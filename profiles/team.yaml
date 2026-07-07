@@ -1,0 +1,12 @@
+profile: team
+solo_auto_approve: false
+artifacts:
+  - {id: charter,       template: charter.md,       owner_role: "@product",             upstream: []}
+  - {id: requirements,  template: requirements.md,  owner_role: "@product,@architects", upstream: [charter]}
+  - {id: design,        template: design.md,        owner_role: "@architects",          upstream: [requirements]}
+  - {id: acceptance,    template: acceptance.md,    owner_role: "@qa",                  upstream: [requirements]}
+  - {id: decomposition, template: decomposition.md, owner_role: "@tech-lead",           upstream: [design, acceptance]}
+  - {id: task,          owner_role: "@stream-owner", upstream: [decomposition], delegate: spec-runner, per: workstream}
+compile:
+  decomposition: {to: maestro,     artifact: project.yaml}
+  task:          {to: spec-runner, artifact: tasks.md}

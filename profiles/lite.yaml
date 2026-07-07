@@ -1,0 +1,6 @@
+profile: lite
+solo_auto_approve: true
+artifacts:
+  - {id: requirements, template: requirements.md, owner_role: "@owner", upstream: []}
+  - {id: design,       template: design.md,       owner_role: "@owner", upstream: [requirements]}
+  - {id: task,         owner_role: "@owner",       upstream: [design], delegate: spec-runner}
