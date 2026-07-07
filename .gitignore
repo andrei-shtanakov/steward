@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyrefly/
+
+# OS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+
+# Local agent tooling
+.claude/
