@@ -34,6 +34,11 @@ __all__ = [
 ]
 
 
+# Mirrors the vendored ``_FM_DELIM`` — a document opening with this is asserting
+# it has frontmatter, so a parse failure past this point is an error, not "unmanaged".
+_FRONTMATTER_START = "---\n"
+
+
 class MetaError(ValueError):
     """Malformed artifact frontmatter (a governance field has the wrong type)."""
 
@@ -82,10 +87,25 @@ def parse_owner_roles(raw: object) -> tuple[str, ...]:
 
 
 def parse_artifact(text: str) -> ArtifactMeta | None:
-    """Parse artifact text into :class:`ArtifactMeta`, or ``None`` when unmanaged."""
+    """Parse artifact text into :class:`ArtifactMeta`, or ``None`` when unmanaged.
+
+    A file that opens a frontmatter block but whose block cannot be parsed
+    (malformed YAML, missing closing delimiter, non-mapping) raises
+    :class:`MetaError` rather than parsing as unmanaged — otherwise a typo would
+    let a managed artifact bypass governance.
+    """
     meta_dict, _ = split_frontmatter(text)
-    if meta_dict is None or not meta_dict.get("spec_stage"):
+    if meta_dict is None:
+        if text.startswith(_FRONTMATTER_START):
+            raise MetaError("frontmatter is present but could not be parsed")
         return None
+
+    stage = meta_dict.get("spec_stage")
+    if stage is None or (isinstance(stage, str) and not stage.strip()):
+        return None  # no recognized spec_stage → unmanaged passthrough (REQ-208)
+    if not isinstance(stage, str):
+        raise MetaError("'spec_stage' must be a string")
+
     return ArtifactMeta(
         base=meta_from_dict(meta_dict),
         owner_roles=parse_owner_roles(meta_dict.get("owner_role")),
@@ -101,6 +121,11 @@ def load_artifact(path: str | Path) -> ArtifactMeta | None:
 def _parse_traces_to(raw: object) -> tuple[str, ...]:
     if raw is None:
         return ()
-    if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
+    if not isinstance(raw, list):
         raise MetaError("'traces_to' must be a list of non-empty ids")
-    return tuple(raw)
+    ids: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise MetaError("'traces_to' must be a list of non-empty ids")
+        ids.append(item.strip())
+    return tuple(ids)

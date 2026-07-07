@@ -76,6 +76,39 @@ def test_malformed_traces_to_raises() -> None:
         parse_artifact(text)
 
 
+def test_broken_yaml_frontmatter_raises() -> None:
+    # Starts a frontmatter block but the YAML is malformed — must not slip
+    # through as "unmanaged" and bypass governance.
+    text = "---\nspec_stage: design\n  bad: : :\n---\nbody\n"
+    with pytest.raises(MetaError, match="frontmatter"):
+        parse_artifact(text)
+
+
+def test_unterminated_frontmatter_raises() -> None:
+    text = "---\nspec_stage: design\nno closing delimiter\n"
+    with pytest.raises(MetaError, match="frontmatter"):
+        parse_artifact(text)
+
+
+def test_non_string_spec_stage_raises() -> None:
+    text = "---\nspec_stage: 123\n---\nbody\n"
+    with pytest.raises(MetaError, match="spec_stage"):
+        parse_artifact(text)
+
+
+def test_whitespace_only_trace_id_raises() -> None:
+    text = "---\nspec_stage: design\ntraces_to: ['   ']\n---\nbody\n"
+    with pytest.raises(MetaError, match="traces_to"):
+        parse_artifact(text)
+
+
+def test_trace_ids_are_stripped() -> None:
+    text = "---\nspec_stage: design\ntraces_to: [' REQ-001 ', 'DEC-002']\n---\nbody\n"
+    meta = parse_artifact(text)
+    assert meta is not None
+    assert meta.traces_to == ("REQ-001", "DEC-002")
+
+
 def test_unknown_frontmatter_keys_ignored() -> None:
     text = "---\nspec_stage: design\nbogus_key: 1\n---\nbody\n"
     meta = parse_artifact(text)
