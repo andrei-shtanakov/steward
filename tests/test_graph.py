@@ -119,6 +119,41 @@ def test_non_mapping_raises_profile_error() -> None:
         load_profile_data(["not", "a", "mapping"])
 
 
+def test_non_bool_solo_auto_approve_raises_profile_error() -> None:
+    data = _lite_data()
+    data["solo_auto_approve"] = "false"  # quoted YAML → truthy string, not a bool
+    with pytest.raises(ProfileError, match="solo_auto_approve"):
+        load_profile_data(data)
+
+
+def test_non_bool_required_raises_profile_error() -> None:
+    data = _lite_data()
+    data["artifacts"][0]["required"] = "false"
+    with pytest.raises(ProfileError, match="required"):
+        load_profile_data(data)
+
+
+def test_empty_string_upstream_raises_profile_error() -> None:
+    data = _lite_data()
+    data["artifacts"][1]["upstream"] = ""
+    with pytest.raises(ProfileError, match="upstream"):
+        load_profile_data(data)
+
+
+def test_null_upstream_treated_as_empty() -> None:
+    data = _lite_data()
+    data["artifacts"][0]["upstream"] = None
+    graph = load_profile_data(data)
+    assert graph.nodes["requirements"].upstream == ()
+
+
+def test_duplicate_upstream_raises_profile_error() -> None:
+    data = _lite_data()
+    data["artifacts"][1]["upstream"] = ["requirements", "requirements"]
+    with pytest.raises(ProfileError, match="upstream"):
+        load_profile_data(data)
+
+
 def test_topo_order_upstream_before_downstream() -> None:
     order = load_profile_data(_lite_data()).topo_order()
     assert order.index("requirements") < order.index("design")

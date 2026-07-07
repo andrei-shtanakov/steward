@@ -9,6 +9,7 @@ maps to exit code 2 (config error, REQ-201).
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,9 +83,13 @@ def load_profile_data(data: Any) -> SpecGraph:
 
     _validate_edges(nodes)
 
+    solo_auto_approve = data.get("solo_auto_approve", False)
+    if not isinstance(solo_auto_approve, bool):
+        raise ProfileError("profile: 'solo_auto_approve' must be a boolean")
+
     return SpecGraph(
         profile=profile,
-        solo_auto_approve=bool(data.get("solo_auto_approve", False)),
+        solo_auto_approve=solo_auto_approve,
         nodes=nodes,
     )
 
@@ -101,15 +106,23 @@ def _node_from_entry(entry: Any) -> SpecNode:
     if not isinstance(owner_role, str) or not owner_role:
         raise ProfileError(f"artifact {node_id!r} missing 'owner_role'")
 
-    upstream = entry.get("upstream") or []
-    if not isinstance(upstream, list) or not all(isinstance(u, str) for u in upstream):
+    upstream = entry.get("upstream")
+    if upstream is None:
+        upstream = []
+    if not isinstance(upstream, list) or not all(isinstance(u, str) and u for u in upstream):
         raise ProfileError(f"artifact {node_id!r}: 'upstream' must be a list of ids")
+    if len(set(upstream)) != len(upstream):
+        raise ProfileError(f"artifact {node_id!r}: duplicate upstream ids")
+
+    required = entry.get("required", True)
+    if not isinstance(required, bool):
+        raise ProfileError(f"artifact {node_id!r}: 'required' must be a boolean")
 
     return SpecNode(
         id=node_id,
         owner_role=owner_role,
         upstream=tuple(upstream),
-        required=bool(entry.get("required", True)),
+        required=required,
         template=entry.get("template"),
         delegate=entry.get("delegate"),
         per=entry.get("per"),
@@ -128,16 +141,24 @@ def _validate_edges(nodes: dict[str, SpecNode]) -> None:
 
 
 def _kahn_order(nodes: dict[str, SpecNode]) -> list[str]:
-    """Topologically order nodes; a shorter-than-input result signals a cycle."""
+    """Topologically order nodes; a shorter-than-input result signals a cycle.
+
+    O(V+E): downstream adjacency is precomputed and a deque feeds the frontier.
+    Assumes upstream references resolve (checked by :func:`_validate_edges`).
+    """
+    downstream: dict[str, list[str]] = {node_id: [] for node_id in nodes}
     indegree = {node_id: len(node.upstream) for node_id, node in nodes.items()}
-    ready = [node_id for node_id, degree in indegree.items() if degree == 0]
+    for node in nodes.values():
+        for upstream_id in node.upstream:
+            downstream[upstream_id].append(node.id)
+
+    ready = deque(node_id for node_id, degree in indegree.items() if degree == 0)
     order: list[str] = []
     while ready:
-        current = ready.pop(0)
+        current = ready.popleft()
         order.append(current)
-        for node in nodes.values():
-            if current in node.upstream:
-                indegree[node.id] -= 1
-                if indegree[node.id] == 0:
-                    ready.append(node.id)
+        for node_id in downstream[current]:
+            indegree[node_id] -= 1
+            if indegree[node_id] == 0:
+                ready.append(node_id)
     return order

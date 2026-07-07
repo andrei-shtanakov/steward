@@ -11,7 +11,7 @@ steward — тонкий слой поверх spec-runner/Maestro: провод
 **компилирует вниз делегированием** (Decomposition→Maestro, Task Spec→spec-runner). Не пишет
 `tasks.md`/`project.yaml` сам, не строит свою идентичность/RBAC.
 
-Контекст и обоснование: `../decisions/2026-07-05-adr-spec-governance-layer.md`.
+Контекст и обоснование: [`spec/20-design.md`](spec/20-design.md) (раздел «Ключевые решения»).
 
 ## Профиль `team` — 8 гейтов sdd схлопнуты в 5 авторинговых + 3 исполнительных
 
