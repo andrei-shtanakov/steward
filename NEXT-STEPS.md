@@ -10,9 +10,8 @@ Phase 2 (governance MVP) → Phase 3 (замкнуть петлю, снять д
 
 ## Phase 0 — решить и пощупать (без нового кода)
 
-- **D1 · Решение DEC-006 (твоё).** Где живёт gate-check: (a) governance-подкоманда spec-runner
-  (реюз SpecMeta) или (b) отдельный линтер-репо. Рекомендация — (a): меньше кода, один владелец
-  состояния. Блокирует Phase 2.
+- **D1 · Решение DEC-006 — ✅ решено (2026-07-11): gate-check живёт в steward**
+  (`src/steward/gatecheck/`); обоснование в `spec/20-design.md` DEC-006.
 - **D2 · Лицензия sdd (параллельно).** Спросить Dmytro Honcharuk — можно ли брать тексты
   шаблонов (LICENSE в репо нет). До ответа берём только идею гейтов. Не блокирует код.
 - **V1 · Живой прогон spec-runner gated.** На маленькой задаче прогнать `plan --gated` → увидеть
@@ -30,9 +29,11 @@ Phase 2 (governance MVP) → Phase 3 (замкнуть петлю, снять д
 
 - **C2 · Frontmatter-схема (WS-001).** Расширить SpecMeta полями `owner_role` + человеческий
   approver. (project: steward/spec-runner)
-- **C3 · gate-check MVP (WS-002, спека готова).** completeness + traceability + status↔git,
-  `--no-fs`, CI-job + branch protection. Здесь git-PR/CODEOWNERS-энфорс становится реальным.
-  Начать с одного пилотного репо. (project: steward)
+- **C3 · gate-check MVP (WS-002) — ✅ реализовано (2026-07-11):** completeness + traceability +
+  upstream-approved + status↔git, `--no-fs facts.json`, exit-коды 0/1/2, CI-job (dogfood на
+  собственном `spec/`). Отложено осознанно: stale-cascade (REQ-206 — ждёт хешей во frontmatter,
+  C2-расширение) и OSS-мост (REQ-209, P2). Branch protection — включить руками после мержа.
+  (project: steward)
 
 ## Phase 3 — замкнуть петлю и снять долг
 

@@ -41,9 +41,11 @@ dispatcher ◀── читает spec/*.md + git state (read-only панель)
   а не с нуля. → REQ-003. См. reference-scope-linter-oss.
 - **DEC-005** Компиляция вниз — только делегирование через существующие границы
   (`maestro/spec_runner.py`, `plan --gated`). steward не знает форматов листовых артефактов. → REQ-005.
-- **DEC-006 (открыто)** Размещение gate-check: (a) governance-подкоманда spec-runner (реюз
-  SpecMeta) либо (b) тонкий отдельный линтер-репо, читающий SpecMeta. Рекомендация — (a), финал —
-  в фазе реализации. В обоих случаях второй state-движок не создаём.
+- **DEC-006 (решено 2026-07-11, owner)** Размещение gate-check: **в steward**
+  (`src/steward/gatecheck/`). Ранняя рекомендация (a) устарела к моменту реализации: WS-001 уже
+  вендорил SpecMeta в steward (аргумент «реюз без копии» снят), а границы владения фиксируют
+  «steward owns gate-check». Второй state-движок не создан: используется вендоренный SpecMeta
+  + ArtifactMeta-обёртка (DEC-003).
 
 ## Frontmatter-схема артефакта (REQ-002)
 
