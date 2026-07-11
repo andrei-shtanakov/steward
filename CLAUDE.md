@@ -54,3 +54,24 @@ Per `NEXT-STEPS.md` — do not start blocked items, do not build all of steward 
 | `meta.py` | partially — SpecMeta contract freeze pending in spec-runner (C1/C2) |
 | gate-check (WS-002, C3) | blocked on DEC-006 decision (where gate-check lives — user's call) and C2 frontmatter schema |
 | compile-down (C5) + Maestro delegation (C4) | Phase 3, only after the C1→C3 vertical slice proves ergonomics |
+
+## Repo scope & boundaries
+
+- **Этот репо:** `steward` — git-корень `all_ai_orchestrators/steward/`, remote `git@github.com:andrei-shtanakov/steward.git`.
+- **Соседи (READ-ONLY reference):** `../arbiter/`, `../atp-platform/`, `../deployer/`, `../dispatcher/`, `../Maestro/`, `../open-prose/`, `../proctor/`, `../prograph/`, `../prograph-vault/`, `../robin-runtime/`, `../robin-toolkit/`, `../spec-runner/`, `../spec-runner-vscode/` — их код не редактировать.
+- Нужна правка у соседа → **стоп**: запиши handoff в `../prograph-vault/authored/notes/`
+  (кросс-проектное) или `../_cowork_output/` (черновик), не трогай его файлы.
+- Кросс-репные контракты — **вендорить пиненой копией внутрь**, не ссылаться наружу.
+- Полное правило (SSOT): `../prograph-vault/authored/rules/repo-boundaries.md`.
+
+## Git workflow (у репо есть remote)
+
+- Ветка `<type>/<slug>` → push → `gh pr create`. **Прямые коммиты в `master` запрещены.**
+- После открытия PR — прочитать ревью **GitHub Copilot**: валидные замечания исправлять
+  новыми коммитами в ту же ветку; невалидные — ответить с обоснованием, **не применять
+  вслепую**; итерировать, пока не останется открытых замечаний.
+- **Не мержить.** Мерж делает пользователь.
+- После мержа пользователем: `git switch master && git pull --ff-only`, затем удалить
+  влитую ветку (`git branch -d <branch>`) и `git fetch --prune`; убрать прочие влитые ветки.
+- Никогда не делать force-push в общие ветки; не трогать другие репо (см. scope выше).
+- Полное правило (SSOT): `../prograph-vault/authored/rules/git-workflow.md`.
