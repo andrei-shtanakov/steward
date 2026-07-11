@@ -61,8 +61,9 @@ def collect_bundle(graph: SpecGraph, spec_dir: Path) -> tuple[list[Artifact], li
 
     for path in sorted(spec_dir.rglob("*.md")):
         rel = path.relative_to(spec_dir).as_posix()
+        text = path.read_text(encoding="utf-8")
         try:
-            meta = parse_artifact(path.read_text(encoding="utf-8"))
+            meta = parse_artifact(text)
         except MetaError as err:
             findings.append(Finding("error", "GC-META", rel, f"malformed frontmatter: {err}"))
             continue
@@ -91,9 +92,7 @@ def collect_bundle(graph: SpecGraph, spec_dir: Path) -> tuple[list[Artifact], li
             node_id = None
         else:
             claimed[node_id] = rel
-        artifacts.append(
-            Artifact(path=rel, node_id=node_id, meta=meta, text=path.read_text("utf-8"))
-        )
+        artifacts.append(Artifact(path=rel, node_id=node_id, meta=meta, text=text))
     return artifacts, findings
 
 
