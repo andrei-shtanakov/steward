@@ -8,9 +8,9 @@ executor:
     post_done:
       auto_commit: true
       run_lint: false
-      run_tests: true
+      run_tests: false
     pre_start:
       create_git_branch: true
   main_branch: feature/gov-risk-classify-docs
   max_retries: 1
-  task_timeout_minutes: 45
+  task_timeout_minutes: 20

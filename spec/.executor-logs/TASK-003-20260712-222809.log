@@ -1,0 +1,77 @@
+=== PROMPT ===
+# Task Execution Request
+
+## Task: TASK-003 — Author part 2: `steward waivers-check [DIR]` section
+
+**Priority:** P0
+**Estimate:** 
+**Milestone:** 
+
+## Checklist (implement ALL items):
+
+
+
+## Related Requirements:
+
+See /private/tmp/claude-501/-Users-Andrei-Shtanakov-labs-all-ai-orchestrators/c24dfd0f-0a40-416e-ac6f-f751e22d5181/scratchpad/governed-run2/ws/risk-classify-docs/spec/requirements.md
+
+## Related Design:
+
+See /private/tmp/claude-501/-Users-Andrei-Shtanakov-labs-all-ai-orchestrators/c24dfd0f-0a40-416e-ac6f-f751e22d5181/scratchpad/governed-run2/ws/risk-classify-docs/spec/design.md
+
+## Instructions:
+
+1. Implement ALL checklist items for this task
+2. Write unit tests for new code (coverage ≥80%)
+3. Follow the design patterns from /private/tmp/claude-501/-Users-Andrei-Shtanakov-labs-all-ai-orchestrators/c24dfd0f-0a40-416e-ac6f-f751e22d5181/scratchpad/governed-run2/ws/risk-classify-docs/spec/design.md
+4. Use existing code style and conventions
+5. Create/update files as needed
+
+## Dependencies:
+
+- To add a new dependency: `uv add <package>`
+- To add a dev dependency: `uv add --dev <package>`
+- NEVER edit pyproject.toml manually for dependencies
+- After adding dependencies, they are available immediately
+
+## Success Criteria:
+
+- All checklist items implemented
+- All tests pass (`uv run pytest`)
+- No lint errors (`uv run ruff check .`)
+- Code follows project conventions
+
+## Output:
+
+When complete, respond with:
+- Summary of changes made
+- Files created/modified
+- Any issues or notes
+- "TASK_COMPLETE" if successful, or "TASK_FAILED: <reason>" if not
+
+
+Begin implementation:
+
+
+=== OUTPUT ===
+## Summary of changes
+
+TASK-003 appended part 2 — the `steward waivers-check [DIR]` section — to `docs/risk-classify.md` (36 lines added, the only file touched). All content was verified against the source of truth before writing (`src/steward/riskclassify/cli.py:92-124` and `waivers.py`):
+
+- **Invocation** (`## steward waivers-check [DIR]`): `DIR` defaults to `spec/waivers`; `--sha` defaults to git HEAD of `--repo`; a missing directory is clean exit 0 — all confirmed against the Typer signature and docstring in `cli.py`.
+- **`### Waiver frontmatter`**: fenced YAML example plus the five required fields (`gate_id`, `sha`, `tier`, `waived_by`, `reason`) matching `_REQUIRED` in `waivers.py`, with the note that approval is the merged PR via CODEOWNERS (DESIGN-609).
+- **`### Semantics`**: SHA-bound invalidation on any new commit/rebase (`waiver-stale-sha`) and the critical-tier prohibition (`waiver-forbidden-tier` via the risk model's `waiver_policy`) — matching `validate_waivers`.
+- **`### Exit codes`**: `0` all valid or none exist; `1` findings (malformed file, non-40-hex SHA, unknown tier, forbidden tier, stale SHA); `2` config error (bad risk model, invalid `--sha`, git failure) — matching the `waivers_check` command body.
+
+**Files modified:** `docs/risk-classify.md` (now 98 lines total, parts 1 + 2 per the DESIGN-002 skeleton).
+
+**Verification:** `uv run pytest` — 123 passed; `uv run ruff check .` — all checks passed; working tree contains only the one documented file change (REQ-001 scope holds).
+
+**Notes:** No unit tests were added — this task is documentation-only by spec (REQ-001 forbids creating any file other than the guide, so the template's test-coverage item does not apply). The doc is 98 lines, slightly over the ≈60–90 target but still one screenful; TASK-004's final length/scope check can trim if desired. I did not commit — per the workflow the executor handles commits on this branch.
+
+TASK_COMPLETE
+
+=== STDERR ===
+
+
+=== RETURN CODE: 0 ===
