@@ -37,7 +37,8 @@ state-machine, не узел DAG.
 **Priority**: 🔴 P0
 **Rationale**: Классификация должна быть воспроизводимой в post-mortem и меняться через PR-review,
 а не через код.
-**Description**: Риск-модель — YAML-файл (`profiles/risk-model.yaml`, предложение — OQ-4), данные,
+**Description**: Риск-модель — YAML-файл (`profiles/risk-model.yaml`, путь зафиксирован — OQ-4
+resolved 2026-07-12), данные,
 не код. Версия = sha256 файла; входит в каждый verdict-record. Профиль задаёт floor; модель может
 только эскалировать (монотонность).
 **Acceptance Criteria**:
