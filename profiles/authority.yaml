@@ -1,0 +1,25 @@
+# Authority policy v1 — SSOT (RD-006 M2; design: arbiter
+# docs/2026-07-12-authority-split-design.md).
+#
+# Role/phase-scoped agent allowlist: "MAY this agent act here", enforced by
+# arbiter at route time (contracts/authority/). This file is GOVERNANCE DATA —
+# changes go through PR review like the gate profiles and risk-model.yaml.
+# arbiter vendors a pinned TOML copy (config/authority.toml) with an
+# AUTHORITY_PINNED_SHA CI check; conformance against the agents-catalog runs
+# on the arbiter side at vendoring (scripts/check_authority_conformance.py).
+#
+# Semantics: pure allowlist, default deny; patterns are exactly
+# `harness@model` or `harness@*`; requests without authority_context are
+# decided by unknown_context (deny = fail-closed).
+# Closed vocabularies:
+#   role:  decompose | implement | review | benchmark
+#   phase: authoring | execution | merge | pr
+
+version: 1
+unknown_context: deny
+
+rules:
+  - {role: implement, phase: execution, agents: ["claude_code@*", "codex_cli@gpt-5.5"]}
+  - {role: review,    phase: execution, agents: ["claude_code@*"]}
+  - {role: decompose, phase: authoring, agents: ["claude_code@*"]}
+  - {role: benchmark, phase: execution, agents: ["claude_code@*", "codex_cli@*", "opencode@*"]}
