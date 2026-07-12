@@ -89,7 +89,7 @@ def load_risk_model(path: Path) -> RiskModel:
         for repo, rules in _mapping(raw, "path_class").items()
     }
 
-    return RiskModel(
+    model = RiskModel(
         version_sha=version_sha,
         profile_floors=_tier_table(raw, "profile_floors"),
         class_tiers=class_tiers,
@@ -106,6 +106,36 @@ def load_risk_model(path: Path) -> RiskModel:
             for k, v in _mapping(raw, "consumer_registry", optional=True).items()
         },
     )
+    _validate_cross_refs(model)
+    return model
+
+
+def _validate_cross_refs(model: RiskModel) -> None:
+    """Every value a rule can emit must resolve in its tier table (exit-2 contract).
+
+    Without this, a typo like ``class: cod`` surfaces as a KeyError mid-
+    classification instead of a config error at load time.
+    """
+    for repo, rules in [*model.path_class.items(), ("_generic", model.generic_class)]:
+        for rule in rules:
+            if rule.value not in model.class_tiers:
+                raise RiskModelError(
+                    f"path_class[{repo}] glob '{rule.glob}': class '{rule.value}' "
+                    f"is not in class_tiers"
+                )
+    for rule in model.trust_rules:
+        if rule.value not in model.trust_tiers:
+            raise RiskModelError(
+                f"trust_rules glob '{rule.glob}': boundary '{rule.value}' is not in trust_tiers"
+            )
+    for flag in model.declared_flags:
+        if flag not in model.trust_tiers:
+            raise RiskModelError(f"declared_flags: '{flag}' is not in trust_tiers")
+    for key in ("single-repo", "cross-repo", "ecosystem-contract"):
+        if key not in model.blast_tiers:
+            raise RiskModelError(f"blast_tiers must define '{key}'")
+    if "none" not in model.trust_tiers:
+        raise RiskModelError("trust_tiers must define 'none'")
 
 
 def _mapping(raw: dict, key: str, *, optional: bool = False) -> dict:

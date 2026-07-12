@@ -217,3 +217,10 @@ def test_classification_carries_sha_and_model_version(model) -> None:
     c = classify_diff(model, project="Maestro", paths=["README.md"], sha="f" * 40)
     assert c.sha == "f" * 40
     assert c.risk_model_version == model.version_sha
+
+
+def test_ex_ante_repo_wide_scope_touches_contracts(model) -> None:
+    # Regression (Copilot, PR #7): "**" has no fixed prefix and must still
+    # conservatively count as touching contracts/** (worst registry entry).
+    c = classify_declared(model, project="Maestro", scope=["**"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"

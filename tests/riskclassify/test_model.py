@@ -17,7 +17,7 @@ tiers: [low, medium, high, critical]
 profile_floors: {lite: low, team: medium}
 class_tiers: {docs: low, code: medium, unknown: medium}
 blast_tiers: {single-repo: low, cross-repo: high, ecosystem-contract: critical}
-trust_tiers: {none: low, secrets: critical}
+trust_tiers: {none: low, secrets: critical, external-api: high}
 tier_gates:
   low: []
   medium: [steward.gate_check]
@@ -93,4 +93,28 @@ def test_missing_file_is_config_error(tmp_path: Path) -> None:
 def test_tier_gates_must_cover_all_tiers(tmp_path: Path) -> None:
     bad = MINIMAL.replace("  critical: [steward.gate_check]\n", "")
     with pytest.raises(RiskModelError, match="tier_gates"):
+        load_risk_model(_write(tmp_path, bad))
+
+
+def test_rule_class_missing_from_class_tiers_is_config_error(tmp_path: Path) -> None:
+    bad = MINIMAL.replace('{glob: "src/**", class: code}', '{glob: "src/**", class: cod}')
+    with pytest.raises(RiskModelError, match="cod"):
+        load_risk_model(_write(tmp_path, bad))
+
+
+def test_missing_required_blast_key_is_config_error(tmp_path: Path) -> None:
+    bad = MINIMAL.replace("single-repo: low, ", "")
+    with pytest.raises(RiskModelError, match="single-repo"):
+        load_risk_model(_write(tmp_path, bad))
+
+
+def test_trust_rule_boundary_missing_from_trust_tiers_is_config_error(tmp_path: Path) -> None:
+    bad = MINIMAL.replace("boundary: secrets", "boundary: sekrets")
+    with pytest.raises(RiskModelError, match="sekrets"):
+        load_risk_model(_write(tmp_path, bad))
+
+
+def test_declared_flag_missing_from_trust_tiers_is_config_error(tmp_path: Path) -> None:
+    bad = MINIMAL.replace("declared_flags: [external-api]", "declared_flags: [ext-api]")
+    with pytest.raises(RiskModelError, match="ext-api"):
         load_risk_model(_write(tmp_path, bad))

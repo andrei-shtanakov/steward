@@ -115,6 +115,12 @@ def _git(repo: Path, *args: str) -> str:
         raise InputError(f"git {' '.join(args)} failed: {exc}") from exc
 
 
+# Field -> expected shape for both input files; wrong types must be a config
+# error (exit 2), not a TypeError from inside the classifier.
+_STR_FIELDS = ("project", "sha")
+_LIST_FIELDS = ("paths", "scope", "declared_scope", "flags")
+
+
 def _read_json(path: Path, *, required: tuple[str, ...]) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -125,6 +131,15 @@ def _read_json(path: Path, *, required: tuple[str, ...]) -> dict:
     missing = [k for k in required if k not in data]
     if missing:
         raise InputError(f"{path}: missing required fields {missing}")
+    for key in _STR_FIELDS:
+        if key in data and not isinstance(data[key], str):
+            raise InputError(f"{path}: '{key}' must be a string")
+    for key in _LIST_FIELDS:
+        value = data.get(key)
+        if value is not None and (
+            not isinstance(value, list) or not all(isinstance(v, str) for v in value)
+        ):
+            raise InputError(f"{path}: '{key}' must be a list of strings")
     return data
 
 

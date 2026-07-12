@@ -94,7 +94,9 @@ def classify_declared(
     classes.add("unknown") if not classes else None
     change_class = _max_class(model, classes or {"unknown"})
 
-    touches_contracts = any(_globs_may_intersect(g, _CONTRACTS_PREFIX + "**") for g in scope)
+    # contracts/** plays the *rule* role here: a prefix-less scope ("**")
+    # covers the whole repo and must count as touching contracts (fail-closed).
+    touches_contracts = any(_globs_may_intersect(_CONTRACTS_PREFIX + "**", g) for g in scope)
     blast = "single-repo"
     if touches_contracts:
         blast = _registry_blast(model, project, pinned_key=None)

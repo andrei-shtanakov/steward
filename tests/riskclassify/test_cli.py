@@ -102,3 +102,44 @@ def test_bad_facts_is_exit_2(tmp_path: Path) -> None:
 def test_missing_input_source_is_exit_2() -> None:
     result = runner.invoke(app, ["risk-classify", "--risk-model", str(CANONICAL)])
     assert result.exit_code == 2
+
+
+def test_wrong_type_paths_is_exit_2(tmp_path: Path) -> None:
+    # Regression (Copilot, PR #7): non-list `paths` must be exit 2, not a TypeError.
+    result = runner.invoke(
+        app,
+        [
+            "risk-classify",
+            "--no-fs",
+            str(_facts(tmp_path, paths="maestro/models.py")),
+            "--risk-model",
+            str(CANONICAL),
+        ],
+    )
+    assert result.exit_code == 2
+
+
+def test_wrong_type_scope_is_exit_2(tmp_path: Path) -> None:
+    scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps({"project": "Maestro", "sha": "b" * 40, "scope": {"not": "a list"}}),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app, ["risk-classify", "--declared", str(scope), "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 2
+
+
+def test_wrong_type_sha_is_exit_2(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "risk-classify",
+            "--no-fs",
+            str(_facts(tmp_path, sha=12345)),
+            "--risk-model",
+            str(CANONICAL),
+        ],
+    )
+    assert result.exit_code == 2
