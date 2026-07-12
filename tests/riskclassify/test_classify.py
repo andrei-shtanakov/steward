@@ -197,6 +197,7 @@ def test_ex_post_scope_violation_escalates_and_flags(model) -> None:
     )
     assert "scope_violation" in c.flags
     assert c.tier == "high"
+    assert c.dominant_axis == "floor"
 
 
 def test_ex_post_within_scope_no_flag(model) -> None:
