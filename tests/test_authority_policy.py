@@ -18,7 +18,9 @@ PHASES = {"authoring", "execution", "merge", "pr"}
 
 
 def _load() -> dict:
-    return yaml.safe_load(CANONICAL.read_text(encoding="utf-8"))
+    data = yaml.safe_load(CANONICAL.read_text(encoding="utf-8"))
+    assert isinstance(data, dict), f"authority.yaml must be a mapping, got {type(data)}"
+    return data
 
 
 def _valid_pattern(pattern: str) -> bool:
