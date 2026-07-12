@@ -22,15 +22,15 @@ approved_at: null
 ## Milestone 0: Design (deliverable RD-004)
 
 ### TASK-601: Ревью и аппрув спек-бандла WS-006
-🔴 P0 | 🔄 IN PROGRESS | Est: —
+🔴 P0 | ✅ DONE | Est: —
 
 **Description:**
 Этот бандл (requirements + design + risk-model.example.yaml) проходит PR-review; открытые
 вопросы OQ-1..OQ-4 закрываются решениями владельца прямо в ревью или отдельными заметками.
 
 **Checklist:**
-- [ ] PR-review бандла
-- [ ] Решения по OQ-1..OQ-4 зафиксированы (в design или ADR-заметке)
+- [x] PR-review бандла (steward PR #5, merged 2026-07-12, master `04accdd`)
+- [x] Решения по OQ-1..OQ-4 зафиксированы (design.md → Resolved Questions, 2026-07-12)
 
 **Traces to:** [REQ-601]..[REQ-611]
 **Depends on:** -
@@ -39,7 +39,7 @@ approved_at: null
 ---
 
 ### TASK-602: Handoff-заметка Maestro
-🔴 P0 | ⬜ TODO | Est: 1h
+🔴 P0 | ✅ DONE (vault PR #17, merged 2026-07-12: `2026-07-12-ws006-gates-maestro-handoff.md`) | Est: 1h
 
 **Description:**
 Maestro-side работы из DESIGN-611 (guard-hook + verdict-record, аннотации advisory-fail,
@@ -52,22 +52,25 @@ SHA-инвалидация, evidence-ref v2 `kind: gate-verdict`) — замет
 ---
 
 ### TASK-603: evidence_rules для RD-004 в contracts-v1.yaml
-🟠 P1 | ⬜ TODO | Est: 1h
+🟠 P1 | ✅ DONE | Est: 1h
 
 **Description:**
 После фиксации путей деливераблов (этим бандлом) добавить evidence_rules RD-004 в
 `prograph-vault/authored/roadmaps/contracts-v1.yaml` (vault PR): `file_exists` на спек-бандл
 и (после M1) на `profiles/risk-model.yaml` — dashboard начнёт честно показывать статус.
+Сделано: implementation-rule на design.md — vault PR #17 (RD-004 → implemented);
+verification-rule на `profiles/risk-model.yaml` (путь зафиксирован OQ-4) — следующим
+vault PR; verified флипнется, когда M1 отгрузит файл.
 
 **Traces to:** [REQ-611]
 **Depends on:** [TASK-601]
 
 ---
 
-## Milestone 1: Implementation ⏸️ BLOCKED до аппрува design
+## Milestone 1: Implementation (разблокирован 2026-07-12: design смержен, OQ-1..4 решены)
 
 ### TASK-604: RiskModel loader + валидация
-🔴 P0 | ⏸️ BLOCKED | Est: 3h
+🔴 P0 | ⬜ TODO | Est: 3h
 
 **Checklist:**
 - [ ] Парсинг risk-model.yaml → `RiskModel`; структурная ошибка → config error (exit 2)
@@ -80,7 +83,7 @@ SHA-инвалидация, evidence-ref v2 `kind: gate-verdict`) — замет
 ---
 
 ### TASK-605: Классификатор — три оси + комбинатор + двухфазность
-🔴 P0 | ⏸️ BLOCKED | Est: 4-5h
+🔴 P0 | ⬜ TODO | Est: 4-5h
 
 **Checklist:**
 - [ ] change_class per-file (per-repo → _generic → default), max по диффу
@@ -94,7 +97,7 @@ SHA-инвалидация, evidence-ref v2 `kind: gate-verdict`) — замет
 ---
 
 ### TASK-606: CLI `risk-classify` + JSON shape
-🔴 P0 | ⏸️ BLOCKED | Est: 3h
+🔴 P0 | ⬜ TODO | Est: 3h
 
 **Checklist:**
 - [ ] `--declared | --diff`, `--risk-model`, `--no-fs`, `--format json`
@@ -106,7 +109,7 @@ SHA-инвалидация, evidence-ref v2 `kind: gate-verdict`) — замет
 ---
 
 ### TASK-607: Waiver-файлы + проверка в gate-check
-🟠 P1 | ⏸️ BLOCKED | Est: 3h
+🟠 P1 | ⬜ TODO | Est: 3h
 
 **Checklist:**
 - [ ] Формат `spec/waivers/<gate_id>-<shortsha>.md` (frontmatter)

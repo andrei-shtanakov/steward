@@ -39,7 +39,7 @@ tier_gates:
              git.required_reviews, human.transition_approval]
 
 waiver_policy:
-  critical: forbidden   # v1 (OQ-3); остальные tier'ы — waiver-файл через PR (DESIGN-609)
+  critical: forbidden   # решено 2026-07-12 (OQ-3); остальные tier'ы — waiver-файл через PR (DESIGN-609)
 
 # path→class: per-repo секция -> _generic -> встроенный default {glob: "**", class: unknown}.
 # Внутри секции first match wins. Пути — относительные корня репо.
@@ -55,7 +55,7 @@ path_class:
     - {glob: "policies/**",            class: policy}
     - {glob: "arbiter-core/src/**",    class: code}
   steward:
-    - {glob: "profiles/**",            class: policy}        # включая risk-model.yaml (OQ-4)
+    - {glob: "profiles/**",            class: policy}        # включая risk-model.yaml (канон: profiles/risk-model.yaml, OQ-4)
     - {glob: "src/steward/gatecheck/**", class: policy}      # enforcement-код = мета-уровень
     - {glob: "src/**",                 class: code}
     - {glob: "spec/**",                class: docs}          # governance самих спек — у gate-check
@@ -85,7 +85,7 @@ trust_rules:
   - {glob: "**/*secret*",             boundary: secrets}
 declared_flags: [external-api]   # из task-спеки, по путям не детектится (DESIGN-602)
 
-# v1: статический реестр (OQ-2). cross-repo при 1 консюмере, ecosystem-contract при >=2.
+# Живёт здесь по решению OQ-2 (2026-07-12). cross-repo при 1 консюмере, ecosystem-contract при >=2.
 consumer_registry:
   "Maestro/contracts/observability":      [spec-runner, arbiter, dispatcher]
   "Maestro/contracts/work-correlation":   [dispatcher]

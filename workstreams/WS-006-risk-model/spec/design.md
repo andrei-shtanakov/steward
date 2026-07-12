@@ -198,13 +198,19 @@ VerdictRecord  { gate_id, obligation, verdict, tier, phase, sha, risk_model_vers
 Waiver         { gate_id, sha, waived_by, reason }   # файл с frontmatter, аппрув через PR
 ```
 
-## Open Questions
+## Resolved Questions (решения владельца, 2026-07-12)
 
-- **OQ-1**: evidence-ref v2 `kind: gate-verdict` vs навсегда остаться на `log`/`artifact` —
-  решение за Maestro (владелец контракта), запускается handoff-заметкой.
-- **OQ-2**: где живёт `consumer_registry` — внутри risk-model.yaml (v1, дублирование) или в
-  общем реестре вендоринга контрактов (появится в параллельном треке вендоринга).
-- **OQ-3**: waiver на critical: forbidden (v1) vs 2-approver — пересмотреть после первых
-  живых прогонов.
-- **OQ-4**: путь risk-model.yaml — предложение `profiles/risk-model.yaml` (рядом с floor'ами,
-  один PR-review-канал).
+- **OQ-1 — делегировано Maestro.** v1 работает на существующих kind'ах evidence-ref
+  (`log`/`artifact`); предложение `kind: gate-verdict` передано handoff'ом
+  (`prograph-vault/authored/notes/2026-07-12-ws006-gates-maestro-handoff.md`, M-4) — решение
+  примет Maestro как владелец контракта, когда возьмёт работы в план. steward M1 ни на что
+  не ждёт.
+- **OQ-2 — внутри risk-model.yaml.** Секция `consumer_registry` живёт в самом файле модели:
+  один файл, один PR-review-канал. Осознанное дублирование; миграция на общий реестр —
+  когда трек вендоринга контрактов его создаст.
+- **OQ-3 — forbidden в v1.** Waiver на critical запрещён полностью; выход — снизить риск
+  изменения (разбить PR) или поменять модель через PR. Пересмотр (напр., 2-approver) —
+  после первых живых прогонов.
+- **OQ-4 — `profiles/risk-model.yaml`.** Канонический путь — рядом с floor-профилями
+  `lite`/`team`: один review-канал, CODEOWNERS на `profiles/` покрывает и модель,
+  path_class уже классифицирует `profiles/**` как policy/high (self-protection).
