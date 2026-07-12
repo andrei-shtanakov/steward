@@ -16,12 +16,12 @@ Documentation-only change: create exactly one new file, `docs/risk-classify.md`,
 Read the source files and collect every fact the document will state, verbatim from code — nothing from memory or invention.
 
 **Checklist:**
-- [ ] Read `src/steward/riskclassify/cli.py`: exact flag names and defaults (`--declared`, `--no-fs`, `--diff`, `--risk-model` default `profiles/risk-model.yaml`, `--profile` default `lite`, `--repo`, `--project`, `--sha`), exit codes for both commands, `waivers-check [DIR]` default directory (`spec/waivers`), missing-directory behavior.
-- [ ] Read `src/steward/riskclassify/cli.py` `_read_json` (and related helpers): required/optional keys for the `--declared` schema (`project`, `sha`, `scope`, optional `flags`) and the `--no-fs` schema (`project`, `sha`, `paths`, optional `declared_scope`, `flags`).
-- [ ] Read `src/steward/riskclassify/classify.py` and `model.py`: the nine `Classification` output fields and their meanings; tier values (`low`/`medium`/`high`/`critical`); phases (`ex_ante`/`ex_post`); the three axes; max-of-floor-and-axes rule; deterministic sorted-key JSON output.
-- [ ] Read `src/steward/riskclassify/waivers.py`: the five frontmatter fields (`gate_id`, `sha`, `tier`, `waived_by`, `reason`), SHA-bound/stale semantics, rule ids (`waiver-stale-sha`, `waiver-forbidden-tier`), critical-tier prohibition, finding categories behind exit code 1.
-- [ ] Skim `workstreams/WS-006-risk-model/spec/design.md` (DESIGN-601…610) to confirm terminology and cross-check the above.
-- [ ] Record collected facts (flag names, defaults, field names, rule ids, exit codes) as notes for TASK-002; flag any discrepancy between design doc and code (code wins per [DESIGN-012]).
+- [x] Read `src/steward/riskclassify/cli.py`: exact flag names and defaults (`--declared`, `--no-fs`, `--diff`, `--risk-model` default `profiles/risk-model.yaml`, `--profile` default `lite`, `--repo`, `--project`, `--sha`), exit codes for both commands, `waivers-check [DIR]` default directory (`spec/waivers`), missing-directory behavior.
+- [x] Read `src/steward/riskclassify/cli.py` `_read_json` (and related helpers): required/optional keys for the `--declared` schema (`project`, `sha`, `scope`, optional `flags`) and the `--no-fs` schema (`project`, `sha`, `paths`, optional `declared_scope`, `flags`).
+- [x] Read `src/steward/riskclassify/classify.py` and `model.py`: the nine `Classification` output fields and their meanings; tier values (`low`/`medium`/`high`/`critical`); phases (`ex_ante`/`ex_post`); the three axes; max-of-floor-and-axes rule; deterministic sorted-key JSON output.
+- [x] Read `src/steward/riskclassify/waivers.py`: the five frontmatter fields (`gate_id`, `sha`, `tier`, `waived_by`, `reason`), SHA-bound/stale semantics, rule ids (`waiver-stale-sha`, `waiver-forbidden-tier`), critical-tier prohibition, finding categories behind exit code 1.
+- [x] Skim `workstreams/WS-006-risk-model/spec/design.md` (DESIGN-601…610) to confirm terminology and cross-check the above.
+- [x] Record collected facts (flag names, defaults, field names, rule ids, exit codes) as notes for TASK-002; flag any discrepancy between design doc and code (code wins per [DESIGN-012]).
 
 **Acceptance criteria:**
 - Every fact planned for the doc has a confirmed source line in code or the WS-006 design doc.
