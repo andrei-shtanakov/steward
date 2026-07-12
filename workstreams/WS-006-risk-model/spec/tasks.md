@@ -70,39 +70,39 @@ vault PR; verified флипнется, когда M1 отгрузит файл.
 ## Milestone 1: Implementation (разблокирован 2026-07-12: design смержен, OQ-1..4 решены)
 
 ### TASK-604: RiskModel loader + валидация
-🔴 P0 | ⬜ TODO | Est: 3h
+🔴 P0 | ✅ DONE | Est: 3h
 
 **Checklist:**
-- [ ] Парсинг risk-model.yaml → `RiskModel`; структурная ошибка → config error (exit 2)
-- [ ] Обязательный `class_tiers.unknown` ≥ medium (REQ-603)
-- [ ] sha256 файла как `risk_model_version`
-- [ ] Юнит-тесты: валидная/битая модель
+- [x] Парсинг risk-model.yaml → `RiskModel`; структурная ошибка → config error (exit 2)
+- [x] Обязательный `class_tiers.unknown` ≥ medium (REQ-603)
+- [x] sha256 файла как `risk_model_version`
+- [x] Юнит-тесты: валидная/битая модель
 
 **Traces to:** [REQ-601], [REQ-603], [DESIGN-603]
 
 ---
 
 ### TASK-605: Классификатор — три оси + комбинатор + двухфазность
-🔴 P0 | ⬜ TODO | Est: 4-5h
+🔴 P0 | ✅ DONE | Est: 4-5h
 
 **Checklist:**
-- [ ] change_class per-file (per-repo → _generic → default), max по диффу
-- [ ] blast_radius через consumer_registry; trust_boundary path-rules + declared flags
-- [ ] `tier = max(floor, lookups)` + `dominant_axis`
-- [ ] ex_ante (scope globs) / ex_post (diff); scope_violation ⇒ эскалация + флаг
-- [ ] Golden-кейсы на каждую ось + unmapped path; property-тест монотонности
+- [x] change_class per-file (per-repo → _generic → default), max по диффу
+- [x] blast_radius через consumer_registry; trust_boundary path-rules + declared flags
+- [x] `tier = max(floor, lookups)` + `dominant_axis`
+- [x] ex_ante (scope globs) / ex_post (diff); scope_violation ⇒ эскалация + флаг
+- [x] Golden-кейсы на каждую ось + unmapped path; property-тест монотонности
 
 **Traces to:** [REQ-602], [REQ-604], [REQ-605], [DESIGN-602], [DESIGN-604], [DESIGN-605]
 
 ---
 
 ### TASK-606: CLI `risk-classify` + JSON shape
-🔴 P0 | ⬜ TODO | Est: 3h
+🔴 P0 | ✅ DONE | Est: 3h
 
 **Checklist:**
-- [ ] `--declared | --diff`, `--risk-model`, `--no-fs`, `--format json`
-- [ ] Байт-идентичный вывод при одинаковом входе (двойной прогон)
-- [ ] Exit 0/2; shape по DESIGN-610
+- [x] `--declared | --diff`, `--risk-model`, `--no-fs`, `--format json`
+- [x] Байт-идентичный вывод при одинаковом входе (двойной прогон)
+- [x] Exit 0/2; shape по DESIGN-610
 
 **Traces to:** [REQ-610], [DESIGN-610]
 
