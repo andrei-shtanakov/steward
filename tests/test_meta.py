@@ -138,7 +138,12 @@ def test_load_real_dogfood_requirements_multi_owner() -> None:
 
 
 def test_all_dogfood_specs_are_managed() -> None:
-    for path in sorted(SPEC_DIR.glob("*.md")):
+    # Dogfood specs use the NN-name.md convention; spec/ may also hold
+    # spec-runner-format work-item files (requirements/design/tasks.md)
+    # that are not steward-managed artifacts.
+    paths = sorted(SPEC_DIR.glob("[0-9][0-9]-*.md"))
+    assert paths, "no dogfood specs found"
+    for path in paths:
         meta = load_artifact(path)
         assert meta is not None, f"{path.name} should be managed"
         assert meta.spec_stage
