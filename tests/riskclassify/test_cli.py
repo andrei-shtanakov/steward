@@ -143,3 +143,87 @@ def test_wrong_type_sha_is_exit_2(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 2
+
+
+# --- waivers-check (TASK-607) ---
+
+
+def _waiver_dir(tmp_path: Path, sha: str, tier: str = "medium") -> Path:
+    d = tmp_path / "waivers"
+    d.mkdir(exist_ok=True)
+    (d / "steward.gate_check-abc.md").write_text(
+        f"---\ngate_id: steward.gate_check\nsha: {sha}\ntier: {tier}\n"
+        f"waived_by: someone\nreason: tracked flake\n---\n",
+        encoding="utf-8",
+    )
+    return d
+
+
+def test_waivers_check_clean_is_exit_0(tmp_path: Path) -> None:
+    d = _waiver_dir(tmp_path, "e" * 40)
+    result = runner.invoke(
+        app, ["waivers-check", str(d), "--sha", "e" * 40, "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_waivers_check_stale_is_exit_1(tmp_path: Path) -> None:
+    d = _waiver_dir(tmp_path, "e" * 40)
+    result = runner.invoke(
+        app, ["waivers-check", str(d), "--sha", "f" * 40, "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 1
+    assert "waiver-stale-sha" in result.output
+
+
+def test_waivers_check_critical_is_exit_1(tmp_path: Path) -> None:
+    d = _waiver_dir(tmp_path, "e" * 40, tier="critical")
+    result = runner.invoke(
+        app, ["waivers-check", str(d), "--sha", "e" * 40, "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 1
+    assert "waiver-forbidden-tier" in result.output
+
+
+def test_waivers_check_missing_dir_is_exit_0(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "waivers-check",
+            str(tmp_path / "none"),
+            "--sha",
+            "e" * 40,
+            "--risk-model",
+            str(CANONICAL),
+        ],
+    )
+    assert result.exit_code == 0
+
+
+def test_waivers_check_malformed_file_is_exit_1(tmp_path: Path) -> None:
+    d = tmp_path / "waivers"
+    d.mkdir()
+    (d / "broken.md").write_text("---\ngate_id: x\n---\n", encoding="utf-8")
+    result = runner.invoke(
+        app, ["waivers-check", str(d), "--sha", "e" * 40, "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 1
+    assert "broken.md" in result.output
+
+
+def test_waivers_check_bad_model_is_exit_2(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("- nope\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["waivers-check", str(tmp_path), "--sha", "e" * 40, "--risk-model", str(bad)],
+    )
+    assert result.exit_code == 2
+
+
+def test_waivers_check_short_sha_option_is_exit_2(tmp_path: Path) -> None:
+    d = _waiver_dir(tmp_path, "e" * 40)
+    result = runner.invoke(
+        app, ["waivers-check", str(d), "--sha", "abc123", "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 2

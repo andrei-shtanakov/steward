@@ -109,11 +109,11 @@ vault PR; verified флипнется, когда M1 отгрузит файл.
 ---
 
 ### TASK-607: Waiver-файлы + проверка в gate-check
-🟠 P1 | ⬜ TODO | Est: 3h
+🟠 P1 | ✅ DONE | Est: 3h
 
 **Checklist:**
-- [ ] Формат `spec/waivers/<gate_id>-<shortsha>.md` (frontmatter)
-- [ ] `waived` требует waiver с совпадающим sha; critical → error
-- [ ] Юнит-тесты: валидный/просроченный (чужой sha)/critical
+- [x] Формат `spec/waivers/<gate_id>-<shortsha>.md` (frontmatter)
+- [x] `waived` требует waiver с совпадающим sha; critical → error
+- [x] Юнит-тесты: валидный/просроченный (чужой sha)/critical
 
 **Traces to:** [REQ-606], [REQ-607], [REQ-609], [DESIGN-606], [DESIGN-608], [DESIGN-609]

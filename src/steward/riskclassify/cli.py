@@ -89,6 +89,41 @@ def risk_classify(
     typer.echo(_render(result))
 
 
+@app.command("waivers-check")
+def waivers_check(
+    waivers_dir: Path = typer.Argument(Path("spec/waivers"), help="waiver files directory"),
+    sha: str | None = typer.Option(None, "--sha", help="head SHA (default: git HEAD of --repo)"),
+    repo: Path = typer.Option(Path("."), "--repo", help="repo root for live git HEAD"),
+    risk_model: Path = typer.Option(_DEFAULT_MODEL, "--risk-model", help="risk-model.yaml"),
+) -> None:
+    """Validate waiver files: parse strictly, flag stale/forbidden ones (REQ-609).
+
+    Exit codes mirror gate-check: 0 clean, 1 findings, 2 config error. A
+    missing directory is clean — no waivers, nothing to validate.
+    """
+    from steward.riskclassify.waivers import FULL_SHA_RE, load_waivers, validate_waivers
+
+    try:
+        model = load_risk_model(risk_model)
+        head = sha if sha is not None else _git(repo, "rev-parse", "HEAD").strip()
+        if not FULL_SHA_RE.fullmatch(head):
+            raise InputError(f"--sha must be a full 40-hex commit SHA, got '{head}'")
+        try:
+            waivers = load_waivers(waivers_dir, strict=True)
+        except ValueError as exc:
+            typer.echo(f"error waiver-malformed: {exc}")
+            raise typer.Exit(1) from exc
+    except (RiskModelError, InputError) as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from exc
+    findings = validate_waivers(waivers, model, head_sha=head)
+    for f in findings:
+        typer.echo(f"{f.severity} {f.rule_id}: {f.path}: {f.message}")
+    if any(f.severity == "error" for f in findings):
+        raise typer.Exit(1)
+    typer.echo(f"ok: {len(waivers)} waiver(s) valid for {head[:12]}")
+
+
 def _classify_live(
     model, diff: str, repo: Path, project: str | None, profile: str
 ) -> Classification:
