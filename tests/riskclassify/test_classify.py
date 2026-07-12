@@ -224,3 +224,12 @@ def test_ex_ante_repo_wide_scope_touches_contracts(model) -> None:
     # conservatively count as touching contracts/** (worst registry entry).
     c = classify_declared(model, project="Maestro", scope=["**"], sha="a" * 40)
     assert c.inputs["blast_radius"] == "ecosystem-contract"
+
+
+def test_ex_ante_maestro_docs_scope_is_low(model) -> None:
+    # Live governed-run finding: without a per-repo docs rule, an ex-ante
+    # scope of docs/** classified unknown/medium (name-based generics are
+    # excluded from ex-ante by design).
+    c = classify_declared(model, project="Maestro", scope=["docs/**"], sha="a" * 40)
+    assert c.inputs["change_class"] == "docs"
+    assert c.tier == "low"
