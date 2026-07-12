@@ -18,6 +18,7 @@ dev = [
 
 [project.scripts]
 gate-check = "steward.gatecheck.cli:app"
+steward = "steward.riskclassify.cli:app"
 
 [build-system]
 requires = ["hatchling"]
