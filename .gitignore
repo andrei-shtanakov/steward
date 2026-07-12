@@ -23,3 +23,9 @@ build/
 
 # Local agent tooling
 .claude/
+
+# spec-runner executor runtime state
+spec/.executor-logs/
+spec/.executor-progress.txt
+spec/.executor-state.db*
+spec/.executor-state.lock

@@ -31,7 +31,7 @@ All command invocations and JSON snippets sit in fenced code blocks (` ```bash `
 - `waivers.py` docstring + `validate_waivers` — the five required frontmatter fields, full-40-hex SHA requirement, stale-SHA and forbidden-tier findings.
 - `workstreams/WS-006-risk-model/spec/design.md` (DESIGN-604/605/608/609/610) — two-phase model, combinator, SHA invalidation, waiver-as-file.
 
-Where the project description and source could diverge, the source prevails (none found — description and source agree). Traces: [REQ-003], [REQ-014].
+Where the project description and source could diverge, the source prevails. The task description and source agree; two divergences exist between the WS-006 design doc and the code, both resolved in the code's favor: DESIGN-609 lists four waiver frontmatter fields while `waivers.py` requires five (adds `tier`) — the guide documents five; DESIGN-610 shows a `--format json` option that does not exist in `cli.py` — the guide omits it. Traces: [REQ-003], [REQ-014].
 
 [DESIGN-004] **Part 1 intro — what risk-classify does.** One short paragraph: the command classifies a change into a risk tier (`low`/`medium`/`high`/`critical`) in one of two phases — **ex-ante** over a declared scope (before the diff exists) or **ex-post** over an actual diff — as `max(profile floor, change_class, blast_radius, trust_boundary)`; output is deterministic JSON on stdout, intended to be the single source of truth for tiers (consumers such as Maestro read it, never compute risk themselves). Traces: [REQ-004].
 
@@ -81,7 +81,7 @@ Traces: [REQ-010], [REQ-011].
 
 [DESIGN-011] **waivers-check exit codes.** Per `cli.py`: `0` — all waivers parse and are valid for the current SHA (or no waivers exist); `1` — findings: malformed waiver file, bad/short SHA, unknown tier, forbidden (critical) tier, or stale SHA; `2` — config error (bad risk model, invalid `--sha`, git failure). Traces: [REQ-012].
 
-[DESIGN-012] **Verification.** Before completion: (a) `git status` shows exactly one new untracked file `docs/risk-classify.md`; (b) every field name, exit code, default path, and JSON key in the guide is re-checked against the four source modules; (c) the document renders as valid GFM (headings, table, fenced blocks) and stays within the one-page target. Traces: [REQ-001], [REQ-002], [REQ-003], [REQ-013].
+[DESIGN-012] **Verification.** Before completion: (a) the branch diff over its base (`git diff --stat <base>...HEAD -- . ':!spec' ':!spec-runner.config.yaml'`) contains exactly one new file, `docs/risk-classify.md` — a diff-based check rather than `git status`, since the executor auto-commits and leaves untracked runtime state under `spec/`; (b) every field name, exit code, default path, and JSON key in the guide is re-checked against the four source modules; (c) the document renders as valid GFM (headings, table, fenced blocks) and stays within the one-page target; (d) `uv run pytest` passes. Traces: [REQ-001], [REQ-002], [REQ-003], [REQ-013].
 
 ## Traceability
 

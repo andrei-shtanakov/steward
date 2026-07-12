@@ -49,7 +49,8 @@ Implementation plan for creating `docs/risk-classify.md`, a one-page English usa
 - **Dependencies:** TASK-002, TASK-003
 - **Traces:** [REQ-001], [REQ-002], [REQ-003], [REQ-013] / [DESIGN-001], [DESIGN-002], [DESIGN-012]
 - **Checklist:**
-  - [ ] `git status` shows exactly one new untracked file: `docs/risk-classify.md`; no other file modified, created, or deleted.
+  - [ ] The branch diff over its base contains exactly one new deliverable file, `docs/risk-classify.md` (beyond the already-committed spec artifacts); no other file modified, created, or deleted. Use the branch diff, not `git status` — the executor auto-commits and leaves untracked runtime state under `spec/`.
+  - [ ] `uv run pytest` passes (guards against spec/doc placement breaking repo tests, e.g. `tests/test_meta.py`).
   - [ ] Re-check every field name, JSON key, default path, flag name, and exit code in the guide against the four source modules (spot-check against TASK-001 notes).
   - [ ] Confirm document length ≈ 60–90 lines (one page), valid GFM: headings render, table renders, all commands/JSON/YAML in fenced blocks with language tags.
   - [ ] Confirm no speculative content: no flags, fields, or behaviors absent from WS-006 M1 code/design; no cross-links added to other docs.
