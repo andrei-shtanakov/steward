@@ -1,0 +1,537 @@
+=== REVIEW PROMPT ===
+# Code Review Request
+
+## Task Completed: TASK-001 — Extract facts from source of truth
+
+## Changed Files:
+spec-runner.config.yaml
+spec/.executor-logs/TASK-001-20260712-221258.log
+spec/.executor-logs/TASK-001-review-20260712-221439.log
+spec/.executor-logs/TASK-002-20260712-222056.log
+spec/.executor-logs/TASK-002-review-20260712-222250.log
+spec/.executor-logs/TASK-003-20260712-222809.log
+spec/.executor-logs/TASK-003-review-20260712-222947.log
+spec/.executor-logs/TASK-004-20260712-223306.log
+spec/.executor-logs/TASK-004-review-20260712-223648.log
+spec/design.md
+spec/requirements.md
+spec/tasks.md
+
+## Full Diff:
+diff --git a/spec-runner.config.yaml b/spec-runner.config.yaml
+index c4e6ea1..1cd128b 100644
+--- a/spec-runner.config.yaml
++++ b/spec-runner.config.yaml
+@@ -8,9 +8,9 @@ executor:
+     post_done:
+       auto_commit: true
+       run_lint: false
+-      run_tests: true
++      run_tests: false
+     pre_start:
+       create_git_branch: true
+   main_branch: feature/gov-risk-classify-docs
+   max_retries: 1
+-  task_timeout_minutes: 45
++  task_timeout_minutes: 20
+diff --git a/spec/.executor-logs/TASK-001-20260712-221258.log b/spec/.executor-logs/TASK-001-20260712-221258.log
+new file mode 100644
+index 0000000..d300d69
+--- /dev/null
++++ b/spec/.executor-logs/TASK-001-20260712-221258.log
+@@ -0,0 +1,108 @@
++=== PROMPT ===
++# Task Execution Request
++
++## Task: TASK-001 — Verify source-of-truth anchors before writing
++
++**Priority:** P0
++**Estimate:** 
++**Milestone:** 
++
++## Checklist (implement ALL items):
++
++
++
++## Related Requirements:
++
++See /private/tmp/claude-501/-Users-Andrei-Shtanakov-labs-all-ai-orchestrators/c24dfd0f-0a40-416e-ac6f-f751e22d5181/scratchpad/governed-run2/ws/risk-classify-docs/spec/requirements.md
++
++## Related Design:
++
++See /private/tmp/claude-501/-Users-Andrei-Shtanakov-labs-all-ai-orchestrators/c24dfd0f-0a40-416e-ac6f-f751e22d5181/scratchpad/governed-run2/ws/risk-classify-docs/spec/design.md
++
++## Instructions:
++
++1. Implement ALL checklist items for this task
++2. Write unit tests for new code (coverage ≥80%)
++3. Follow the design patterns from /private/tmp/claude-501/-Users-Andrei-Shtanakov-labs-all-ai-orchestrators/c24dfd0f-0a40-416e-ac6f-f751e22d5181/scratchpad/governed-run2/ws/risk-classify-docs/spec/design.md
++4. Use existing code style and conventions
++5. Create/update files as needed
++
++## Dependencies:
++
++- To add a new dependency: `uv add <package>`
++- To add a dev dependency: `uv add --dev <package>`
++- NEVER edit pyproject.toml manually for dependencies
++- After adding dependencies, they are available immediately
++
++## Success Criteria:
++
++- All checklist items implemented
++- All tests pass (`uv run pytest`)
++- No lint errors (`uv run ruff check .`)
++- Code follows project conventions
++
++## Output:
++
++When complete, respond with:
++- Summary of changes made
++- Files created/modified
++- Any issues or notes
++- "TASK_COMPLETE" if successful, or "TASK_FAILED: <reason>" if not
++
++
++Begin implementation:
++
++
++=== OUTPUT ===
++All checklist items are verified. TASK-001 is a read-and-verify task (traces REQ-003/REQ-014), and per REQ-001 the overall change may create only `docs/risk-classify.md` — so these verification notes are delivered in this report, not written into the repo.
++
++## Verification notes — source-of-truth anchors
++
++**1. `cli.py` — confirmed ✅**
++- Three input modes, exactly one required (`cli.py:56-59`): `--diff BASE..HEAD`, `--no-fs facts.json`, `--declared scope.json`.
++- Required JSON keys: `--declared` → `project`, `sha`, `scope` (optional `flags`) at `cli.py:63`; `--no-fs` → `project`, `sha`, `paths` (optional `declared_scope`, `flags`) at `cli.py:73-81`. Type checks: `project`/`sha` strings, list fields lists of strings (`cli.py:155-177`).
++- Shared options: `--risk-model` default `profiles/risk-model.yaml` (`cli.py:38,50`), `--profile` default `lite` (`cli.py:53`); also `--repo` (default `.`) and `--project` for `--diff`.
++- Exit codes: risk-classify `0` classified / `2` config error (`RiskModelError`, `InputError`, `ValueError` → exit 2, `cli.py:86-88`); no exit 1 exists for it. waivers-check: `0` clean / `1` findings (including strict-parse `waiver-malformed`, `cli.py:114-115,122-123`) / `2` config error.
++- Output rendering is byte-stable: `json.dumps(..., sort_keys=True, indent=2)` (`cli.py:181-184`).
++
++**2. `classify.py` — confirmed ✅**
++- `Classification` fields (`classify.py:28-39`): `tier`, `phase`, `inputs`, `dominant_axis`, `floor_profile`, `mandatory_gates`, `sha`, `risk_model_version`, `flags` — exactly the nine fields REQ-006 requires.
++- Phase values `ex_ante` / `ex_post` confirmed; `dominant_axis` falls back to the literal `"floor"` when the profile floor dominates (`classify.py:136`), matching DESIGN-006.
++- `scope_violation`: with `declared_scope` given, any path outside it appends the flag and floors the tier at `high` (`_SCOPE_VIOLATION_MIN = "high"`, `classify.py:23,62-64`).
++
++**3. `model.py` — confirmed ✅**
++- Tier ladder `TIERS = ("low", "medium", "high", "critical")` (`model.py:20`).
++- `RiskModelError` raised for missing/unparsable/invalid model; CLI maps it to exit 2 (module docstring + `cli.py:86`).
++- `version_sha` = `"sha256:" + sha256(file bytes)` (`model.py:72`), carried into every classification as `risk_model_version`.
++
++**4. `waivers.py` — confirmed ✅**
++- Five required frontmatter fields: `gate_id`, `sha`, `tier`, `waived_by`, `reason` (`waivers.py:29`).
++- `FULL_SHA_RE = [0-9a-f]{40}` — full 40-hex SHA required (`waivers.py:30`); short SHA → `waiver-bad-sha`.
++- Findings confirmed: `waiver-bad-sha`, `waiver-bad-tier`, `waiver-forbidden-tier` (driven by `waiver_policy` = `forbidden`), `waiver-stale-sha` (sha ≠ HEAD).
++- Default directory `spec/waivers` is the Typer argument default (`cli.py:94`); missing directory → empty list → clean exit 0 (`waivers.py:63-64`); `--sha` defaults to `git rev-parse HEAD` of `--repo` (`cli.py:108`).
++
++**5. WS-006 `spec/design.md` — confirmed ✅**
++- DESIGN-604: `tier = max(floor, class, blast, trust)`, `dominant_axis` for explainability.
++- DESIGN-605: two phases (`ex_ante` on declared scope / `ex_post` on diff); scope violation escalates to `max(tier, high)` + flag.
++- DESIGN-608: SHA invalidation — new commit invalidates all verdicts and waivers.
++- DESIGN-609: waiver-as-file, approval = PR merge via CODEOWNERS, forbidden on critical.
++- DESIGN-610: output JSON shape matches the nine `Classification` fields exactly.
++
++**6. Divergences noted (source wins):**
++- **WS-006 DESIGN-609 lists only four frontmatter fields** (`gate_id, sha, waived_by, reason` — no `tier`), but `waivers.py` requires five including `tier`. The code wins: document five fields. (Our spec's DESIGN-009 already agrees with the code.)
++- **WS-006 DESIGN-610 shows a `--format json` option** that does not exist in `cli.py` (output is always JSON). Per REQ-014, `--format` must NOT be documented.
++- No divergence found between our `spec/requirements.md`/`spec/design.md` and the source — every field name, default, exit code, and rule id in DESIGN-003…DESIGN-011 matches the code.
++
++## Summary
++
++- **Changes made:** none — TASK-001 is verification-only; all six checklist items completed via reading the four source modules and the WS-006 design doc.
++- **Files created/modified:** none (`git status` unchanged, as required — REQ-001 permits only `docs/risk-classify.md` later in TASK-002).
++- **Tests/lint:** N/A — no code written; existing suite untouched.
++- **Notes for TASK-002/003:** use five waiver fields (incl. `tier`), do not document `--format`, do not document an exit 1 for `risk-classify`, remember `dominant_axis` can be `"floor"`, and mention byte-stable output.
++
++TASK_COMPLETE
++
++=== STDERR ===
++
++
++=== RETURN CODE: 0 ===
+diff --git a/spec/.executor-logs/TASK-001-review-20260712-221439.log b/spec/.executor-logs/TASK-001-review-20260712-221439.log
+new file mode 100644
+index 0000000..702b756
+--- /dev/null
++++ b/spec/.executor-logs/TASK-001-review-20260712-221439.log
+@@ -0,0 +1,322 @@
++=== REVIEW PROMPT ===
++# Code Review Request
++
++## Task Completed: TASK-001 — Verify source-of-truth anchors before writing
++
++## Changed Files:
++spec-runner.config.yaml
++spec/design.md
++spec/requirements.md
++spec/tasks.md
++
++## Full Diff:
++diff --git a/spec-runner.config.yaml b/spec-runner.config.yaml
++new file mode 100644
++index 0000000..1cd128b
++--- /dev/null
+++++ b/spec-runner.config.yaml
++@@ -0,0 +1,16 @@
+++executor:
+++  auto_commit: true
+++  claude_command: claude
+++  commands:
+++    lint: uv run ruff check .
+++    test: uv run pytest
+++  hooks:
+++    post_done:
+++      auto_commit: true
+++      run_lint: false
+++      run_tests: false
+++    pre_start:
+++      create_git_branch: true
+++  main_branch: feature/gov-risk-classify-docs
+++  max_retries: 1
+++  task_timeout_minutes: 20
++diff --git a/spec/design.md b/spec/design.md
++new file mode 100644
++index 0000000..f1b9df3
++--- /dev/null
+++++ b/spec/design.md
++@@ -0,0 +1,103 @@
+++# Design — docs: risk-classify and waivers-check usage guide
+++
+++## Overview
+++
+++This design specifies the single new artifact `docs/risk-classify.md`: a one-page English usage guide for the two WS-006 M1 CLI commands, `steward risk-classify` and `steward waivers-check`. The design is documentation-only — it defines the document's structure, the exact content each section must carry, and how each statement is grounded in the verified source of truth (`src/steward/riskclassify/{model,classify,cli,waivers}.py` and `workstreams/WS-006-risk-model/spec/design.md`). No code, config, or existing file is touched.
+++
+++## Design Decisions
+++
+++[DESIGN-001] **Single-file, additive change.** The only filesystem effect is creating `docs/risk-classify.md` (the `docs/` directory is created implicitly if absent — creating the parent directory for the new file is inherent to [REQ-001], not a separate artifact). No other file is created, modified, or deleted; in particular the guide does not add cross-links into `README.md` or other docs, since that would violate the one-file scope. Traces: [REQ-001].
+++
+++[DESIGN-002] **Document skeleton.** The guide is valid GitHub-flavored markdown with this fixed outline, giving the required two-part structure:
+++
+++```
+++# Risk classification CLI            (1–2 sentence intro: WS-006 M1, two commands)
+++## steward risk-classify             (part 1)
+++### Input modes                      (three modes, one example each)
+++### Output                           (JSON field table)
+++### Exit codes                       (0 / 2)
+++## steward waivers-check [DIR]       (part 2)
+++### Waiver frontmatter               (five fields)
+++### Semantics                        (SHA-bound, critical forbidden)
+++### Exit codes                       (0 / 1 / 2)
+++```
+++
+++All command invocations and JSON snippets sit in fenced code blocks (` ```bash `, ` ```json `, ` ```yaml ` for the waiver frontmatter example). Target length ≈ 60–90 lines of markdown — one screenful, no exhaustive reference dump. Traces: [REQ-002], [REQ-013].
+++
+++[DESIGN-003] **Grounding rule: source code wins.** Every documented fact is taken from the module docstrings and code, verified during authoring, not from the task description. Concretely verified anchors:
+++- `cli.py` module docstring — the three input modes, their JSON shapes, exit-code contract ("0 classified, 2 config error"), and the "classification never fails with findings — it is a function, not a check" framing.
+++- `classify.py` — `Classification` dataclass fields; phase values `ex_ante` / `ex_post`; `scope_violation` flag semantics.
+++- `model.py` — `RiskModelError` → exit 2 mapping; tier ladder `low < medium < high < critical`; `version_sha` provenance ("sha256:…" of the model file).
+++- `waivers.py` docstring + `validate_waivers` — the five required frontmatter fields, full-40-hex SHA requirement, stale-SHA and forbidden-tier findings.
+++- `workstreams/WS-006-risk-model/spec/design.md` (DESIGN-604/605/608/609/610) — two-phase model, combinator, SHA invalidation, waiver-as-file.
+++
+++Where the project description and source could diverge, the source prevails (none found — description and source agree). Traces: [REQ-003], [REQ-014].
+++
+++[DESIGN-004] **Part 1 intro — what risk-classify does.** One short paragraph: the command classifies a change into a risk tier (`low`/`medium`/`high`/`critical`) in one of two phases — **ex-ante** over a declared scope (before the diff exists) or **ex-post** over an actual diff — as `max(profile floor, change_class, blast_radius, trust_boundary)`; output is deterministic JSON on stdout, intended to be the single source of truth for tiers (consumers such as Maestro read it, never compute risk themselves). Traces: [REQ-004].
+++
+++[DESIGN-005] **Input modes subsection.** Three short entries, each with exactly one fenced example, mirroring `cli.py`:
+++
+++1. `--declared scope.json` — ex-ante over a declared scope. Example JSON with the required fields from `_read_json(required=("project","sha","scope"))`:
+++   ```json
+++   {"project": "steward", "sha": "<40-hex sha>", "scope": ["docs/**"], "flags": []}
+++   ```
+++   (`flags` noted as optional.)
+++2. `--no-fs facts.json` — ex-post with injected facts, no git/filesystem access (deterministic CI). Example with required `project`, `sha`, `paths` and optional `declared_scope`, `flags`; the guide notes that paths outside `declared_scope` set the `scope_violation` flag and raise the tier to at least `high`.
+++3. `--diff BASE..HEAD` — ex-post over live git; example is an invocation, not JSON: `steward risk-classify --diff origin/master..HEAD [--repo . --project steward]`.
+++
+++A one-line note states that exactly one of the three must be given, and mentions the shared options `--risk-model` (default `profiles/risk-model.yaml`) and `--profile` (default `lite`) — both are M1 options visible in `cli.py`, so documenting them briefly does not breach [REQ-014]. Traces: [REQ-005], [REQ-014].
+++
+++[DESIGN-006] **Output fields subsection.** A compact markdown table (field → meaning), one row per required field, meanings taken from `Classification` and the WS-006 design:
+++- `tier` — resulting risk tier: `low`/`medium`/`high`/`critical`.
+++- `phase` — `ex_ante` (declared scope) or `ex_post` (actual diff).
+++- `inputs` — the three axis values that fed the combinator: `change_class`, `blast_radius`, `trust_boundary`.
+++- `dominant_axis` — which axis produced the max (or `floor` when the profile floor dominates).
+++- `floor_profile` — the profile whose floor was applied (e.g. `lite`).
+++- `mandatory_gates` — gate ids mandatory at this tier, from the risk model's `tier_gates`.
+++- `flags` — raised flags, e.g. `scope_violation`.
+++- `sha` — the commit SHA the classification is bound to.
+++- `risk_model_version` — `sha256:…` hash of the risk-model file, for reproducibility.
+++
+++One trailing sentence: output is byte-stable (sorted keys, fixed formatting) so two runs can be diffed directly. Traces: [REQ-006].
+++
+++[DESIGN-007] **risk-classify exit codes.** Two-row list per `cli.py`: `0` — classified successfully (any tier, including `critical`, is exit 0 — classification is a function, not a check); `2` — config error (bad/missing risk model, invalid input file, wrong option usage). No exit 1 exists for this command and none is documented. Traces: [REQ-007], [REQ-014].
+++
+++[DESIGN-008] **Part 2 — waivers-check invocation.** Documented form: `steward waivers-check [DIR]` where `DIR` defaults to `spec/waivers` (per the Typer argument in `cli.py`); mention `--sha` (defaults to `git HEAD` of `--repo`) in one line since SHA comparison is the command's core. A missing directory is clean (no waivers, exit 0). Traces: [REQ-008].
+++
+++[DESIGN-009] **Waiver frontmatter subsection.** One fenced YAML frontmatter example plus a five-item field list, per `waivers.py`:
+++- `gate_id` — the mandatory gate being waived;
+++- `sha` — full 40-hex commit SHA the waiver covers;
+++- `tier` — the classification tier the waiver was issued against;
+++- `waived_by` — git handle of the approver;
+++- `reason` — human justification.
+++
+++A one-line note that approval is the merged PR itself (CODEOWNERS on the waivers directory), per DESIGN-609. Traces: [REQ-009].
+++
+++[DESIGN-010] **Semantics subsection.** Two short statements grounded in `validate_waivers` / DESIGN-608/609:
+++1. **SHA-bound:** a waiver is valid only while `sha` equals the current HEAD; any new commit (including a rebase) invalidates all waivers, which must be removed or re-issued (`waiver-stale-sha`).
+++2. **Critical forbidden:** waivers on the `critical` tier are rejected (`waiver-forbidden-tier`, driven by the risk model's `waiver_policy`).
+++
+++Traces: [REQ-010], [REQ-011].
+++
+++[DESIGN-011] **waivers-check exit codes.** Per `cli.py`: `0` — all waivers parse and are valid for the current SHA (or no waivers exist); `1` — findings: malformed waiver file, bad/short SHA, unknown tier, forbidden (critical) tier, or stale SHA; `2` — config error (bad risk model, invalid `--sha`, git failure). Traces: [REQ-012].
+++
+++[DESIGN-012] **Verification.** Before completion: (a) `git status` shows exactly one new untracked file `docs/risk-classify.md`; (b) every field name, exit code, default path, and JSON key in the guide is re-checked against the four source modules; (c) the document renders as valid GFM (headings, table, fenced blocks) and stays within the one-page target. Traces: [REQ-001], [REQ-002], [REQ-003], [REQ-013].
+++
+++## Traceability
+++
+++| Requirement | Design |
+++|---|---|
+++| REQ-001 | DESIGN-001, DESIGN-012 |
+++| REQ-002 | DESIGN-002, DESIGN-012 |
+++| REQ-003 | DESIGN-003, DESIGN-012 |
+++| REQ-004 | DESIGN-004 |
+++| REQ-005 | DESIGN-005 |
+++| REQ-006 | DESIGN-006 |
+++| REQ-007 | DESIGN-007 |
+++| REQ-008 | DESIGN-008 |
+++| REQ-009 | DESIGN-009 |
+++| REQ-010 | DESIGN-010 |
+++| REQ-011 | DESIGN-010 |
+++| REQ-012 | DESIGN-011 |
+++| REQ-013 | DESIGN-002, DESIGN-012 |
+++| REQ-014 | DESIGN-003, DESIGN-005, DESIGN-007 |
++diff --git a/spec/requirements.md b/spec/requirements.md
++new file mode 100644
++index 0000000..80a4d9d
++--- /dev/null
+++++ b/spec/requirements.md
++@@ -0,0 +1,40 @@
+++# Requirements — docs: risk-classify and waivers-check usage guide
+++
+++## Introduction
+++
+++This work item adds `docs/risk-classify.md`, a concise one-page usage guide (in English) for the two steward CLI commands shipped in WS-006 M1: `steward risk-classify` and `steward waivers-check`. The guide is derived from the docstrings in `src/steward/riskclassify/` (`model.py`, `classify.py`, `cli.py`, `waivers.py`) and from `workstreams/WS-006-risk-model/spec/design.md`. Scope is documentation only (`docs/**`); no code changes.
+++
+++## Requirements
+++
+++[REQ-001] **File creation and scope.** The change SHALL create exactly one new file, `docs/risk-classify.md`, and SHALL NOT modify, delete, or create any other file in the repository.
+++
+++[REQ-002] **Language and length.** The document SHALL be written in English and SHALL be a concise one-page usage guide (roughly what fits on a single printed page / one screenful of markdown; no exhaustive reference dump).
+++
+++[REQ-003] **Accuracy against source of truth.** All documented behavior (semantics, field names, exit codes, frontmatter fields) SHALL be consistent with the docstrings in `src/steward/riskclassify/model.py`, `classify.py`, `cli.py`, `waivers.py` and with `workstreams/WS-006-risk-model/spec/design.md`. Where the description below and the source disagree, the source code/design SHALL prevail.
+++
+++[REQ-004] **risk-classify — purpose.** The guide SHALL contain a section for `steward risk-classify` that explains what the command does: computing a two-phase risk tier over either a diff or a declared scope.
+++
+++[REQ-005] **risk-classify — input modes.** The guide SHALL document all three input modes:
+++- `--declared scope.json`
+++- `--no-fs facts.json`
+++- `--diff BASE..HEAD`
+++
+++Each mode SHALL be accompanied by exactly one example JSON snippet (or, for `--diff`, an example invocation with its range argument) illustrating its input.
+++
+++[REQ-006] **risk-classify — output fields.** The guide SHALL document the output JSON fields: `tier`, `phase`, `inputs`, `dominant_axis`, `floor_profile`, `mandatory_gates`, `flags`, `sha`, `risk_model_version` — each with a brief description of its meaning consistent with the source docstrings.
+++
+++[REQ-007] **risk-classify — exit codes.** The guide SHALL document the exit codes for `risk-classify`: `0` = classified successfully, `2` = configuration error.
+++
+++[REQ-008] **waivers-check — invocation.** The guide SHALL contain a section for `steward waivers-check [DIR]` describing its invocation form, including the optional directory argument.
+++
+++[REQ-009] **waivers-check — waiver frontmatter.** The guide SHALL document the waiver file frontmatter fields: `gate_id`, `sha`, `tier`, `waived_by`, `reason`, each with a brief description.
+++
+++[REQ-010] **waivers-check — SHA-bound semantics.** The guide SHALL explain the SHA-bound semantics of waivers: a waiver is bound to a specific commit SHA, and a new commit invalidates existing waivers.
+++
+++[REQ-011] **waivers-check — critical-tier restriction.** The guide SHALL state that waivers on the critical tier are forbidden.
+++
+++[REQ-012] **waivers-check — exit codes.** The guide SHALL document the exit codes for `waivers-check`: `0`, `1`, and `2`, with the meaning of each as defined by the implementation (success / waiver violation / configuration error, verified against `waivers.py` and `cli.py`).
+++
+++[REQ-013] **Document structure.** The document SHALL be valid GitHub-flavored markdown with a clear two-part structure (part 1: `steward risk-classify`; part 2: `steward waivers-check`), using fenced code blocks for all command examples and JSON snippets.
+++
+++[REQ-014] **No speculative content.** The guide SHALL NOT document flags, fields, behaviors, or future plans that are not present in the WS-006 M1 implementation or its design document.
++diff --git a/spec/tasks.md b/spec/tasks.md
++new file mode 100644
++index 0000000..1f26b41
++--- /dev/null
+++++ b/spec/tasks.md
++@@ -0,0 +1,66 @@
+++# Tasks — docs: risk-classify and waivers-check usage guide
+++
+++## Overview
+++
+++Implementation plan for creating `docs/risk-classify.md`, a one-page English usage guide for `steward risk-classify` and `steward waivers-check` (WS-006 M1). Documentation-only; exactly one new file, grounded in the source modules and the WS-006 design doc.
+++
+++## Tasks
+++
+++### TASK-001: Verify source-of-truth anchors before writing
+++- **Priority:** P0
+++- **Estimate:** 20 min
+++- **Dependencies:** none
+++- **Traces:** [REQ-003], [REQ-014] / [DESIGN-003]
+++- **Checklist:**
+++  - [ ] Read `src/steward/riskclassify/cli.py` — confirm the three input modes (`--declared`, `--no-fs`, `--diff BASE..HEAD`), required JSON keys per mode, shared options (`--risk-model` default `profiles/risk-model.yaml`, `--profile` default `lite`), and the exit-code contract (0 classified / 2 config error; waivers-check 0/1/2).
+++  - [ ] Read `src/steward/riskclassify/classify.py` — confirm `Classification` field names, phase values `ex_ante`/`ex_post`, and `scope_violation` flag semantics.
+++  - [ ] Read `src/steward/riskclassify/model.py` — confirm tier ladder `low < medium < high < critical`, `RiskModelError` → exit 2, and `version_sha` (`sha256:…`) provenance.
+++  - [ ] Read `src/steward/riskclassify/waivers.py` — confirm the five frontmatter fields (`gate_id`, `sha`, `tier`, `waived_by`, `reason`), full-40-hex SHA requirement, `waiver-stale-sha` and `waiver-forbidden-tier` findings, and the default waivers directory (`spec/waivers`).
+++  - [ ] Skim `workstreams/WS-006-risk-model/spec/design.md` (DESIGN-604/605/608/609/610) for two-phase model, combinator, SHA invalidation, waiver-as-file/CODEOWNERS approval.
+++  - [ ] Note any divergence from the requirements text; where they differ, the source wins.
+++
+++### TASK-002: Author part 1: `steward risk-classify` section
+++- **Priority:** P0
+++- **Estimate:** 40 min
+++- **Dependencies:** TASK-001
+++- **Traces:** [REQ-004], [REQ-005], [REQ-006], [REQ-007], [REQ-013], [REQ-014] / [DESIGN-002], [DESIGN-004], [DESIGN-005], [DESIGN-006], [DESIGN-007]
+++- **Checklist:**
+++  - [ ] Create `docs/risk-classify.md` with the fixed skeleton from DESIGN-002 (`# Risk classification CLI` intro + `## steward risk-classify` part).
+++  - [ ] Write the purpose paragraph: two-phase tier (`ex_ante` over declared scope / `ex_post` over a diff), tier = `max(profile floor, change_class, blast_radius, trust_boundary)`, deterministic JSON on stdout, consumers read the output rather than computing risk.
+++  - [ ] `### Input modes`: document all three modes with exactly one fenced example each — `--declared scope.json` (JSON with `project`, `sha`, `scope`, optional `flags`), `--no-fs facts.json` (JSON with `project`, `sha`, `paths`, optional `declared_scope`/`flags`; note `scope_violation` raises tier to ≥ `high`), `--diff BASE..HEAD` (bash invocation example).
+++  - [ ] Add the one-line note: exactly one mode must be given; mention `--risk-model` and `--profile` defaults.
+++  - [ ] `### Output`: markdown table covering all nine fields — `tier`, `phase`, `inputs`, `dominant_axis`, `floor_profile`, `mandatory_gates`, `flags`, `sha`, `risk_model_version` — with meanings per DESIGN-006, plus the byte-stable-output sentence.
+++  - [ ] `### Exit codes`: `0` classified (any tier, including `critical`), `2` config error. Do not document a nonexistent exit 1.
+++
+++### TASK-003: Author part 2: `steward waivers-check [DIR]` section
+++- **Priority:** P0
+++- **Estimate:** 30 min
+++- **Dependencies:** TASK-001, TASK-002 (same file, sequential edit)
+++- **Traces:** [REQ-008], [REQ-009], [REQ-010], [REQ-011], [REQ-012], [REQ-013], [REQ-014] / [DESIGN-002], [DESIGN-008], [DESIGN-009], [DESIGN-010], [DESIGN-011]
+++- **Checklist:**
+++  - [ ] `## steward waivers-check [DIR]`: invocation form; `DIR` defaults to `spec/waivers`; one line on `--sha` (defaults to git HEAD of `--repo`); missing directory ⇒ clean exit 0.
+++  - [ ] `### Waiver frontmatter`: one fenced YAML example plus the five-field list (`gate_id`, `sha`, `tier`, `waived_by`, `reason`) with brief descriptions; note approval = merged PR via CODEOWNERS (DESIGN-609).
+++  - [ ] `### Semantics`: SHA-bound — waiver valid only while `sha` equals current HEAD; any new commit/rebase invalidates (`waiver-stale-sha`). Critical tier — waivers forbidden (`waiver-forbidden-tier`).
+++  - [ ] `### Exit codes`: `0` all waivers valid or none exist; `1` findings (malformed file, bad SHA, unknown tier, forbidden tier, stale SHA); `2` config error.
+++
+++### TASK-004: Final verification and scope check
+++- **Priority:** P1
+++- **Estimate:** 15 min
+++- **Dependencies:** TASK-002, TASK-003
+++- **Traces:** [REQ-001], [REQ-002], [REQ-003], [REQ-013] / [DESIGN-001], [DESIGN-002], [DESIGN-012]
+++- **Checklist:**
+++  - [ ] `git status` shows exactly one new untracked file: `docs/risk-classify.md`; no other file modified, created, or deleted.
+++  - [ ] Re-check every field name, JSON key, default path, flag name, and exit code in the guide against the four source modules (spot-check against TASK-001 notes).
+++  - [ ] Confirm document length ≈ 60–90 lines (one page), valid GFM: headings render, table renders, all commands/JSON/YAML in fenced blocks with language tags.
+++  - [ ] Confirm no speculative content: no flags, fields, or behaviors absent from WS-006 M1 code/design; no cross-links added to other docs.
+++
+++## Task summary
+++
+++| Task | Priority | Estimate | Depends on | Requirements |
+++|---|---|---|---|---|
+++| TASK-001 | P0 | 20 min | — | REQ-003, REQ-014 |
+++| TASK-002 | P0 | 40 min | TASK-001 | REQ-004…REQ-007, REQ-013, REQ-014 |
+++| TASK-003 | P0 | 30 min | TASK-001, TASK-002 | REQ-008…REQ-012, REQ-013, REQ-014 |
+++| TASK-004 | P1 | 15 min | TASK-002, TASK-003 | REQ-001, REQ-002, REQ-003, REQ-013 |
+++
+++Total estimate: ~1 h 45 min. All REQ-001…REQ-014 are covered; execution order is strictly TASK-001 → TASK-002 → TASK-003 → TASK-004.
++
++
++## Diff Summary:
++spec-runner.config.yaml |  16 ++++++++
++ spec/design.md          | 103 ++++++++++++++++++++++++++++++++++++++++++++++++
++ spec/requirements.md    |  40 +++++++++++++++++++
++ spec/tasks.md           |  66 +++++++++++++++++++++++++++++++
++ 4 files changed, 225 insertions(+)
++
++## Review Instructions:
++
++Launch the following review agents in parallel using the Task tool:
++
++### 1. Quality Agent
++Review the code changes for:
++- Bugs and logic errors
++- Security vulnerabilities
++- Error handling gaps
++
++### 2. Implementation Agent
++Verify the implementation:
++- Code achieves the stated task goals
++- All checklist items are properly implemented
++- Edge cases are handled
++
++### 3. Testing Agent
++Review test coverage:
++- New code has adequate test coverage
++- Tests are meaningful and not trivial
++
++## Output:
++
++For each issue found, describe it briefly.
++If issues are found, fix them and respond with: "REVIEW_FIXED"
++If no issues found, respond with: "REVIEW_PASSED"
++
++
++=== OUTPUT ===
++All three review agents completed, one blocking issue was found and fixed, plus several smaller ones. All 123 tests now pass and ruff is clean.
++
++**Issues found and fixed:**
++
++1. **Test suite breakage (high).** The three new `spec/*.md` files broke `tests/test_meta.py::test_all_dogfood_specs_are_managed`, which globbed `spec/*.md` and required steward frontmatter on every file (`uv run pytest` was failing with 1 failed / 122 passed). Since the executor needs `spec/{requirements,design,tasks}.md` in place mid-run, I narrowed the test glob to the dogfood naming convention `[0-9][0-9]-*.md` (with a non-empty guard so the test can't silently pass on nothing). Suite now: 123 passed.
++
++2. **Disabled test hook masked the breakage (medium).** `spec-runner.config.yaml` had `run_tests: false`, which is why the failure slipped through. Enabled `run_tests: true` (suite runs in 0.2s) and added an explicit `uv run pytest` item to TASK-004's checklist.
++
++3. **Unmeetable verification predicate (medium).** TASK-004 and DESIGN-012 required "`git status` shows exactly one new untracked file" — impossible as written, because `auto_commit: true` means the doc will already be committed by TASK-004, and the executor leaves untracked runtime state under `spec/`. Reworded both to a branch-diff-based check. Also added `spec/.executor-*` patterns to `.gitignore` so auto-commit can't sweep runtime state into a commit (which would have violated REQ-001).
++
++4. **Inaccurate divergence log (minor).** DESIGN-0
+... (diff truncated)
+
+## Diff Summary:
+spec-runner.config.yaml                            |   4 +-
+ spec/.executor-logs/TASK-001-20260712-221258.log   | 108 +++++++
+ .../TASK-001-review-20260712-221439.log            | 322 +++++++++++++++++++++
+ spec/.executor-logs/TASK-002-20260712-222056.log   |  76 +++++
+ .../TASK-002-review-20260712-222250.log            | 155 ++++++++++
+ spec/.executor-logs/TASK-003-20260712-222809.log   |  77 +++++
+ .../TASK-003-review-20260712-222947.log            | 200 +++++++++++++
+ spec/.executor-logs/TASK-004-20260712-223306.log   |  87 ++++++
+ .../TASK-004-review-20260712-223648.log            | 123 ++++++++
+ spec/design.md                                     | 124 ++++----
+ spec/requirements.md                               |  39 +--
+ spec/tasks.md                                      | 145 ++++++----
+ 12 files changed, 1310 insertions(+), 150 deletions(-)
+
+## Task Checklist
+- Read `src/steward/riskclassify/cli.py`: exact flag names and defaults (`--declared`, `--no-fs`, `--diff`, `--risk-model` default `profiles/risk-model.yaml`, `--profile` default `lite`, `--repo`, `--project`, `--sha`), exit codes for both commands, `waivers-check [DIR]` default directory (`spec/waivers`), missing-directory behavior.
+- Read `src/steward/riskclassify/cli.py` `_read_json` (and related helpers): required/optional keys for the `--declared` schema (`project`, `sha`, `scope`, optional `flags`) and the `--no-fs` schema (`project`, `sha`, `paths`, optional `declared_scope`, `flags`).
+- Read `src/steward/riskclassify/classify.py` and `model.py`: the nine `Classification` output fields and their meanings; tier values (`low`/`medium`/`high`/`critical`); phases (`ex_ante`/`ex_post`); the three axes; max-of-floor-and-axes rule; deterministic sorted-key JSON output.
+- Read `src/steward/riskclassify/waivers.py`: the five frontmatter fields (`gate_id`, `sha`, `tier`, `waived_by`, `reason`), SHA-bound/stale semantics, rule ids (`waiver-stale-sha`, `waiver-forbidden-tier`), critical-tier prohibition, finding categories behind exit code 1.
+- Skim `workstreams/WS-006-risk-model/spec/design.md` (DESIGN-601…610) to confirm terminology and cross-check the above.
+- Record collected facts (flag names, defaults, field names, rule ids, exit codes) as notes for TASK-002; flag any discrepancy between design doc and code (code wins per [DESIGN-012]).
+
+## Review Instructions:
+
+Launch the following review agents in parallel using the Task tool:
+
+### 1. Quality Agent
+Review the code changes for:
+- Bugs and logic errors
+- Security vulnerabilities
+- Error handling gaps
+
+### 2. Implementation Agent
+Verify the implementation:
+- Code achieves the stated task goals
+- All checklist items are properly implemented
+- Edge cases are handled
+
+### 3. Testing Agent
+Review test coverage:
+- New code has adequate test coverage
+- Tests are meaningful and not trivial
+
+## Output:
+
+For each issue found, describe it briefly.
+If issues are found, fix them and respond with: "REVIEW_FIXED"
+If no issues found, respond with: "REVIEW_PASSED"
+
+
+=== OUTPUT ===
+All three review agents completed with no findings. TASK-001 is clean.
+
+**Quality Agent** — verified every fact in `.claude/TASK-001-facts.md` against the four source modules, the WS-006 design doc, `profiles/risk-model.yaml`, and the existing `docs/risk-classify.md`. No factual discrepancies: flags and defaults, `_read_json` schemas, the nine `Classification` fields, tier ladder, exit-code contracts (risk-classify 0/2, waivers-check 0/1/2), the five waiver frontmatter fields, and all five rule ids all match the code. All four flagged design-doc discrepancies are real (four vs five waiver fields, nonexistent `--format json`, `--no-fs` rendered as optional, filename convention not enforced), and the claim that the existing tracked `docs/risk-classify.md` is fully accurate holds — so TASK-002's "align rather than re-create" guidance is well founded.
+
+**Implementation Agent** — all six checklist items covered with resolving file:line anchors (~25 spot-checked); acceptance criterion met; scope clean (`git diff` / `git diff --cached` empty, only executor runtime state untracked, notes file gitignored); all edge cases for TASK-002 captured, including that `docs/risk-classify.md` already exists and that risk-classify has no exit 1.
+
+**Testing Agent** — no code was written, so no new tests were owed. `uv run ruff check .` passes. Pytest: `1 failed, 122 passed in 0.23s` — the single failure (`tests/test_meta.py::test_all_dogfood_specs_are_managed`) is pre-existing, caused by the maestro scaffolding commit 99f9751 adding `spec/*.md` without steward frontmatter. Fixing it was correctly left alone: the operator's governed-review commit 55d2b70 explicitly stripped a prior attempt to modify that test as out-of-scope (tracked as H-7), and REQ-001 limits this work item to `docs/risk-classify.md` only.
+
+No issues to fix.
+
+REVIEW_PASSED
+
+
+=== STDERR ===
+
+
+=== RETURN CODE: 0 ===
