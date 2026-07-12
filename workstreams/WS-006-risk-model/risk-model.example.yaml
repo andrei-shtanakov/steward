@@ -1,0 +1,93 @@
+# risk-model v1 — ПРИМЕР (WS-006, draft). Не runtime-конфиг: иллюстрирует shape для DESIGN-602..604.
+# Провенанс: потребители фиксируют sha256 этого файла в каждом verdict-record (REQ-601).
+# Профиль задаёт floor; модель только эскалирует (DESIGN-601). Комбинатор: max, без весов.
+
+version: 1
+tiers: [low, medium, high, critical]
+
+class_tiers:
+  docs: low
+  config: medium
+  code: medium
+  state-machine: high
+  policy: high          # профили/риск-модель/политики — мета-уровень: меняют правила игры
+  contract: high
+  ci-deploy: critical   # supply chain
+  secrets: critical
+  unknown: medium       # fail-closed floor для unmapped путей (REQ-603); ключ обязателен
+
+blast_tiers:
+  single-repo: low
+  cross-repo: high
+  ecosystem-contract: critical
+
+trust_tiers:
+  none: low
+  ci: high
+  external-api: high
+  deploy: critical
+  secrets: critical
+
+# require-набор как функция tier'а (REQ-606, DESIGN-611 `obligation: by_tier`).
+# Floor профиля добавляется поверх; список кумулятивен сверху вниз.
+tier_gates:
+  low: []
+  medium: [steward.gate_check]
+  high: [steward.gate_check, maestro.validate_strict, human.owner_approval,
+         git.required_reviews]
+  critical: [steward.gate_check, maestro.validate_strict, human.owner_approval,
+             git.required_reviews, human.transition_approval]
+
+waiver_policy:
+  critical: forbidden   # v1 (OQ-3); остальные tier'ы — waiver-файл через PR (DESIGN-609)
+
+# path→class: per-repo секция -> _generic -> встроенный default {glob: "**", class: unknown}.
+# Внутри секции first match wins. Пути — относительные корня репо.
+path_class:
+  Maestro:
+    - {glob: "contracts/**",           class: contract}
+    - {glob: "maestro/correlation.py", class: contract}      # reference impl контрактов
+    - {glob: "maestro/models.py",      class: state-machine}
+    - {glob: "maestro/scheduler.py",   class: state-machine}
+    - {glob: "maestro/**",             class: code}
+  arbiter:
+    - {glob: "contracts/**",           class: contract}
+    - {glob: "policies/**",            class: policy}
+    - {glob: "arbiter-core/src/**",    class: code}
+  steward:
+    - {glob: "profiles/**",            class: policy}        # включая risk-model.yaml (OQ-4)
+    - {glob: "src/steward/gatecheck/**", class: policy}      # enforcement-код = мета-уровень
+    - {glob: "src/**",                 class: code}
+    - {glob: "spec/**",                class: docs}          # governance самих спек — у gate-check
+    - {glob: "workstreams/**",         class: docs}
+  dispatcher:
+    - {glob: "dispatcher/core/**",     class: code}
+    - {glob: "dispatcher/**",          class: code}
+  spec-runner:
+    - {glob: "src/**",                 class: code}
+
+_generic:
+  - {glob: "**/.github/workflows/**", class: ci-deploy}
+  - {glob: "**/Dockerfile*",          class: ci-deploy}
+  - {glob: "**/.env*",                class: secrets}
+  - {glob: "**/*secret*",             class: secrets}
+  - {glob: "**/docs/**",              class: docs}
+  - {glob: "**/*.md",                 class: docs}
+  - {glob: "**/tests/**",             class: code}
+  - {glob: "**/pyproject.toml",       class: config}
+  - {glob: "**/uv.lock",              class: config}
+
+trust_rules:
+  - {glob: "**/.github/workflows/**", boundary: ci}
+  - {glob: "**/Dockerfile*",          boundary: deploy}
+  - {glob: "**/deploy/**",            boundary: deploy}
+  - {glob: "**/.env*",                boundary: secrets}
+  - {glob: "**/*secret*",             boundary: secrets}
+declared_flags: [external-api]   # из task-спеки, по путям не детектится (DESIGN-602)
+
+# v1: статический реестр (OQ-2). cross-repo при 1 консюмере, ecosystem-contract при >=2.
+consumer_registry:
+  "Maestro/contracts/observability":      [spec-runner, arbiter, dispatcher]
+  "Maestro/contracts/work-correlation":   [dispatcher]
+  "arbiter/contracts/budget":             [Maestro, dispatcher]
+  "arbiter/contracts/policy-decision-ref": [Maestro, dispatcher]
