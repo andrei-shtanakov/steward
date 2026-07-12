@@ -14,6 +14,7 @@ policy is enforced without re-running the diff), ``waived_by`` (git handle),
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -26,6 +27,7 @@ from steward.riskclassify.model import TIERS, RiskModel
 __all__ = ["Waiver", "WaiverFinding", "find_waiver", "load_waivers", "validate_waivers"]
 
 _REQUIRED = ("gate_id", "sha", "tier", "waived_by", "reason")
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _FORBIDDEN = "forbidden"
 
 
@@ -63,13 +65,18 @@ def load_waivers(directory: Path, *, strict: bool = False) -> list[Waiver]:
     waivers = []
     for path in sorted(directory.glob("*.md")):
         try:
-            meta, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            meta, _ = split_frontmatter(text)
         except (OSError, yaml.YAMLError) as exc:
             if strict:
                 raise ValueError(f"{path}: unreadable waiver: {exc}") from exc
             continue
         if meta is None:
             if strict:
+                # split_frontmatter returns None both for absent frontmatter and
+                # for a present-but-broken YAML block — say which one it was.
+                if text.startswith("---\n"):
+                    raise ValueError(f"{path}: frontmatter is not parseable as a YAML mapping")
                 raise ValueError(f"{path}: waiver file has no frontmatter")
             continue
         missing = [k for k in _REQUIRED if not isinstance(meta.get(k), str) or not meta[k]]
@@ -96,6 +103,19 @@ def validate_waivers(
     """Findings for stale, forbidden-tier, or malformed-tier waivers (REQ-609)."""
     findings = []
     for w in waivers:
+        if not FULL_SHA_RE.fullmatch(w.sha):
+            findings.append(
+                WaiverFinding(
+                    severity="error",
+                    rule_id="waiver-bad-sha",
+                    path=w.path,
+                    message=(
+                        f"sha '{w.sha}' is not a full 40-hex commit SHA — consumers "
+                        f"compare full SHAs, a short one can never match"
+                    ),
+                )
+            )
+            continue
         if w.tier not in TIERS:
             findings.append(
                 WaiverFinding(

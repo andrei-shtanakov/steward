@@ -101,11 +101,13 @@ def waivers_check(
     Exit codes mirror gate-check: 0 clean, 1 findings, 2 config error. A
     missing directory is clean — no waivers, nothing to validate.
     """
-    from steward.riskclassify.waivers import load_waivers, validate_waivers
+    from steward.riskclassify.waivers import FULL_SHA_RE, load_waivers, validate_waivers
 
     try:
         model = load_risk_model(risk_model)
         head = sha if sha is not None else _git(repo, "rev-parse", "HEAD").strip()
+        if not FULL_SHA_RE.fullmatch(head):
+            raise InputError(f"--sha must be a full 40-hex commit SHA, got '{head}'")
         try:
             waivers = load_waivers(waivers_dir, strict=True)
         except ValueError as exc:

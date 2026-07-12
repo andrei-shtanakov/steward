@@ -123,3 +123,21 @@ def test_find_waiver_matches_gate_and_sha(tmp_path: Path) -> None:
     assert find_waiver(waivers, "steward.gate_check", HEAD) is not None
     assert find_waiver(waivers, "steward.gate_check", "d" * 40) is None
     assert find_waiver(waivers, "tests.passed", HEAD) is None
+
+
+def test_invalid_yaml_frontmatter_strict_message_is_accurate(tmp_path: Path) -> None:
+    # Regression (Copilot, PR #8): split_frontmatter returns None for broken
+    # YAML too — strict mode must not claim the frontmatter is absent.
+    d = _write(tmp_path, "broken.md", "---\ngate_id: [unclosed\n---\n\nbody\n")
+    assert load_waivers(d) == []
+    with pytest.raises(ValueError, match="not parseable"):
+        load_waivers(d, strict=True)
+
+
+def test_waiver_with_short_sha_is_finding(tmp_path: Path, model) -> None:
+    # Regression (Copilot, PR #8): consumers compare full 40-hex SHAs; a short
+    # sha can only ever produce a misleading result.
+    bad = VALID.replace(HEAD, "abc123")
+    d = _write(tmp_path, "steward.gate_check-abc123.md", bad)
+    findings = validate_waivers(load_waivers(d), model, head_sha="abc123")
+    assert [f.rule_id for f in findings] == ["waiver-bad-sha"]

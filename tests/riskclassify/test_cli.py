@@ -219,3 +219,11 @@ def test_waivers_check_bad_model_is_exit_2(tmp_path: Path) -> None:
         ["waivers-check", str(tmp_path), "--sha", "e" * 40, "--risk-model", str(bad)],
     )
     assert result.exit_code == 2
+
+
+def test_waivers_check_short_sha_option_is_exit_2(tmp_path: Path) -> None:
+    d = _waiver_dir(tmp_path, "e" * 40)
+    result = runner.invoke(
+        app, ["waivers-check", str(d), "--sha", "abc123", "--risk-model", str(CANONICAL)]
+    )
+    assert result.exit_code == 2
