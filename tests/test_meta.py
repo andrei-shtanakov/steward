@@ -139,6 +139,10 @@ def test_load_real_dogfood_requirements_multi_owner() -> None:
 
 def test_all_dogfood_specs_are_managed() -> None:
     for path in sorted(SPEC_DIR.glob("*.md")):
+        if path.name.startswith("maestro-"):
+            # Maestro-injected task artifacts (git-excluded via info/exclude),
+            # spec-runner format without steward frontmatter — not dogfood specs.
+            continue
         meta = load_artifact(path)
         assert meta is not None, f"{path.name} should be managed"
         assert meta.spec_stage
