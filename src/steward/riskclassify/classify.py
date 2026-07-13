@@ -96,8 +96,8 @@ def classify_declared(
 
     # contracts/** plays the *rule* role here: a prefix-less scope ("**")
     # covers the whole repo and must count as touching contracts (fail-closed).
-    # Registered contract paths outside contracts/ (exact-file registry keys,
-    # e.g. an ecosystem SSOT) count the same way.
+    # Registered contract paths outside contracts/ (exact-file or directory
+    # registry keys, e.g. an ecosystem SSOT) count the same way.
     touches_contracts = any(
         _globs_may_intersect(_CONTRACTS_PREFIX + "**", g) for g in scope
     ) or any(_may_intersect_any(p, scope) for p in _registry_paths(model, project))
@@ -177,16 +177,20 @@ def _max_class(model: RiskModel, classes: set[str]) -> str:
 def _blast_of_paths(model: RiskModel, project: str, paths: list[str]) -> str:
     blast = "single-repo"
     for path in paths:
-        if f"{project}/{path}" in model.consumer_registry:
-            # Exact-file registry key — a registered contract may live outside
-            # contracts/ (e.g. the ecosystem agents-catalog SSOT).
-            key = f"{project}/{path}"
-        elif path.startswith(_CONTRACTS_PREFIX):
+        candidate = f"{project}/{path}"
+        # Registry keys covering the path — exact file or directory, inside or
+        # outside contracts/ (e.g. the ecosystem agents-catalog SSOT). Grade
+        # them all: overlapping keys may only escalate, never shadow.
+        keys: list[str | None] = [
+            k for k in model.consumer_registry if candidate == k or candidate.startswith(k + "/")
+        ]
+        if path.startswith(_CONTRACTS_PREFIX):
+            # Contract dirs grade even when unregistered (cross-repo floor); a
+            # top-level contracts/ file takes the project's worst entry (no pin).
             segments = path.split("/")
-            key = f"{project}/{segments[0]}/{segments[1]}" if len(segments) > 2 else None
-        else:
-            continue
-        blast = tier_str_max(model, blast, _registry_blast(model, project, pinned_key=key))
+            keys.append(f"{project}/{segments[0]}/{segments[1]}" if len(segments) > 2 else None)
+        for key in keys:
+            blast = tier_str_max(model, blast, _registry_blast(model, project, pinned_key=key))
     return blast
 
 

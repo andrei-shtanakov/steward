@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from steward.riskclassify.classify import classify_declared, classify_diff
-from steward.riskclassify.model import load_risk_model
+from steward.riskclassify.model import RiskModel, load_risk_model
 
 CANONICAL = Path(__file__).parents[2] / "profiles" / "risk-model.yaml"
 
@@ -108,6 +108,51 @@ def test_unregistered_contract_dir_still_cross_repo(model) -> None:
         model, project="arbiter", paths=["contracts/new-thing/schema.json"], sha="a" * 40
     )
     assert c.inputs["blast_radius"] == "cross-repo"
+
+
+def test_top_level_contracts_file_takes_project_worst_grade(model) -> None:
+    # A file directly under contracts/ (2 segments) pins no dir key, so the
+    # un-pinned lookup takes the project's worst registry entry by design.
+    c = classify_diff(model, project="Maestro", paths=["contracts/README.md"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+
+
+def _registry_only_model(consumer_registry: dict[str, list[str]]) -> RiskModel:
+    """Minimal hand-built model to pin registry-key matching semantics."""
+    return RiskModel(
+        version_sha="sha256:test",
+        profile_floors={"lite": "low"},
+        class_tiers={"unknown": "medium"},
+        blast_tiers={"single-repo": "low", "cross-repo": "high", "ecosystem-contract": "critical"},
+        trust_tiers={"none": "low"},
+        tier_gates={t: [] for t in ("low", "medium", "high", "critical")},
+        waiver_policy={},
+        path_class={},
+        generic_class=[],
+        trust_rules=[],
+        consumer_registry=consumer_registry,
+    )
+
+
+def test_overlapping_registry_keys_take_the_max_grade() -> None:
+    # A 1-consumer exact-file key must not shadow the 3-consumer directory key
+    # covering the same path — the model only escalates (DESIGN-601).
+    m = _registry_only_model(
+        {
+            "Maestro/contracts/observability": ["spec-runner", "arbiter", "dispatcher"],
+            "Maestro/contracts/observability/spec.md": ["dispatcher"],
+        }
+    )
+    c = classify_diff(m, project="Maestro", paths=["contracts/observability/spec.md"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+
+
+def test_directory_registry_key_outside_contracts_grades_ex_post() -> None:
+    # Ex-post must honor directory-shaped registry keys outside contracts/,
+    # matching what classify_declared already grades ex-ante for such keys.
+    m = _registry_only_model({"atp-platform/method/schemas": ["Maestro", "arbiter"]})
+    c = classify_diff(m, project="atp-platform", paths=["method/schemas/eval.json"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
 
 
 # --- trust_boundary axis ---
@@ -242,7 +287,7 @@ def test_atp_agents_catalog_beats_method_policy(model) -> None:
     # Ordering-sensitive: the SSOT catalog rule must precede method/** —
     # reversed, first-match-wins would silently demote the catalog to policy.
     # Blast comes from the exact-file consumer_registry key (2 consumers ->
-    # ecosystem-contract), so the tier is critical per REQ-006/DESIGN-006.
+    # ecosystem-contract), so the tier is critical per REQ-003/DESIGN-003.
     c = classify_diff(
         model,
         project="atp-platform",
@@ -282,7 +327,7 @@ def test_atp_method_readme_beats_generic_docs(model) -> None:
 
 
 def test_atp_unmapped_path_falls_through_to_unknown(model) -> None:
-    # REQ-012/DESIGN-008: no catch-all ** in the atp-platform section —
+    # DESIGN-001/REQ-603: no catch-all ** in the atp-platform section —
     # unmapped paths fall through _generic to the built-in unknown class.
     c = classify_diff(
         model,
@@ -324,6 +369,26 @@ def test_ex_ante_atp_code_scope_stays_single_repo(model) -> None:
     c = classify_declared(model, project="atp-platform", scope=["atp/**"], sha="a" * 40)
     assert c.inputs["blast_radius"] == "single-repo"
     assert c.tier == "medium"
+
+
+def test_atp_mixed_diff_is_order_independent(model) -> None:
+    # Max across paths: the catalog's ecosystem blast must survive being
+    # listed before or after lower-graded paths.
+    paths = ["atp/runner.py", "method/agents-catalog.toml"]
+    c = classify_diff(model, project="atp-platform", paths=paths, sha="a" * 40)
+    r = classify_diff(model, project="atp-platform", paths=paths[::-1], sha="a" * 40)
+    assert c.inputs["blast_radius"] == r.inputs["blast_radius"] == "ecosystem-contract"
+    assert c.tier == r.tier == "critical"
+
+
+def test_ex_ante_project_without_registry_entries(model) -> None:
+    # dispatcher has no consumer_registry entries: the registry term of
+    # touches_contracts is inert, and contracts/** still grades the
+    # cross-repo fail-closed floor via the un-pinned lookup.
+    c = classify_declared(model, project="dispatcher", scope=["contracts/**"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "cross-repo"
+    c2 = classify_declared(model, project="dispatcher", scope=["dispatcher/**"], sha="a" * 40)
+    assert c2.inputs["blast_radius"] == "single-repo"
 
 
 # --- consumer_registry entry (TASK-002) ---
