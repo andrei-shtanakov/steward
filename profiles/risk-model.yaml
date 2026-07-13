@@ -74,6 +74,11 @@ path_class:
     - {glob: "dispatcher/**",          class: code}
   spec-runner:
     - {glob: "src/**",                 class: code}
+  atp-platform:
+    - {glob: "method/agents-catalog.toml", class: contract}  # ecosystem agents-catalog SSOT (ADR-ECO-003), vendored by consumers
+    - {glob: "method/**",       class: policy}   # eval methodology + schemas: meta-level, changes the rules
+    - {glob: "ci-templates/**", class: ci-deploy}
+    - {glob: "atp/**",          class: code}
 
 _generic:
   - {glob: "**/.github/workflows/**", class: ci-deploy}

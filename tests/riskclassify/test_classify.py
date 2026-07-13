@@ -233,3 +233,54 @@ def test_ex_ante_maestro_docs_scope_is_low(model) -> None:
     c = classify_declared(model, project="Maestro", scope=["docs/**"], sha="a" * 40)
     assert c.inputs["change_class"] == "docs"
     assert c.tier == "low"
+
+
+# --- atp-platform section (TASK-001) ---
+
+
+def test_atp_agents_catalog_beats_method_policy(model) -> None:
+    # Ordering-sensitive: the SSOT catalog rule must precede method/** —
+    # reversed, first-match-wins would silently demote the catalog to policy.
+    c = classify_diff(
+        model,
+        project="atp-platform",
+        paths=["method/agents-catalog.toml"],
+        sha="a" * 40,
+    )
+    assert c.inputs["change_class"] == "contract"
+    assert c.tier == "high"
+
+
+def test_atp_method_is_policy(model) -> None:
+    c = classify_diff(
+        model,
+        project="atp-platform",
+        paths=["method/eval-schema.json"],
+        sha="a" * 40,
+    )
+    assert c.inputs["change_class"] == "policy"
+    assert c.tier == "high"
+
+
+def test_atp_ci_templates_are_critical(model) -> None:
+    c = classify_diff(
+        model,
+        project="atp-platform",
+        paths=["ci-templates/python-ci.yml"],
+        sha="a" * 40,
+    )
+    assert c.inputs["change_class"] == "ci-deploy"
+    assert c.tier == "critical"
+
+
+def test_atp_code_is_medium(model) -> None:
+    c = classify_diff(model, project="atp-platform", paths=["atp/runner.py"], sha="a" * 40)
+    assert c.inputs["change_class"] == "code"
+    assert c.tier == "medium"
+
+
+def test_ex_ante_atp_method_scope_is_high(model) -> None:
+    # Fail-closed ex-ante: a method/** scope may touch the catalog, so both
+    # the contract and policy rules are in play (both map to high).
+    c = classify_declared(model, project="atp-platform", scope=["method/**"], sha="a" * 40)
+    assert c.tier == "high"
