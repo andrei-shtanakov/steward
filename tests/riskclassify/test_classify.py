@@ -155,6 +155,50 @@ def test_directory_registry_key_outside_contracts_grades_ex_post() -> None:
     assert c.inputs["blast_radius"] == "ecosystem-contract"
 
 
+def test_sibling_directory_does_not_inherit_registry_key_grade() -> None:
+    # Pins the "/" segment boundary: a bare startswith(k) would escalate the
+    # unrelated sibling dir method/schemas-v2 to the method/schemas grade.
+    m = _registry_only_model({"atp-platform/method/schemas": ["Maestro", "arbiter"]})
+    c = classify_diff(
+        m, project="atp-platform", paths=["method/schemas-v2/eval.json"], sha="a" * 40
+    )
+    assert c.inputs["blast_radius"] == "single-repo"
+
+
+def test_lower_graded_registry_key_iterated_last_cannot_demote() -> None:
+    # Outside contracts/ no pinned key is appended, so key order is pure
+    # registry order: the 1-consumer exact key comes last and a last-wins
+    # regression (plain assignment instead of tier_str_max) would demote.
+    m = _registry_only_model(
+        {
+            "atp-platform/method/schemas": ["Maestro", "arbiter"],
+            "atp-platform/method/schemas/eval.json": ["Maestro"],
+        }
+    )
+    c = classify_diff(m, project="atp-platform", paths=["method/schemas/eval.json"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+
+
+def test_exact_file_key_escalates_over_unregistered_contract_dir() -> None:
+    # The other shadowing direction: the pinned dir key (unregistered ->
+    # cross-repo floor) is graded after the 2-consumer exact-file key and
+    # must not shadow its ecosystem grade.
+    m = _registry_only_model({"Maestro/contracts/foo/schema.json": ["arbiter", "dispatcher"]})
+    c = classify_diff(m, project="Maestro", paths=["contracts/foo/schema.json"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+
+
+def test_ex_post_contracts_paths_keep_cross_repo_floor_with_empty_registry() -> None:
+    # Fail-closed floor through _blast_of_paths with no registry entries at
+    # all: both the pinned dir lookup and the un-pinned top-level lookup must
+    # still grade cross-repo, never single-repo.
+    m = _registry_only_model({})
+    c = classify_diff(m, project="Maestro", paths=["contracts/foo/spec.md"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "cross-repo"
+    c2 = classify_diff(m, project="Maestro", paths=["contracts/README.md"], sha="a" * 40)
+    assert c2.inputs["blast_radius"] == "cross-repo"
+
+
 # --- trust_boundary axis ---
 
 
