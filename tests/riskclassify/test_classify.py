@@ -241,6 +241,8 @@ def test_ex_ante_maestro_docs_scope_is_low(model) -> None:
 def test_atp_agents_catalog_beats_method_policy(model) -> None:
     # Ordering-sensitive: the SSOT catalog rule must precede method/** —
     # reversed, first-match-wins would silently demote the catalog to policy.
+    # Blast comes from the exact-file consumer_registry key (2 consumers ->
+    # ecosystem-contract), so the tier is critical per REQ-006/DESIGN-006.
     c = classify_diff(
         model,
         project="atp-platform",
@@ -248,18 +250,48 @@ def test_atp_agents_catalog_beats_method_policy(model) -> None:
         sha="a" * 40,
     )
     assert c.inputs["change_class"] == "contract"
-    assert c.tier == "high"
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+    assert c.tier == "critical"
 
 
 def test_atp_method_is_policy(model) -> None:
+    # Nested path: ** crosses /, and a non-registry method/** file grades
+    # policy/high without picking up the catalog's ecosystem blast.
     c = classify_diff(
         model,
         project="atp-platform",
-        paths=["method/eval-schema.json"],
+        paths=["method/schemas/v2/eval-schema.json"],
+        sha="a" * 40,
+    )
+    assert c.inputs["change_class"] == "policy"
+    assert c.inputs["blast_radius"] == "single-repo"
+    assert c.tier == "high"
+
+
+def test_atp_method_readme_beats_generic_docs(model) -> None:
+    # Section rules win over _generic: method/README.md is policy via
+    # method/**, not docs via the _generic **/*.md rule.
+    c = classify_diff(
+        model,
+        project="atp-platform",
+        paths=["method/README.md"],
         sha="a" * 40,
     )
     assert c.inputs["change_class"] == "policy"
     assert c.tier == "high"
+
+
+def test_atp_unmapped_path_falls_through_to_unknown(model) -> None:
+    # REQ-012/DESIGN-008: no catch-all ** in the atp-platform section —
+    # unmapped paths fall through _generic to the built-in unknown class.
+    c = classify_diff(
+        model,
+        project="atp-platform",
+        paths=["mystery/blob.bin"],
+        sha="a" * 40,
+    )
+    assert c.inputs["change_class"] == "unknown"
+    assert c.tier == "medium"
 
 
 def test_atp_ci_templates_are_critical(model) -> None:
@@ -279,11 +311,19 @@ def test_atp_code_is_medium(model) -> None:
     assert c.tier == "medium"
 
 
-def test_ex_ante_atp_method_scope_is_high(model) -> None:
-    # Fail-closed ex-ante: a method/** scope may touch the catalog, so both
-    # the contract and policy rules are in play (both map to high).
+def test_ex_ante_atp_method_scope_is_critical(model) -> None:
+    # Fail-closed ex-ante: a method/** scope may touch the registered catalog
+    # (2 consumers), so blast grades ecosystem-contract -> critical.
     c = classify_declared(model, project="atp-platform", scope=["method/**"], sha="a" * 40)
-    assert c.tier == "high"
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+    assert c.tier == "critical"
+
+
+def test_ex_ante_atp_code_scope_stays_single_repo(model) -> None:
+    # A scope disjoint from the registered catalog must not pick up its blast.
+    c = classify_declared(model, project="atp-platform", scope=["atp/**"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "single-repo"
+    assert c.tier == "medium"
 
 
 # --- consumer_registry entry (TASK-002) ---
