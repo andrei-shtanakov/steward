@@ -284,3 +284,15 @@ def test_ex_ante_atp_method_scope_is_high(model) -> None:
     # the contract and policy rules are in play (both map to high).
     c = classify_declared(model, project="atp-platform", scope=["method/**"], sha="a" * 40)
     assert c.tier == "high"
+
+
+# --- consumer_registry entry (TASK-002) ---
+
+
+def test_atp_registry_entry_grades_broad_ex_ante_scope_ecosystem(model) -> None:
+    # Discriminating check that the agents-catalog registry entry is loaded
+    # and consumed: with 2 registered consumers the un-pinned lookup grades
+    # atp-platform ecosystem-contract; without the entry it stays cross-repo.
+    c = classify_declared(model, project="atp-platform", scope=["**"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "ecosystem-contract"
+    assert c.tier == "critical"

@@ -105,3 +105,4 @@ consumer_registry:
   "Maestro/contracts/work-correlation":    [dispatcher]
   "arbiter/contracts/budget":              [Maestro, dispatcher]
   "arbiter/contracts/policy-decision-ref": [Maestro, dispatcher]
+  "atp-platform/method/agents-catalog.toml": [Maestro, arbiter]
