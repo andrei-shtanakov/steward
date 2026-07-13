@@ -189,7 +189,9 @@ def _blast_of_paths(model: RiskModel, project: str, paths: list[str]) -> str:
             # top-level contracts/ file takes the project's worst entry (no pin).
             segments = path.split("/")
             keys.append(f"{project}/{segments[0]}/{segments[1]}" if len(segments) > 2 else None)
-        for key in keys:
+        # A registered contracts/ dir can appear both here and in the registry
+        # scan above; dedup so each key grades once (order-preserving).
+        for key in dict.fromkeys(keys):
             blast = tier_str_max(model, blast, _registry_blast(model, project, pinned_key=key))
     return blast
 
