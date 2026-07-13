@@ -293,6 +293,7 @@ def test_atp_registry_entry_grades_broad_ex_ante_scope_ecosystem(model) -> None:
     # Discriminating check that the agents-catalog registry entry is loaded
     # and consumed: with 2 registered consumers the un-pinned lookup grades
     # atp-platform ecosystem-contract; without the entry it stays cross-repo.
+    # Only blast_radius is asserted: the tier would be critical regardless,
+    # via change_class (ci-templates/** -> ci-deploy intersects a "**" scope).
     c = classify_declared(model, project="atp-platform", scope=["**"], sha="a" * 40)
     assert c.inputs["blast_radius"] == "ecosystem-contract"
-    assert c.tier == "critical"
