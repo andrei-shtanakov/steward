@@ -96,7 +96,11 @@ def classify_declared(
 
     # contracts/** plays the *rule* role here: a prefix-less scope ("**")
     # covers the whole repo and must count as touching contracts (fail-closed).
-    touches_contracts = any(_globs_may_intersect(_CONTRACTS_PREFIX + "**", g) for g in scope)
+    # Registered contract paths outside contracts/ (exact-file registry keys,
+    # e.g. an ecosystem SSOT) count the same way.
+    touches_contracts = any(
+        _globs_may_intersect(_CONTRACTS_PREFIX + "**", g) for g in scope
+    ) or any(_may_intersect_any(p, scope) for p in _registry_paths(model, project))
     blast = "single-repo"
     if touches_contracts:
         blast = _registry_blast(model, project, pinned_key=None)
@@ -173,12 +177,23 @@ def _max_class(model: RiskModel, classes: set[str]) -> str:
 def _blast_of_paths(model: RiskModel, project: str, paths: list[str]) -> str:
     blast = "single-repo"
     for path in paths:
-        if not path.startswith(_CONTRACTS_PREFIX):
+        if f"{project}/{path}" in model.consumer_registry:
+            # Exact-file registry key — a registered contract may live outside
+            # contracts/ (e.g. the ecosystem agents-catalog SSOT).
+            key = f"{project}/{path}"
+        elif path.startswith(_CONTRACTS_PREFIX):
+            segments = path.split("/")
+            key = f"{project}/{segments[0]}/{segments[1]}" if len(segments) > 2 else None
+        else:
             continue
-        segments = path.split("/")
-        key = f"{project}/{segments[0]}/{segments[1]}" if len(segments) > 2 else None
         blast = tier_str_max(model, blast, _registry_blast(model, project, pinned_key=key))
     return blast
+
+
+def _registry_paths(model: RiskModel, project: str) -> list[str]:
+    """Repo-relative paths of the project's registered contracts."""
+    prefix = project + "/"
+    return [k.removeprefix(prefix) for k in model.consumer_registry if k.startswith(prefix)]
 
 
 def _registry_blast(model: RiskModel, project: str, *, pinned_key: str | None) -> str:
