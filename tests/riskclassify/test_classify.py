@@ -199,6 +199,15 @@ def test_ex_post_contracts_paths_keep_cross_repo_floor_with_empty_registry() -> 
     assert c2.inputs["blast_radius"] == "cross-repo"
 
 
+def test_project_name_prefix_does_not_absorb_other_projects_entries() -> None:
+    # Pins the project + "/" boundary in the un-pinned worst-entry lookup: a
+    # bare startswith(project) would let project "atp" absorb atp-platform's
+    # 2-consumer entry and grade its top-level contracts file ecosystem.
+    m = _registry_only_model({"atp-platform/contracts/foo": ["Maestro", "arbiter"]})
+    c = classify_diff(m, project="atp", paths=["contracts/README.md"], sha="a" * 40)
+    assert c.inputs["blast_radius"] == "cross-repo"
+
+
 # --- trust_boundary axis ---
 
 
