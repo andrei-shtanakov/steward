@@ -217,6 +217,22 @@ def test_stale_cascade_pin_for_non_upstream_warns(tmp_path: Path) -> None:
     assert "bogus" in findings[0].message
 
 
+def test_stale_cascade_missing_upstream_pin_is_not_a_stray_key(tmp_path: Path) -> None:
+    # requirements absent from the bundle: GC-UPSTREAM owns that failure; the pin
+    # for it must not be misreported as GC-STALE-KEY (Copilot review, PR #14)
+    _write(
+        tmp_path,
+        "des.md",
+        "design",
+        "approved",
+        traces="[requirements]",
+        extra="upstream_hashes: {requirements: old123}\n",
+    )
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts())
+    assert findings == []
+
+
 def test_stale_cascade_ignores_non_approved_downstream(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "approved")
     _write(

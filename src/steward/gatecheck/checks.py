@@ -214,9 +214,9 @@ def check_stale_cascade(
         pinned = dict(artifact.meta.upstream_hashes)
         for up in node.upstream:
             upstream = present.get(up)
+            recorded = pinned.pop(up, None)
             if upstream is None:
                 continue  # GC-UPSTREAM already errors on a missing approved upstream
-            recorded = pinned.pop(up, None)
             if recorded is None:
                 findings.append(
                     Finding(
