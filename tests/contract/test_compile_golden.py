@@ -98,6 +98,22 @@ def test_cli_config_errors_exit_two(tmp_path: Path) -> None:
     blockless = runner.invoke(app, ["project-yaml", str(no_block)])
     assert blockless.exit_code == 2
 
+    # A malformed frontmatter must surface itself, not a misleading
+    # "no decomposition artifact" (Copilot review, PR #15).
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "d.md").write_text("---\nspec_stage: decomposition\n  bad: : :\n---\nbody\n")
+    malformed = runner.invoke(app, ["project-yaml", str(broken)])
+    assert malformed.exit_code == 2
+    assert "malformed frontmatter" in malformed.output
+
+    # An empty base config must fail fast, not silently drop the knobs.
+    empty_base = tmp_path / "empty-base.yaml"
+    empty_base.write_text("")
+    dropped = runner.invoke(app, ["project-yaml", str(SPEC_DIR), "--base", str(empty_base)])
+    assert dropped.exit_code == 2
+    assert "non-empty YAML mapping" in dropped.output
+
 
 def test_cli_delegation_and_out_file(tmp_path: Path) -> None:
     out = tmp_path / "delegation.yaml"

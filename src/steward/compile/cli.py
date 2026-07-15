@@ -38,8 +38,11 @@ def _load_decomposition(spec_dir: Path) -> Decomposition:
     for path in sorted(spec_dir.rglob("*.md")):
         try:
             meta = parse_artifact(path.read_text(encoding="utf-8"))
-        except MetaError:
-            continue  # gate-check owns frontmatter findings; compile just skips
+        except MetaError as err:
+            # Fail loudly: skipping would hide a malformed decomposition behind
+            # a misleading "no decomposition artifact" error further down.
+            _fail_config(f"{path}: malformed frontmatter: {err}")
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
         if meta is not None and meta.spec_stage == _DECOMPOSITION_STAGE:
             candidates.append(path)
     if not candidates:
@@ -78,6 +81,10 @@ def project_yaml(
             base_data = yaml.safe_load(base.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as err:
             _fail_config(f"cannot read base config {base}: {err}")
+        if not isinstance(base_data, dict):
+            # An empty file loads as None — dropping the base silently would
+            # emit a project.yaml without its deployment knobs.
+            _fail_config(f"base config {base} must be a non-empty YAML mapping")
     try:
         text = emit_project_yaml(decomposition, base_data)
     except CompileError as err:
