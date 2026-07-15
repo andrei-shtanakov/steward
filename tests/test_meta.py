@@ -22,6 +22,8 @@ owner_role: "@architects,@product"
 generated_by: claude@claude-opus-4-8
 approved_by: alice
 traces_to: [REQ-001, DEC-002]
+upstream_hashes:
+  requirements: "1a2b3c"
 ---
 
 # Design
@@ -51,11 +53,18 @@ def test_traces_to_parsed() -> None:
     assert meta.traces_to == ("REQ-001", "DEC-002")
 
 
+def test_upstream_hashes_parsed() -> None:
+    meta = parse_artifact(MANAGED)
+    assert meta is not None
+    assert meta.upstream_hashes == (("requirements", "1a2b3c"),)
+
+
 def test_owner_role_and_traces_absent_are_empty() -> None:
     meta = parse_artifact("---\nspec_stage: charter\n---\nbody\n")
     assert meta is not None
     assert meta.owner_roles == ()
     assert meta.traces_to == ()
+    assert meta.upstream_hashes == ()
 
 
 def test_no_frontmatter_is_unmanaged() -> None:
@@ -68,6 +77,29 @@ def test_frontmatter_without_spec_stage_is_unmanaged() -> None:
 
 def test_empty_spec_stage_is_unmanaged() -> None:
     assert parse_artifact("---\nspec_stage:\n---\nbody\n") is None
+
+
+def test_upstream_hashes_ids_and_blobs_stripped() -> None:
+    text = "---\nspec_stage: design\nupstream_hashes: {' requirements ': ' abc '}\n---\nbody\n"
+    meta = parse_artifact(text)
+    assert meta is not None
+    assert meta.upstream_hashes == (("requirements", "abc"),)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "upstream_hashes: [requirements]",  # list, not a mapping
+        "upstream_hashes: abc",  # scalar
+        "upstream_hashes: {requirements: 123}",  # non-string hash
+        "upstream_hashes: {requirements: '  '}",  # blank hash
+        "upstream_hashes: {'': abc}",  # blank id
+    ],
+)
+def test_malformed_upstream_hashes_raises(raw: str) -> None:
+    text = f"---\nspec_stage: design\n{raw}\n---\nbody\n"
+    with pytest.raises(MetaError, match="upstream_hashes"):
+        parse_artifact(text)
 
 
 def test_malformed_traces_to_raises() -> None:

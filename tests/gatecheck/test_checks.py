@@ -1,4 +1,4 @@
-"""Unit tests for the gate-check checks (WS-002 REQ-202..205, 208)."""
+"""Unit tests for the gate-check checks (WS-002 REQ-202..206, 208)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from pathlib import Path
 
 from steward.gatecheck.checks import (
     check_completeness,
+    check_stale_cascade,
     check_status_git,
     check_traceability,
     check_upstream_approved,
@@ -35,9 +36,11 @@ class FakeGitFacts:
         self,
         on_default: set[str] | None = None,
         approvals: dict[str, tuple[Approval, ...]] | None = None,
+        blob_hashes: dict[str, str] | None = None,
     ) -> None:
         self._on_default = on_default or set()
         self._approvals = approvals or {}
+        self._hashes = blob_hashes or {}
 
     def on_default_branch(self, path: str) -> bool:
         return path in self._on_default
@@ -45,8 +48,8 @@ class FakeGitFacts:
     def approvals(self, path: str) -> tuple[Approval, ...]:
         return self._approvals.get(path, ())
 
-    def blob_hash(self, path: str) -> str | None:  # noqa: ARG002
-        return None
+    def blob_hash(self, path: str) -> str | None:
+        return self._hashes.get(path)
 
 
 def _graph():
@@ -54,10 +57,17 @@ def _graph():
 
 
 def _write(
-    tmp_path: Path, name: str, stage: str, status: str, traces: str = "[]", body: str = ""
+    tmp_path: Path,
+    name: str,
+    stage: str,
+    status: str,
+    traces: str = "[]",
+    body: str = "",
+    extra: str = "",
 ) -> None:
     (tmp_path / name).write_text(
-        f"---\nspec_stage: {stage}\nstatus: {status}\nversion: 1\ntraces_to: {traces}\n---\n{body}",
+        f"---\nspec_stage: {stage}\nstatus: {status}\nversion: 1\ntraces_to: {traces}\n"
+        f"{extra}---\n{body}",
         encoding="utf-8",
     )
 
@@ -162,3 +172,63 @@ def test_solo_auto_approve_skips_role_check(tmp_path: Path) -> None:
     artifacts, _ = collect_bundle(solo, tmp_path)
     findings = check_status_git(solo, artifacts, FakeGitFacts(on_default={"req.md"}))
     assert findings == []  # branch confirmed; no role approval needed
+
+
+def _stale_bundle(tmp_path: Path, extra: str) -> list:
+    _write(tmp_path, "req.md", "requirements", "approved")
+    _write(tmp_path, "des.md", "design", "approved", traces="[requirements]", extra=extra)
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    return artifacts
+
+
+def test_stale_cascade_pinned_hash_mismatch_is_error(tmp_path: Path) -> None:
+    artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: old123}\n")
+    findings = check_stale_cascade(
+        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "new456"})
+    )
+    assert [(f.severity, f.rule_id) for f in findings] == [("error", "GC-STALE")]
+    assert "old123" in findings[0].message and "new456" in findings[0].message
+
+
+def test_stale_cascade_pinned_hash_match_is_clean(tmp_path: Path) -> None:
+    artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: same789}\n")
+    findings = check_stale_cascade(
+        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "same789"})
+    )
+    assert findings == []
+
+
+def test_stale_cascade_missing_pin_warns(tmp_path: Path) -> None:
+    artifacts = _stale_bundle(tmp_path, "")
+    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "abc"}))
+    assert [(f.severity, f.rule_id) for f in findings] == [("warn", "GC-STALE-UNPINNED")]
+
+
+def test_stale_cascade_unresolvable_current_hash_warns(tmp_path: Path) -> None:
+    artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: old123}\n")
+    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts())  # no hashes known
+    assert [(f.severity, f.rule_id) for f in findings] == [("warn", "GC-STALE-UNPINNED")]
+
+
+def test_stale_cascade_pin_for_non_upstream_warns(tmp_path: Path) -> None:
+    artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: ok1, bogus: ok2}\n")
+    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "ok1"}))
+    assert [(f.severity, f.rule_id) for f in findings] == [("warn", "GC-STALE-KEY")]
+    assert "bogus" in findings[0].message
+
+
+def test_stale_cascade_ignores_non_approved_downstream(tmp_path: Path) -> None:
+    _write(tmp_path, "req.md", "requirements", "approved")
+    _write(
+        tmp_path,
+        "des.md",
+        "design",
+        "stale",
+        traces="[requirements]",
+        extra="upstream_hashes: {requirements: old123}\n",
+    )
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_stale_cascade(
+        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "new456"})
+    )
+    assert findings == []  # already marked stale — correctly flagged, nothing to add
