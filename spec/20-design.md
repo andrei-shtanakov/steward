@@ -58,6 +58,8 @@ generated_by: <harness>@<model>  # agent-id (как в spec-runner)
 approved_by: <git-handle>|null   # человек, проставляется при PR-merge
 approved_at: <iso>|null
 traces_to: [<upstream artifact id | REQ-/NFR-/DEC-/AC-/WS- id>]
+upstream_hashes: {<upstream id>: <git blob hash>}  # пиновка при аппруве downstream;
+                                                   # база stale-cascade (REQ-206, DESIGN-207 WS-002)
 ```
 
 ## Профиль `team` (REQ-001)

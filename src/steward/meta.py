@@ -6,6 +6,9 @@ DEC-003) and layers steward-only governance fields on top:
 - ``owner_role`` → :attr:`ArtifactMeta.owner_roles` (CODEOWNERS roles, REQ-004)
 - ``traces_to`` → :attr:`ArtifactMeta.traces_to` (upstream artifact / REQ / DEC /
   AC ids used by the traceability gate, REQ-003)
+- ``upstream_hashes`` → :attr:`ArtifactMeta.upstream_hashes` (git blob hash of
+  each upstream artifact, stamped at approval time; the stale-cascade gate
+  compares them against the current tree, REQ-206 / DESIGN-207)
 
 A file with no frontmatter, or whose frontmatter carries no ``spec_stage``, is
 *unmanaged* and parses to ``None`` — this is the passthrough gate-check relies on
@@ -55,6 +58,7 @@ class ArtifactMeta:
     base: SpecMeta
     owner_roles: tuple[str, ...] = ()
     traces_to: tuple[str, ...] = ()
+    upstream_hashes: tuple[tuple[str, str], ...] = ()  # (upstream node id, blob hash) pairs
 
     @property
     def spec_stage(self) -> str:
@@ -110,12 +114,28 @@ def parse_artifact(text: str) -> ArtifactMeta | None:
         base=meta_from_dict(meta_dict),
         owner_roles=parse_owner_roles(meta_dict.get("owner_role")),
         traces_to=_parse_traces_to(meta_dict.get("traces_to")),
+        upstream_hashes=_parse_upstream_hashes(meta_dict.get("upstream_hashes")),
     )
 
 
 def load_artifact(path: str | Path) -> ArtifactMeta | None:
     """Load and parse an artifact file, or ``None`` when unmanaged."""
     return parse_artifact(Path(path).read_text(encoding="utf-8"))
+
+
+def _parse_upstream_hashes(raw: object) -> tuple[tuple[str, str], ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise MetaError("'upstream_hashes' must map upstream id -> blob hash")
+    pairs: list[tuple[str, str]] = []
+    for node_id, blob in raw.items():
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise MetaError("'upstream_hashes' must map upstream id -> blob hash")
+        if not isinstance(blob, str) or not blob.strip():
+            raise MetaError("'upstream_hashes' must map upstream id -> blob hash")
+        pairs.append((node_id.strip(), blob.strip()))
+    return tuple(pairs)
 
 
 def _parse_traces_to(raw: object) -> tuple[str, ...]:

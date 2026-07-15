@@ -6,8 +6,6 @@ ordering dependencies, independently unit-testable. The aggregator
 
 Deferred by design (documented, not forgotten):
 
-- REQ-206 stale-cascade needs approved-upstream blob hashes in frontmatter
-  (DESIGN-207) — a C2 frontmatter-schema extension that has not landed yet.
 - REQ-209 OSS bridge (repolinter / codeowners-validator) is P2 and follows
   once the native checks prove themselves in CI.
 """
@@ -103,6 +101,7 @@ def run_checks(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> li
     findings.extend(check_traceability(graph, artifacts))
     findings.extend(check_upstream_approved(graph, artifacts))
     findings.extend(check_status_git(graph, artifacts, git))
+    findings.extend(check_stale_cascade(graph, artifacts, git))
     return findings
 
 
@@ -191,6 +190,75 @@ def check_upstream_approved(graph: SpecGraph, artifacts: list[Artifact]) -> list
                         f"approved while upstream {up!r} is {state}",
                     )
                 )
+    return findings
+
+
+def check_stale_cascade(
+    graph: SpecGraph, artifacts: list[Artifact], git: GitFacts
+) -> list[Finding]:
+    """REQ-206 / DESIGN-207: an approved downstream pins its upstream blob hashes.
+
+    Approval stamps ``upstream_hashes`` into the downstream's frontmatter; a
+    pinned hash that no longer matches the upstream's current blob means the
+    upstream changed after approval — the downstream is stale and must be
+    re-approved (error). A downstream approved without a pin, or whose upstream
+    hash cannot be resolved, only warns: pins arrive with C2-era approvals, so
+    older approved artifacts must not start failing CI retroactively.
+    """
+    present = _by_node(artifacts)
+    findings = []
+    for artifact in artifacts:
+        if artifact.node_id is None or artifact.meta.status != _APPROVED:
+            continue
+        node = graph.nodes[artifact.node_id]
+        pinned = dict(artifact.meta.upstream_hashes)
+        for up in node.upstream:
+            upstream = present.get(up)
+            recorded = pinned.pop(up, None)
+            if upstream is None:
+                continue  # GC-UPSTREAM already errors on a missing approved upstream
+            if recorded is None:
+                findings.append(
+                    Finding(
+                        "warn",
+                        "GC-STALE-UNPINNED",
+                        artifact.path,
+                        f"approved without a pinned upstream_hashes entry for {up!r} — "
+                        "stale-cascade cannot verify this edge",
+                    )
+                )
+                continue
+            current = git.blob_hash(upstream.path)
+            if current is None:
+                findings.append(
+                    Finding(
+                        "warn",
+                        "GC-STALE-UNPINNED",
+                        artifact.path,
+                        f"cannot resolve the current blob hash of upstream {up!r} "
+                        f"({upstream.path}) — stale-cascade cannot verify this edge",
+                    )
+                )
+            elif current != recorded:
+                findings.append(
+                    Finding(
+                        "error",
+                        "GC-STALE",
+                        artifact.path,
+                        f"upstream {up!r} ({upstream.path}) changed since approval "
+                        f"(pinned {recorded}, current {current}) — mark stale and re-approve",
+                    )
+                )
+        for unknown in pinned:
+            findings.append(
+                Finding(
+                    "warn",
+                    "GC-STALE-KEY",
+                    artifact.path,
+                    f"upstream_hashes pins {unknown!r}, which is not an upstream of "
+                    f"{node.id!r} (upstream: {', '.join(node.upstream) or '—'})",
+                )
+            )
     return findings
 
 

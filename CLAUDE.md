@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **steward** — spec governance layer: gated multi-artifact authoring above spec-runner/Maestro. It shepherds a spec through a DAG of approved artifacts (gates), enforces order and traceability via git-PR/CODEOWNERS/CI, and compiles down by delegation (decomposition → Maestro, task specs → spec-runner).
 
-No implementation code exists yet (`main.py` is a stub). Sources of truth, in order:
+Implemented so far: profiles + `graph.py` (WS-001), `meta.py` + vendored SpecMeta, the gate-check linter with CI dogfood (WS-002), and the risk-model classifier (WS-006). Sources of truth, in order:
 
 - `NEXT-STEPS.md` — the roadmap (Phase 0–3, items D1/V1/C1–C5); read this first to know what is unblocked.
 - `BOOTSTRAP.md` — the bootstrap blueprint: target structure, file skeletons, dependency decision. Apply structure from it rather than inventing.
@@ -37,7 +37,7 @@ Python >= 3.12.
 ## Architecture (target)
 
 - `profiles/*.yaml` — governance profiles (`lite`, `team`): declarative data, not code. Each defines the artifact DAG (charter → requirements → design → acceptance → decomposition → task) with `owner_role`, `upstream` edges, and optional `delegate`/`compile` targets. `lite` (requirements → design → tasks, solo auto-approve) is the default — ceremony is risk #1.
-- `src/steward/meta.py` — thin wrapper over spec-runner's `split_frontmatter`/`SpecMeta` plus `owner_role`. Dependency strategy: **spec-runner as a pinned git/path dep** (BOOTSTRAP.md option A), not vendoring. `meta.py` defines the minimal consumed SpecMeta interface.
+- `src/steward/meta.py` — thin wrapper over spec-runner's `split_frontmatter`/`SpecMeta` plus governance fields (`owner_role`, `traces_to`, `upstream_hashes`). Dependency strategy: **vendored pinned copy** in `src/steward/_vendor/spec_meta.py` (DEC-003; supersedes BOOTSTRAP.md option A) — re-vendor when spec-runner's `SPEC_META_CONTRACT` bumps.
 - `src/steward/graph.py` — SpecGraph + profile loader (WS-001).
 - `src/steward/gatecheck/` — WS-002 linter: completeness / traceability / status↔git / stale cascade, `--no-fs` mode, exit codes for CI (`checks.py`, `git_facts.py`, `cli.py` as a Typer app exposed as the `gate-check` script). CI workflow needs `fetch-depth: 0`.
 - `src/steward/compile/` — compile-down emitters (Phase 3). The `decomposition → project.yaml` contract is already verified against Maestro's loader/preflight.
@@ -50,9 +50,9 @@ Per `NEXT-STEPS.md` — do not start blocked items, do not build all of steward 
 
 | Work | Status |
 |---|---|
-| Bootstrap + G1 profiles + `graph.py` (WS-001) | ready now |
-| `meta.py` | partially — SpecMeta contract freeze pending in spec-runner (C1/C2) |
-| gate-check (WS-002, C3) | blocked on DEC-006 decision (where gate-check lives — user's call) and C2 frontmatter schema |
+| Bootstrap + G1 profiles + `graph.py` (WS-001) | ✅ done |
+| `meta.py` | ✅ steward side done (owner_role, traces_to, upstream_hashes); re-vendor SpecMeta when spec-runner ships contract v2 (owner_role + approver) |
+| gate-check (WS-002, C3) | ✅ done incl. stale-cascade (C2); deferred: OSS bridge (REQ-209, P2) |
 | compile-down (C5) + Maestro delegation (C4) | Phase 3, only after the C1→C3 vertical slice proves ergonomics |
 
 ## Repo scope & boundaries

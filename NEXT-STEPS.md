@@ -27,12 +27,15 @@ Phase 2 (governance MVP) → Phase 3 (замкнуть петлю, снять д
 
 ## Phase 2 — governance MVP
 
-- **C2 · Frontmatter-схема (WS-001).** Расширить SpecMeta полями `owner_role` + человеческий
-  approver. (project: steward/spec-runner)
+- **C2 · Frontmatter-схема (WS-001) — steward-часть ✅ (2026-07-15):** `upstream_hashes`
+  в ArtifactMeta (пиновка upstream-блобов при аппруве) + stale-cascade check (REQ-206,
+  GC-STALE/GC-STALE-UNPINNED) — снят deferred-пункт C3. spec-runner-часть (owner_role +
+  человеческий approver в SpecMeta, SPEC_META_CONTRACT v2 → ре-вендоринг) — handoff в
+  `prograph-vault/authored/notes/`. (project: steward/spec-runner)
 - **C3 · gate-check MVP (WS-002) — ✅ реализовано (2026-07-11):** completeness + traceability +
   upstream-approved + status↔git, `--no-fs facts.json`, exit-коды 0/1/2, CI-job (dogfood на
-  собственном `spec/`). Отложено осознанно: stale-cascade (REQ-206 — ждёт хешей во frontmatter,
-  C2-расширение) и OSS-мост (REQ-209, P2). Branch protection — включить руками после мержа.
+  собственном `spec/`). Отложено осознанно: ~~stale-cascade (REQ-206)~~ — реализован с C2
+  (2026-07-15); OSS-мост (REQ-209, P2). Branch protection — включить руками после мержа.
   (project: steward)
 
 ## Phase 3 — замкнуть петлю и снять долг

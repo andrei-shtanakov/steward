@@ -108,8 +108,36 @@ def test_no_fs_is_deterministic(tmp_path: Path) -> None:
     second = runner.invoke(app, args)
     assert first.output == second.output
     payload = json.loads(first.output)
-    # upstream gate still fires (req is draft); git checks are satisfied
-    assert [f["rule_id"] for f in payload["findings"]] == ["GC-UPSTREAM"]
+    # upstream gate still fires (req is draft); git checks are satisfied;
+    # approved des.md carries no upstream pin, so stale-cascade warns (REQ-206)
+    assert [f["rule_id"] for f in payload["findings"]] == ["GC-UPSTREAM", "GC-STALE-UNPINNED"]
+
+
+def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path) -> None:
+    # REQ-206 e2e: approved design pins the requirements blob; facts report a
+    # different current blob -> GC-STALE error blocks the PR.
+    profile, spec = _bundle(tmp_path)
+    (spec / "req.md").write_text(
+        "---\nspec_stage: requirements\nstatus: approved\nversion: 1\n---\n## REQ-001\n"
+    )
+    (spec / "des.md").write_text(
+        "---\nspec_stage: design\nstatus: approved\nversion: 1\ntraces_to: [REQ-001]\n"
+        "upstream_hashes: {requirements: old123}\n---\n"
+    )
+    facts = _facts(
+        tmp_path,
+        {
+            "default_branch_files": ["des.md", "req.md"],
+            "approvals": {
+                "req.md": [{"handle": "@p", "role": "@product"}],
+                "des.md": [{"handle": "@a", "role": "@architects"}],
+            },
+            "blob_hashes": {"req.md": "new456"},
+        },
+    )
+    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
+    assert result.exit_code == 1
+    assert "GC-STALE" in result.output
 
 
 def test_json_format_shape(tmp_path: Path) -> None:
