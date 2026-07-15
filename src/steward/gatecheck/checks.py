@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from steward.compile.decomposition import (
+    CompileError,
+    extract_compile_block,
+    parse_decomposition,
+)
 from steward.gatecheck.git_facts import GitFacts
 from steward.graph import SpecGraph
 from steward.meta import ArtifactMeta, MetaError, parse_artifact, parse_owner_roles
@@ -102,6 +107,7 @@ def run_checks(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> li
     findings.extend(check_upstream_approved(graph, artifacts))
     findings.extend(check_status_git(graph, artifacts, git))
     findings.extend(check_stale_cascade(graph, artifacts, git))
+    findings.extend(check_compile_block(artifacts))
     return findings
 
 
@@ -190,6 +196,26 @@ def check_upstream_approved(graph: SpecGraph, artifacts: list[Artifact]) -> list
                         f"approved while upstream {up!r} is {state}",
                     )
                 )
+    return findings
+
+
+def check_compile_block(artifacts: list[Artifact]) -> list[Finding]:
+    """Dep-link integrity of the normalized decomposition, upstream of compilation.
+
+    The known trap (``emitter-contract-check.md``): Maestro ``validate --no-fs``
+    silently accepts a dangling ``depends_on``, so a broken workstream link must
+    be caught HERE, before compile-down ever runs — never rely on Maestro
+    preflight for this. Artifacts without a ``steward-compile`` block are out of
+    scope; whichever managed artifact carries one gets validated.
+    """
+    findings = []
+    for artifact in artifacts:
+        try:
+            if extract_compile_block(artifact.text) is None:
+                continue
+            parse_decomposition(artifact.text)
+        except CompileError as err:
+            findings.append(Finding("error", "GC-COMPILE", artifact.path, str(err)))
     return findings
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from steward.gatecheck.checks import (
+    check_compile_block,
     check_completeness,
     check_stale_cascade,
     check_status_git,
@@ -248,3 +249,34 @@ def test_stale_cascade_ignores_non_approved_downstream(tmp_path: Path) -> None:
         _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "new456"})
     )
     assert findings == []  # already marked stale — correctly flagged, nothing to add
+
+
+_COMPILE_BLOCK = """\
+```yaml steward-compile
+project: demo
+workstreams:
+  - {id: a, ws: WS-001, title: A, description: d, scope: ['x/**'], depends_on: [%s]}
+```
+"""
+
+
+def test_compile_block_dangling_dep_is_error(tmp_path: Path) -> None:
+    # The Maestro validate --no-fs blind spot (emitter-contract-check.md):
+    # a dangling depends_on must die here, upstream of compilation.
+    _write(tmp_path, "des.md", "design", "draft", body=_COMPILE_BLOCK % "does-not-exist")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_compile_block(artifacts)
+    assert [(f.severity, f.rule_id) for f in findings] == [("error", "GC-COMPILE")]
+    assert "does-not-exist" in findings[0].message
+
+
+def test_compile_block_valid_is_clean(tmp_path: Path) -> None:
+    _write(tmp_path, "des.md", "design", "draft", body=_COMPILE_BLOCK % "")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    assert check_compile_block(artifacts) == []
+
+
+def test_artifacts_without_compile_block_are_out_of_scope(tmp_path: Path) -> None:
+    _write(tmp_path, "des.md", "design", "draft", body="```yaml\nnot: normative\n```\n")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    assert check_compile_block(artifacts) == []
