@@ -40,8 +40,10 @@ Phase 2 (governance MVP) → Phase 3 (замкнуть петлю, снять д
 
 ## Phase 3 — замкнуть петлю и снять долг
 
-- **C4 · Maestro decomposer → делегирование.** Убрать встроенный `SPEC_GENERATION_PROMPT`,
-  вызывать spec-runner authoring. Снимает существующий дубль формата. (project: Maestro)
+- **C4 · Maestro decomposer → делегирование — ✅ сделано в Maestro (2026-07-06, PR #46 +
+  follow-up #50):** `generate_spec` делегирует в `spec-runner plan --full`, встроенного
+  prompt-дубля формата больше нет («spec-runner owns the tasks.md format»). Проверено
+  2026-07-15 по `Maestro/maestro/decomposer.py`. (project: Maestro)
 - **C5 · Emitters compile-down — ✅ реализовано (2026-07-15):** `steward-compile project-yaml`
   (decomposition → Maestro `project.yaml`; вход — нормализованный `yaml steward-compile` блок в
   артефакте, deployment-настройки — `spec/maestro-base.yaml` passthrough) и `steward-compile
@@ -52,8 +54,11 @@ Phase 2 (governance MVP) → Phase 3 (замкнуть петлю, снять д
 
 ## Побочно (мелко, можно сейчас)
 
-- **I1 · Баг Maestro:** `validate --no-fs` не ловит висячую `depends_on` (см.
-  `emitter-contract-check.md`). Завести в бэклог Maestro. (project: Maestro)
+- **I1 · Баг Maestro — ✅ исправлен в Maestro (2026-07-06, PR #47):** preflight флагует
+  висячую `depends_on` ошибкой `dangling-dep`, проверка идёт до `check_fs` — ловится и в
+  `validate --no-fs`. Проверено 2026-07-15 по `Maestro/maestro/preflight.py`. steward-side
+  `GC-COMPILE` остаётся как defense-in-depth (ловит раньше, на слое governance).
+  (project: Maestro)
 
 ## Критическая заметка
 

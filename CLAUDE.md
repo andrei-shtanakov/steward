@@ -42,7 +42,7 @@ Python >= 3.12.
 - `src/steward/gatecheck/` — WS-002 linter: completeness / traceability / status↔git / stale cascade, `--no-fs` mode, exit codes for CI (`checks.py`, `git_facts.py`, `cli.py` as a Typer app exposed as the `gate-check` script). CI workflow needs `fetch-depth: 0`.
 - `src/steward/compile/` — compile-down emitters (WS-004, C5): `steward-compile project-yaml` renders Maestro `project.yaml` from the normalized ```` ```yaml steward-compile ```` block inside the decomposition artifact (deployment knobs pass through from `spec/maestro-base.yaml`); `steward-compile delegation` renders the WS → spec-runner authoring manifest. Golden tests in `tests/contract/` keep the root `project.yaml` byte-equal to the emitter output.
 
-**Known trap** (from `emitter-contract-check.md`): Maestro `validate --no-fs` does NOT catch dangling `depends_on` references. gate-check validates dep-link integrity between workstreams itself (`GC-COMPILE`, `check_compile_block`), upstream of compilation — never rely on Maestro preflight for this.
+**Historical trap** (from `emitter-contract-check.md`, 2026-07-05): Maestro `validate --no-fs` used to miss dangling `depends_on` references. Fixed in Maestro on 2026-07-06 (PR #47, `dangling-dep` error, runs in `--no-fs` too). gate-check still validates dep-link integrity itself (`GC-COMPILE`, `check_compile_block`) upstream of compilation — defense in depth, and it fails earlier, at the governance layer.
 
 ## Build-order constraints
 
