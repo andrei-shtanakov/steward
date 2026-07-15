@@ -1,0 +1,63 @@
+# steward compile-down: WS → spec-runner authoring delegation (DEC-005).
+# Порядок — топологический по depends_on; исполнитель — Maestro/CI/человек,
+# steward сам spec-runner не запускает.
+
+project: steward
+workstreams:
+- ws: WS-001
+  id: profiles-frontmatter-core
+  dir: workstreams/WS-001-profiles-frontmatter-core
+  depends_on: []
+  command:
+  - spec-runner
+  - plan
+  - --gated
+  - --profile
+  - lite
+- ws: WS-002
+  id: gate-check-linter
+  dir: workstreams/WS-002-gate-check-linter
+  depends_on:
+  - profiles-frontmatter-core
+  command:
+  - spec-runner
+  - plan
+  - --gated
+  - --profile
+  - lite
+- ws: WS-003
+  id: git-approval-integration
+  dir: workstreams/WS-003-git-approval-integration
+  depends_on:
+  - profiles-frontmatter-core
+  command:
+  - spec-runner
+  - plan
+  - --gated
+  - --profile
+  - lite
+- ws: WS-004
+  id: compile-down-delegation
+  dir: workstreams/WS-004-compile-down-delegation
+  depends_on:
+  - profiles-frontmatter-core
+  - gate-check-linter
+  command:
+  - spec-runner
+  - plan
+  - --gated
+  - --profile
+  - lite
+- ws: WS-005
+  id: dispatcher-panel-dogfood
+  dir: workstreams/WS-005-dispatcher-panel-dogfood
+  depends_on:
+  - gate-check-linter
+  - git-approval-integration
+  - compile-down-delegation
+  command:
+  - spec-runner
+  - plan
+  - --gated
+  - --profile
+  - lite

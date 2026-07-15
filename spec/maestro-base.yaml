@@ -1,0 +1,23 @@
+# Maestro deployment knobs для compile-down этого бандла (steward-compile --base).
+# Passthrough: steward эти ключи не интерпретирует — формат принадлежит Maestro.
+# Не артефакт governance (не .md, без frontmatter) — gate-check его не видит.
+
+repo_url: https://example.com/andrei/steward
+repo_path: ~/projects/steward
+workspace_base: /tmp/maestro-ws/steward
+
+max_concurrent: 2
+base_branch: main
+branch_prefix: "feature/steward-"
+auto_pr: true
+
+spec_runner:
+  max_retries: 3
+  task_timeout_minutes: 30
+  claude_command: claude
+  auto_commit: true
+  create_git_branch: true
+  run_tests_on_done: true
+  test_command: "uv run pytest"
+  run_lint_on_done: true
+  lint_command: "uv run ruff check ."

@@ -13,7 +13,7 @@ Implemented so far: profiles + `graph.py` (WS-001), `meta.py` + vendored SpecMet
 - `spec/` — steward's own dogfood spec (`00-charter` … `40-decomposition`), written in its own format. `spec/20-design.md` holds the frontmatter schema and key decisions DEC-001…DEC-006.
 - `workstreams/WS-002-gate-check/spec/` — leaf spec for the gate-check linter (requirements/design/tasks in spec-runner format), ready to implement once unblocked.
 
-`project.yaml` at the repo root is a **contract-check artifact**, not runtime config: it's the hand-compiled `decomposition → Maestro` output used to verify the emitter contract (see `emitter-contract-check.md`). steward never writes this file at runtime.
+`project.yaml` at the repo root is a **contract-check artifact**, not runtime config: it's the `decomposition → Maestro` output of `steward-compile project-yaml`, kept byte-equal to the emitter by a golden test in `tests/contract/` (shape verified against Maestro's loader/preflight — see `emitter-contract-check.md`). steward never writes this file at runtime; regenerate it explicitly when the decomposition block or emitter changes.
 
 ## Commands
 
@@ -40,9 +40,9 @@ Python >= 3.12.
 - `src/steward/meta.py` — thin wrapper over spec-runner's `split_frontmatter`/`SpecMeta` plus governance fields (`owner_role`, `traces_to`, `upstream_hashes`). Dependency strategy: **vendored pinned copy** in `src/steward/_vendor/spec_meta.py` (DEC-003; supersedes BOOTSTRAP.md option A) — re-vendor when spec-runner's `SPEC_META_CONTRACT` bumps.
 - `src/steward/graph.py` — SpecGraph + profile loader (WS-001).
 - `src/steward/gatecheck/` — WS-002 linter: completeness / traceability / status↔git / stale cascade, `--no-fs` mode, exit codes for CI (`checks.py`, `git_facts.py`, `cli.py` as a Typer app exposed as the `gate-check` script). CI workflow needs `fetch-depth: 0`.
-- `src/steward/compile/` — compile-down emitters (Phase 3). The `decomposition → project.yaml` contract is already verified against Maestro's loader/preflight.
+- `src/steward/compile/` — compile-down emitters (WS-004, C5): `steward-compile project-yaml` renders Maestro `project.yaml` from the normalized ```` ```yaml steward-compile ```` block inside the decomposition artifact (deployment knobs pass through from `spec/maestro-base.yaml`); `steward-compile delegation` renders the WS → spec-runner authoring manifest. Golden tests in `tests/contract/` keep the root `project.yaml` byte-equal to the emitter output.
 
-**Known trap** (from `emitter-contract-check.md`): Maestro `validate --no-fs` does NOT catch dangling `depends_on` references. gate-check must validate dep-link integrity between workstreams itself, upstream of compilation — never rely on Maestro preflight for this.
+**Known trap** (from `emitter-contract-check.md`): Maestro `validate --no-fs` does NOT catch dangling `depends_on` references. gate-check validates dep-link integrity between workstreams itself (`GC-COMPILE`, `check_compile_block`), upstream of compilation — never rely on Maestro preflight for this.
 
 ## Build-order constraints
 
@@ -53,7 +53,8 @@ Per `NEXT-STEPS.md` — do not start blocked items, do not build all of steward 
 | Bootstrap + G1 profiles + `graph.py` (WS-001) | ✅ done |
 | `meta.py` | ✅ steward side done (owner_role, traces_to, upstream_hashes); re-vendor SpecMeta when spec-runner ships contract v2 (owner_role + approver) |
 | gate-check (WS-002, C3) | ✅ done incl. stale-cascade (C2); deferred: OSS bridge (REQ-209, P2) |
-| compile-down (C5) + Maestro delegation (C4) | Phase 3, only after the C1→C3 vertical slice proves ergonomics |
+| compile-down emitters (C5, WS-004) | ✅ done (`steward-compile`) |
+| Maestro delegation (C4) | Maestro-side (neighbor repo) — handoff, not steward code |
 
 ## Repo scope & boundaries
 

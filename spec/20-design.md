@@ -101,6 +101,12 @@ CI: job на каждый PR + branch protection на папки downstream-ар
 
 ## Интерфейсы компиляции вниз (REQ-005, DEC-005)
 
+- Нормализованный список живёт в самом артефакте `decomposition` — fenced-блок
+  ```` ```yaml steward-compile ```` (project + workstreams: id/ws/title/description/scope/
+  depends_on/priority?). Его читают emitters (`steward-compile`) и валидирует gate-check
+  (`GC-COMPILE`: dangling/self/dup/cycle в `depends_on` — до компиляции, т.к. Maestro
+  `validate --no-fs` этого не ловит). Deployment-настройки Maestro — отдельный passthrough
+  base-конфиг (`spec/maestro-base.yaml`), steward их не интерпретирует.
 - `decomposition` (WS-список со scope/deps) → рендер в Maestro `project.yaml` (владелец формата —
   Maestro; steward отдаёт нормализованный список, Maestro валидирует `maestro validate`).
 - каждый `WS-xxx` → вызов spec-runner authoring в директории workstream'а (`plan [--gated]

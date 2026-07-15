@@ -42,8 +42,13 @@ Phase 2 (governance MVP) → Phase 3 (замкнуть петлю, снять д
 
 - **C4 · Maestro decomposer → делегирование.** Убрать встроенный `SPEC_GENERATION_PROMPT`,
   вызывать spec-runner authoring. Снимает существующий дубль формата. (project: Maestro)
-- **C5 · Emitters compile-down.** `decomposition → project.yaml` (контракт уже проверен),
-  `WS → spec-runner`. Golden-тесты. (project: steward)
+- **C5 · Emitters compile-down — ✅ реализовано (2026-07-15):** `steward-compile project-yaml`
+  (decomposition → Maestro `project.yaml`; вход — нормализованный `yaml steward-compile` блок в
+  артефакте, deployment-настройки — `spec/maestro-base.yaml` passthrough) и `steward-compile
+  delegation` (WS → spec-runner authoring manifest). Golden-тесты в `tests/contract/`
+  (корневой `project.yaml` регенерируется emitter'ом). Целостность `depends_on` проверяет
+  gate-check (GC-COMPILE) до компиляции — закрывает ловушку Maestro `validate --no-fs`
+  (см. `emitter-contract-check.md`). (project: steward)
 
 ## Побочно (мелко, можно сейчас)
 

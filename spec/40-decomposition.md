@@ -47,3 +47,59 @@ WS-001 ─┬─▶ WS-002 ─┬─▶ WS-004 ─▶ WS-005
   `branch_prefix: feature/steward-`. Отдаётся Maestro (`maestro validate` перед orchestrate).
 - Листовые таски: `maestro orchestrate` на каждый WS вызывает spec-runner authoring (профиль
   `lite`) — steward свой `tasks.md` не пишет (DEC-005).
+
+## Нормализованный список (вход compile-down)
+
+Блок ниже — машиночитаемая половина артефакта (DEC-005: steward отдаёт нормализованный
+список). Его потребляют emitters (`steward-compile project-yaml` / `delegation`) и проверяет
+gate-check (целостность `depends_on` — до компиляции, см. `emitter-contract-check.md`).
+Deployment-настройки Maestro живут отдельно в `spec/maestro-base.yaml`.
+
+```yaml steward-compile
+project: steward
+description: |
+  Spec governance layer: конфигурируемый artifact-DAG (профили lite/team),
+  CI-линтер gate-check, аппрув через git-PR/CODEOWNERS, компиляция вниз
+  делегированием в Maestro и spec-runner.
+workstreams:
+  - id: profiles-frontmatter-core
+    ws: WS-001
+    title: "Profiles + frontmatter core"
+    description: |
+      profile-loader (lite/team как данные), схема артефакта поверх SpecMeta
+      spec-runner + owner_role. WS-001. Trace: REQ-001, REQ-002.
+    scope: ["profiles/**", "steward/spec_meta_ext.py"]
+    depends_on: []
+  - id: gate-check-linter
+    ws: WS-002
+    title: "gate-check linter"
+    description: |
+      Линтер CI: completeness / traceability / status↔git / stale + --no-fs;
+      база repolinter/codeowners-validator. WS-002. Trace: REQ-003, REQ-006.
+    scope: ["steward/gatecheck/**", "tests/gatecheck/**"]
+    depends_on: [profiles-frontmatter-core]
+  - id: git-approval-integration
+    ws: WS-003
+    title: "Git approval integration"
+    description: |
+      role-resolver над CODEOWNERS, зеркало Status↔git, CI-job + branch
+      protection. WS-003. Trace: REQ-004, NFR-003.
+    scope: ["steward/git/**", ".github/**", "CODEOWNERS"]
+    depends_on: [profiles-frontmatter-core]
+  - id: compile-down-delegation
+    ws: WS-004
+    title: "Compile-down delegation"
+    description: |
+      decomposition → Maestro project.yaml; WS → spec-runner authoring;
+      golden-контракты. WS-004. Trace: REQ-005, DEC-005.
+    scope: ["steward/compile/**", "tests/contract/**"]
+    depends_on: [profiles-frontmatter-core, gate-check-linter]
+  - id: dispatcher-panel-dogfood
+    ws: WS-005
+    title: "Dispatcher panel + dogfood/docs"
+    description: |
+      read-only панель состояния бандла; E2E-прогон этого бандла через steward.
+      WS-005. Trace: REQ-007, SC-5.
+    scope: ["docs/**", "examples/dogfood/**"]
+    depends_on: [gate-check-linter, git-approval-integration, compile-down-delegation]
+```
