@@ -59,7 +59,7 @@ Per `NEXT-STEPS.md` — do not start blocked items, do not build all of steward 
 ## Repo scope & boundaries
 
 - **Этот репо:** `steward` — git-корень `all_ai_orchestrators/steward/`, remote `git@github.com:andrei-shtanakov/steward.git`.
-- **Соседи (READ-ONLY reference):** `../arbiter/`, `../atp-platform/`, `../deployer/`, `../dispatcher/`, `../Maestro/`, `../open-prose/`, `../proctor/`, `../prograph/`, `../prograph-vault/`, `../robin-runtime/`, `../robin-toolkit/`, `../spec-runner/`, `../spec-runner-vscode/` — их код не редактировать.
+- **Соседи (READ-ONLY reference):** `../arbiter/`, `../atp-platform/`, `../deployer/`, `../dispatcher/`, `../maestro/`, `../libretto/`, `../proctor/`, `../prograph/`, `../prograph-vault/`, `../robin-runtime/`, `../robin-toolkit/`, `../spec-runner/`, `../spec-runner-vscode/` — их код не редактировать.
 - Нужна правка у соседа → **стоп**: запиши handoff в `../prograph-vault/authored/notes/`
   (кросс-проектное) или `../_cowork_output/` (черновик), не трогай его файлы.
 - Кросс-репные контракты — **вендорить пиненой копией внутрь**, не ссылаться наружу.
