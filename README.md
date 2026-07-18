@@ -19,7 +19,7 @@ steward — тонкий слой поверх spec-runner/Maestro: провод
   status/git mirror, stale cascade, compile-block checks.
 - `steward-compile` — compile-down emitters: Maestro `project.yaml` и
   delegation manifest для spec-runner leaf specs; golden tests держат контракт.
-- `steward riskclassify` — risk-model classifier и waiver-модель.
+- `steward risk-classify` — risk-model classifier и waiver-модель.
 
 `project.yaml` в корне — contract-check artifact, а не runtime config: он
 должен оставаться byte-equal выводу `steward-compile project-yaml`.
