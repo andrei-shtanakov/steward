@@ -11,7 +11,7 @@ Implemented so far: profiles + `graph.py` (WS-001), `meta.py` + vendored SpecMet
 - `NEXT-STEPS.md` — the roadmap (Phase 0–3, items D1/V1/C1–C5); read this first to know what is unblocked.
 - `BOOTSTRAP.md` — the bootstrap blueprint: target structure, file skeletons, dependency decision. Apply structure from it rather than inventing.
 - `spec/` — steward's own dogfood spec (`00-charter` … `40-decomposition`), written in its own format. `spec/20-design.md` holds the frontmatter schema and key decisions DEC-001…DEC-006.
-- `workstreams/WS-002-gate-check/spec/` — leaf spec for the gate-check linter (requirements/design/tasks in spec-runner format), ready to implement once unblocked.
+- `workstreams/WS-002-gate-check/spec/` — implemented leaf spec for the gate-check linter (requirements/design/tasks in spec-runner format); keep it as provenance and contract context.
 
 `project.yaml` at the repo root is a **contract-check artifact**, not runtime config: it's the `decomposition → Maestro` output of `steward-compile project-yaml`, kept byte-equal to the emitter by a golden test in `tests/contract/` (shape verified against Maestro's loader/preflight — see `emitter-contract-check.md`). steward never writes this file at runtime; regenerate it explicitly when the decomposition block or emitter changes.
 
@@ -23,7 +23,7 @@ Package management is **uv only** (never pip):
 - `uv add <package>` — add a dependency
 - `uv run pytest` — run tests (`uv run pytest tests/gatecheck/test_x.py::test_name` for a single test)
 - `uv run ruff format .` / `uv run ruff check . --fix` — format and lint (line length 100 per the blueprint's pyproject)
-- `uv run gate-check --profile team spec/` — the CLI entry point (once `src/steward/gatecheck/cli.py` exists)
+- `uv run gate-check --profile team spec/` — run the gate-check CLI
 
 Python >= 3.12.
 
