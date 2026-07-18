@@ -2,7 +2,7 @@
 
 > Рабочее имя проекта: **steward** (провизорно). Управляет жизненным циклом спек, **не** исполняет.
 > Это спека самого steward, написанная в его собственном формате (dogfood).
-> Статус бандла: DRAFT · Профиль: `team` (5 авторинговых артефактов) · Дата: 2026-07-05
+> Статус реализации: active bootstrap · Профиль: `team` (5 авторинговых артефактов) · Дата: 2026-07-18
 
 ## Что это
 
@@ -12,6 +12,17 @@ steward — тонкий слой поверх spec-runner/Maestro: провод
 `tasks.md`/`project.yaml` сам, не строит свою идентичность/RBAC.
 
 Контекст и обоснование: [`spec/20-design.md`](spec/20-design.md) (раздел «Ключевые решения»).
+
+## Реализовано сейчас
+
+- `gate-check` — линтер governance-артефактов: completeness, traceability,
+  status/git mirror, stale cascade, compile-block checks.
+- `steward-compile` — compile-down emitters: Maestro `project.yaml` и
+  delegation manifest для spec-runner leaf specs; golden tests держат контракт.
+- `steward riskclassify` — risk-model classifier и waiver-модель.
+
+`project.yaml` в корне — contract-check artifact, а не runtime config: он
+должен оставаться byte-equal выводу `steward-compile project-yaml`.
 
 ## Профиль `team` — 8 гейтов sdd схлопнуты в 5 авторинговых + 3 исполнительных
 
