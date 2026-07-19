@@ -2,7 +2,7 @@
 
 Exit codes mirror gate-check: ``0`` emitted · ``2`` config error (no/invalid
 decomposition artifact, bad base config). Output goes to stdout by default —
-steward never writes into another repo or into ``_cowork_output/`` on its own;
+steward never writes into another repo or into ``_cowork_output/`` on its own;  (gov:allow-cowork)
 redirect or pass ``-o`` explicitly.
 """
 
