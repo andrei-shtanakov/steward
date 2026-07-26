@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **steward** — spec governance layer: gated multi-artifact authoring above spec-runner/Maestro. It shepherds a spec through a DAG of approved artifacts (gates), enforces order and traceability via git-PR/CODEOWNERS/CI, and compiles down by delegation (decomposition → Maestro, task specs → spec-runner).
 
-Implemented so far: profiles + `graph.py` (WS-001), `meta.py` + vendored SpecMeta, the gate-check linter with CI dogfood (WS-002), and the risk-model classifier (WS-006). Sources of truth, in order:
+Implemented so far: profiles + `graph.py` (WS-001), `meta.py` + vendored SpecMeta, the gate-check linter with CI dogfood (WS-002), the compile-down emitters (WS-004), the risk-model classifier + waivers (WS-006), and `profiles/authority.yaml` as the authority-policy SSOT (RD-006 M2, vendored by arbiter). Sources of truth, in order:
 
-- `NEXT-STEPS.md` — the roadmap (Phase 0–3, items D1/V1/C1–C5); read this first to know what is unblocked.
+- `TODO.md` — the open-items surface: what is actually left, tagged `@owner:` / `@blocked_by:` / `@trigger:` (format: `../_cowork_output/2026-07-26-plan-fields-and-todo-coverage-handoff.md` §3). Read this first; it is also what Robin's ecosystem digest reads.
+- `NEXT-STEPS.md` — the phase roadmap and its rationale (Phase 0–3, items D1/V1/C1–C5); explains *why* the order is what it is.
 - `BOOTSTRAP.md` — the bootstrap blueprint: target structure, file skeletons, dependency decision. Apply structure from it rather than inventing.
 - `spec/` — steward's own dogfood spec (`00-charter` … `40-decomposition`), written in its own format. `spec/20-design.md` holds the frontmatter schema and key decisions DEC-001…DEC-006.
 - `workstreams/WS-002-gate-check/spec/` — implemented leaf spec for the gate-check linter (requirements/design/tasks in spec-runner format); keep it as provenance and contract context.
@@ -24,8 +25,12 @@ Package management is **uv only** (never pip):
 - `uv run pytest` — run tests (`uv run pytest tests/gatecheck/test_x.py::test_name` for a single test)
 - `uv run ruff format .` / `uv run ruff check . --fix` — format and lint (line length 100 per the blueprint's pyproject)
 - `uv run gate-check --profile team spec/` — run the gate-check CLI
+- `uv run steward risk-classify …` / `uv run steward waivers-check …` — risk tier + waiver validation (WS-006)
+- `uv run steward-compile project-yaml …` / `uv run steward-compile delegation …` — compile-down emitters
 
 Python >= 3.12.
+
+CI runs two workflows: `ci.yml` (ruff format/check, `pyrefly check`, pytest — needs `fetch-depth: 0` for gate-check) and `governance.yml`, a thin caller of the umbrella's reusable governance gate pinned to the immutable tag `governance-v1` (ADR-ECO-004 D5). The governance gate is **advisory** until `governance / gate` is added as a required status check in the `master` ruleset — that last mile is an open TODO item, not an oversight.
 
 ## Ecosystem rules (non-negotiable)
 
@@ -40,21 +45,32 @@ Python >= 3.12.
 - `src/steward/meta.py` — thin wrapper over spec-runner's `split_frontmatter`/`SpecMeta` plus governance fields (`owner_role`, `traces_to`, `upstream_hashes`). Dependency strategy: **vendored pinned copy** in `src/steward/_vendor/spec_meta.py` (DEC-003; supersedes BOOTSTRAP.md option A) — re-vendor when spec-runner's `SPEC_META_CONTRACT` bumps.
 - `src/steward/graph.py` — SpecGraph + profile loader (WS-001).
 - `src/steward/gatecheck/` — WS-002 linter: completeness / traceability / status↔git / stale cascade, `--no-fs` mode, exit codes for CI (`checks.py`, `git_facts.py`, `cli.py` as a Typer app exposed as the `gate-check` script). CI workflow needs `fetch-depth: 0`.
+- `profiles/roles.yaml` — role catalog v1, the SSOT for governance **role identity** (DEC-007, 2026-07-26): `owner_role` is exactly one accountable role, a slug without `@`; multiplicity is modelled by separate `reviewer_roles` / `allowed_approver_roles` fields, never a tuple inside `owner_role`. dispatcher and spec-runner vendor a pinned copy and carry slugs; they do not define the form. **The code has not migrated yet** — `profiles/{lite,team}.yaml`, the repo's own `spec/*.md` frontmatter and `meta.py::parse_owner_roles` still carry the legacy `"@role[,@role]"` form, and the loader does not validate against the catalog. Migration is tracked in `TODO.md` §1 and must not be done silently: an `owner_role` with more than one role requires an explicit choice of the accountable owner. Also note `GC-GIT-ROLE` currently accepts an approval from any *owner* role — under DEC-007 it must consult `allowed_approver_roles` instead.
+- `src/steward/riskclassify/` — WS-006 risk model: `steward risk-classify` (tier = `max(profile floor, change_class, blast_radius, trust_boundary)`, ex-ante over a declared scope / ex-post over a diff, byte-stable JSON on stdout) and `steward waivers-check` (SHA-bound waiver files; a waiver on `critical` is forbidden). Canonical model data: `profiles/risk-model.yaml`. Docs: `docs/risk-classify.md`.
+- `profiles/authority.yaml` — authority policy v1 SSOT (RD-006 M2): role/phase-scoped agent allowlist, default deny. Governance **data**, changed via PR like the gate profiles. arbiter vendors a pinned TOML copy guarded by `AUTHORITY_PINNED_SHA` in its CI — any edit here needs a re-vendor handoff to arbiter (it is a neighbor repo; do not edit it).
 - `src/steward/compile/` — compile-down emitters (WS-004, C5): `steward-compile project-yaml` renders Maestro `project.yaml` from the normalized ```` ```yaml steward-compile ```` block inside the decomposition artifact (deployment knobs pass through from `spec/maestro-base.yaml`); `steward-compile delegation` renders the WS → spec-runner authoring manifest. Golden tests in `tests/contract/` keep the root `project.yaml` byte-equal to the emitter output.
 
 **Historical trap** (from `emitter-contract-check.md`, 2026-07-05): Maestro `validate --no-fs` used to miss dangling `depends_on` references. Fixed in Maestro on 2026-07-06 (PR #47, `dangling-dep` error, runs in `--no-fs` too). gate-check still validates dep-link integrity itself (`GC-COMPILE`, `check_compile_block`) upstream of compilation — defense in depth, and it fails earlier, at the governance layer.
 
 ## Build-order constraints
 
-Per `NEXT-STEPS.md` — do not start blocked items, do not build all of steward at once:
+Per `TODO.md` (open items) and `NEXT-STEPS.md` (why that order) — do not start blocked items, do not build all of steward at once:
 
 | Work | Status |
 |---|---|
 | Bootstrap + G1 profiles + `graph.py` (WS-001) | ✅ done |
-| `meta.py` | ✅ steward side done (owner_role, traces_to, upstream_hashes); re-vendor SpecMeta when spec-runner ships contract v2 (owner_role + approver) |
+| `meta.py` | ✅ steward side done (owner_role, traces_to, upstream_hashes); re-vendor SpecMeta when spec-runner ships contract v2 — in flight there since 2026-07-26 (`feat/specmeta-contract-v2`), until then `owner_role` is read from the raw frontmatter dict as a documented workaround |
 | gate-check (WS-002, C3) | ✅ done incl. stale-cascade (C2); deferred: OSS bridge (REQ-209, P2) |
 | compile-down emitters (C5, WS-004) | ✅ done (`steward-compile`) |
+| risk model + waivers (WS-006 M1) | ✅ done (`steward risk-classify` / `waivers-check`, RD-004 verified) |
+| authority policy v1 (RD-006 M2) | ✅ done (`profiles/authority.yaml`; arbiter vendored it, M3) |
+| role identity (DEC-007) | 🟡 decided, not migrated — catalog exists, code/data still legacy (`TODO.md` §1) |
+| git approval (WS-003) | ⛔ **invalidated by ADR-ECO-004 D4** — required-owner-review is structurally unsatisfiable solo. Close it as superseded rather than silently re-scoping; the replacement is a separate item, "solo-compatible merge evidence policy", built on typed `human_merge` / `agent_merge` evidence |
+| dispatcher panel (WS-005) | ⬜ open — gated on steward stabilizing the `gate_verdicts.jsonl` schema + gate-id catalog that Maestro and dispatcher both vendor; verdict records must use the DEC-007 role slugs |
+| governance gate → required check | 🟡 advisory by design until an **evidence-based promotion gate** is met (V1 live run, real PRs through the gate, FP/FN triaged, working break-glass path, named runtime owner) — not a calendar decision |
+| V1 live gated run | ⬜ open — has an explicit evidence DoD in `TODO.md` §4; never mark it done from tests or implementation alone |
 | Maestro delegation (C4) | Maestro-side (neighbor repo) — handoff, not steward code |
+| gates-in-DAG (WS-006 M-1…M-4) | Maestro-side — handoff `../prograph-vault/authored/notes/2026-07-12-ws006-gates-maestro-handoff.md` |
 
 ## Repo scope & boundaries
 

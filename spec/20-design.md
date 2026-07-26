@@ -46,6 +46,41 @@ dispatcher ◀── читает spec/*.md + git state (read-only панель)
   вендорил SpecMeta в steward (аргумент «реюз без копии» снят), а границы владения фиксируют
   «steward owns gate-check». Второй state-движок не создан: используется вендоренный SpecMeta
   + ArtifactMeta-обёртка (DEC-003).
+- **DEC-007 (решено 2026-07-26, owner)** `owner_role` — **ровно одна accountable роль**,
+  slug без `@`, стабильное машинное имя (не display name). Ownership и authorization — разные
+  отношения: несколько допустимых аппруверов не означают нескольких владельцев. Множественность
+  моделируется **отдельными полями** — `reviewer_roles[]` (обязательные ревьюеры) и
+  `allowed_approver_roles[]` (кто вправе аппрувнуть гейт), а не tuple внутри `owner_role`.
+  Каталог ролей и regex slug'а — **SSOT steward** (`profiles/roles.yaml`); dispatcher и
+  spec-runner вендорят пиненую копию, но собственной формы не определяют. → REQ-002, REQ-004.
+  Причина: singular-форма согласуется со SpecMeta v2 и dispatcher'ом и убирает преобразования
+  на границах; `authority.yaml` описывает **полномочия** и не должен владеть идентичностью ролей.
+
+## Модель идентичности ролей (DEC-007)
+
+Каталог — `profiles/roles.yaml`: `version`, `slug_pattern`, `roles[] = {slug, display}`.
+Валидируется (владелец проверок — steward, место — profile-loader + gate-check):
+
+- уникальность `slug`;
+- соответствие каждого `slug` шаблону `slug_pattern`;
+- разрешимость всех ссылок `owner_role` / `reviewer_roles` / `allowed_approver_roles`;
+- запрет удаления используемой роли без явной миграции и бампа версии контракта.
+
+**Миграция legacy-формы** (`"@a,@b"`):
+
+- `@architect` → `architect` (снять `@`);
+- tuple длины 1 → строка;
+- tuple длины > 1 **не нормализуется молча** — требуется выбрать accountable `owner_role`,
+  остальные роли переносятся в `reviewer_roles` / `allowed_approver_roles`;
+- reader временно принимает legacy-форму, writer выпускает **только** canonical v2;
+- маппинг `slug → @github-handle` живёт на границе с CODEOWNERS, не в самой модели.
+
+Решение по единственному коллизионному узлу (owner, 2026-07-26): `requirements` →
+`owner_role: product`, `reviewer_roles: [architects]` — requirements определяет потребность,
+границы и acceptance intent, архитекторы остаются обязательными ревьюерами за реализуемость.
+
+Та же role identity model обязательна для записей `gate_verdicts.jsonl` (WS-005) — иначе
+governance-панель и вердикты будут ссылаться на разные словари ролей.
 
 ## Frontmatter-схема артефакта (REQ-002)
 
@@ -53,7 +88,9 @@ dispatcher ◀── читает spec/*.md + git state (read-only панель)
 spec_stage: charter|requirements|design|acceptance|decomposition|task
 status: draft|approved|stale
 version: <int>
-owner_role: "@role[,@role]"      # маппится на CODEOWNERS
+owner_role: <role-slug>                 # ровно одна accountable роль (DEC-007)
+reviewer_roles: [<role-slug>, ...]      # опц.: обязательные ревьюеры
+allowed_approver_roles: [<role-slug>]   # опц.: кто вправе аппрувнуть гейт
 generated_by: <harness>@<model>  # agent-id (как в spec-runner)
 approved_by: <git-handle>|null   # человек, проставляется при PR-merge
 approved_at: <iso>|null
@@ -61,6 +98,10 @@ traces_to: [<upstream artifact id | REQ-/NFR-/DEC-/AC-/WS- id>]
 upstream_hashes: {<upstream id>: <git blob hash>}  # пиновка при аппруве downstream;
                                                    # база stale-cascade (REQ-206, DESIGN-207 WS-002)
 ```
+
+Форма выше — **canonical v2**. На 2026-07-26 код и данные (`profiles/*.yaml`, собственный
+`spec/*.md`, `parse_owner_roles`) ещё несут legacy-форму `"@role[,@role]"`; миграция ведётся
+пунктами в `TODO.md` и не делается молча.
 
 ## Профиль `team` (REQ-001)
 
