@@ -1,0 +1,34 @@
+# Role catalog v1 — SSOT for governance role identity (DEC-007, decided 2026-07-26).
+#
+# A role slug is a stable machine name, not a display name and not a @github-handle.
+# `owner_role` on an artifact/profile node names exactly ONE accountable role; multiple
+# roles are modelled by separate fields (`reviewer_roles`, `allowed_approver_roles`) —
+# never as a tuple inside `owner_role`.
+#
+# Ownership vs authority: this file owns role *identity*. `profiles/authority.yaml` owns
+# what an agent MAY do (role/phase allowlist) and deliberately does not define identity;
+# its closed vocabulary (decompose|implement|review|benchmark) is a different axis.
+#
+# This is GOVERNANCE DATA — changes go through PR review like the gate profiles,
+# risk-model.yaml and authority.yaml. dispatcher and spec-runner vendor a pinned copy;
+# they carry role slugs, they do not define the form.
+#
+# STATUS 2026-07-26: catalog declared; the profile loader and gate-check do not yet
+# validate against it, and profiles/*.yaml still carry the legacy "@role[,@role]" form.
+# Wiring + migration are tracked in TODO.md ("Role identity model (DEC-007)") and are
+# deliberately not done silently.
+#
+# Validation owed by steward tooling (TODO): slug uniqueness; every slug matches
+# slug_pattern; every owner_role/reviewer_roles/allowed_approver_roles reference resolves;
+# a role in use cannot be deleted without an explicit migration and a version bump.
+
+version: 1
+slug_pattern: "^[a-z][a-z0-9-]{1,31}$"
+
+roles:
+  - {slug: product,      display: "Product"}
+  - {slug: architects,   display: "Architecture"}
+  - {slug: qa,           display: "QA"}
+  - {slug: tech-lead,    display: "Tech lead"}
+  - {slug: stream-owner, display: "Workstream owner"}
+  - {slug: owner,        display: "Solo owner"}   # lite profile / solo mode

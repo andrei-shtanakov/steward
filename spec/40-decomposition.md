@@ -23,9 +23,20 @@ traces_to: [DEC-001, DEC-002, DEC-003, DEC-004, DEC-005, AC-001, AC-002, AC-003,
 - **WS-002 · gate-check linter** — completeness/traceability/status↔git/stale + `--no-fs`; база
   repolinter/codeowners-validator. Трасса: REQ-003, REQ-006, AC-001..004, AC-008. Scope:
   `steward/gatecheck/**`, `tests/gatecheck/**`. depends_on: [WS-001].
-- **WS-003 · git approval integration** — role-resolver над CODEOWNERS, зеркало Status↔git,
-  CI-job + branch-protection рецепт. Трасса: REQ-004, NFR-003, AC-005. Scope: `steward/git/**`,
+- **WS-003 · git approval integration — ⛔ SUPERSEDED / invalidated-by ADR-ECO-004 D4
+  (2026-07-26)** — исходный scope: role-resolver над CODEOWNERS, зеркало Status↔git, CI-job +
+  branch-protection рецепт. Трасса: REQ-004, NFR-003, AC-005. Scope: `steward/git/**`,
   `.github/**`, `CODEOWNERS`. depends_on: [WS-001].
+  Причина инвалидации: D4 ADR-ECO-004 фиксирует, что «require code owner review» **структурно
+  невыполним для соло-репо** — единственный владелец не может аппрувнуть собственный PR, поэтому
+  enforcement переезжает на GitHub rulesets + типизированное evidence, а steward владеет
+  *семантикой* «кто и под каким evidence вправе мержить». Что стало с частями исходного scope:
+  зеркало Status↔git уже реализовано в `gate-check` (WS-002); role-resolver поглощён моделью
+  идентичности ролей DEC-007 (`profiles/roles.yaml`, `spec/20-design.md`); ветка
+  branch-protection живёт как evidence-based promotion гейта advisory → required.
+  **Заместитель — отдельный пункт, а не переписанный WS-003**: «solo-compatible merge evidence
+  policy» поверх `human_merge` / `agent_merge` (I1–I4), см. `TODO.md` §6. Молчаливой подмены
+  scope не делаем.
 - **WS-004 · compile-down delegation** — `decomposition`→Maestro `project.yaml`, `WS`→spec-runner
   authoring; golden-контракты. Трасса: REQ-005, DEC-005, AC-006. Scope: `steward/compile/**`,
   `tests/contract/**`. depends_on: [WS-001, WS-002].
