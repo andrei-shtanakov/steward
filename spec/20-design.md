@@ -90,7 +90,7 @@ status: draft|approved|stale
 version: <int>
 owner_role: <role-slug>                 # ровно одна accountable роль (DEC-007)
 reviewer_roles: [<role-slug>, ...]      # опц.: обязательные ревьюеры
-allowed_approver_roles: [<role-slug>]   # опц.: кто вправе аппрувнуть гейт
+allowed_approver_roles: [<role-slug>, ...]   # опц.: кто вправе аппрувнуть гейт
 generated_by: <harness>@<model>  # agent-id (как в spec-runner)
 approved_by: <git-handle>|null   # человек, проставляется при PR-merge
 approved_at: <iso>|null
