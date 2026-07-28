@@ -65,10 +65,10 @@
 - [ ] Загрузчик читает `profiles/roles.yaml` и валидирует: уникальность slug, соответствие `slug_pattern`, разрешимость ссылок `owner_role`/`reviewer_roles`/`allowed_approver_roles` @owner:andrei @id:roles-catalog-loader
 - [ ] Запрет удаления используемой роли без явной миграции и бампа `version` каталога @owner:andrei @id:role-deletion-guard
 - [ ] `meta.py`: reader принимает legacy `"@a,@b"`, writer выпускает только canonical v2; `parse_owner_roles` уходит в legacy-путь @owner:andrei @id:meta-owner-roles-v2
-- [ ] Мигрировать `profiles/{team,lite}.yaml` на singular + `reviewer_roles` (`requirements` → owner `product`, reviewer `architects`) @owner:andrei @blocked_by:steward#roles-catalog-loader @id:migrate-profiles-singular-roles
-- [ ] Мигрировать frontmatter собственного `spec/*.md` (у `10-requirements.md` сейчас две роли) @owner:andrei @blocked_by:steward#roles-catalog-loader @id:migrate-spec-frontmatter-roles
+- [ ] Мигрировать `profiles/{team,lite}.yaml` на singular + `reviewer_roles` (`requirements` → owner `product`, reviewer `architects`) @owner:andrei @blocked_by:todo://steward/roles-catalog-loader @id:migrate-profiles-singular-roles
+- [ ] Мигрировать frontmatter собственного `spec/*.md` (у `10-requirements.md` сейчас две роли) @owner:andrei @blocked_by:todo://steward/roles-catalog-loader @id:migrate-spec-frontmatter-roles
 - [ ] Маппинг `slug → @github-handle` на границе с CODEOWNERS (в модель ролей не тащить) @owner:andrei @id:role-slug-github-handle-mapping
-- [ ] `GC-GIT-ROLE` сверять с `allowed_approver_roles`, а не с `owner_role` — сейчас проверка смешивает ownership и authorization @owner:andrei @blocked_by:steward#roles-catalog-loader @id:gc-git-role-authorization
+- [ ] `GC-GIT-ROLE` сверять с `allowed_approver_roles`, а не с `owner_role` — сейчас проверка смешивает ownership и authorization @owner:andrei @blocked_by:todo://steward/roles-catalog-loader @id:gc-git-role-authorization
 - [ ] Handoff в dispatcher: их предложение (одна строка-роль без `@`) принято; прислать пиненую копию каталога @owner:andrei @id:dispatcher-roles-catalog-handoff
 
 ### 2. C2 (хвост): ре-вендоринг SpecMeta v2
@@ -95,9 +95,9 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 пиненую копию. Записи обязаны ссылаться на ту же role identity model, что и артефакты (DEC-007).
 
 - [ ] Зафиксировать схему `gate_verdicts.jsonl` (`gate_id`, `obligation`, `verdict`, `tier`, `phase`, `sha`, `risk_model_version`, `ts`, `waiver_ref?`) с версией контракта @owner:andrei @id:gate-verdicts-schema
-- [ ] Каталог стабильных `gate_id` + маппинг `owner_role` → obligation @owner:andrei @blocked_by:steward#gate-verdicts-schema @id:gate-id-catalog
-- [ ] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:andrei @blocked_by:steward#gate-verdicts-schema @id:oq-1-approval-evidence
-- [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:andrei @blocked_by:steward#gate-verdicts-schema @id:dispatcher-bundle-status-panel
+- [ ] Каталог стабильных `gate_id` + маппинг `owner_role` → obligation @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:gate-id-catalog
+- [ ] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:oq-1-approval-evidence
+- [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:dispatcher-bundle-status-panel
 
 ### 4. V1 · живой прогон `spec-runner plan --gated`
 
@@ -135,9 +135,9 @@ review» структурно невыполним для соло-репо — 
 status↔git уже даёт `gate-check`; role-resolver переехал в пункт 1 как часть DEC-007.
 
 - [x] Пометить WS-003 в `spec/40-decomposition.md` как superseded / invalidated-by ADR-ECO-004 D4, со ссылкой на пункт-заместитель (прозаический раздел «Workstreams»)
-- [ ] Решить судьбу `WS-003` в compile-блоке и DAG: `git-approval-integration` всё ещё узел `steward-compile` и upstream для `dispatcher-panel-dogfood`. Удаление/замена меняет `project.yaml` → регенерация emitter'ом + обновление golden-тестов; висячий `depends_on` поймает `GC-COMPILE` @owner:andrei @blocked_by:steward#solo-merge-evidence-policy @id:ws-003-compile-dag-fate
+- [ ] Решить судьбу `WS-003` в compile-блоке и DAG: `git-approval-integration` всё ещё узел `steward-compile` и upstream для `dispatcher-panel-dogfood`. Удаление/замена меняет `project.yaml` → регенерация emitter'ом + обновление golden-тестов; висячий `depends_on` поймает `GC-COMPILE` @owner:andrei @blocked_by:todo://steward/solo-merge-evidence-policy @id:ws-003-compile-dag-fate
 - [ ] **Определить solo-compatible merge evidence policy** — опереться на будущие `human_merge` / `agent_merge` (I1–I4), а не имитировать невозможный owner review; `solo-mode` = значение конфига (набор аппруверов из одного + явно разрешённое и логируемое self-approval) @owner:andrei @id:solo-merge-evidence-policy
-- [ ] Типизированное evidence `human_merge`: merge существует, actor ∈ humans, чеки зелёные (GitHub API) @owner:andrei @blocked_by:steward#solo-merge-evidence-policy @id:human-merge-evidence
+- [ ] Типизированное evidence `human_merge`: merge существует, actor ∈ humans, чеки зелёные (GitHub API) @owner:andrei @blocked_by:todo://steward/solo-merge-evidence-policy @id:human-merge-evidence
 - [ ] Evidence `agent_merge` с инвариантами I1–I4 (scoped change-class, agent-immutable authority root, adversarial verifier, ревокация) @owner:andrei @blocked_by:prograph-vault#adr-eco-004-deferred @trigger:"ADR-ECO-004 снял deferred после batch-2" @id:agent-merge-evidence
 
 ### 7. Постоянные обязательства и отложенное
