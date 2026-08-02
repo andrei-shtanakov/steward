@@ -304,7 +304,7 @@ def parse_coverage_declarations(text: str) -> tuple[list[dict], list[dict]]:
     waivers = [
         entry
         for entry in _entry_list(meta_dict, "coverage_waivers")
-        if isinstance(entry.get("fr"), str) and isinstance(entry.get("reason"), str)
+        if _nonempty(entry.get("fr")) and _nonempty(entry.get("reason"))
     ]
     return structural, waivers
 
@@ -337,7 +337,7 @@ def _parse_frontmatter_coverage(
 
     waived: set[str] = set()
     for entry in _entry_list(meta_dict, "coverage_waivers"):
-        if isinstance(entry.get("fr"), str) and isinstance(entry.get("reason"), str):
+        if _nonempty(entry.get("fr")) and _nonempty(entry.get("reason")):
             waived.add(entry["fr"])
         else:
             findings.append(
@@ -359,25 +359,30 @@ def _entry_list(meta_dict: dict, key: str) -> list[dict]:
     return [entry for entry in raw if isinstance(entry, dict)]
 
 
+def _nonempty(value: object) -> bool:
+    """A field counts only as a non-empty string — '' / whitespace never satisfies it."""
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _obligation_problem(entry: dict) -> str | None:
     """Validate the FR → constraint → obligation chain; return the defect or None."""
-    if not isinstance(entry.get("fr"), str):
+    if not _nonempty(entry.get("fr")):
         return "missing 'fr'"
-    if not isinstance(entry.get("constraint"), str):
+    if not _nonempty(entry.get("constraint")):
         return "missing 'constraint'"
     obligation = entry.get("obligation")
     if not isinstance(obligation, dict):
         return "missing 'obligation'"
     for required in ("detector", "owner_role", "release_gate"):
-        if not isinstance(obligation.get(required), str):
+        if not _nonempty(obligation.get(required)):
             return f"obligation is missing {required!r}"
     detector = obligation["detector"]
     if detector == _MANUAL_EVIDENCE_DETECTOR:
-        if not isinstance(obligation.get("evidence_target"), str):
+        if not _nonempty(obligation.get("evidence_target")):
             return (
                 "a manual-evidence detector reports 'unknown' forever, so the "
                 "obligation must name an 'evidence_target'"
             )
-    elif not isinstance(obligation.get("expected_verdict"), str):
+    elif not _nonempty(obligation.get("expected_verdict")):
         return "obligation is missing 'expected_verdict' for its detector"
     return None

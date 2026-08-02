@@ -123,7 +123,8 @@ def test_matrix_carries_check_bindings_verbatim() -> None:
 
 def test_invalid_declarations_never_reach_the_matrix() -> None:
     behaviour = _BEHAVIOUR.replace("      release_gate: block\n", "")  # broken chain
-    behaviour = behaviour.replace(", reason: freshness deferred to WS-C", "")  # broken waiver
+    # Whitespace-only reason (Copilot review, PR #26) — not a reason, never counts.
+    behaviour = behaviour.replace(", reason: freshness deferred to WS-C", ', reason: "  "')
     artifacts = _artifacts()
     meta = parse_artifact(behaviour)
     assert meta is not None

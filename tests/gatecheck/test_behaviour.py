@@ -162,6 +162,18 @@ def test_waiver_covers_a_should_fr() -> None:
     assert all("FR-03" not in f.message for f in findings)
 
 
+def test_whitespace_reason_waiver_does_not_count() -> None:
+    # Copilot review, PR #26: an empty/whitespace-only reason is not a reason.
+    behaviour = _BEHAVIOUR_OK.replace("[FR-01, FR-03]", "[FR-01]").replace(
+        "structural_coverage:",
+        'coverage_waivers:\n  - {fr: FR-03, reason: "   "}\nstructural_coverage:',
+    )
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    messages = [f.message for f in findings if f.rule_id == "GC-BEH-COVERAGE"]
+    assert any("reason" in m for m in messages)
+    assert any("FR-03" in m and "covered by no" in m for m in messages)
+
+
 def test_waiver_without_reason_does_not_count() -> None:
     behaviour = _BEHAVIOUR_OK.replace("[FR-01, FR-03]", "[FR-01]").replace(
         "structural_coverage:",
