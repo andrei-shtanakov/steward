@@ -47,7 +47,13 @@ from steward._vendor.spec_meta import split_frontmatter
 from steward.gatecheck.checks import Artifact, Finding
 from steward.graph import SpecGraph
 
-__all__ = ["check_behaviour_spec"]
+__all__ = [
+    "Scenario",
+    "check_behaviour_spec",
+    "parse_coverage_declarations",
+    "parse_priorities",
+    "parse_scenarios",
+]
 
 BEHAVIOUR_NODE = "behaviour-spec"
 
@@ -71,7 +77,7 @@ _CHECK_FIELD_RE = re.compile(r"`([a-z_]+):\s*([^`]+)`")
 
 
 @dataclass(frozen=True)
-class _Scenario:
+class Scenario:
     """One parsed BEH entry."""
 
     beh_id: str
@@ -98,8 +104,8 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     if not upstream_texts:
         return []
 
-    scenarios = _parse_scenarios(behaviour.text)
-    priorities = _parse_priorities(upstream_texts)
+    scenarios = parse_scenarios(behaviour.text)
+    priorities = parse_priorities(upstream_texts)
     findings: list[Finding] = []
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
@@ -108,7 +114,7 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
 
 
 def _check_trace(
-    behaviour: Artifact, scenarios: list[_Scenario], priorities: dict[str, str]
+    behaviour: Artifact, scenarios: list[Scenario], priorities: dict[str, str]
 ) -> list[Finding]:
     """GC-BEH-TRACE: every scenario traces ≥1 FR/NFR *defined* upstream.
 
@@ -142,7 +148,7 @@ def _check_trace(
 
 
 def _check_coverage(
-    behaviour: Artifact, scenarios: list[_Scenario], priorities: dict[str, str]
+    behaviour: Artifact, scenarios: list[Scenario], priorities: dict[str, str]
 ) -> list[Finding]:
     """GC-BEH-COVERAGE: every Must/Should FR is covered by BEH, obligation chain, or waiver."""
     findings: list[Finding] = []
@@ -167,7 +173,7 @@ def _check_coverage(
 
 
 def _check_planned(
-    behaviour: Artifact, scenarios: list[_Scenario], priorities: dict[str, str]
+    behaviour: Artifact, scenarios: list[Scenario], priorities: dict[str, str]
 ) -> list[Finding]:
     """GC-CHECK-PLANNED: blocking scenarios carry a complete checked_by binding.
 
@@ -194,7 +200,7 @@ def _check_planned(
     return findings
 
 
-def _binding_findings(behaviour: Artifact, scenario: _Scenario) -> list[Finding]:
+def _binding_findings(behaviour: Artifact, scenario: Scenario) -> list[Finding]:
     binding = scenario.checked_by
     status = binding.get("status")
     if status not in _CHECK_STATUSES:
@@ -232,7 +238,7 @@ def _binding_findings(behaviour: Artifact, scenario: _Scenario) -> list[Finding]
     return findings
 
 
-def _parse_scenarios(text: str) -> list[_Scenario]:
+def parse_scenarios(text: str) -> list[Scenario]:
     scenarios = []
     for beh_id, block in _definition_blocks(text):
         if not beh_id.startswith("BEH-"):
@@ -248,7 +254,7 @@ def _parse_scenarios(text: str) -> list[_Scenario]:
                 key: value.strip() for key, value in _CHECK_FIELD_RE.findall(checked_match.group(1))
             }
         scenarios.append(
-            _Scenario(
+            Scenario(
                 beh_id=beh_id,
                 traces=traces,
                 checked_by=checked_by,
@@ -258,7 +264,7 @@ def _parse_scenarios(text: str) -> list[_Scenario]:
     return scenarios
 
 
-def _parse_priorities(upstream_texts: list[str]) -> dict[str, str]:
+def parse_priorities(upstream_texts: list[str]) -> dict[str, str]:
     """Map every upstream FR/NFR definition to its priority ('' when none stated)."""
     priorities: dict[str, str] = {}
     for text in upstream_texts:
@@ -278,6 +284,29 @@ def _definition_blocks(text: str) -> list[tuple[str, str]]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         blocks.append((match.group(1), text[match.start() : end]))
     return blocks
+
+
+def parse_coverage_declarations(text: str) -> tuple[list[dict], list[dict]]:
+    """Return the *valid* structural_coverage and coverage_waivers frontmatter entries.
+
+    Invalid entries (a broken obligation chain, a waiver without a reason) are
+    dropped here; :func:`check_behaviour_spec` is where they become findings.
+    Used by the derived trace matrix, which only reports what actually counts.
+    """
+    meta_dict, _ = split_frontmatter(text)
+    if meta_dict is None:
+        return [], []
+    structural = [
+        entry
+        for entry in _entry_list(meta_dict, "structural_coverage")
+        if _obligation_problem(entry) is None
+    ]
+    waivers = [
+        entry
+        for entry in _entry_list(meta_dict, "coverage_waivers")
+        if isinstance(entry.get("fr"), str) and isinstance(entry.get("reason"), str)
+    ]
+    return structural, waivers
 
 
 def _parse_frontmatter_coverage(

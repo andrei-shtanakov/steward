@@ -150,8 +150,8 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 > golden run: `../_cowork_output/golden-run-ws005/`. `team`/`lite` не меняются —
 > всё в экспериментальном профиле `team-exp`.
 
-- [ ] **Slice PR-1**: узел `behaviour-spec` в `profiles/team-exp.yaml` + гейты `GC-BEH-TRACE` / `GC-BEH-COVERAGE` (verification obligation chain, FL-03) / `GC-CHECK-PLANNED` @owner:andrei @id:behaviour-spec-gates
-- [ ] **Slice PR-2**: derived trace matrix (выход линтера, FL-09) + stale-тест с настоящими blob hashes (FL-10) @owner:andrei @blocked_by:todo://steward/behaviour-spec-gates @id:behaviour-trace-matrix-stale
+- [x] **Slice PR-1**: узел `behaviour-spec` в `profiles/team-exp.yaml` + гейты `GC-BEH-TRACE` / `GC-BEH-COVERAGE` (verification obligation chain, FL-03) / `GC-CHECK-PLANNED` (PR #25, merged `9bbcd1b`) @owner:andrei @id:behaviour-spec-gates
+- [ ] **Slice PR-2**: derived trace matrix — `gate-check --trace-matrix` (FL-09) + live stale-тест с настоящими blob hashes (FL-10) @owner:andrei @id:behaviour-trace-matrix-stale
 - [ ] `GC-ARCH-*` + узел `architecture` — только после фиксации intended schema v1 (prograph) @owner:andrei @trigger:"intended-graph schema v1 согласована" @id:behaviour-arch-gates
 
 ### 7. Постоянные обязательства и отложенное
