@@ -101,6 +101,9 @@ def collect_bundle(graph: SpecGraph, spec_dir: Path) -> tuple[list[Artifact], li
 
 def run_checks(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> list[Finding]:
     """Run every check and concatenate their findings."""
+    # Local import: behaviour.py imports Artifact/Finding from this module.
+    from steward.gatecheck.behaviour import check_behaviour_spec
+
     findings: list[Finding] = []
     findings.extend(check_completeness(graph, artifacts))
     findings.extend(check_traceability(graph, artifacts))
@@ -108,6 +111,7 @@ def run_checks(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> li
     findings.extend(check_status_git(graph, artifacts, git))
     findings.extend(check_stale_cascade(graph, artifacts, git))
     findings.extend(check_compile_block(artifacts))
+    findings.extend(check_behaviour_spec(graph, artifacts))
     return findings
 
 

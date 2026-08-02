@@ -144,6 +144,16 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 - [ ] Типизированное evidence `human_merge`: merge существует, actor ∈ humans, чеки зелёные (GitHub API) @owner:andrei @blocked_by:todo://steward/solo-merge-evidence-policy @id:human-merge-evidence
 - [ ] Evidence `agent_merge` с инвариантами I1–I4 (scoped change-class, agent-immutable authority root, adversarial verifier, ревокация) @owner:andrei @blocked_by:prograph-vault#adr-eco-004-deferred @trigger:"ADR-ECO-004 снял deferred после batch-2" @id:agent-merge-evidence
 
+### 6b. ADR behaviour-lifecycle · Фаза 1 (slice утверждён 2026-08-02)
+
+> ADR: `../_cowork_output/decisions/2026-08-02-adr-behaviour-architecture-lifecycle.md`;
+> golden run: `../_cowork_output/golden-run-ws005/`. `team`/`lite` не меняются —
+> всё в экспериментальном профиле `team-exp`.
+
+- [ ] **Slice PR-1**: узел `behaviour-spec` в `profiles/team-exp.yaml` + гейты `GC-BEH-TRACE` / `GC-BEH-COVERAGE` (verification obligation chain, FL-03) / `GC-CHECK-PLANNED` @owner:andrei @id:behaviour-spec-gates
+- [ ] **Slice PR-2**: derived trace matrix (выход линтера, FL-09) + stale-тест с настоящими blob hashes (FL-10) @owner:andrei @blocked_by:todo://steward/behaviour-spec-gates @id:behaviour-trace-matrix-stale
+- [ ] `GC-ARCH-*` + узел `architecture` — только после фиксации intended schema v1 (prograph) @owner:andrei @trigger:"intended-graph schema v1 согласована" @id:behaviour-arch-gates
+
 ### 7. Постоянные обязательства и отложенное
 
 - [ ] Handoff в arbiter на ре-вендоринг `config/authority.toml` + бамп `AUTHORITY_PINNED_SHA` @owner:andrei @trigger:"любая правка profiles/authority.yaml" @id:arbiter-authority-revendor-handoff
