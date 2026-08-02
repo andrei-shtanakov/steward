@@ -1,12 +1,15 @@
 ---
 spec_stage: design
-status: draft
+status: approved
 version: 1
 owner_role: "@architects"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: null
-approved_at: null
+approved_by: andrei-shtanakov
+approved_at: 2026-08-02
+upstream_hashes:
+  requirements: 3ea49935b5f28bc21c5d65d42cb766ed2f076b54
+  behaviour-spec: f9cd2470a3dac14be72af49ea688ca9771e7eeef
 traces_to: [requirements, behaviour-spec]
 ---
 
