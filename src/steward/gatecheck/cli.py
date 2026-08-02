@@ -26,6 +26,7 @@ from steward.gatecheck.trace_matrix import (
     render_matrix_text,
 )
 from steward.graph import ProfileError, SpecGraph, load_profile
+from steward.verdicts import EmitError, emit_verdicts
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -105,6 +106,13 @@ def main(
         help="Render the derived requirement→scenario→check matrix instead of the "
         "findings list. Exit codes still reflect the findings.",
     ),
+    emit_verdicts_flag: bool = typer.Option(
+        False,
+        "--emit-verdicts",
+        help="Write the run's facts to <repo-root>/.steward/gate_verdicts.jsonl "
+        "(contract gate-verdicts/v1). Requires live git provenance — incompatible "
+        "with --no-fs. Exit codes still reflect the findings.",
+    ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
     if output not in ("text", "json"):
@@ -112,11 +120,25 @@ def main(
     if not spec_dir.is_dir():
         _fail_config(f"bundle directory not found: {spec_dir}")
 
+    if emit_verdicts_flag and no_fs is not None:
+        _fail_config(
+            "--emit-verdicts needs live git provenance (HEAD + dirty state) "
+            "and cannot run under --no-fs"
+        )
+
     graph = _resolve_profile(profile)
     git = _git_facts(no_fs, spec_dir)
 
     artifacts, findings = collect_bundle(graph, spec_dir)
     findings.extend(run_checks(graph, artifacts, git))
+
+    if emit_verdicts_flag:
+        try:
+            out_path = emit_verdicts(graph, artifacts, findings, spec_dir)
+        except EmitError as err:
+            _fail_config(str(err))
+        else:
+            typer.echo(f"verdicts written: {out_path}", err=True)
 
     if trace_matrix:
         matrix = build_trace_matrix(graph, artifacts)
