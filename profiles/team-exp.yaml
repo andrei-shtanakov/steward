@@ -1,0 +1,18 @@
+# Experimental team profile: `team` + the behaviour-spec gate between requirements
+# and design/acceptance (ADR behaviour-architecture-lifecycle, Phase 1 slice item 1;
+# golden run: ../_cowork_output/golden-run-ws005/). `team` and `lite` stay untouched.
+# `design` keeps its name — the design → architecture rename is an open ADR question
+# (waits for a second signal); it only gains the behaviour-spec upstream edge here.
+profile: team-exp
+solo_auto_approve: false
+artifacts:
+  - {id: charter,        template: charter.md,        owner_role: "@product",             upstream: []}
+  - {id: requirements,   template: requirements.md,   owner_role: "@product,@architects", upstream: [charter]}
+  - {id: behaviour-spec, template: behaviour-spec.md, owner_role: "@product,@qa",         upstream: [requirements]}
+  - {id: design,         template: design.md,         owner_role: "@architects",          upstream: [requirements, behaviour-spec]}
+  - {id: acceptance,     template: acceptance.md,     owner_role: "@qa",                  upstream: [requirements, behaviour-spec]}
+  - {id: decomposition,  template: decomposition.md,  owner_role: "@tech-lead",           upstream: [design, acceptance]}
+  - {id: task,           owner_role: "@stream-owner", upstream: [decomposition], delegate: spec-runner, per: workstream}
+compile:
+  decomposition: {to: maestro,     artifact: project.yaml}
+  task:          {to: spec-runner, artifact: tasks.md}
