@@ -116,7 +116,10 @@ def emit_verdicts(
         )
 
     out_path = root / VERDICTS_RELPATH
-    _atomic_write_jsonl(out_path, records)
+    try:
+        _atomic_write_jsonl(out_path, records)
+    except OSError as err:
+        raise EmitError(f"cannot write verdicts file {out_path}: {err}") from err
     return out_path
 
 

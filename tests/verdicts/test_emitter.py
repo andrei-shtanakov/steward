@@ -14,7 +14,7 @@ from steward.gatecheck.checks import collect_bundle, run_checks
 from steward.gatecheck.cli import app
 from steward.gatecheck.git_facts import LiveGitFacts
 from steward.graph import load_profile_data
-from steward.verdicts import ProvenanceError, emit_verdicts
+from steward.verdicts import EmitError, ProvenanceError, emit_verdicts
 
 runner = CliRunner()
 
@@ -143,6 +143,17 @@ def test_no_git_means_no_file(tmp_path: Path) -> None:
     with pytest.raises(ProvenanceError):
         emit_verdicts(graph, artifacts, findings, spec)
     assert not (tmp_path / ".steward").exists()  # fail-closed: no provenance, no file
+
+
+def test_unwritable_target_is_a_config_error_not_a_crash(tmp_path: Path) -> None:
+    # Copilot review, PR #33: an OSError on write must surface as EmitError
+    # (CLI exit 2), never as an uncaught crash.
+    repo, spec = _repo(tmp_path)
+    (repo / ".steward").write_text("a file where the directory must go")
+    graph = load_profile_data(_PROFILE)
+    artifacts, findings = collect_bundle(graph, spec)
+    with pytest.raises(EmitError, match="cannot write verdicts file"):
+        emit_verdicts(graph, artifacts, findings, spec)
 
 
 def test_cli_emit_writes_file_and_keeps_exit_semantics(tmp_path: Path) -> None:
