@@ -101,16 +101,20 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     scenarios = _parse_scenarios(behaviour.text)
     priorities = _parse_priorities(upstream_texts)
     findings: list[Finding] = []
-    findings.extend(_check_trace(behaviour, scenarios, upstream_texts))
+    findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
     findings.extend(_check_planned(behaviour, scenarios, priorities))
     return findings
 
 
 def _check_trace(
-    behaviour: Artifact, scenarios: list[_Scenario], upstream_texts: list[str]
+    behaviour: Artifact, scenarios: list[_Scenario], priorities: dict[str, str]
 ) -> list[Finding]:
-    """GC-BEH-TRACE: every scenario names ≥1 FR/NFR that exists upstream."""
+    """GC-BEH-TRACE: every scenario traces ≥1 FR/NFR *defined* upstream.
+
+    A definition is a ``#### FR-NN``/``#### NFR-NN`` heading; an incidental
+    mention of the id in upstream prose does not satisfy the trace.
+    """
     findings = []
     for scenario in scenarios:
         if not scenario.traces:
@@ -124,14 +128,14 @@ def _check_trace(
             )
             continue
         for ref in scenario.traces:
-            pattern = re.compile(rf"(?<![\w-]){re.escape(ref)}(?![\w-])")
-            if not any(pattern.search(text) for text in upstream_texts):
+            if ref not in priorities:
                 findings.append(
                     Finding(
                         "error",
                         "GC-BEH-TRACE",
                         behaviour.path,
-                        f"{scenario.beh_id} traces {ref!r}, which no upstream artifact defines",
+                        f"{scenario.beh_id} traces {ref!r}, which no upstream artifact "
+                        "defines (definitions are `#### FR-NN`/`#### NFR-NN` headings)",
                     )
                 )
     return findings
@@ -165,7 +169,12 @@ def _check_coverage(
 def _check_planned(
     behaviour: Artifact, scenarios: list[_Scenario], priorities: dict[str, str]
 ) -> list[Finding]:
-    """GC-CHECK-PLANNED: blocking scenarios (tracing a Must FR) carry a complete binding."""
+    """GC-CHECK-PLANNED: blocking scenarios carry a complete checked_by binding.
+
+    Blocking = the scenario traces a Must-priority requirement — FR *or* NFR:
+    a Must NFR's scenario losing its check binding is exactly the fail-closed
+    hole this gate exists to keep shut (golden run BEH-08/NFR-02 is one).
+    """
     findings = []
     for scenario in scenarios:
         if not any(priorities.get(ref) == _BLOCKING_PRIORITY for ref in scenario.traces):
@@ -176,8 +185,8 @@ def _check_planned(
                     "error",
                     "GC-CHECK-PLANNED",
                     behaviour.path,
-                    f"blocking scenario {scenario.beh_id} (traces a Must FR) has no "
-                    "**checked_by** binding",
+                    f"blocking scenario {scenario.beh_id} (traces a Must-priority "
+                    "requirement) has no **checked_by** binding",
                 )
             )
             continue

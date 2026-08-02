@@ -245,3 +245,27 @@ def test_non_blocking_scenario_needs_no_binding() -> None:
     )
     findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
     assert all("BEH-02" not in f.message for f in findings if f.rule_id == "GC-CHECK-PLANNED")
+
+
+def test_must_nfr_scenario_is_blocking() -> None:
+    # Copilot review, PR #25: blocking deliberately includes Must-priority NFRs —
+    # BEH-02 traces NFR-01 (Must), so dropping its binding must error.
+    behaviour = _BEHAVIOUR_OK.replace(
+        "- **checked_by**: `status: planned` `kind: integration` `owner: @qa` `target: tests/t.py::t2`\n",
+        "",
+    )
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    planned = [f for f in findings if f.rule_id == "GC-CHECK-PLANNED"]
+    assert len(planned) == 1
+    assert "BEH-02" in planned[0].message
+
+
+def test_prose_mention_is_not_a_definition() -> None:
+    # Copilot review, PR #25: an id mentioned in upstream prose (no heading)
+    # must not satisfy GC-BEH-TRACE.
+    requirements = _REQUIREMENTS + "\nProse aside: FR-77 might exist one day.\n"
+    behaviour = _BEHAVIOUR_OK.replace("[FR-01, FR-03]", "[FR-01, FR-77]")
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, behaviour))
+    trace = [f for f in findings if f.rule_id == "GC-BEH-TRACE"]
+    assert len(trace) == 1
+    assert "FR-77" in trace[0].message and "headings" in trace[0].message
