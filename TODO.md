@@ -99,7 +99,7 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 пиненую копию. Записи обязаны ссылаться на ту же role identity model, что и артефакты (DEC-007).
 
 - [x] **Governance-бандл WS-005 заведён и АППРУВНУТ насквозь** (`workstreams/WS-005-gate-verdicts/spec/`, профиль `team-exp`, линтуется в CI): бандл — PR #28; аппрув-след по DAG-порядку — PR #29 (L1) / #30 (L2) / #31 (L3), каждое ребро запиновано настоящим blob-хешом, stale-каскад покрывает полный DAG @owner:andrei @id:ws005-bundle-approvals
-- [ ] Зафиксировать схему `gate_verdicts.jsonl` (`gate_id`, `obligation`, `verdict`, `tier`, `phase`, `sha`, `risk_model_version`, `ts`, `waiver_ref?`) с версией контракта — реализация = WS-A бандла @owner:andrei @id:gate-verdicts-schema
+- [x] Зафиксировать схему `gate_verdicts.jsonl` с версией контракта — `contracts/gate-verdicts/v1/` (schema+README+5 фикстур) + emitter `gate-check --emit-verdicts`; поля obligation/tier/phase/risk_model_version/waiver_ref объявлены reserved до каталога (PR #33) @owner:andrei @id:gate-verdicts-schema
 - [ ] Каталог стабильных `gate_id` + маппинг `owner_role` → obligation @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:gate-id-catalog
 - [ ] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:oq-1-approval-evidence
 - [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:dispatcher-bundle-status-panel
