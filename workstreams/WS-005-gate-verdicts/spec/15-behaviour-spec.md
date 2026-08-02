@@ -31,8 +31,9 @@ structural_coverage:
 > merge-gate «нечитаемое выглядит как чистое»). Все `checked_by` — `planned`:
 > по двухстадийному гейту этого достаточно до compile-down; материализация —
 > задачи workstream'ов (см. 40-decomposition). Структурная половина FR-02 —
-> obligation-цепочки во frontmatter (ARCH-C1 import-detector, ARCH-C3
-> manual-evidence: постоянный unknown, закрывается review-evidence + BEH-02).
+> obligation-цепочки во frontmatter (ARCH-C1 import-detector; ARCH-C3
+> manual-evidence: вердикт `unknown` постоянен, а release-obligation
+> исполняется review-evidence + BEH-02 — не меняя вердикта).
 
 #### BEH-01: Свежий чистый бандл — pass с происхождением `traces: [FR-01, FR-05]`
 - **Given**: бандл, все артефакты approved; вердикт-файл валиден, header

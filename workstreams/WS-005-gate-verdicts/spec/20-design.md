@@ -89,4 +89,4 @@ exceptions: []
 | I-01, I-02 (declared) | missing-required-edge — план, не блокер | conformant |
 | I-03 (contract) | missing-required-edge | conformant |
 | I-04, ARCH-C1, ARCH-C4 (import) | unknown до появления кода | conformant / violation |
-| ARCH-C2, ARCH-C3 (manual-evidence) | **unknown — постоянно**; закрывается materialized BEH + review-evidence | unknown + materialized check |
+| ARCH-C2, ARCH-C3 (manual-evidence) | **unknown — постоянно**: вердикт детектора не меняется никогда | unknown; release-obligation исполнена review-evidence + materialized BEH |

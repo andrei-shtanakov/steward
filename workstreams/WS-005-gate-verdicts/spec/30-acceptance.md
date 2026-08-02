@@ -23,8 +23,9 @@ traces_to: [requirements, behaviour-spec]
   состояния. Агрегирует BEH-03, BEH-04, BEH-05, BEH-06, BEH-08; порог — M-01:
   0 фикстур этих классов, показанных как pass, в golden-сьюте. → FR-03, FR-04
 - **AC-002 · Панель строго read-only.** Ни одного мутирующего маршрута в
-  governance-разделе; структурно — ARCH-C2 (постоянный unknown, закрыт
-  review-evidence) + materialized BEH-09. → FR-01, OUT-01
+  governance-разделе; структурно — ARCH-C2 (детектор остаётся `unknown`
+  навсегда; его release-obligation исполняется review-evidence + materialized
+  BEH-09 — вердикт при этом не меняется). → FR-01, OUT-01
 - **AC-003 · Единственный источник — файл вердиктов.** Collector не импортирует
   steward и не вычисляет вердикты: ARCH-C1 (import-detector, conformant) +
   ARCH-C3 (manual-evidence) + BEH-02. → FR-02
