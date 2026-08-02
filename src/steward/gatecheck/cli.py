@@ -20,6 +20,11 @@ from steward.gatecheck.git_facts import (
     InjectedGitFacts,
     LiveGitFacts,
 )
+from steward.gatecheck.trace_matrix import (
+    build_trace_matrix,
+    render_matrix_json,
+    render_matrix_text,
+)
 from steward.graph import ProfileError, SpecGraph, load_profile
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -94,6 +99,12 @@ def main(
         None, "--no-fs", help="Deterministic mode: read git facts from this JSON file."
     ),
     output: str = typer.Option("text", "--format", help="Output format: text | json."),
+    trace_matrix: bool = typer.Option(
+        False,
+        "--trace-matrix",
+        help="Render the derived requirement→scenario→check matrix instead of the "
+        "findings list. Exit codes still reflect the findings.",
+    ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
     if output not in ("text", "json"):
@@ -107,7 +118,17 @@ def main(
     artifacts, findings = collect_bundle(graph, spec_dir)
     findings.extend(run_checks(graph, artifacts, git))
 
-    if output == "json":
+    if trace_matrix:
+        matrix = build_trace_matrix(graph, artifacts)
+        if matrix is None:
+            _fail_config(
+                f"profile {graph.profile!r} has no behaviour-spec node, or the bundle "
+                "is missing the behaviour-spec / its upstream artifact"
+            )
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
+        renderer = render_matrix_json if output == "json" else render_matrix_text
+        typer.echo(renderer(matrix))
+    elif output == "json":
         _render_json(findings)
     else:
         _render_text(findings)
