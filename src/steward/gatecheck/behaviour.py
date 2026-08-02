@@ -1,10 +1,11 @@
 """Behaviour-spec checks: GC-BEH-TRACE / GC-BEH-COVERAGE / GC-CHECK-PLANNED.
 
-Phase 1 slice of the behaviour-architecture-lifecycle ADR
-(``../_cowork_output/decisions/2026-08-02-adr-behaviour-architecture-lifecycle.md``;
-formats rehearsed by the manual golden run in ``../_cowork_output/golden-run-ws005/``).
-Active only when the profile carries a ``behaviour-spec`` node (``team-exp``);
-``team``/``lite`` bundles never produce these findings.
+Phase 1 slice of the behaviour-architecture-lifecycle ADR (2026-08-02); the body
+and frontmatter formats below were rehearsed by its manual golden run on WS-005.
+Both live in the dev-only coordination workspace — pointers in ``TODO.md`` §6b;
+runtime code neither reads nor resolves them. Active only when the profile carries
+a ``behaviour-spec`` node (``team-exp``); ``team``/``lite`` bundles never produce
+these findings.
 
 Normative body format (mirrors the golden run):
 
