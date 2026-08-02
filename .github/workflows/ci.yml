@@ -41,3 +41,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
       - run: uv run gate-check --profile team spec/
+      # WS-005 bundle: the first real team-exp bundle, gated by the
+      # behaviour-lifecycle checks it was born from (TODO §6b / §3).
+      - run: uv run gate-check --profile team-exp workstreams/WS-005-gate-verdicts/spec/
