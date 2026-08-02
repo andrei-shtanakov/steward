@@ -5,10 +5,10 @@ version: 1
 owner_role: "@product,@architects"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: claude@claude-fable-5
+approved_by: andrei-shtanakov
 approved_at: 2026-08-02
 upstream_hashes:
-  charter: 1e7111fbf723a4ddbe3b988b03435e941be5632c
+  charter: af247ce25f442bd7115172b20c15be991ef05cfd
 traces_to: [charter]
 ---
 

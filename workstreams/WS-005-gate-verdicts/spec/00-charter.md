@@ -5,7 +5,7 @@ version: 1
 owner_role: "@product"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: claude@claude-fable-5
+approved_by: andrei-shtanakov
 approved_at: 2026-08-02
 traces_to: []
 ---

@@ -5,8 +5,11 @@
 # (waits for a second signal); it only gains the behaviour-spec upstream edge here.
 profile: team-exp
 # solo_auto_approve: WS-003 (required-owner-review) закрыт как structurally
-# unsatisfiable solo; до появления solo-compatible merge evidence policy
-# (TODO §6) аппрув = PR-merge человеком, без ролевого ревью-гейта.
+# unsatisfiable solo. Что ЭНФОРСИТ gate-check при true: GC-GIT-ROLE выключен,
+# GC-GIT-BRANCH проверяет только присутствие файла на default branch — тип
+# мержа (человек/агент) не различается. «Аппрув = PR-merge человеком» — это
+# operating policy владельца, не машинная гарантия; typed merge evidence
+# (human_merge/agent_merge, ADR-ECO-004) появится с merge evidence policy (TODO §6).
 solo_auto_approve: true
 artifacts:
   - {id: charter,        template: charter.md,        owner_role: "@product",             upstream: []}
