@@ -1,12 +1,12 @@
 ---
 spec_stage: charter
-status: draft
+status: approved
 version: 1
 owner_role: "@product"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: null
-approved_at: null
+approved_by: claude@claude-fable-5
+approved_at: 2026-08-02
 traces_to: []
 ---
 

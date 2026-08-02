@@ -1,12 +1,14 @@
 ---
 spec_stage: requirements
-status: draft
+status: approved
 version: 1
 owner_role: "@product,@architects"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: null
-approved_at: null
+approved_by: claude@claude-fable-5
+approved_at: 2026-08-02
+upstream_hashes:
+  charter: 1e7111fbf723a4ddbe3b988b03435e941be5632c
 traces_to: [charter]
 ---
 

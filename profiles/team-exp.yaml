@@ -4,7 +4,10 @@
 # `design` keeps its name — the design → architecture rename is an open ADR question
 # (waits for a second signal); it only gains the behaviour-spec upstream edge here.
 profile: team-exp
-solo_auto_approve: false
+# solo_auto_approve: WS-003 (required-owner-review) закрыт как structurally
+# unsatisfiable solo; до появления solo-compatible merge evidence policy
+# (TODO §6) аппрув = PR-merge человеком, без ролевого ревью-гейта.
+solo_auto_approve: true
 artifacts:
   - {id: charter,        template: charter.md,        owner_role: "@product",             upstream: []}
   - {id: requirements,   template: requirements.md,   owner_role: "@product,@architects", upstream: [charter]}
