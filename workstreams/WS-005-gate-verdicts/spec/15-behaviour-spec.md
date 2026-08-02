@@ -1,12 +1,14 @@
 ---
 spec_stage: behaviour-spec
-status: draft
+status: approved
 version: 1
 owner_role: "@product,@qa"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: null
-approved_at: null
+approved_by: andrei-shtanakov
+approved_at: 2026-08-02
+upstream_hashes:
+  requirements: 3ea49935b5f28bc21c5d65d42cb766ed2f076b54
 traces_to: [requirements]
 structural_coverage:
   - fr: FR-02
