@@ -1,12 +1,15 @@
 ---
 spec_stage: decomposition
-status: draft
+status: approved
 version: 1
 owner_role: "@tech-lead"
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
-approved_by: null
-approved_at: null
+approved_by: andrei-shtanakov
+approved_at: 2026-08-02
+upstream_hashes:
+  design: 73238e7bf855d740f82763ca74933bdc8e525080
+  acceptance: c3521be83801d066e8ff83b0d5cd8a112282cb34
 traces_to: [design, acceptance]
 ---
 
