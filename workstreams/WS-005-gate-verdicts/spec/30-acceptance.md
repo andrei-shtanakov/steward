@@ -9,7 +9,7 @@ approved_by: andrei-shtanakov
 approved_at: 2026-08-02
 upstream_hashes:
   requirements: 3ea49935b5f28bc21c5d65d42cb766ed2f076b54
-  behaviour-spec: 3a49319a071405cebaf1e0051b4df141933904e2
+  behaviour-spec: 27f8b15e6c387dc1a3719e289c30f380699a4e87
 traces_to: [requirements, behaviour-spec]
 ---
 

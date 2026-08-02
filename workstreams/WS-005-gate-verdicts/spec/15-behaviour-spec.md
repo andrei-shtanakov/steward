@@ -33,7 +33,9 @@ structural_coverage:
 > merge-gate «нечитаемое выглядит как чистое»). Все `checked_by` —
 > **materialized** (v2, 2026-08-02): цели существуют — фикстуры канона
 > `contracts/gate-verdicts/v1` (steward #33) и тесты dispatcher #107/#109;
-> кросс-репные ref — в форме `dispatcher:<path>::<test>`. Структурная половина
+> кросс-репные ref — в форме `dispatcher:<path>[::<test>]`: без `::<test>`,
+> когда проверкой является модуль целиком (live smoke); `::<test>` без
+> повторения пути — сокращение внутри одного ref. Структурная половина
 > FR-02 — obligation-цепочки во frontmatter (ARCH-C1 import-detector; ARCH-C3
 > manual-evidence: вердикт `unknown` постоянен, а release-obligation
 > исполняется review-evidence + BEH-02 — не меняя вердикта).
