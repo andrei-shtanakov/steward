@@ -67,8 +67,12 @@ behaviour-architecture-lifecycle gate table and the owner rulings of 2026-08-03
 - **D5 — vendored schemas, two guarantees.** Byte-pinned copies from
   `prograph@8deb730`:
   `contracts/prograph-intended-graph/v1/schema.json` and
-  `contracts/prograph-conformance-report/v1/schema.json` (naming mirrors dispatcher's
-  `contracts/steward-gate-verdicts/v1` consumer convention), each with a `PIN` file.
+  `contracts/prograph-conformance-report/v1/schema.json`, each with a `PIN` file.
+  Naming: producer-prefixed directories mark **vendored consumer copies**, keeping
+  them visually distinct from steward's own produced contract
+  (`contracts/gate-verdicts/v1`); the same producer-prefix idea is what dispatcher
+  uses for its vendored copy of ours (`contracts/steward-gate-verdicts/v1` in the
+  dispatcher repo).
   Copy-integrity = offline contract test (sha256 of the vendored bytes against the PIN).
   Upstream-drift = scheduled observation, **out of PR CI** (workspace obligation;
   absent/expired ⇒ unknown, not clean) — same split as the gate-verdicts contract.
@@ -115,8 +119,11 @@ behaviour-architecture-lifecycle gate table and the owner rulings of 2026-08-03
 
 ## Global Constraints
 
-- uv only. New **runtime** dep: `jsonschema` (`uv add jsonschema`). PyYAML already
-  present.
+- uv only. `jsonschema>=4.26.0` already exists as a **dev** dependency (used by the
+  gate-verdicts contract tests) — GC-ARCH-* imports it in production code, so Task 1
+  **promotes** it to `[project] dependencies` (`uv add "jsonschema>=4.26.0"`) and
+  removes the `[dependency-groups].dev` entry to avoid double-declaring. PyYAML
+  already present.
 - Ruff line length 100 (`pyproject.toml`); `uv run pyrefly check` per repo convention;
   `uv run ruff format .` / `uv run ruff check . --fix`; `uv run pytest` — local gate
   before every commit (ci.yml also runs these).
@@ -163,7 +170,7 @@ behaviour-architecture-lifecycle gate table and the owner rulings of 2026-08-03
 - [ ] **Step 1: Vendor byte-exact + write PINs**
 
 ```sh
-uv add jsonschema
+uv add "jsonschema>=4.26.0"  # promotes the existing dev dep to runtime; drop the dev entry
 mkdir -p contracts/prograph-intended-graph/v1 contracts/prograph-conformance-report/v1
 git -C ../prograph show 8deb730:contracts/intended-graph/v1/schema.json \
   > contracts/prograph-intended-graph/v1/schema.json
@@ -276,7 +283,7 @@ class ArchBundle:
     report_doc: object | None
     report_error: str | None
 
-def collect_arch_bundle(spec_dir: Path) -> ArchBundle | None
+def collect_arch_bundle(spec_dir: Path) -> ArchBundle | None: ...
     # None when no intended-graph.yaml anywhere under spec_dir (gates inactive).
     # Finds the manifest via rglob (nested bundle layouts allowed); the report must
     # sit NEXT TO the manifest (co-located pair, design D2).
@@ -474,7 +481,7 @@ class ArchPolicy:
 
 class ArchPolicyError(Exception): ...
 
-def load_arch_policy(path: Path, stage: str) -> ArchPolicy
+def load_arch_policy(path: Path, stage: str) -> ArchPolicy: ...
     # Raises ArchPolicyError on: unreadable/malformed YAML, unknown stage, unknown
     # finding classes / verdicts / unknown-reasons (validated against the closed
     # prograph vocabulary; None allowed in reasons), negative age. The CLI maps
@@ -486,7 +493,7 @@ def check_arch_conformance(
     git: GitFacts,
     *,
     now: dt.datetime | None = None,
-) -> list[Finding]
+) -> list[Finding]: ...
 ```
 
 **GitFacts extension (D9, part of this task — no vague adaptation):** add to the
