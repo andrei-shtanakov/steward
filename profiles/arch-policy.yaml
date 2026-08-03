@@ -1,0 +1,19 @@
+self_project: steward
+stages:
+  authoring:
+    fail_on_findings: []
+    fail_on_verdicts: [violation]
+    unknown_policy:
+      allowed_reasons: [manual-evidence, unsupported-resolution, outside-workspace,
+                        orphan-component, null]
+      allowed_elements: []
+    require_self_fresh: false
+    max_snapshot_age_hours: null
+  release:
+    fail_on_findings: [missing-required-edge]
+    fail_on_verdicts: [violation]
+    unknown_policy:
+      allowed_reasons: [manual-evidence, unsupported-resolution]
+      allowed_elements: []          # explicit element-id exemptions when needed
+    require_self_fresh: true
+    max_snapshot_age_hours: 24
