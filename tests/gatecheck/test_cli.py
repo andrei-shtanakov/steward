@@ -221,6 +221,10 @@ def _arch_report(manifest_bytes: bytes) -> dict:
 def _arch_bundle(tmp_path: Path, *, with_report: bool = True) -> tuple[Path, Path]:
     """A gate-check-shaped bundle (no governance artifacts) plus an arch manifest."""
     profile, spec = _bundle(tmp_path)
+    # arch-policy.yaml resolves relative to the profile actually used (CWD-independent),
+    # so the tmp profile needs the real policy as its sibling.
+    repo_policy = Path(__file__).resolve().parents[2] / "profiles" / "arch-policy.yaml"
+    (profile.parent / "arch-policy.yaml").write_bytes(repo_policy.read_bytes())
     manifest_bytes = _ARCH_MANIFEST.encode("utf-8")
     (spec / "intended-graph.yaml").write_bytes(manifest_bytes)
     if with_report:

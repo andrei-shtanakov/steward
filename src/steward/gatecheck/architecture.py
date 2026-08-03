@@ -221,8 +221,10 @@ def check_arch_evidence(arch: ArchBundle) -> list[Finding]:
     For each entry in ``components`` / ``interfaces`` / ``constraints``, the
     ``evidence`` key must be present, a list, and non-empty — else one
     finding naming the element's ``id`` (or its index when ``id`` is absent).
-    Skips silently when the manifest doc is not a dict, or when it failed
-    schema-level parsing (GC-ARCH-SCHEMA already reported it).
+    Skips silently when the manifest failed YAML parsing (``manifest_error``
+    set — GC-ARCH-SCHEMA already reported it) or when the parsed doc is not a
+    mapping. Schema-level *validation* errors do NOT suppress this check: a
+    structurally imperfect manifest still gets its evidence audited.
     """
     if arch.manifest_error is not None or not isinstance(arch.manifest_doc, dict):
         return []

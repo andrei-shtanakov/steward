@@ -47,14 +47,19 @@ def _fail_config(message: str) -> None:
     raise typer.Exit(_EXIT_CONFIG)
 
 
-def _resolve_profile(profile: str) -> SpecGraph:
+def _resolve_profile(profile: str) -> tuple[SpecGraph, Path]:
+    """Resolve a profile name/path to its graph AND the YAML path it loaded from.
+
+    The path anchors sibling policy files (arch-policy.yaml) so they resolve
+    relative to the profiles directory actually used, not the current CWD.
+    """
     candidate = Path(profile)
     if not candidate.is_file():
         candidate = Path("profiles") / f"{profile}.yaml"
     if not candidate.is_file():
         _fail_config(f"profile {profile!r} not found (looked for {candidate})")
     try:
-        return load_profile(candidate)
+        return load_profile(candidate), candidate
     except ProfileError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
@@ -139,7 +144,7 @@ def main(
             "and cannot run under --no-fs"
         )
 
-    graph = _resolve_profile(profile)
+    graph, profile_path = _resolve_profile(profile)
     git = _git_facts(no_fs, spec_dir)
 
     artifacts, findings = collect_bundle(graph, spec_dir)
@@ -148,7 +153,7 @@ def main(
     arch = collect_arch_bundle(spec_dir)
     if arch is not None:
         try:
-            policy = load_arch_policy(Path("profiles/arch-policy.yaml"), arch_stage)
+            policy = load_arch_policy(profile_path.parent / "arch-policy.yaml", arch_stage)
         except ArchPolicyError as err:
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm

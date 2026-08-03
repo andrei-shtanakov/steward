@@ -153,25 +153,19 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 
 - [x] **Slice PR-1**: узел `behaviour-spec` в `profiles/team-exp.yaml` + гейты `GC-BEH-TRACE` / `GC-BEH-COVERAGE` (verification obligation chain, FL-03) / `GC-CHECK-PLANNED` (PR #25, merged `9bbcd1b`) @owner:andrei @id:behaviour-spec-gates
 - [x] **Slice PR-2**: derived trace matrix — `gate-check --trace-matrix` (FL-09) + live stale-тест с настоящими blob hashes (FL-10) (PR #26, merged `c18d3cd`) @owner:andrei @id:behaviour-trace-matrix-stale
-- [ ] **Slice PR-3**: `GC-ARCH-*` — код готов на ветке `feat/arch-gates` (Tasks 1-4) @owner:andrei @id:behaviour-arch-gates
-  Смержено в код (не в master): вендоринг обеих схем пиненой копией
-  (`contracts/prograph-intended-graph/v1`, `contracts/prograph-conformance-report/v1`,
-  copy-integrity PR-гейт отдельно от upstream-drift), `GC-ARCH-SCHEMA` /
-  `GC-ARCH-EVIDENCE` / `GC-ARCH-CONFORMANCE` как offline-потребители отчёта,
-  декларативная stage policy (`profiles/arch-policy.yaml`, `--arch-stage
-  authoring|release`), активация по присутствию файла — отдельный узел `architecture`
-  в DAG профиля не понадобился (D1: file-presence activation). WS-005 манифест
-  (`workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml`) получил `evidence` на
-  всех четырёх интерфейсах (D7). Осталось до закрытия пункта:
-  1. **operational WS-005 evidence run** (choreography step 3b, тот же PR, второй
-     коммит): проиндексировать steward в умбрелла-воркспейсе, сгенерировать
-     `uv run prograph conformance --project steward --format json` и закоммитить как
-     `workstreams/WS-005-gate-verdicts/spec/conformance-report.json` — без него
-     `gate-check --profile team-exp workstreams/WS-005-gate-verdicts/spec/` красный на
-     `GC-ARCH-CONFORMANCE` (missing-report), это ожидаемо на текущем коммите, не баг.
-  2. @trigger:"после коммита evidence — завести scheduled workspace-обязательство
-     (вне CI этого репо) на upstream-drift обеих вендоренных prograph-схем и на
-     freshness манифест/отчёта; отсутствует/просрочено ⇒ unknown, не clean".
+- [x] **Slice PR-3**: `GC-ARCH-*` гейты + первое живое evidence (Tasks 1-4 + choreography 3b) @owner:andrei @id:behaviour-arch-gates
+  Схемы prograph завендорены пиненой копией (`contracts/prograph-intended-graph/v1`,
+  `contracts/prograph-conformance-report/v1`; copy-integrity PR-гейт отдельно от
+  upstream-drift). `GC-ARCH-SCHEMA` / `GC-ARCH-EVIDENCE` / `GC-ARCH-CONFORMANCE` —
+  offline-потребители отчёта; декларативная stage policy
+  (`profiles/arch-policy.yaml`, `--arch-stage authoring|release`, постоянные unknown
+  проходят release по причине); D9 self-freshness: ancestor + path-scoped diff
+  (петля commit==HEAD исключена). Отдельный узел `architecture` в DAG не понадобился
+  (D1: file-presence activation). WS-005: манифест получил `evidence` на всех
+  интерфейсах (D7), первый настоящий `conformance-report.json` закоммичен рядом
+  (umbrella snapshot #8, provenance commit = ancestor); dogfood: authoring exit 0,
+  release exit 1 ровно на I-01/I-02 — реальный остаток реализации workstream'а.
+- [ ] Scheduled workspace-обязательство (вне CI этого репо): upstream-drift обеих вендоренных prograph-схем + freshness манифест/отчёта WS-005; отсутствует/просрочено ⇒ unknown, не clean @owner:andrei @id:arch-evidence-freshness-watch
 
 ### 7. Постоянные обязательства и отложенное
 
