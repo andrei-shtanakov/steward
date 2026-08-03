@@ -40,50 +40,13 @@ traces_to: [requirements, behaviour-spec]
 
 ## Intended graph
 
-```yaml
-schema: intended-graph/v0-draft   # schema v1 — открытый вопрос ADR (prograph)
-components:
-  - {id: steward.gatecheck,             kind: cli,      owner: "@architects",
-     responsibility: "прогон проверок, модель Finding, exit 0/1/2",
-     evidence: [CON-02]}
-  - {id: steward.verdicts-emitter,      kind: module,   owner: "@architects",
-     responsibility: "сериализация прогона в gate_verdicts.jsonl; header: schema_version, source_commit, dirty, generated_at",
-     evidence: [BEH-01, BEH-07]}
-  - {id: contract.gate-verdicts-v1,     kind: contract, owner: "@architects",
-     responsibility: "JSON Schema + golden fixtures (positive + все negative-классы)",
-     evidence: [BEH-03, BEH-04, BEH-06, CON-02]}
-  - {id: dispatcher.contract-vendor,    kind: module,   owner: "@architects",
-     responsibility: "пиненая копия схемы; copy-integrity + upstream-drift раздельно",
-     evidence: [CON-02]}
-  - {id: dispatcher.governance-collector, kind: module, owner: "@architects",
-     responsibility: "чтение файла + git-фактов; классификация в 6 состояний ARCH-D2",
-     evidence: [BEH-02, BEH-03, BEH-04, BEH-05, BEH-06, BEH-08, NFR-01, NFR-02]}
-  - {id: dispatcher.governance-panel,   kind: ui,       owner: "@architects",
-     responsibility: "read-only отображение состояния бандлов",
-     evidence: [BEH-01, BEH-07, BEH-09, FR-01]}
-interfaces:
-  - {id: I-01, producer: steward.verdicts-emitter, consumer: "file:.steward/gate_verdicts.jsonl",
-     protocol: "jsonl / gate-verdicts/v1", detector: declared}
-  - {id: I-02, producer: "file:.steward/gate_verdicts.jsonl", consumer: dispatcher.governance-collector,
-     protocol: "jsonl / gate-verdicts/v1", detector: declared}
-  - {id: I-03, producer: contract.gate-verdicts-v1, consumer: dispatcher.contract-vendor,
-     protocol: "вендоринг пиненой копии", detector: contract}
-  - {id: I-04, producer: dispatcher.governance-collector, consumer: dispatcher.governance-panel,
-     protocol: "in-process read model", detector: import}
-constraints:
-  - {id: ARCH-C1, rule: "forbidden: dispatcher.* -> import steward.*",
-     detector: import, evidence: [FR-02, CON-02]}
-  - {id: ARCH-C2, rule: "forbidden: governance-panel -> запись в наблюдаемые репо; только GET",
-     detector: manual-evidence, evidence: [BEH-09, OUT-01]}
-  - {id: ARCH-C3, rule: "forbidden: governance-collector вычисляет вердикты (только классификация)",
-     detector: manual-evidence, evidence: [FR-02]}
-  - {id: ARCH-C4, rule: "layering: panel -> collector -> file; панель не читает файл напрямую",
-     detector: import, evidence: []}
-resources:
-  - "runtime: существующий FastAPI dispatcher; новых сервисов нет"
-  - "storage: локальный диск, gitignored файл на бандл (ARCH-D1)"
-exceptions: []
-```
+Машиночитаемый канон — **`intended-graph.yaml`** рядом с этим артефактом
+(схема `intended-graph/v1`, спека принята prograph#22 2026-08-03). Этот
+документ его не дублирует: компоненты, интерфейсы и ограничения живут в одном
+месте, здесь — обоснование (Решения) и conformance-ожидания (ниже).
+Указатель для prograph — `[tool.prograph] intended` в `pyproject.toml` репо.
+ARCH-C4 (panel → file, оба конца внутри dispatcher) по правилам v1 даёт
+честный `unknown/unsupported-resolution` до module-level резолюции (v1.1).
 
 ## Conformance-ожидания (трёхзначные)
 
@@ -91,5 +54,6 @@ exceptions: []
 |---|---|---|
 | I-01, I-02 (declared) | missing-required-edge — план, не блокер | conformant |
 | I-03 (contract) | missing-required-edge | conformant |
-| I-04, ARCH-C1, ARCH-C4 (import) | unknown до появления кода | conformant / violation |
+| ARCH-C1 (import, cross-project) | unknown до появления кода | conformant / violation |
+| I-04 (import), ARCH-C4 (declared) — **intra-project пары** внутри dispatcher | unknown (`unsupported-resolution`) — наблюдаемый долг v1 | unknown до module-level резолюции (v1.1); закрыто materialized BEH-09 и route-тестом |
 | ARCH-C2, ARCH-C3 (manual-evidence) | **unknown — постоянно**: вердикт детектора не меняется никогда | unknown; release-obligation исполнена review-evidence + materialized BEH |

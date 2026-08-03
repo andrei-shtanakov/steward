@@ -8,7 +8,7 @@ generated_at: 2026-08-02
 approved_by: andrei-shtanakov
 approved_at: 2026-08-02
 upstream_hashes:
-  design: 8f3b645d138254e2937c438e00dfe61ebb977c63
+  design: 0723e40e1b8cacb7fcd59981ae6133441dfa8760
   acceptance: 13662491b32da8a9e7b7836b6e337a3b78d90134
 traces_to: [design, acceptance]
 ---
