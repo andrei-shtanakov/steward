@@ -1,0 +1,139 @@
+{
+  "elements": [
+    {
+      "detector": "declared",
+      "id": "I-01",
+      "reason": null,
+      "type": "interface",
+      "verdict": "unknown",
+      "waived_by": null
+    },
+    {
+      "detector": "declared",
+      "id": "I-02",
+      "reason": null,
+      "type": "interface",
+      "verdict": "unknown",
+      "waived_by": null
+    },
+    {
+      "detector": "contract",
+      "id": "I-03",
+      "reason": null,
+      "type": "interface",
+      "verdict": "conformant",
+      "waived_by": null
+    },
+    {
+      "detector": "import",
+      "id": "I-04",
+      "reason": "unsupported-resolution",
+      "type": "interface",
+      "verdict": "unknown",
+      "waived_by": null
+    },
+    {
+      "detector": "import",
+      "id": "ARCH-C1",
+      "reason": null,
+      "type": "constraint",
+      "verdict": "conformant",
+      "waived_by": null
+    },
+    {
+      "detector": "manual-evidence",
+      "id": "ARCH-C2",
+      "reason": "manual-evidence",
+      "type": "constraint",
+      "verdict": "unknown",
+      "waived_by": null
+    },
+    {
+      "detector": "manual-evidence",
+      "id": "ARCH-C3",
+      "reason": "manual-evidence",
+      "type": "constraint",
+      "verdict": "unknown",
+      "waived_by": null
+    },
+    {
+      "detector": "declared",
+      "id": "ARCH-C4",
+      "reason": "unsupported-resolution",
+      "type": "constraint",
+      "verdict": "unknown",
+      "waived_by": null
+    }
+  ],
+  "exceptions": [],
+  "findings": [
+    {
+      "class": "manual-obligation",
+      "detail": "manual-evidence element: verify by review, restated in every report",
+      "element": "ARCH-C2",
+      "suppressed_by": null
+    },
+    {
+      "class": "manual-obligation",
+      "detail": "manual-evidence element: verify by review, restated in every report",
+      "element": "ARCH-C3",
+      "suppressed_by": null
+    },
+    {
+      "class": "missing-required-edge",
+      "detail": "detector 'declared' observed no edge for steward.verdicts-emitter -> file:.steward/gate_verdicts.jsonl",
+      "element": "I-01",
+      "suppressed_by": null
+    },
+    {
+      "class": "missing-required-edge",
+      "detail": "detector 'declared' observed no edge for file:.steward/gate_verdicts.jsonl -> dispatcher.governance-collector",
+      "element": "I-02",
+      "suppressed_by": null
+    }
+  ],
+  "generated_at": "2026-08-03T10:34:14Z",
+  "manifest": {
+    "path": "workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml",
+    "project": "steward",
+    "sha256": "e50ce9704301f4aeaf754864f96673e59bc3b409f1f60b6aba9e4d6901bd7234"
+  },
+  "projects": {
+    "dispatcher": {
+      "commit": "41512124733b86d49431e81c7e4708f56aa11c53",
+      "dirty": true
+    },
+    "steward": {
+      "commit": "53ff2085a4a00f92f7b5e95233246d72ada5a981",
+      "dirty": false
+    }
+  },
+  "schema": "conformance-report/v1",
+  "snapshot": {
+    "complete": true,
+    "content_hash": "prograph-snapshot/v1+sha256:03ab14bd75d560aca95aeca263ee0fba40c0ca6d2a88623b018a66a3aaa1abab",
+    "id": 8,
+    "indexed_at": "2026-08-03T10:34:00Z"
+  },
+  "summary": {
+    "findings": {
+      "expired-waiver": 0,
+      "forbidden-edge": 0,
+      "manual-obligation": 2,
+      "missing-required-edge": 2,
+      "orphan-component": 0,
+      "undeclared-edge": 0
+    },
+    "verdicts": {
+      "conformant": 2,
+      "unknown": 6,
+      "violation": 0
+    }
+  },
+  "system": "ws005-governance-panel",
+  "tool": {
+    "name": "prograph",
+    "schema": "intended-graph/v1",
+    "version": "0.1.0"
+  }
+}

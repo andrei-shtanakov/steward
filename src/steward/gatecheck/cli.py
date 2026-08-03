@@ -13,6 +13,14 @@ from pathlib import Path
 
 import typer
 
+from steward.gatecheck.architecture import (
+    ArchPolicyError,
+    check_arch_conformance,
+    check_arch_evidence,
+    check_arch_schema,
+    collect_arch_bundle,
+    load_arch_policy,
+)
 from steward.gatecheck.checks import Finding, collect_bundle, run_checks
 from steward.gatecheck.git_facts import (
     FactsError,
@@ -39,14 +47,19 @@ def _fail_config(message: str) -> None:
     raise typer.Exit(_EXIT_CONFIG)
 
 
-def _resolve_profile(profile: str) -> SpecGraph:
+def _resolve_profile(profile: str) -> tuple[SpecGraph, Path]:
+    """Resolve a profile name/path to its graph AND the YAML path it loaded from.
+
+    The path anchors sibling policy files (arch-policy.yaml) so they resolve
+    relative to the profiles directory actually used, not the current CWD.
+    """
     candidate = Path(profile)
     if not candidate.is_file():
         candidate = Path("profiles") / f"{profile}.yaml"
     if not candidate.is_file():
         _fail_config(f"profile {profile!r} not found (looked for {candidate})")
     try:
-        return load_profile(candidate)
+        return load_profile(candidate), candidate
     except ProfileError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
@@ -113,6 +126,11 @@ def main(
         "(contract gate-verdicts/v1). Requires live git provenance — incompatible "
         "with --no-fs. Exit codes still reflect the findings.",
     ),
+    arch_stage: str = typer.Option(
+        "authoring",
+        "--arch-stage",
+        help="GC-ARCH-CONFORMANCE stage policy: authoring | release (profiles/arch-policy.yaml).",
+    ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
     if output not in ("text", "json"):
@@ -126,11 +144,22 @@ def main(
             "and cannot run under --no-fs"
         )
 
-    graph = _resolve_profile(profile)
+    graph, profile_path = _resolve_profile(profile)
     git = _git_facts(no_fs, spec_dir)
 
     artifacts, findings = collect_bundle(graph, spec_dir)
     findings.extend(run_checks(graph, artifacts, git))
+
+    arch = collect_arch_bundle(spec_dir)
+    if arch is not None:
+        try:
+            policy = load_arch_policy(profile_path.parent / "arch-policy.yaml", arch_stage)
+        except ArchPolicyError as err:
+            _fail_config(str(err))
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
+        findings.extend(check_arch_schema(arch))
+        findings.extend(check_arch_evidence(arch))
+        findings.extend(check_arch_conformance(arch, policy, git))
 
     if emit_verdicts_flag:
         try:

@@ -15,10 +15,22 @@ facts.json shape::
     {
       "default_branch_files": ["spec/10-requirements.md", ...],
       "approvals": {"spec/10-requirements.md": [{"handle": "@alice", "role": "@product"}]},
-      "blob_hashes": {"spec/10-requirements.md": "abc123..."}
+      "blob_hashes": {"spec/10-requirements.md": "abc123..."},
+      "ancestors": ["<sha>", ...],
+      "changed_paths_since": {"<sha>": ["path", ...]}
     }
 
-Paths are bundle-relative POSIX strings.
+Paths are bundle-relative POSIX strings, except ``changed_paths_since`` values
+which are repo-relative POSIX (D9: self-freshness compares against the
+manifest's own scopes, defined repo-relative).
+
+``ancestors`` / ``changed_paths_since`` are optional: only ``GC-ARCH-CONFORMANCE``
+under ``require_self_fresh`` needs them (D9). When required and absent, callers
+must treat this as an unprovable-freshness condition, not a crash — see
+:func:`steward.gatecheck.architecture.check_arch_conformance`, which converts
+the resulting :class:`FactsError` from :meth:`InjectedGitFacts.is_ancestor` /
+:meth:`InjectedGitFacts.changed_paths_since` into a blocking finding rather
+than propagating it.
 """
 
 from __future__ import annotations
@@ -59,6 +71,14 @@ class GitFacts(Protocol):
         """Current blob hash of the artifact, if known."""
         ...
 
+    def is_ancestor(self, commit: str) -> bool:
+        """True when ``commit`` is an ancestor of (or equal to) HEAD (D9)."""
+        ...
+
+    def changed_paths_since(self, commit: str) -> list[str]:
+        """Repo-relative POSIX paths changed in ``commit..HEAD`` (D9)."""
+        ...
+
 
 class InjectedGitFacts:
     """Deterministic facts loaded from JSON for ``--no-fs`` runs (REQ-207)."""
@@ -68,10 +88,16 @@ class InjectedGitFacts:
         default_branch_files: frozenset[str],
         approvals: dict[str, tuple[Approval, ...]],
         blob_hashes: dict[str, str],
+        ancestors: frozenset[str] | None = None,
+        changed_paths_since_map: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         self._files = default_branch_files
         self._approvals = approvals
         self._hashes = blob_hashes
+        # None (not merely absent-for-this-commit) means the facts file never
+        # declared the key at all — self-freshness cannot be proven (D9).
+        self._ancestors = ancestors
+        self._changed_paths_since = changed_paths_since_map
 
     @classmethod
     def from_file(cls, path: str | Path) -> InjectedGitFacts:
@@ -114,7 +140,35 @@ class InjectedGitFacts:
         ):
             raise FactsError("facts file: 'blob_hashes' must map path -> hash string")
 
-        return cls(frozenset(files), approvals, dict(raw_hashes))
+        ancestors: frozenset[str] | None = None
+        raw_ancestors = data.get("ancestors")
+        if raw_ancestors is not None:
+            if not isinstance(raw_ancestors, list) or not all(
+                isinstance(a, str) for a in raw_ancestors
+            ):
+                raise FactsError("facts file: 'ancestors' must be a list of strings")
+            ancestors = frozenset(raw_ancestors)
+
+        changed_paths_since_map: dict[str, tuple[str, ...]] | None = None
+        raw_changed = data.get("changed_paths_since")
+        if raw_changed is not None:
+            if not isinstance(raw_changed, dict):
+                raise FactsError("facts file: 'changed_paths_since' must be a mapping")
+            changed_paths_since_map = {}
+            for commit, paths in raw_changed.items():
+                if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+                    raise FactsError(
+                        f"facts file: changed_paths_since[{commit!r}] must be a list of strings"
+                    )
+                changed_paths_since_map[commit] = tuple(paths)
+
+        return cls(
+            frozenset(files),
+            approvals,
+            dict(raw_hashes),
+            ancestors=ancestors,
+            changed_paths_since_map=changed_paths_since_map,
+        )
 
     def on_default_branch(self, path: str) -> bool:
         return path in self._files
@@ -124,6 +178,20 @@ class InjectedGitFacts:
 
     def blob_hash(self, path: str) -> str | None:
         return self._hashes.get(path)
+
+    def is_ancestor(self, commit: str) -> bool:
+        if self._ancestors is None:
+            raise FactsError(
+                "facts file: 'ancestors' required for self-freshness checks but absent"
+            )
+        return commit in self._ancestors
+
+    def changed_paths_since(self, commit: str) -> list[str]:
+        if self._changed_paths_since is None:
+            raise FactsError(
+                "facts file: 'changed_paths_since' required for self-freshness checks but absent"
+            )
+        return list(self._changed_paths_since.get(commit, ()))
 
 
 class LiveGitFacts:
@@ -177,3 +245,28 @@ class LiveGitFacts:
             check=False,
         )
         return proc.stdout.strip() if proc.returncode == 0 else None
+
+    def is_ancestor(self, commit: str) -> bool:
+        proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
+            ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+            cwd=self._root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode == 0
+
+    def changed_paths_since(self, commit: str) -> list[str]:
+        proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
+            ["git", "diff", "--name-only", f"{commit}..HEAD"],
+            cwd=self._root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise FactsError(
+                f"git diff --name-only {commit}..HEAD failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
+        return proc.stdout.splitlines()

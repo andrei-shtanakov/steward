@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "intended-graph/v1",
+  "title": "Intended graph manifest v1 (structural schema)",
+  "description": "Structural layer only. Cross-object integrity (global id uniqueness, endpoint existence, exception-target resolvability, constraint rule grammar, the two-file-endpoint ban) is enforced by prograph's loader and attested by a successfully produced conformance report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "system", "components"],
+  "properties": {
+    "schema": {"const": "intended-graph/v1"},
+    "system": {"type": "string"},
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "project", "kind", "owner", "responsibility"],
+        "properties": {
+          "id": {"type": "string"},
+          "project": {"type": "string"},
+          "kind": {"enum": ["service", "module", "cli", "ui", "contract", "store"]},
+          "owner": {"type": "string"},
+          "responsibility": {"type": "string"},
+          "scope": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "producer", "consumer", "detector"],
+        "properties": {
+          "id": {"type": "string"},
+          "producer": {"type": "string"},
+          "consumer": {"type": "string"},
+          "detector": {"enum": ["import", "mcp", "contract", "declared", "manual-evidence"]},
+          "protocol": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rule", "detector"],
+        "properties": {
+          "id": {"type": "string"},
+          "rule": {"type": "string"},
+          "detector": {"enum": ["import", "mcp", "contract", "declared", "manual-evidence"]},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "resources": {"type": "array", "items": {"type": "string"}},
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "target", "reason", "owner", "expires"],
+        "properties": {
+          "id": {"type": "string"},
+          "target": {"type": "string"},
+          "reason": {"type": "string"},
+          "owner": {"type": "string"},
+          "expires": {"type": "string", "format": "date"}
+        }
+      }
+    }
+  }
+}
