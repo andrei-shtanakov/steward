@@ -34,3 +34,7 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.prograph]
+# intended-graph манифест системы WS-005 (schema intended-graph/v1, prograph#22)
+intended = "workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml"

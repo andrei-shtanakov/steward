@@ -1,0 +1,102 @@
+# Intended graph — WS-005 governance-панель бандла.
+# Первый настоящий манифест схемы intended-graph/v1 (спека: prograph
+# docs/superpowers/specs/2026-08-03-prograph-intended-graph-design.md, #22).
+# Машинный канон архитектурной части бандла: человекочитаемое обоснование и
+# conformance-ожидания — в 20-design.md, который ссылается сюда.
+# Указатель для prograph — [tool.prograph] intended в pyproject.toml этого репо.
+schema: intended-graph/v1
+system: ws005-governance-panel
+components:
+  - id: steward.gatecheck
+    project: steward
+    scope: src/steward/gatecheck
+    kind: cli
+    owner: architects
+    responsibility: "прогон проверок бандла, модель Finding, exit 0/1/2"
+    evidence: [CON-02]
+  - id: steward.verdicts-emitter
+    project: steward
+    scope: src/steward/verdicts
+    kind: module
+    owner: architects
+    responsibility: >-
+      сериализация прогона в gate_verdicts.jsonl; header: schema_version,
+      source_commit, dirty, generated_at
+    evidence: [BEH-01, BEH-07]
+  - id: contract.gate-verdicts-v1
+    project: steward
+    scope: contracts/gate-verdicts/v1
+    kind: contract
+    owner: architects
+    responsibility: "JSON Schema + golden fixtures (positive + все negative-классы)"
+    evidence: [BEH-03, BEH-04, BEH-06, CON-02]
+  - id: dispatcher.contract-vendor
+    project: dispatcher
+    scope: contracts/steward-gate-verdicts/v1
+    kind: module
+    owner: architects
+    responsibility: "пиненая копия схемы; copy-integrity + upstream-drift раздельно"
+    evidence: [CON-02]
+  - id: dispatcher.governance-collector
+    project: dispatcher
+    scope: dispatcher/core/governance.py
+    kind: module
+    owner: architects
+    responsibility: "чтение файла + git-фактов; классификация в 6 состояний ARCH-D2"
+    evidence: [BEH-02, BEH-03, BEH-04, BEH-05, BEH-06, BEH-08, NFR-01, NFR-02]
+  - id: dispatcher.governance-panel
+    project: dispatcher
+    scope: dispatcher/server
+    kind: ui
+    owner: architects
+    responsibility: "read-only отображение состояния бандлов"
+    evidence: [BEH-01, BEH-07, BEH-09, FR-01]
+interfaces:
+  - id: I-01
+    producer: steward.verdicts-emitter
+    consumer: "file:.steward/gate_verdicts.jsonl"
+    protocol: "jsonl / gate-verdicts/v1"
+    detector: declared
+  - id: I-02
+    producer: "file:.steward/gate_verdicts.jsonl"
+    consumer: dispatcher.governance-collector
+    protocol: "jsonl / gate-verdicts/v1"
+    detector: declared
+  - id: I-03
+    producer: contract.gate-verdicts-v1
+    consumer: dispatcher.contract-vendor
+    protocol: "вендоринг пиненой копии"
+    detector: contract
+  - id: I-04
+    producer: dispatcher.governance-collector
+    consumer: dispatcher.governance-panel
+    protocol: "in-process read model"
+    detector: import
+constraints:
+  - id: ARCH-C1
+    rule: "forbidden: dispatcher -> steward"
+    detector: import
+    evidence: [FR-02, CON-02]
+  - id: ARCH-C2
+    rule: >-
+      forbidden: governance-panel мутирует наблюдаемые репо; в
+      governance-разделе только GET
+    detector: manual-evidence
+    evidence: [BEH-09, OUT-01]
+  - id: ARCH-C3
+    rule: >-
+      forbidden: governance-collector вычисляет вердикты (только классификация
+      прочитанного)
+    detector: manual-evidence
+    evidence: [FR-02]
+  - id: ARCH-C4
+    # intra-project пара (panel и collector оба в dispatcher): по спеке v1 это
+    # честный unknown/unsupported-resolution — наблюдаемый долг до module-level
+    # резолюции (v1.1), не ложная гарантия.
+    rule: "forbidden: dispatcher.governance-panel -> file:.steward/gate_verdicts.jsonl"
+    detector: declared
+    evidence: [BEH-09]
+resources:
+  - "runtime: существующий FastAPI dispatcher; новых сервисов нет"
+  - "storage: локальный диск, gitignored файл на бандл (ARCH-D1)"
+exceptions: []
