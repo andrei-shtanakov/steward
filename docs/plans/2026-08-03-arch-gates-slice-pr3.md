@@ -27,7 +27,11 @@ behaviour-architecture-lifecycle gate table and the owner rulings of 2026-08-03
   manifest bytes, `complete: true`. Broader freshness (self-commit match, snapshot age)
   is **stage policy**, not hardcoded: `authoring` is permissive, `release` strict.
 - **D4 — declarative stage policy** in `profiles/arch-policy.yaml` (governance data,
-  changed via PR like other profiles):
+  changed via PR like other profiles). **`unknown` is never blocked wholesale** —
+  WS-005's own design declares ARCH-C2/C3 permanently unknown (`manual-evidence`) and
+  I-04/ARCH-C4 unknown until module-level v1.1 (`unsupported-resolution`); a release
+  stage that fails on all unknowns could never pass by design. Permanent
+  `manual-evidence` is the normal observability model, NOT a waiver. Instead:
 
   ```yaml
   self_project: steward
@@ -35,20 +39,31 @@ behaviour-architecture-lifecycle gate table and the owner rulings of 2026-08-03
     authoring:
       fail_on_findings: []
       fail_on_verdicts: [violation]
+      unknown_policy:
+        allowed_reasons: [manual-evidence, unsupported-resolution, outside-workspace,
+                          orphan-component, null]
+        allowed_elements: []
       require_self_fresh: false
       max_snapshot_age_hours: null
     release:
       fail_on_findings: [missing-required-edge]
-      fail_on_verdicts: [violation, unknown]
+      fail_on_verdicts: [violation]
+      unknown_policy:
+        allowed_reasons: [manual-evidence, unsupported-resolution]
+        allowed_elements: []          # explicit element-id exemptions when needed
       require_self_fresh: true
       max_snapshot_age_hours: 24
   ```
 
-  Vocabulary is prograph's closed taxonomy verbatim — steward never re-interprets
-  finding semantics, it only applies the declarative policy. Stage is selected by a new
-  `gate-check --arch-stage authoring|release` option (default `authoring`).
-  Age policy checks `snapshot.indexed_at` (the mandatory freshness dimension per the
-  provenance spec), never `generated_at`.
+  Semantics: an element with verdict `unknown` blocks iff its `reason` is NOT in
+  `allowed_reasons` AND its id is NOT in `allowed_elements` (and it is not waived).
+  `reason: null` (observed absence) is separately covered by the
+  `missing-required-edge` finding class in `fail_on_findings` — release blocks it
+  there, by class, where the actionable detail lives. Vocabulary is prograph's closed
+  taxonomy verbatim (validated at load; unknown entries = config error). Stage is
+  selected by a new `gate-check --arch-stage authoring|release` option (default
+  `authoring`). Age policy checks `snapshot.indexed_at` (the mandatory freshness
+  dimension per the provenance spec), never `generated_at`.
 - **D5 — vendored schemas, two guarantees.** Byte-pinned copies from
   `prograph@8deb730`:
   `contracts/prograph-intended-graph/v1/schema.json` and
@@ -70,6 +85,33 @@ behaviour-architecture-lifecycle gate table and the owner rulings of 2026-08-03
   (checks are pure functions), `architecture.py` exposes
   `collect_arch_bundle(spec_dir)` (the only I/O: reads the two files) and a pure
   `check_architecture(arch, policy, stage, git)`; the CLI wires them.
+- **D9 — self-freshness is ancestor + path-scoped diff, never `commit == HEAD`.**
+  A committed report can never satisfy `projects.self.commit == HEAD`: committing the
+  report itself moves HEAD past the provenance commit (the self-referential loop).
+  v1 semantics for `require_self_fresh`:
+  1. `projects[self_project].commit` must be an **ancestor of HEAD**
+     (`git merge-base --is-ancestor`);
+  2. `projects[self_project].dirty` must be `false`;
+  3. the diff `provenance_commit..HEAD` must not touch the **modelled surface**: the
+     manifest file itself, or any path under a `scope` of a manifest component whose
+     `project == self_project` (the manifest's own scopes define the surface — no
+     second registry). Changes to the co-located report or other unmodelled paths do
+     not stale the evidence.
+  A future fingerprint-of-modelled-surface contract can replace 3; for v1
+  ancestor + scoped diff is the practical guarantee. This requires a **deliberate
+  `GitFacts` extension** (its current surface is only
+  `on_default_branch`/`approvals`/`blob_hash`): add `is_ancestor(commit) -> bool` and
+  `changed_paths_since(commit) -> list[str]` (repo-relative POSIX), implemented live
+  via `git merge-base --is-ancestor` / `git diff --name-only <commit>..HEAD`, and as
+  optional keys in the `--no-fs` facts JSON. Under `--no-fs`, `require_self_fresh`
+  with the keys absent is a **config error** (fail-closed: freshness must be provable,
+  not assumed).
+- **D10 — CI reality: WS-005 IS linted.** `ci.yml` already runs
+  `gate-check --profile team-exp workstreams/WS-005-gate-verdicts/spec/`, so the
+  moment the gates are wired, that bundle needs its evidence or CI goes red. The
+  implementation PR therefore ships the manifest amendment (D7) **and the real
+  co-located conformance report** in the same PR, via the two-commit choreography of
+  Task 4 — which is also the first live dogfood of D2.
 
 ## Global Constraints
 
@@ -425,6 +467,8 @@ class ArchPolicy:
     self_project: str | None
     fail_on_findings: frozenset[str]
     fail_on_verdicts: frozenset[str]
+    unknown_allowed_reasons: frozenset[str | None]   # may contain None (yaml null)
+    unknown_allowed_elements: frozenset[str]
     require_self_fresh: bool
     max_snapshot_age_hours: int | None
 
@@ -432,8 +476,9 @@ class ArchPolicyError(Exception): ...
 
 def load_arch_policy(path: Path, stage: str) -> ArchPolicy
     # Raises ArchPolicyError on: unreadable/malformed YAML, unknown stage, unknown
-    # finding classes / verdicts (validated against the closed prograph vocabulary),
-    # negative age. The CLI maps ArchPolicyError to exit 2 (config error).
+    # finding classes / verdicts / unknown-reasons (validated against the closed
+    # prograph vocabulary; None allowed in reasons), negative age. The CLI maps
+    # ArchPolicyError to exit 2 (config error).
 
 def check_arch_conformance(
     arch: ArchBundle,
@@ -443,6 +488,20 @@ def check_arch_conformance(
     now: dt.datetime | None = None,
 ) -> list[Finding]
 ```
+
+**GitFacts extension (D9, part of this task — no vague adaptation):** add to the
+`GitFacts` protocol and both implementations:
+
+```python
+def is_ancestor(self, commit: str) -> bool: ...
+def changed_paths_since(self, commit: str) -> list[str]: ...   # repo-relative POSIX
+```
+
+- `LiveGitFacts`: `git merge-base --is-ancestor <commit> HEAD` (exit 0 ⇒ True) and
+  `git diff --name-only <commit>..HEAD`; unknown/invalid commit ⇒ `is_ancestor` False.
+- `InjectedGitFacts`: optional facts-JSON keys `ancestors: [sha...]` and
+  `changed_paths_since: {sha: [path...]}`; when `require_self_fresh` needs them and
+  they are absent ⇒ `ArchPolicyError`-equivalent config error (fail-closed).
 
 `check_arch_conformance` semantics (rule `GC-ARCH-CONFORMANCE`):
 
@@ -462,11 +521,18 @@ def check_arch_conformance(
      `suppressed_by is None` ⇒ error naming the class and element;
    - any report element with `verdict` ∈ `policy.fail_on_verdicts` and
      `waived_by is None` ⇒ error naming the element id and verdict;
-   - `policy.require_self_fresh` and `policy.self_project` set: the report's
-     `projects[self_project]` must exist, have `dirty == False`, and its `commit` must
-     equal the repo HEAD from `git` (reuse the same HEAD source `emit_verdicts` /
-     `check_status_git` already use — adapt to the actual `GitFacts` surface); any
-     mismatch/null ⇒ error ("self freshness not provable ⇒ unknown, not clean");
+   - any report element with `verdict == "unknown"`, `waived_by is None`, whose
+     `reason` ∉ `policy.unknown_allowed_reasons` AND whose `id` ∉
+     `policy.unknown_allowed_elements` ⇒ error naming the element, its reason, and
+     which policy list could exempt it (permanent `manual-evidence` /
+     `unsupported-resolution` pass release by reason, per D4 — not by waiver);
+   - `policy.require_self_fresh` and `policy.self_project` set (D9 semantics):
+     `projects[self_project]` must exist with non-null `commit` and `dirty == False`;
+     `git.is_ancestor(commit)` must be True; and no path in
+     `git.changed_paths_since(commit)` may be the manifest file or fall under any
+     `scope` of a manifest component with `project == self_project` — any failure ⇒
+     error ("self freshness not provable ⇒ unknown, not clean", naming the offending
+     path or condition);
    - `policy.max_snapshot_age_hours` set: parse `report["snapshot"]["indexed_at"]`
      (`YYYY-MM-DDTHH:MM:SSZ`); if `now - indexed_at` exceeds the bound ⇒ error. `now`
      is injectable for tests; defaults to `datetime.now(UTC)`. NEVER uses
@@ -475,11 +541,17 @@ def check_arch_conformance(
 - [ ] **Step 1: Write the failing tests** (append; build a minimal valid report dict in
 a helper and serialize with the real sha256 of the manifest bytes; cover: missing
 report / bad json / sha mismatch / complete false / schema-invalid report /
-authoring-stage passes with unknown verdicts but fails on violation / release-stage
-fails on missing-required-edge + unknown verdict + stale snapshot age + self-commit
-mismatch / suppressed findings and waived elements do NOT fire / unknown policy stage
-and unknown vocabulary raise ArchPolicyError). Use a fake GitFacts per existing
-gatecheck test patterns.
+authoring-stage passes with any-reason unknowns but fails on violation /
+release-stage fails on missing-required-edge and on unknowns with disallowed reasons
+(`outside-workspace`, `null`) while `manual-evidence` and `unsupported-resolution`
+unknowns PASS (the WS-005 permanent-unknown model) / `allowed_elements` exemption
+works / stale snapshot age / D9 self-freshness: non-ancestor commit fails, ancestor
+with diff touching the manifest or a self-project component scope fails, ancestor
+with diff touching only the report or unmodelled paths passes, dirty:true fails /
+suppressed findings and waived elements do NOT fire / unknown policy stage, unknown
+vocabulary, and missing injected ancestor facts under require_self_fresh raise
+config errors). Use a fake GitFacts (extended with `is_ancestor` /
+`changed_paths_since`) per existing gatecheck test patterns.
 
 - [ ] **Step 2: Run to verify failure; implement; run to pass** (as specced above; keep
 `check_arch_conformance` pure — all I/O already happened in `collect_arch_bundle`).
@@ -548,24 +620,42 @@ matching minimal report ⇒ `gate-check` (CliRunner or direct function calls per
 test_cli.py patterns) exits 0 at authoring; with the report deleted ⇒ exit 1 with a
 GC-ARCH-CONFORMANCE error; `--arch-stage nonsense` ⇒ exit 2.
 
-- [ ] **Step 3: WS-005 manifest evidence (D7).** Add `evidence` to the four interfaces
-in `workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml` — proposed mapping from
-the design artifact's conformance table (owner approves in the PR):
+- [ ] **Step 3: WS-005 manifest evidence (D7, owner-ruled ids).** Add `evidence` to the
+four interfaces in `workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml`:
 
 ```yaml
   # I-01 (emitter -> file):        evidence: [BEH-01, BEH-07]
   # I-02 (file -> collector):      evidence: [BEH-02, BEH-03]
   # I-03 (contract vendoring):     evidence: [CON-02]
-  # I-04 (collector -> panel):     evidence: [BEH-09, FR-01]
+  # I-04 (collector -> panel):     evidence: [BEH-01, BEH-07, FR-01]
 ```
 
-Note: the co-located `conformance-report.json` for WS-005 is NOT committed in this
-slice — generating it is the operational cross-repo step (run
-`prograph conformance --project steward --format json` in the umbrella workspace after
-a fresh index) and lands in its own PR together with this manifest change, because the
-manifest edit invalidates any previously generated report (`manifest.sha256`). Until
-then the WS-005 bundle is simply not linted with the arch gates in CI (nothing points
-gate-check at `workstreams/` today).
+(I-04 per the owner ruling 2026-08-03: BEH-09 proves the read-only surface — it
+naturally covers ARCH-C2, not the collector→panel flow; BEH-01/BEH-07/FR-01 require
+the panel to receive and display the collector's read model.)
+
+- [ ] **Step 3b: Generate and commit the real WS-005 evidence (D10 — same PR).**
+`ci.yml` already lints this bundle with `team-exp`, so the implementation PR must be
+self-sufficient. Two-commit choreography (this is what makes a committed report
+satisfiable under D9):
+
+1. Commit the manifest amendment (and all code of Tasks 1–4) — call it commit **A**.
+2. In the umbrella workspace: refresh the prograph index so steward-at-A is indexed
+   clean (`.prograph/tracked.toml` must include steward and dispatcher; run
+   `uv run prograph index` in the workspace root from a clean steward tree at A).
+3. Generate: `uv run prograph conformance --project steward --format json` (from the
+   prograph checkout, `-m` pointing at the workspace root) — verify in the output:
+   `manifest.sha256` matches the amended manifest, `projects.steward.commit == A`,
+   `projects.steward.dirty == false`, `complete: true`.
+4. Write the output to
+   `workstreams/WS-005-gate-verdicts/spec/conformance-report.json` and commit — commit
+   **B**. The diff A..B touches only the report ⇒ D9 self-freshness holds
+   (A is an ancestor of B; no modelled path changed).
+5. Run `uv run gate-check --profile team-exp workstreams/WS-005-gate-verdicts/spec/`
+   locally — must exit 0 at the default authoring stage. This is the slice's live
+   dogfood; if it errors, fix forward before opening the PR (expected content: the
+   report may legitimately carry missing-required-edge findings and permanent
+   unknowns — authoring policy does not block them).
 
 - [ ] **Step 4: Docs + TODO.**
   - `CLAUDE.md`: architecture section gains `gatecheck/architecture.py` (GC-ARCH-*,
@@ -594,16 +684,22 @@ Then action the Copilot review; do NOT merge (owner merges).
 ## Self-Review (performed while writing)
 
 - **Coverage vs the settled decisions:** D1 (file-presence activation, no node — Tasks
-  2/4), D2 (co-located pair, owner-committed — Task 3 mandatory core message, Task 4
-  step 3 keeps the report out of this slice deliberately), D3 (mandatory core vs
-  policy — Task 3 ordering), D4 (declarative policy + closed-vocabulary validation +
-  snapshot-age-not-report-age — Task 3), D5 (two pinned vendored schemas +
-  copy-integrity test, drift out of CI — Task 1), D6 (stock jsonschema engine, no
-  second parser — Task 2), D7 (WS-005 interface evidence amendment with proposed ids —
-  Task 4), D8 (I/O only in collect_arch_bundle — Tasks 2–4).
+  2/4), D2 (co-located pair, owner-committed — Task 3 mandatory core message; first
+  live dogfood in Task 4 step 3b), D3 (mandatory core vs policy — Task 3 ordering),
+  D4 (declarative policy + closed-vocabulary validation + unknown_policy honoring the
+  permanent-unknown model + snapshot-age-not-report-age — Task 3), D5 (two pinned
+  vendored schemas + copy-integrity test, drift out of CI — Task 1), D6 (stock
+  jsonschema engine, no second parser — Task 2), D7 (WS-005 interface evidence with
+  owner-ruled ids incl. the I-04 correction — Task 4), D8 (I/O only in
+  collect_arch_bundle — Tasks 2–4), D9 (ancestor + path-scoped-diff self-freshness;
+  explicit GitFacts extension `is_ancestor`/`changed_paths_since`, fail-closed under
+  --no-fs — Task 3), D10 (WS-005 IS CI-linted; evidence ships in the same PR via the
+  two-commit choreography — Task 4 step 3b).
 - **ADR gate table:** GC-ARCH-EVIDENCE error ✓, GC-ARCH-SCHEMA error ✓,
-  GC-ARCH-CONFORMANCE error/warn-by-policy ✓ (authoring permissive, release strict).
-- **Known adaptation points for implementers** (named, not hidden): the exact
-  `GitFacts` HEAD/dirty surface (Task 3 reuses whatever `emit_verdicts` /
-  `check_status_git` use); existing test-helper patterns for fake git facts and CLI
-  invocation.
+  GC-ARCH-CONFORMANCE error/warn-by-policy ✓ (authoring permissive, release strict —
+  without ever blocking the by-design permanent unknowns).
+- **Owner-review fixes applied (2026-08-03):** implementation PR is CI-self-sufficient
+  (D10); the self-freshness self-referential loop is closed by D9 (a committed report
+  is satisfiable: provenance commit = ancestor, report-only diff allowed); release
+  policy cannot fail the by-design unknowns (D4 unknown_policy); I-04 evidence ids
+  corrected per ruling.
