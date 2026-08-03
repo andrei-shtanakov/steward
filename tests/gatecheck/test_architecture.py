@@ -581,3 +581,69 @@ def test_missing_injected_ancestor_facts_under_require_self_fresh_is_fail_closed
     assert len(findings) == 1
     assert findings[0].rule_id == "GC-ARCH-CONFORMANCE"
     assert "ancestors/changed_paths_since" in findings[0].message
+
+
+def test_self_freshness_scope_sibling_dir_not_matched_but_nested_path_is(
+    tmp_path: Path,
+) -> None:
+    """_under_scope must not treat 'src/steward/gatecheck' as a prefix match for
+    the sibling directory 'src/steward/gatecheck2' — only an exact path or a
+    '/'-bounded descendant counts as touching the modelled scope.
+    """
+    manifest_with_scope = VALID_MANIFEST.replace(
+        "    evidence: [FR-01]\n", "    evidence: [FR-01]\n    scope: src/steward/gatecheck\n"
+    )
+    manifest_bytes = manifest_with_scope.encode("utf-8")
+    from dataclasses import replace
+
+    release_cfg = load_arch_policy(ARCH_POLICY_PATH, "release")
+    policy = replace(release_cfg, self_project="alpha")
+
+    # sibling dir "gatecheck2" must NOT match scope "gatecheck" -> self-fresh passes
+    sibling_report = _report(manifest_bytes, self_project="alpha", self_commit="deadbeef")
+    sibling_bundle = _bundle_with_report(tmp_path, manifest_with_scope, sibling_report)
+    arch_sibling = collect_arch_bundle(sibling_bundle)
+    assert arch_sibling is not None
+    git_sibling = FakeGitFacts(
+        ancestors={"deadbeef"}, changed={"deadbeef": ["src/steward/gatecheck2/x.py"]}
+    )
+    findings_sibling = check_arch_conformance(
+        arch_sibling, policy, git_sibling, now=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+    )
+    assert findings_sibling == []
+
+    # a real descendant of the scope must match -> stale
+    nested_report = _report(manifest_bytes, self_project="alpha", self_commit="deadbeef")
+    nested_bundle = _bundle_with_report(tmp_path, manifest_with_scope, nested_report)
+    arch_nested = collect_arch_bundle(nested_bundle)
+    assert arch_nested is not None
+    git_nested = FakeGitFacts(
+        ancestors={"deadbeef"}, changed={"deadbeef": ["src/steward/gatecheck/x.py"]}
+    )
+    findings_nested = check_arch_conformance(
+        arch_nested, policy, git_nested, now=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+    )
+    assert any("not provable" in f.message for f in findings_nested)
+
+
+def test_missing_injected_changed_paths_facts_with_ancestors_present_is_fail_closed_finding(
+    tmp_path: Path,
+) -> None:
+    """D9 fail-closed route, ancestors-present variant: the facts file may declare
+    'ancestors' (so is_ancestor succeeds) while never declaring
+    'changed_paths_since' — InjectedGitFacts.changed_paths_since then raises
+    FactsError, which must still become a blocking finding, not a crash.
+    """
+    manifest_bytes = VALID_MANIFEST.encode("utf-8")
+    report = _report(manifest_bytes, self_commit="deadbeef")
+    bundle = _bundle_with_report(tmp_path, VALID_MANIFEST, report)
+    arch = collect_arch_bundle(bundle)
+    assert arch is not None
+    policy = load_arch_policy(ARCH_POLICY_PATH, "release")
+    git = InjectedGitFacts(frozenset(), {}, {}, ancestors=frozenset({"deadbeef"}))
+    findings = check_arch_conformance(
+        arch, policy, git, now=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+    )
+    assert len(findings) == 1
+    assert findings[0].rule_id == "GC-ARCH-CONFORMANCE"
+    assert "ancestors/changed_paths_since" in findings[0].message

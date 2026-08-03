@@ -13,6 +13,14 @@ from pathlib import Path
 
 import typer
 
+from steward.gatecheck.architecture import (
+    ArchPolicyError,
+    check_arch_conformance,
+    check_arch_evidence,
+    check_arch_schema,
+    collect_arch_bundle,
+    load_arch_policy,
+)
 from steward.gatecheck.checks import Finding, collect_bundle, run_checks
 from steward.gatecheck.git_facts import (
     FactsError,
@@ -113,6 +121,11 @@ def main(
         "(contract gate-verdicts/v1). Requires live git provenance — incompatible "
         "with --no-fs. Exit codes still reflect the findings.",
     ),
+    arch_stage: str = typer.Option(
+        "authoring",
+        "--arch-stage",
+        help="GC-ARCH-CONFORMANCE stage policy: authoring | release (profiles/arch-policy.yaml).",
+    ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
     if output not in ("text", "json"):
@@ -131,6 +144,17 @@ def main(
 
     artifacts, findings = collect_bundle(graph, spec_dir)
     findings.extend(run_checks(graph, artifacts, git))
+
+    arch = collect_arch_bundle(spec_dir)
+    if arch is not None:
+        try:
+            policy = load_arch_policy(Path("profiles/arch-policy.yaml"), arch_stage)
+        except ArchPolicyError as err:
+            _fail_config(str(err))
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
+        findings.extend(check_arch_schema(arch))
+        findings.extend(check_arch_evidence(arch))
+        findings.extend(check_arch_conformance(arch, policy, git))
 
     if emit_verdicts_flag:
         try:

@@ -57,21 +57,25 @@ interfaces:
     consumer: "file:.steward/gate_verdicts.jsonl"
     protocol: "jsonl / gate-verdicts/v1"
     detector: declared
+    evidence: [BEH-01, BEH-07]
   - id: I-02
     producer: "file:.steward/gate_verdicts.jsonl"
     consumer: dispatcher.governance-collector
     protocol: "jsonl / gate-verdicts/v1"
     detector: declared
+    evidence: [BEH-02, BEH-03]
   - id: I-03
     producer: contract.gate-verdicts-v1
     consumer: dispatcher.contract-vendor
     protocol: "вендоринг пиненой копии"
     detector: contract
+    evidence: [CON-02]
   - id: I-04
     producer: dispatcher.governance-collector
     consumer: dispatcher.governance-panel
     protocol: "in-process read model"
     detector: import
+    evidence: [BEH-01, BEH-07, FR-01]
 constraints:
   - id: ARCH-C1
     rule: "forbidden: dispatcher -> steward"
