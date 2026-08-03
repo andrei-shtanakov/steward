@@ -54,5 +54,6 @@ ARCH-C4 (panel → file, оба конца внутри dispatcher) по пра�
 |---|---|---|
 | I-01, I-02 (declared) | missing-required-edge — план, не блокер | conformant |
 | I-03 (contract) | missing-required-edge | conformant |
-| I-04, ARCH-C1, ARCH-C4 (import) | unknown до появления кода | conformant / violation |
+| ARCH-C1 (import, cross-project) | unknown до появления кода | conformant / violation |
+| I-04 (import), ARCH-C4 (declared) — **intra-project пары** внутри dispatcher | unknown (`unsupported-resolution`) — наблюдаемый долг v1 | unknown до module-level резолюции (v1.1); закрыто materialized BEH-09 и route-тестом |
 | ARCH-C2, ARCH-C3 (manual-evidence) | **unknown — постоянно**: вердикт детектора не меняется никогда | unknown; release-obligation исполнена review-evidence + materialized BEH |
