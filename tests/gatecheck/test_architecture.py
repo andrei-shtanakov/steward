@@ -73,6 +73,21 @@ def test_schema_unparseable_yaml(tmp_path: Path) -> None:
     assert len(findings) == 1 and "YAML" in findings[0].message
 
 
+def test_schema_non_string_yaml_key_is_a_finding_not_a_crash(tmp_path: Path) -> None:
+    # A bare `2026-01-01: x` line parses as valid YAML (PyYAML auto-detects
+    # the date), but the resulting datetime.date key cannot be canonicalized
+    # to JSON — this must surface as one GC-ARCH-SCHEMA finding, not a
+    # traceback.
+    bad = "2026-01-01: x\n" + VALID_MANIFEST
+    arch = collect_arch_bundle(_bundle(tmp_path, bad))
+    assert arch is not None
+    findings = check_arch_schema(arch)
+    assert len(findings) == 1
+    assert findings[0].rule_id == "GC-ARCH-SCHEMA"
+    assert findings[0].severity == "error"
+    assert "not JSON-representable" in findings[0].message
+
+
 def test_evidence_missing_on_interface(tmp_path: Path) -> None:
     stripped = VALID_MANIFEST.replace("    evidence: [BEH-01]\n", "")
     arch = collect_arch_bundle(_bundle(tmp_path, stripped))
@@ -254,6 +269,35 @@ def test_load_arch_policy_unknown_vocabulary_is_config_error(tmp_path: Path) -> 
         raise AssertionError("expected ArchPolicyError")
     except ArchPolicyError:
         pass
+
+
+def test_load_arch_policy_require_self_fresh_without_self_project_is_config_error(
+    tmp_path: Path,
+) -> None:
+    # A stage that declares require_self_fresh: true but self_project is
+    # null/absent must not load cleanly and silently skip D9 — that is the
+    # "unknown read as green" class the loader's own vocabulary validation
+    # exists to prevent.
+    bad = tmp_path / "arch-policy.yaml"
+    bad.write_text(
+        "self_project: null\n"
+        "stages:\n"
+        "  release:\n"
+        "    fail_on_findings: []\n"
+        "    fail_on_verdicts: [violation]\n"
+        "    unknown_policy:\n"
+        "      allowed_reasons: []\n"
+        "      allowed_elements: []\n"
+        "    require_self_fresh: true\n"
+        "    max_snapshot_age_hours: null\n",
+        encoding="utf-8",
+    )
+    try:
+        load_arch_policy(bad, "release")
+        raise AssertionError("expected ArchPolicyError")
+    except ArchPolicyError as err:
+        assert "require_self_fresh" in str(err)
+        assert "self_project" in str(err)
 
 
 def test_missing_report_is_mandatory_core_error(tmp_path: Path) -> None:

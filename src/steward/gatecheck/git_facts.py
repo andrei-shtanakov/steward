@@ -265,5 +265,8 @@ class LiveGitFacts:
             check=False,
         )
         if proc.returncode != 0:
-            return []
+            raise FactsError(
+                f"git diff --name-only {commit}..HEAD failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
         return proc.stdout.splitlines()

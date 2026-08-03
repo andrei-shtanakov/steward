@@ -174,7 +174,10 @@ def check_arch_schema(arch: ArchBundle) -> list[Finding]:
     Unparseable YAML is one finding. Otherwise the manifest is canonicalized
     to plain JSON types and validated against the vendored
     ``intended-graph/v1`` schema with ``jsonschema.Draft202012Validator``;
-    every validation error becomes one finding, sorted by JSON path.
+    every validation error becomes one finding, sorted by JSON path. A
+    manifest that parses as YAML but is not JSON-representable (e.g. a
+    non-string mapping key such as a bare date) is one "not
+    JSON-representable" finding rather than an uncaught crash.
     """
     if arch.manifest_error is not None:
         return [
@@ -185,9 +188,20 @@ def check_arch_schema(arch: ArchBundle) -> list[Finding]:
                 f"unparseable YAML: {arch.manifest_error}",
             )
         ]
+    try:
+        canonical = _as_json_types(arch.manifest_doc)
+    except TypeError as err:
+        return [
+            Finding(
+                "error",
+                "GC-ARCH-SCHEMA",
+                arch.manifest_rel,
+                f"manifest is not JSON-representable: {err}",
+            )
+        ]
     validator = jsonschema.Draft202012Validator(_load_schema(_MANIFEST_SCHEMA_PATH))
     errors = sorted(
-        validator.iter_errors(_as_json_types(arch.manifest_doc)),
+        validator.iter_errors(canonical),
         key=lambda e: list(map(str, e.absolute_path)),
     )
     return [
@@ -348,6 +362,12 @@ def load_arch_policy(path: Path, stage: str) -> ArchPolicy:
     if not isinstance(require_self_fresh, bool):
         raise ArchPolicyError(
             f"arch policy {path}: stage {stage!r} 'require_self_fresh' must be a bool"
+        )
+    if require_self_fresh and self_project is None:
+        raise ArchPolicyError(
+            f"arch policy {path}: stage {stage!r} has 'require_self_fresh: true' but "
+            "top-level 'self_project' is null/absent — a stage that declares it "
+            "requires freshness must not silently skip the check"
         )
 
     max_snapshot_age_hours = cfg.get("max_snapshot_age_hours")
