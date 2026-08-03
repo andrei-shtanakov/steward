@@ -1,0 +1,4 @@
+source: prograph@8deb730 contracts/conformance-report/v1/schema.json
+sha256: 80128422126473b5c58b6ea8cc3c0ab363647b3768d562e1e0da3e846f96a8c2
+vendored: 2026-08-03
+purpose: GC-ARCH-CONFORMANCE step 1: the committed report must be a conformance-report/v1

@@ -1,0 +1,4 @@
+source: prograph@8deb730 contracts/intended-graph/v1/schema.json
+sha256: f0768998ccf482cd40124aa90f960122de49bf676f422fb9179b8f65e02d2daa
+vendored: 2026-08-03
+purpose: GC-ARCH-SCHEMA structural validation (steward never re-derives integrity rules)

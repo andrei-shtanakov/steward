@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "conformance-report/v1",
+  "title": "Conformance report v1 (versioned evidence)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "system", "generated_at", "manifest", "snapshot", "tool",
+                "projects", "elements", "findings", "exceptions", "summary"],
+  "properties": {
+    "schema": {"const": "conformance-report/v1"},
+    "system": {"type": "string"},
+    "generated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "path", "sha256"],
+      "properties": {
+        "project": {"type": ["string", "null"]},
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "indexed_at", "content_hash", "complete"],
+      "properties": {
+        "id": {"type": "integer"},
+        "indexed_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^prograph-snapshot/v1\\+sha256:[0-9a-f]{64}$"
+        },
+        "complete": {"type": "boolean"}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "schema"],
+      "properties": {
+        "name": {"type": "string"},
+        "version": {"type": "string"},
+        "schema": {"const": "intended-graph/v1"}
+      }
+    },
+    "projects": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["commit", "dirty"],
+        "properties": {
+          "commit": {"type": ["string", "null"]},
+          "dirty": {"type": ["boolean", "null"]}
+        }
+      }
+    },
+    "elements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "detector", "verdict", "reason", "waived_by"],
+        "properties": {
+          "id": {"type": "string"},
+          "type": {"enum": ["interface", "constraint"]},
+          "detector": {"enum": ["import", "mcp", "contract", "declared", "manual-evidence"]},
+          "verdict": {"enum": ["conformant", "violation", "unknown"]},
+          "reason": {
+            "enum": ["manual-evidence", "unsupported-resolution", "outside-workspace",
+                      "orphan-component", null]
+          },
+          "waived_by": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "element", "detail", "suppressed_by"],
+        "properties": {
+          "class": {
+            "enum": ["missing-required-edge", "forbidden-edge", "undeclared-edge",
+                      "orphan-component", "expired-waiver", "manual-obligation"]
+          },
+          "element": {"type": ["string", "null"]},
+          "detail": {"type": "string"},
+          "suppressed_by": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "target", "expires", "status"],
+        "properties": {
+          "id": {"type": "string"},
+          "target": {"type": "string"},
+          "expires": {"type": "string"},
+          "status": {"enum": ["active", "expired"]}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdicts", "findings"],
+      "properties": {
+        "verdicts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["conformant", "violation", "unknown"],
+          "properties": {
+            "conformant": {"type": "integer"},
+            "violation": {"type": "integer"},
+            "unknown": {"type": "integer"}
+          }
+        },
+        "findings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["missing-required-edge", "forbidden-edge", "undeclared-edge",
+                        "orphan-component", "expired-waiver", "manual-obligation"],
+          "properties": {
+            "missing-required-edge": {"type": "integer"},
+            "forbidden-edge": {"type": "integer"},
+            "undeclared-edge": {"type": "integer"},
+            "orphan-component": {"type": "integer"},
+            "expired-waiver": {"type": "integer"},
+            "manual-obligation": {"type": "integer"}
+          }
+        }
+      }
+    }
+  }
+}
