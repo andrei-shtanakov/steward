@@ -153,21 +153,21 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 
 - [x] **Slice PR-1**: узел `behaviour-spec` в `profiles/team-exp.yaml` + гейты `GC-BEH-TRACE` / `GC-BEH-COVERAGE` (verification obligation chain, FL-03) / `GC-CHECK-PLANNED` (PR #25, merged `9bbcd1b`) @owner:andrei @id:behaviour-spec-gates
 - [x] **Slice PR-2**: derived trace matrix — `gate-check --trace-matrix` (FL-09) + live stale-тест с настоящими blob hashes (FL-10) (PR #26, merged `c18d3cd`) @owner:andrei @id:behaviour-trace-matrix-stale
-- [ ] **Slice PR-3**: `GC-ARCH-*` + узел `architecture` — триггер снят (inbox #36: prograph
-  conformance реализован, `prograph@07cce3d` #24; provenance/evidence — `prograph@8deb730`
-  #27). Доступно для вендоринга пиненой копией: `contracts/intended-graph/v1/schema.json`
-  (для `GC-ARCH-SCHEMA`, структурный слой — integrity доказывается существованием отчёта)
-  и `contracts/conformance-report/v1/schema.json` (проверка №1 `GC-ARCH-CONFORMANCE`).
-  Отчёт — versioned evidence c D2-provenance (раздельные `generated_at` /
+- [ ] **Slice PR-3**: `GC-ARCH-*` + узел `architecture` — триггер снят (inbox #36) @owner:andrei @id:behaviour-arch-gates
+  prograph conformance реализован (`prograph@07cce3d` #24); отчёт — versioned evidence
+  с D2-provenance (`prograph@8deb730` #27: раздельные `generated_at` /
   `snapshot.indexed_at`, `projects{commit,dirty}` сняты при индексации, `complete`,
-  `content_hash`). Объём слайса: вендоринг обеих схем (две гарантии: copy-integrity
-  PR-гейт + upstream-drift), `GC-ARCH-SCHEMA` / `GC-ARCH-EVIDENCE` /
-  `GC-ARCH-CONFORMANCE` как offline-потребители отчёта, декларативная stage policy
-  (authoring/release: fail_on_findings/fail_on_verdicts/max age по возрасту снапшота),
-  узел `architecture` в `team-exp`; scheduled cross-repo freshness-check — вне CI
-  (workspace-обязательство; отсутствует/просрочен ⇒ unknown, не clean). Первый манифест:
-  `workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml`. @owner:andrei
-  @id:behaviour-arch-gates
+  `content_hash`). Доступно для вендоринга пиненой копией:
+  `contracts/intended-graph/v1/schema.json` (для `GC-ARCH-SCHEMA`, структурный слой —
+  integrity доказывается существованием отчёта) и
+  `contracts/conformance-report/v1/schema.json` (проверка №1 `GC-ARCH-CONFORMANCE`).
+  Объём слайса: вендоринг обеих схем (две гарантии: copy-integrity PR-гейт +
+  upstream-drift), `GC-ARCH-SCHEMA` / `GC-ARCH-EVIDENCE` / `GC-ARCH-CONFORMANCE` как
+  offline-потребители отчёта, декларативная stage policy (authoring/release:
+  fail_on_findings/fail_on_verdicts/max age по возрасту снапшота), узел `architecture`
+  в `team-exp`; scheduled cross-repo freshness-check — вне CI (workspace-обязательство;
+  отсутствует/просрочен ⇒ unknown, не clean). Первый манифест:
+  `workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml`.
 
 ### 7. Постоянные обязательства и отложенное
 
