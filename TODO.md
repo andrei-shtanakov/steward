@@ -153,8 +153,7 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 
 - [x] **Slice PR-1**: узел `behaviour-spec` в `profiles/team-exp.yaml` + гейты `GC-BEH-TRACE` / `GC-BEH-COVERAGE` (verification obligation chain, FL-03) / `GC-CHECK-PLANNED` (PR #25, merged `9bbcd1b`) @owner:andrei @id:behaviour-spec-gates
 - [x] **Slice PR-2**: derived trace matrix — `gate-check --trace-matrix` (FL-09) + live stale-тест с настоящими blob hashes (FL-10) (PR #26, merged `c18d3cd`) @owner:andrei @id:behaviour-trace-matrix-stale
-- [ ] **Slice PR-3**: `GC-ARCH-*` — код готов на ветке `feat/arch-gates` (Tasks 1-4)
-  @owner:andrei @id:behaviour-arch-gates
+- [ ] **Slice PR-3**: `GC-ARCH-*` — код готов на ветке `feat/arch-gates` (Tasks 1-4) @owner:andrei @id:behaviour-arch-gates
   Смержено в код (не в master): вендоринг обеих схем пиненой копией
   (`contracts/prograph-intended-graph/v1`, `contracts/prograph-conformance-report/v1`,
   copy-integrity PR-гейт отдельно от upstream-drift), `GC-ARCH-SCHEMA` /
