@@ -53,10 +53,20 @@ components:
     evidence: [BEH-01, BEH-07, BEH-09, FR-01]
 interfaces:
   - id: I-01
+    # Решение владельца 2026-08-04: self-owned file write неразличим текущей
+    # project-level моделью — declared-детектор намеренно подавляет self-edges,
+    # а декларация проекта о своём же файле эпистемически равна manual-evidence
+    # (проект клянётся о себе; внешнего наблюдения нет). Гарантию несут тесты
+    # writer path (BEH-01/BEH-07). Это НЕ waiver: нарушения нет, release
+    # допускает именованный unknown, а не притворный conformant.
+    # Вернуть detector: declared, когда prograph сможет атрибутировать
+    # self-owned file edge конкретному writer-модулю и использовать такое ребро
+    # в conformance без подавления как project self-edge (module-level
+    # resolution) — триггер по capability, не по номеру версии.
     producer: steward.verdicts-emitter
     consumer: "file:.steward/gate_verdicts.jsonl"
     protocol: "jsonl / gate-verdicts/v1"
-    detector: declared
+    detector: manual-evidence
     evidence: [BEH-01, BEH-07]
   - id: I-02
     producer: "file:.steward/gate_verdicts.jsonl"
