@@ -194,6 +194,30 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       пина (8deb730 → efb4a5d): clean честный, сравниваются файлы контрактной
       поверхности, не коммиты. Красное → inbox-issue сюда с дедуп-ключом
       `arch-evidence-freshness-watch:<class>`.
+- [ ] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:andrei @id:arch-evidence-freshness-schedule
+      Сессия B перехода launchd→CI (дизайн принят владельцем 2026-08-06;
+      прецедент — advisory-watcher dispatcher#110: владелец вендоренных копий
+      hostит свою вахту). ИНВАРИАНТ: это scheduled-НАБЛЮДЕНИЕ (guarantee B,
+      two-contract-guarantees), НЕ PR-гейт — workflow никогда не добавлять
+      required-чеком; прежняя формулировка «вне CI этого репо» у пункта выше
+      значила именно «вне PR-гейта», не «вне Actions вообще».
+      Механика: daily cron (05:40 UTC = каденция launchd-приёмки) +
+      workflow_dispatch (вход synthetic=drift — контролируемый non-clean
+      правкой вендоренной копии в ephemeral-чекауте); multi-checkout
+      steward/prograph HEAD + devtools@пин; сенсор devtools БЕЗ изменений.
+      Crash-envelope `arch-evidence-freshness-run/v1` публикуется через
+      `if: always()`: сенсор domain-статус не подделывает (краш = нет
+      status.json), оркестрация честно фиксирует падение исполнения.
+      Публикация: job summary + artifact (status.json + envelope) +
+      check-run на steward SHA + dedup inbox-issue (эскалация сенсора,
+      ключ `arch-evidence-freshness-watch:<class>`). PAT не нужен: репо
+      публичные, GITHUB_TOKEN с issues/checks write. Actions — полные SHA.
+      Приёмка: два штатных cron-прогона + один контролируемый non-clean
+      (synthetic=drift: run красный, envelope опубликован, issue создан по
+      дедуп-ключу). После приёмки — сессия C: независимый reader freshness
+      runs (Robin/dispatcher — не самонаблюдение; 60-дневная cron-ловушка),
+      затем снятие launchd (`make arch-freshness-unschedule`) и уборка
+      install-целей в devtools.
 
 ### 7. Постоянные обязательства и отложенное
 
