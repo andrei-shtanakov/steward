@@ -100,9 +100,27 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 
 - [x] **Governance-бандл WS-005 заведён и АППРУВНУТ насквозь** (`workstreams/WS-005-gate-verdicts/spec/`, профиль `team-exp`, линтуется в CI): бандл — PR #28; аппрув-след по DAG-порядку — PR #29 (L1) / #30 (L2) / #31 (L3), каждое ребро запиновано настоящим blob-хешом, stale-каскад покрывает полный DAG @owner:andrei @id:ws005-bundle-approvals
 - [x] Зафиксировать схему `gate_verdicts.jsonl` с версией контракта — `contracts/gate-verdicts/v1/` (schema+README+5 фикстур) + emitter `gate-check --emit-verdicts`; поля obligation/tier/phase/risk_model_version/waiver_ref объявлены reserved до каталога (PR #33) @owner:andrei @id:gate-verdicts-schema
-- [ ] Каталог стабильных `gate_id` + маппинг `owner_role` → obligation @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:gate-id-catalog
-- [ ] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:oq-1-approval-evidence
-- [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:andrei @blocked_by:todo://steward/gate-verdicts-schema @id:dispatcher-bundle-status-panel
+- [ ] Каталог стабильных `gate_id` + маппинг `owner_role` → obligation @owner:andrei @blocked_by:todo://steward/oq-1-approval-evidence @id:gate-id-catalog
+      Unblocked by steward#33 (gate-verdicts-schema доставлен; PF-BLOCKER-STALE
+      снят 2026-08-06). Новый блокер — по решению владельца 2026-08-06: OQ-1
+      обязан предшествовать каталогу, иначе каталог преждевременно закрепит
+      obligation-семантику, которую решение ещё может изменить.
+- [ ] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:andrei @id:oq-1-approval-evidence
+      Unblocked by steward#33 (2026-08-06). Первый в очереди секции: его ответ
+      питает дизайн каталога (obligation-маппинг). Контекст: WS-003
+      инвалидирован ADR-ECO-004 D4; замена — solo-compatible merge evidence
+      на типизированных human_merge/agent_merge.
+- [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:andrei @id:dispatcher-bundle-status-panel
+      Unblocked by steward#33 (2026-08-06). Acceptance-сверка с фактической
+      панелью dispatcher (2026-08-06): 5/6 критериев подтверждены кодом —
+      6 состояний ARCH-D2 (`core/governance.py` BundleState), отсутствующее/
+      невалидное evidence НЕ читается clean (no-data / unreadable / unknown
+      freshness = stale-grade), источник `.steward/gate_verdicts.jsonl`,
+      строго read-only (единственный GET `/api/projects/{name}/governance`),
+      4 файла тестов включая live-smoke. **Точный остаток пункта:**
+      checked_by-evidence в панели не материализован — его нет ни в модели
+      `VerdictFinding`, ни в истории dispatcher; появится осмысленно после
+      каталога gate_id (reserved-поля obligation/tier/phase уже в модели).
 
 ### 4. V1 · живой прогон `spec-runner plan --gated`
 
