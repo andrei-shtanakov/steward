@@ -164,8 +164,18 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
   (D1: file-presence activation). WS-005: манифест получил `evidence` на всех
   интерфейсах (D7), первый настоящий `conformance-report.json` закоммичен рядом
   (umbrella snapshot #8, provenance commit = ancestor); dogfood: authoring exit 0,
-  release exit 1 ровно на I-01/I-02 — реальный остаток реализации workstream'а.
-- [ ] Scheduled workspace-обязательство (вне CI этого репо): upstream-drift обеих вендоренных prograph-схем + freshness манифест/отчёта WS-005; отсутствует/просрочено ⇒ unknown, не clean @owner:andrei @id:arch-evidence-freshness-watch
+  release exit 1 ровно на I-01/I-02 — реальный остаток реализации workstream'а
+  (остаток закрыт 2026-08-04: dispatcher#117 → I-02 conformant; steward#40 →
+  I-01 manual-evidence с capability-триггером возврата; release 0/0 exit 0).
+- [x] Scheduled workspace-обязательство (вне CI этого репо): upstream-drift обеих вендоренных prograph-схем + freshness манифест/отчёта WS-005; отсутствует/просрочено ⇒ unknown, не clean @owner:andrei @id:arch-evidence-freshness-watch — исполнено в devtools (`todo://devtools/arch-evidence-freshness-watch`, devtools#26); приёмка 2026-08-06
+      Сенсор: `devtools/check-arch-evidence-freshness.py` + launchd (ЯВНО
+      interim до CI devtools); durable статус-файл с `next_expected_at`;
+      `unknown` выводит ЧИТАТЕЛЬ (просрочка/отсутствие статуса), сенсор пишет
+      только clean|drift|stale|unavailable. Приёмка 2026-08-06: два штатных
+      прогона по расписанию, оба clean — при том что prograph master уехал с
+      пина (8deb730 → efb4a5d): clean честный, сравниваются файлы контрактной
+      поверхности, не коммиты. Красное → inbox-issue сюда с дедуп-ключом
+      `arch-evidence-freshness-watch:<class>`.
 
 ### 7. Постоянные обязательства и отложенное
 
