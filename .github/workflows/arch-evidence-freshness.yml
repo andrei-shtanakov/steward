@@ -110,8 +110,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Публикационные шаги — best-effort (continue-on-error): их транзиентный
+      # сбой не должен красить job при чистом сенсоре. Вердикт job'а решает
+      # ТОЛЬКО domain exit сенсора (финальный шаг verdict).
       - name: publish artifact
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: arch-evidence-freshness-status
@@ -119,6 +123,7 @@ jobs:
 
       - name: check-run на steward SHA
         if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOMAIN_EXIT: ${{ steps.sensor.outputs.domain_exit }}
