@@ -194,7 +194,12 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       пина (8deb730 → efb4a5d): clean честный, сравниваются файлы контрактной
       поверхности, не коммиты. Красное → inbox-issue сюда с дедуп-ключом
       `arch-evidence-freshness-watch:<class>`.
-- [ ] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:andrei @id:arch-evidence-freshness-schedule
+- [ ] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:andrei @id:arch-evidence-freshness-schedule @trigger:"второй штатный cron-прогон, ожидается 2026-08-08 ~05:40 UTC"
+      **КОД ДОСТАВЛЕН, ПУНКТ ЖДЁТ ПРИЁМКУ, НЕ РЕАЛИЗАЦИЮ.**
+      `.github/workflows/arch-evidence-freshness.yml` смержен PR #43 (2026-08-06);
+      реализационной работы не осталось. Открыт ровно потому, что DoD пункта —
+      наблюдаемые прогоны (см. «Приёмка» ниже), а не merge; закрывать по факту
+      мержа — ровно та подмена доказательства, против которой пункт и написан.
       Сессия B перехода launchd→CI (дизайн принят владельцем 2026-08-06;
       прецедент — advisory-watcher dispatcher#110: владелец вендоренных копий
       hostит свою вахту). ИНВАРИАНТ: это scheduled-НАБЛЮДЕНИЕ (guarantee B,
@@ -212,9 +217,19 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       check-run на steward SHA + dedup inbox-issue (эскалация сенсора,
       ключ `arch-evidence-freshness-watch:<class>`). PAT не нужен: репо
       публичные, GITHUB_TOKEN с issues/checks write. Actions — полные SHA.
-      Приёмка: два штатных cron-прогона + один контролируемый non-clean
-      (synthetic=drift: run красный, envelope опубликован, issue создан по
-      дедуп-ключу). После приёмки — сессия C: независимый reader freshness
+      Приёмка (2 из 3 закрыто на 2026-08-07):
+      ✅ контролируемый non-clean — dispatch synthetic=drift, run 31092873091
+         (2026-08-06): красный ТОЛЬКО на шаге `verdict`, ПОСЛЕ публикации
+         (envelope + artifact + check-run — success); inbox-issue #44
+         `arch-evidence-freshness-watch:drift` создан по дедуп-ключу.
+      ✅ штатный cron-прогон №1 — run 31155437323 (2026-08-07 06:51 UTC,
+         event=schedule): status clean, `next_expected_at` 2026-08-08,
+         envelope `execution_status: completed`, `domain_exit: 0`. Задержка
+         06:51 vs 05:40 — штатный дрейф очереди GitHub cron, не отказ.
+      ⬜ штатный cron-прогон №2 — ожидается 2026-08-08 ~05:40 UTC. Это
+         единственное, чего ждёт пункт; проверять `gh run list --workflow
+         arch-evidence-freshness.yml` + artifact `…-status`.
+      После приёмки — сессия C: независимый reader freshness
       runs (Robin/dispatcher — не самонаблюдение; 60-дневная cron-ловушка),
       затем снятие launchd (`make arch-freshness-unschedule`) и уборка
       install-целей в devtools.
