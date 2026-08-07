@@ -194,7 +194,7 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       пина (8deb730 → efb4a5d): clean честный, сравниваются файлы контрактной
       поверхности, не коммиты. Красное → inbox-issue сюда с дедуп-ключом
       `arch-evidence-freshness-watch:<class>`.
-- [ ] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:andrei @id:arch-evidence-freshness-schedule @trigger:"второй штатный cron-прогон, ожидается 2026-08-08 ~05:40 UTC"
+- [ ] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:andrei @trigger:"второй штатный cron-прогон, ожидается 2026-08-08 ~05:40 UTC" @id:arch-evidence-freshness-schedule
       **КОД ДОСТАВЛЕН, ПУНКТ ЖДЁТ ПРИЁМКУ, НЕ РЕАЛИЗАЦИЮ.**
       `.github/workflows/arch-evidence-freshness.yml` смержен PR #43 (2026-08-06);
       реализационной работы не осталось. Открыт ровно потому, что DoD пункта —
@@ -227,8 +227,9 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
          envelope `execution_status: completed`, `domain_exit: 0`. Задержка
          06:51 vs 05:40 — штатный дрейф очереди GitHub cron, не отказ.
       ⬜ штатный cron-прогон №2 — ожидается 2026-08-08 ~05:40 UTC. Это
-         единственное, чего ждёт пункт; проверять `gh run list --workflow
-         arch-evidence-freshness.yml` + artifact `…-status`.
+         единственное, чего ждёт пункт. Проверять:
+         `gh run list --workflow arch-evidence-freshness.yml`
+         + артефакт `arch-evidence-freshness-status`.
       После приёмки — сессия C: независимый reader freshness
       runs (Robin/dispatcher — не самонаблюдение; 60-дневная cron-ловушка),
       затем снятие launchd (`make arch-freshness-unschedule`) и уборка
