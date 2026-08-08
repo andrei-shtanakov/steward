@@ -82,6 +82,18 @@ dispatcher ◀── читает spec/*.md + git state (read-only панель)
 Та же role identity model обязательна для записей `gate_verdicts.jsonl` (WS-005) — иначе
 governance-панель и вердикты будут ссылаться на разные словари ролей.
 
+**Authorization (DEC-007 D6+D7, 2026-08-08)**: `GC-GIT-ROLE` теперь авторизует, а не просто
+владеет. `Approval` несёт только identity — провайдер не может заявить роль изнутри факта;
+роль identity получает единственно через `profiles/role-assignments.yaml` (governance-данные,
+тот же PR-режим, что и `roles.yaml`). Проверка сверяет approvers артефакта с `allowed_approver_roles`
+узла (по умолчанию — `owner_role`, явный список ЗАМЕНЯЕТ дефолт, не расширяет). Пока это
+**node-level only**: `allowed_approver_roles` на уровне frontmatter-инстанса парсится, но его
+приоритет над узловым значением сознательно не решён — отдельное владельческое решение (см.
+комментарий в `check_status_git`, `src/steward/gatecheck/checks.py`). `reviewer_roles` не
+энфорсится машинно. Live-факты (`LiveGitFacts`) пока всегда возвращают `approvals: None` —
+gate не срабатывает вживую до появления авторитетного facts-источника; это не регрессия, а
+честная граница текущего PR.
+
 ## Frontmatter-схема артефакта (REQ-002)
 
 ```yaml

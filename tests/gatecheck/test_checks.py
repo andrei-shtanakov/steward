@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from steward.gatecheck.checks import (
     check_compile_block,
     check_completeness,
@@ -14,8 +16,9 @@ from steward.gatecheck.checks import (
     check_upstream_approved,
     collect_bundle,
 )
-from steward.gatecheck.git_facts import Approval, InjectedGitFacts, LiveGitFacts
+from steward.gatecheck.git_facts import Approval, FactsError, InjectedGitFacts, LiveGitFacts
 from steward.graph import load_profile_data
+from steward.roleassignments import Assignment, RoleAssignments
 from steward.roles import Role, RolesCatalog
 
 _PROFILE = {
@@ -33,6 +36,19 @@ _PROFILE = {
     ],
 }
 
+_PROFILE_RESTRICTED = {
+    "profile": "team-test-restricted",
+    "solo_auto_approve": False,
+    "artifacts": [
+        {
+            "id": "requirements",
+            "owner_role": "product",
+            "upstream": [],
+            "allowed_approver_roles": ["qa"],
+        },
+    ],
+}
+
 _CATALOG = RolesCatalog(
     version=1,
     slug_pattern="^[a-z][a-z0-9-]{1,31}$",
@@ -44,6 +60,14 @@ _CATALOG = RolesCatalog(
     ),
 )
 
+ASSIGNMENTS = RoleAssignments(
+    version=1,
+    assignments=(
+        Assignment("github:alice", ("product",)),
+        Assignment("github:quinn", ("qa",)),
+    ),
+)
+
 
 class FakeGitFacts:
     def __init__(
@@ -51,15 +75,19 @@ class FakeGitFacts:
         on_default: set[str] | None = None,
         approvals: dict[str, tuple[Approval, ...]] | None = None,
         blob_hashes: dict[str, str] | None = None,
+        approvals_unavailable: bool = False,
     ) -> None:
         self._on_default = on_default or set()
         self._approvals = approvals or {}
         self._hashes = blob_hashes or {}
+        self._approvals_unavailable = approvals_unavailable
 
     def on_default_branch(self, path: str) -> bool:
         return path in self._on_default
 
-    def approvals(self, path: str) -> tuple[Approval, ...]:
+    def approvals(self, path: str) -> tuple[Approval, ...] | None:
+        if self._approvals_unavailable:
+            return None
         return self._approvals.get(path, ())
 
     def blob_hash(self, path: str) -> str | None:
@@ -68,6 +96,10 @@ class FakeGitFacts:
 
 def _graph():
     return load_profile_data(_PROFILE, _CATALOG)
+
+
+def _restricted_graph():
+    return load_profile_data(_PROFILE_RESTRICTED, _CATALOG)
 
 
 def _write(
@@ -156,7 +188,7 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "approved")
     artifacts, _ = collect_bundle(_graph(), tmp_path)
 
-    nothing = check_status_git(_graph(), artifacts, FakeGitFacts())
+    nothing = check_status_git(_graph(), artifacts, FakeGitFacts(), ASSIGNMENTS)
     assert {f.rule_id for f in nothing} == {"GC-GIT-BRANCH", "GC-GIT-ROLE"}
 
     wrong_role = check_status_git(
@@ -164,8 +196,9 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
         artifacts,
         FakeGitFacts(
             on_default={"req.md"},
-            approvals={"req.md": (Approval("@bob", "qa"),)},
+            approvals={"req.md": (Approval("github:quinn"),)},
         ),
+        ASSIGNMENTS,
     )
     assert {f.rule_id for f in wrong_role} == {"GC-GIT-ROLE"}
 
@@ -174,10 +207,158 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
         artifacts,
         FakeGitFacts(
             on_default={"req.md"},
-            approvals={"req.md": (Approval("@alice", "product"),)},
+            approvals={"req.md": (Approval("github:alice"),)},
         ),
+        ASSIGNMENTS,
     )
     assert clean == []
+
+
+# --- DEC-007 D7: GC-GIT-ROLE authorizes via allowed_approver_roles x assignments
+
+
+def test_default_allowlist_owner_role_approves(tmp_path: Path) -> None:
+    """Scenario 1: no allowed_approver_roles -> owner_role's identity approves clean."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_status_git(
+        _graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:alice"),)},  # product == owner_role
+        ),
+        ASSIGNMENTS,
+    )
+    assert findings == []
+
+
+def test_default_allowlist_miss_names_needed_roles(tmp_path: Path) -> None:
+    """Scenario 2: approval from a non-owner role -> error naming the needed role."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_status_git(
+        _graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:quinn"),)},  # qa, not product
+        ),
+        ASSIGNMENTS,
+    )
+    assert [f.rule_id for f in findings] == ["GC-GIT-ROLE"]
+    message = findings[0].message
+    assert "product" in message
+    assert "allowed approver role" in message
+
+
+def test_exact_replacement_excludes_owner(tmp_path: Path) -> None:
+    """Scenario 3: an explicit allowed_approver_roles REPLACES the owner default —
+    the owner role, even though it's the accountable owner, is excluded."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_restricted_graph(), tmp_path)
+    findings = check_status_git(
+        _restricted_graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:alice"),)},  # product, the owner
+        ),
+        ASSIGNMENTS,
+    )
+    assert [f.rule_id for f in findings] == ["GC-GIT-ROLE"]
+
+
+def test_exact_replacement_hit(tmp_path: Path) -> None:
+    """Scenario 4: an approval from the explicit allowlist's role is clean."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_restricted_graph(), tmp_path)
+    findings = check_status_git(
+        _restricted_graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:quinn"),)},  # qa
+        ),
+        ASSIGNMENTS,
+    )
+    assert findings == []
+
+
+def test_unknown_identity_has_no_roles_and_fails_closed(tmp_path: Path) -> None:
+    """Scenario 5: an identity absent from role-assignments grants no roles."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_status_git(
+        _graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:mallory"),)},
+        ),
+        ASSIGNMENTS,
+    )
+    assert [f.rule_id for f in findings] == ["GC-GIT-ROLE"]
+    assert "no roles" in findings[0].message
+
+
+def test_approver_union_one_allowed_identity_suffices(tmp_path: Path) -> None:
+    """Roles union across approvers: a role-less identity beside an allowed one passes.
+
+    Authorization asks "did anyone with an allowed role approve?" — an extra
+    approval by an unmapped identity must neither grant nor revoke anything.
+    """
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_status_git(
+        _graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:mallory"), Approval("github:alice"))},
+        ),
+        ASSIGNMENTS,
+    )
+    assert findings == []
+
+
+def test_unavailable_approvals_facts_skip(tmp_path: Path) -> None:
+    """Scenario 6: approvals() -> None (unauthoritative) skips, unchanged contour."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_status_git(
+        _graph(),
+        artifacts,
+        FakeGitFacts(on_default={"req.md"}, approvals_unavailable=True),
+        ASSIGNMENTS,
+    )
+    assert findings == []
+
+
+def test_solo_profile_never_needs_assignments(tmp_path: Path) -> None:
+    """Scenario 7: solo profile passes assignments=None without crashing."""
+    solo = load_profile_data({**_PROFILE, "solo_auto_approve": True}, _CATALOG)
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(solo, tmp_path)
+    findings = check_status_git(solo, artifacts, FakeGitFacts(on_default={"req.md"}), None)
+    assert findings == []
+
+
+def test_non_solo_approvals_present_assignments_none_raises(tmp_path: Path) -> None:
+    """Scenario 8: fail-closed — missing assignments must never read as authorized
+    or skipped; it must raise, not silently pass."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    with pytest.raises(FactsError):
+        check_status_git(
+            _graph(),
+            artifacts,
+            FakeGitFacts(
+                on_default={"req.md"},
+                approvals={"req.md": (Approval("github:alice"),)},
+            ),
+            None,
+        )
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -210,7 +391,7 @@ def test_status_git_injected_empty_approvals_still_finds(tmp_path: Path) -> None
     facts = InjectedGitFacts(
         default_branch_files=frozenset({"req.md"}), approvals={}, blob_hashes={}
     )
-    findings = check_status_git(_graph(), artifacts, facts)
+    findings = check_status_git(_graph(), artifacts, facts, ASSIGNMENTS)
     assert {f.rule_id for f in findings} == {"GC-GIT-ROLE"}
 
 
@@ -219,10 +400,10 @@ def test_status_git_injected_correct_role_is_clean(tmp_path: Path) -> None:
     artifacts, _ = collect_bundle(_graph(), tmp_path)
     facts = InjectedGitFacts(
         default_branch_files=frozenset({"req.md"}),
-        approvals={"req.md": (Approval("@alice", "product"),)},
+        approvals={"req.md": (Approval("github:alice"),)},
         blob_hashes={},
     )
-    findings = check_status_git(_graph(), artifacts, facts)
+    findings = check_status_git(_graph(), artifacts, facts, ASSIGNMENTS)
     assert findings == []
 
 

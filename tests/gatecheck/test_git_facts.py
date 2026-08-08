@@ -11,12 +11,13 @@ silent "no changes".
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from steward.gatecheck.git_facts import FactsError, LiveGitFacts
+from steward.gatecheck.git_facts import Approval, FactsError, InjectedGitFacts, LiveGitFacts
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -59,3 +60,69 @@ def test_approvals_are_unavailable_not_empty(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     facts = LiveGitFacts(repo, repo)
     assert facts.approvals("a.txt") is None
+
+
+def _facts_file(tmp_path: Path, approvals: list[dict]) -> Path:
+    """Write a facts.json with the given approvals and return its (closed) path.
+
+    The file is fully written and closed before the caller reads it —
+    keeping a NamedTemporaryFile open across ``from_file`` works on POSIX
+    but trips over file locking on Windows.
+    """
+    path = tmp_path / "facts.json"
+    path.write_text(
+        json.dumps(
+            {
+                "default_branch_files": ["spec/10-requirements.md"],
+                "approvals": {"spec/10-requirements.md": approvals},
+                "blob_hashes": {"spec/10-requirements.md": "abc123"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_injected_facts_parses_valid_approvals(tmp_path: Path) -> None:
+    """Approvals with identity field parse successfully."""
+    path = _facts_file(tmp_path, [{"identity": "github:alice"}, {"identity": "github:bob"}])
+    facts = InjectedGitFacts.from_file(path)
+    approvals = facts.approvals("spec/10-requirements.md")
+    assert len(approvals) == 2
+    assert approvals[0] == Approval(identity="github:alice")
+    assert approvals[1] == Approval(identity="github:bob")
+
+
+def test_injected_facts_rejects_approvals_without_identity(tmp_path: Path) -> None:
+    """Approvals missing 'identity' field fail parsing."""
+    path = _facts_file(tmp_path, [{"other_field": "value"}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
+
+
+def test_injected_facts_rejects_empty_identity(tmp_path: Path) -> None:
+    """Approvals with empty identity string fail parsing."""
+    path = _facts_file(tmp_path, [{"identity": ""}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
+
+
+def test_injected_facts_rejects_non_string_identity(tmp_path: Path) -> None:
+    """Approvals with non-string identity fail parsing."""
+    path = _facts_file(tmp_path, [{"identity": 123}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
+
+
+def test_injected_facts_rejects_old_approval_shape(tmp_path: Path) -> None:
+    """Old-shape approvals with handle/role fields fail parsing with error naming identity."""
+    path = _facts_file(tmp_path, [{"handle": "@alice", "role": "product"}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
+
+
+def test_injected_facts_rejects_approvals_with_unknown_keys(tmp_path: Path) -> None:
+    """Approvals with unknown keys fail parsing."""
+    path = _facts_file(tmp_path, [{"identity": "github:alice", "extra_field": "value"}])
+    with pytest.raises(FactsError, match="unknown keys"):
+        InjectedGitFacts.from_file(path)

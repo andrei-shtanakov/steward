@@ -41,3 +41,32 @@ def write_roles(tmp_path: Path) -> Path:
     path = tmp_path / "roles.yaml"
     path.write_text(DEFAULT_ROLES, encoding="utf-8")
     return path
+
+
+# DEC-007 D7 (PR-3): role-assignments.yaml is a mandatory sibling of the
+# profile for every non-solo `gate-check` run (CLI loads it unconditionally,
+# regardless of whether any artifact is approved). The granted roles are
+# DEFAULT_ROLES slugs so any test's approvals fixtures resolve cleanly.
+DEFAULT_ASSIGNMENTS = (
+    "version: 1\n"
+    "assignments:\n"
+    "  github:alice:\n"
+    "    roles: [product]\n"
+    "  github:bob:\n"
+    "    roles: [architects]\n"
+    "  github:quinn:\n"
+    "    roles: [qa]\n"
+)
+
+
+@pytest.fixture
+def write_role_assignments(tmp_path: Path) -> Path:
+    """Drop a permissive role-assignments.yaml into ``tmp_path``.
+
+    Same discovery pattern as ``write_roles``: request by name, it writes
+    before the test body runs. Tests proving the sibling is MANDATORY
+    (missing-file config error) deliberately do not request this fixture.
+    """
+    path = tmp_path / "role-assignments.yaml"
+    path.write_text(DEFAULT_ASSIGNMENTS, encoding="utf-8")
+    return path
