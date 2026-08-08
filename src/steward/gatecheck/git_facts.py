@@ -16,7 +16,7 @@ facts.json shape::
 
     {
       "default_branch_files": ["spec/10-requirements.md", ...],
-      "approvals": {"spec/10-requirements.md": [{"handle": "@alice", "role": "product"}]},
+      "approvals": {"spec/10-requirements.md": [{"identity": "github:alice"}]},
       "blob_hashes": {"spec/10-requirements.md": "abc123..."},
       "ancestors": ["<sha>", ...],
       "changed_paths_since": {"<sha>": ["path", ...]}
@@ -98,10 +98,15 @@ class FactsError(ValueError):
 
 @dataclass(frozen=True)
 class Approval:
-    """One recorded PR approval for an artifact."""
+    """One recorded PR approval for an artifact.
 
-    handle: str
-    role: str
+    Carries the approver's forge identity ONLY (``github:<login>``). The
+    provider cannot claim a role: roles are computed by steward from
+    profiles/role-assignments.yaml (DEC-007 D6/D7) — an injected fact
+    asserting a role would make the assignments file decorative.
+    """
+
+    identity: str
 
 
 @dataclass(frozen=True)
@@ -221,16 +226,23 @@ class InjectedGitFacts:
                 raise FactsError(f"facts file: approvals[{artifact_path!r}] must be a list")
             parsed = []
             for entry in entries:
-                if (
-                    not isinstance(entry, dict)
-                    or not isinstance(entry.get("handle"), str)
-                    or not isinstance(entry.get("role"), str)
-                ):
+                if not isinstance(entry, dict):
                     raise FactsError(
-                        f"facts file: approvals[{artifact_path!r}] entries need "
-                        "string 'handle' and 'role'"
+                        f"facts file: approvals[{artifact_path!r}] entries must be mappings"
                     )
-                parsed.append(Approval(handle=entry["handle"], role=entry["role"]))
+                identity = entry.get("identity")
+                if not isinstance(identity, str) or not identity:
+                    raise FactsError(
+                        f"facts file: approvals[{artifact_path!r}] entries must have "
+                        "non-empty string 'identity'"
+                    )
+                unknown_keys = set(entry.keys()) - {"identity"}
+                if unknown_keys:
+                    raise FactsError(
+                        f"facts file: approvals[{artifact_path!r}] entries contain unknown keys "
+                        f"{sorted(unknown_keys)} (expected only 'identity')"
+                    )
+                parsed.append(Approval(identity=identity))
             approvals[artifact_path] = tuple(parsed)
 
         raw_hashes = data.get("blob_hashes", {})
