@@ -1,0 +1,9 @@
+# Закрытая классификация merge-акторов (решение владельца 2026-08-08).
+# Точное совпадение, никаких default-human: неизвестный актор = unknown,
+# unknown НЕ удовлетворяет release-policy. agent_merge disabled by default
+# (ADR-ECO-004): в v1 agent тоже не удовлетворяет policy.
+version: 1
+human_identities:
+  - github:andrei-shtanakov
+agent_identities:
+  - github:dependabot[bot]

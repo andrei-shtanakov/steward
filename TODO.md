@@ -74,6 +74,9 @@
 - [ ] Мигрировать frontmatter собственного `spec/*.md` (у `10-requirements.md` сейчас две роли) @owner:github:andrei-shtanakov @blocked_by:todo://steward/roles-catalog-loader @id:migrate-spec-frontmatter-roles
 - [ ] Маппинг `slug → @github-handle` на границе с CODEOWNERS (в модель ролей не тащить) @owner:github:andrei-shtanakov @id:role-slug-github-handle-mapping
 - [ ] `GC-GIT-ROLE` сверять с `allowed_approver_roles`, а не с `owner_role` — сейчас проверка смешивает ownership и authorization @owner:github:andrei-shtanakov @blocked_by:todo://steward/roles-catalog-loader @id:gc-git-role-authorization
+      2026-08-08: GC-GIT-ROLE запускается только при авторитетных role-facts
+      (approvals: None = unavailable, live всегда None) — ложные got:none в live
+      сняты; полный fix — после DEC-007 mapping.
 - [ ] Handoff в dispatcher: их предложение (одна строка-роль без `@`) принято; прислать пиненую копию каталога @owner:github:andrei-shtanakov @id:dispatcher-roles-catalog-handoff
 
 ### 2. C2 (хвост): ре-вендоринг SpecMeta v2
@@ -101,7 +104,7 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 
 - [x] **Governance-бандл WS-005 заведён и АППРУВНУТ насквозь** (`workstreams/WS-005-gate-verdicts/spec/`, профиль `team-exp`, линтуется в CI): бандл — PR #28; аппрув-след по DAG-порядку — PR #29 (L1) / #30 (L2) / #31 (L3), каждое ребро запиновано настоящим blob-хешом, stale-каскад покрывает полный DAG @owner:github:andrei-shtanakov @id:ws005-bundle-approvals
 - [x] Зафиксировать схему `gate_verdicts.jsonl` с версией контракта — `contracts/gate-verdicts/v1/` (schema+README+5 фикстур) + emitter `gate-check --emit-verdicts`; поля obligation/tier/phase/risk_model_version/waiver_ref объявлены reserved до каталога (PR #33) @owner:github:andrei-shtanakov @id:gate-verdicts-schema
-- [x] Каталог стабильных `gate_id` + каталог правил obligation: v1 включает 19 active/quality + GC-APPROVAL-MISSING declared/approval с матрицей применимости к owner_role / стадии; три гарантии полноты — emitter-гейт на active, sync через Finding-конструкторы, обратная сверка; obligation активирован на эмиссии @owner:github:andrei-shtanakov @id:gate-id-catalog — PR этой ветки
+- [x] Каталог стабильных `gate_id` + каталог правил obligation: v1 включает 19 active/quality + GC-APPROVAL-MISSING declared/approval с матрицей применимости к owner_role / стадии; три гарантии полноты — emitter-гейт на active, sync через Finding-конструкторы, обратная сверка; obligation активирован на эмиссии @owner:github:andrei-shtanakov @id:gate-id-catalog — steward#50
       Unblocked by steward#33 (gate-verdicts-schema доставлен; PF-BLOCKER-STALE
       снят 2026-08-06). Блокер `oq-1-approval-evidence` РЕШЁН 2026-08-08 и
       снят — каталог actionable. Порядок сработал как задумано: решение
@@ -139,17 +142,17 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
       питает дизайн каталога (obligation-маппинг). Контекст: WS-003
       инвалидирован ADR-ECO-004 D4; замена — solo-compatible merge evidence
       на типизированных human_merge/agent_merge.
-- [ ] Approval policy enforcement: fact-provider merge/review-фактов + solo-compatible policy → эмит GC-APPROVAL-MISSING @owner:github:andrei-shtanakov @id:approval-policy-enforcement
+- [x] Approval policy enforcement: fact-provider merge/review-фактов + solo-compatible policy → эмит GC-APPROVAL-MISSING @owner:github:andrei-shtanakov @id:approval-policy-enforcement
       Резолюция @id:oq-1-approval-evidence (steward#49) установила, что approval
       enforcement живёт в steward `gate_verdicts.jsonl` с `obligation: approval`.
-      Steward получает merge/review-факты и применяет solo-compatible policy;
-      dispatcher только классифицирует прочитанные findings (ARCH-C3/D1: steward —
-      enforcer, dispatcher — read model). Типизированные `human_merge`/`agent_merge`
-      (ADR-ECO-004 D4) живут внутри fact-provider'а steward; наружу — только
-      findings. Конверсия `GC-APPROVAL-MISSING` declared→active — часть этой работы.
-      ⚠️ `GC-APPROVAL-ROLE` можно вводить ТОЛЬКО вместе с отдельным принятым
-      решением о границе GC-GIT-ROLE / GC-APPROVAL-MISSING / возможного
-      GC-APPROVAL-ROLE — не молчаливо.
+      Steward получает merge/review-факты через `steward approval-facts` (GitHub API,
+      mergedBy) и применяет solo-compatible policy; провенанс актора локально недоступен
+      принципиально, но GitHub возвращает authoritatively typed human_merge (mergedBy).
+      Классификация закрыта: unknown/agent НЕ проходят release (E-01/E-02). Dispatcher
+      только классифицирует прочитанные findings (ARCH-C3/D1: steward — enforcer, dispatcher
+      — read model). GC-APPROVAL-MISSING active (каталог v2, 20 gates), GC-GIT-ROLE unavailable-контур
+      (approvals: None = unavailable, live всегда None). Флаг `--stage` канонический, `--arch-stage`
+      deprecated. PR #51
 - [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:github:andrei-shtanakov @id:dispatcher-bundle-status-panel
       Unblocked by steward#33 (2026-08-06). Acceptance-сверка с фактической
       панелью dispatcher (2026-08-06): 5/6 критериев подтверждены кодом —

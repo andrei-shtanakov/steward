@@ -314,8 +314,13 @@ def check_status_git(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts)
             )
         if graph.solo_auto_approve:
             continue
+        artifact_approvals = git.approvals(artifact.path)
+        if artifact_approvals is None:
+            # No authoritative role-facts (e.g. LiveGitFacts, no forge access):
+            # absence of a role-mapping is not a proven role violation.
+            continue
         node_roles = set(parse_owner_roles(graph.nodes[artifact.node_id].owner_role))
-        approving_roles = {a.role for a in git.approvals(artifact.path)}
+        approving_roles = {a.role for a in artifact_approvals}
         if not node_roles & approving_roles:
             findings.append(
                 Finding(
