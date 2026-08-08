@@ -178,3 +178,106 @@ def test_all_dogfood_specs_are_managed() -> None:
         meta = load_artifact(path)
         assert meta is not None, f"{path.name} should be managed"
         assert meta.spec_stage
+
+
+def test_canonical_singular_owner_role() -> None:
+    meta = parse_artifact(
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: product\n---\n"
+    )
+    assert meta is not None
+    assert meta.owner_role == "product"
+    assert meta.owner_roles == ("product",)
+
+
+def test_legacy_single_role_is_not_canonical() -> None:
+    meta = parse_artifact(
+        '---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: "@product"\n---\n'
+    )
+    assert meta is not None
+    assert meta.owner_role is None  # legacy form: distinguished, not silently upgraded
+    assert meta.owner_roles == ("@product",)
+
+
+def test_legacy_tuple_preserved_without_owner_choice() -> None:
+    meta = parse_artifact(
+        '---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: "@product,@qa"\n---\n'
+    )
+    assert meta is not None
+    assert meta.owner_role is None
+    assert meta.owner_roles == ("@product", "@qa")
+
+
+def test_comma_without_at_is_still_legacy_multi() -> None:
+    # A hybrid "product,qa" is multiplicity inside owner_role — never canonical.
+    meta = parse_artifact(
+        '---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: "product,qa"\n---\n'
+    )
+    assert meta is not None
+    assert meta.owner_role is None
+    assert meta.owner_roles == ("product", "qa")
+
+
+def test_reviewer_and_approver_arrays_parse() -> None:
+    meta = parse_artifact(
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+        "owner_role: product\nreviewer_roles: [qa]\nallowed_approver_roles: [qa, product]\n---\n"
+    )
+    assert meta is not None
+    assert meta.reviewer_roles == ("qa",)
+    assert meta.allowed_approver_roles == ("qa", "product")
+
+
+def test_role_arrays_absent_defaults() -> None:
+    meta = parse_artifact(
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: product\n---\n"
+    )
+    assert meta is not None
+    assert meta.reviewer_roles == ()
+    assert meta.allowed_approver_roles is None  # absent != empty: default {owner_role} applies
+
+
+def test_explicit_empty_allowed_approver_roles_is_error() -> None:
+    with pytest.raises(MetaError, match="allowed_approver_roles"):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            "owner_role: product\nallowed_approver_roles: []\n---\n"
+        )
+
+
+def test_explicit_empty_reviewer_roles_is_error() -> None:
+    # Absent is the only spelling of "no required reviewers" — one state,
+    # one representation.
+    with pytest.raises(MetaError, match="reviewer_roles"):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            "owner_role: product\nreviewer_roles: []\n---\n"
+        )
+
+
+@pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
+def test_at_sign_in_canonical_arrays_rejected(field: str) -> None:
+    # The new arrays are canonical-only fields — the legacy "@" spelling
+    # never leaks into them.
+    with pytest.raises(MetaError, match=field):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            f'owner_role: product\n{field}: ["@qa"]\n---\n'
+        )
+
+
+@pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
+def test_duplicate_slugs_in_role_arrays_rejected(field: str) -> None:
+    with pytest.raises(MetaError, match=field):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            f"owner_role: product\n{field}: [qa, qa]\n---\n"
+        )
+
+
+@pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
+def test_non_list_role_arrays_rejected(field: str) -> None:
+    with pytest.raises(MetaError, match=field):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            f"owner_role: product\n{field}: qa\n---\n"
+        )
