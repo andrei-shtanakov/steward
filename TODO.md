@@ -200,7 +200,7 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       пина (8deb730 → efb4a5d): clean честный, сравниваются файлы контрактной
       поверхности, не коммиты. Красное → inbox-issue сюда с дедуп-ключом
       `arch-evidence-freshness-watch:<class>`.
-- [ ] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:github:andrei-shtanakov @trigger:"второй штатный cron-прогон, ожидается 2026-08-08 ~05:40 UTC" @id:arch-evidence-freshness-schedule
+- [x] Scheduled-workflow arch-evidence-freshness в CI этого репо — расписание к владельцу обязательства @owner:github:andrei-shtanakov @id:arch-evidence-freshness-schedule — PR #43; приёмка пройдена 2026-08-08 (триггер «второй штатный cron-прогон» сработал)
       **КОД ДОСТАВЛЕН, ПУНКТ ЖДЁТ ПРИЁМКУ, НЕ РЕАЛИЗАЦИЮ.**
       `.github/workflows/arch-evidence-freshness.yml` смержен PR #43 (2026-08-06);
       реализационной работы не осталось. Открыт ровно потому, что DoD пункта —
@@ -240,6 +240,17 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       runs (Robin/dispatcher — не самонаблюдение; 60-дневная cron-ловушка),
       затем снятие launchd (`make arch-freshness-unschedule`) и уборка
       install-целей в devtools.
+      ПРИЁМКА ПРОЙДЕНА 2026-08-08, все три пункта: (1) smoke
+      workflow_dispatch 2026-08-06 — success + artifact; (2) контролируемый
+      non-clean (synthetic=drift) — run красный ровно по domain exit сенсора,
+      envelope/artifact опубликованы, inbox-issue #44 создан по дедуп-ключу
+      с CI-раннера и НЕМЕДЛЕННО закрыт (открытый синтетический drift-issue
+      подавлял бы дедупом эскалацию настоящего дрейфа тем же ключом);
+      (3) два штатных cron-прогона — 2026-08-07 06:51Z и 2026-08-08 06:23Z,
+      оба success (задержка 40–70 мин от 05:40 — нормальная очередь
+      scheduled-событий GitHub, учитывать в deadline читателя). Сессия C:
+      независимый reader — inbox-запрос в robin-runtime; снятие launchd —
+      действие владельца на машине-хосте.
 
 ### 7. Постоянные обязательства и отложенное
 
