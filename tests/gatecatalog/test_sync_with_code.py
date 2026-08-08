@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from steward.gatecatalog import load_catalog
+from steward.gatecatalog import load_catalog_files
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "steward"
 PROFILES = Path(__file__).resolve().parents[2] / "profiles"
@@ -51,7 +51,7 @@ def _extract_finding_rule_ids() -> set[str]:
 
 
 def test_every_emitted_rule_id_is_active_in_catalog():
-    cat = load_catalog(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
+    cat = load_catalog_files(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
     emitted = _extract_finding_rule_ids()
     assert emitted, "экстрактор не нашёл ни одного Finding(...) — сломан сам тест"
     missing = emitted - cat.active_ids()
@@ -59,7 +59,7 @@ def test_every_emitted_rule_id_is_active_in_catalog():
 
 
 def test_every_active_id_is_reachable_from_code():
-    cat = load_catalog(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
+    cat = load_catalog_files(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
     emitted = _extract_finding_rule_ids()
     dead = cat.active_ids() - emitted
     assert not dead, (

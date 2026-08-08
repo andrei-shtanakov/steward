@@ -15,7 +15,7 @@ import typer
 import yaml
 
 from steward.approvalfacts import ApprovalFactsError, load_approval_facts
-from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
+from steward.gatecatalog import CatalogError, GateCatalog, load_catalog_files
 from steward.gatecheck.approval import (
     ApprovalPolicy,
     PolicyError,
@@ -102,7 +102,7 @@ def _load_catalog(profile_path: Path) -> GateCatalog:
     anchoring ``_resolve_profile`` documents for arch-policy.yaml.
     """
     try:
-        return load_catalog(
+        return load_catalog_files(
             profile_path.parent / "gate-catalog.yaml",
             profile_path.parent / "roles.yaml",
         )
