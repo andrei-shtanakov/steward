@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -63,127 +62,67 @@ def test_approvals_are_unavailable_not_empty(tmp_path: Path) -> None:
     assert facts.approvals("a.txt") is None
 
 
-def test_injected_facts_parses_valid_approvals() -> None:
-    """Approvals with identity field parse successfully."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
+def _facts_file(tmp_path: Path, approvals: list[dict]) -> Path:
+    """Write a facts.json with the given approvals and return its (closed) path.
+
+    The file is fully written and closed before the caller reads it —
+    keeping a NamedTemporaryFile open across ``from_file`` works on POSIX
+    but trips over file locking on Windows.
+    """
+    path = tmp_path / "facts.json"
+    path.write_text(
+        json.dumps(
             {
                 "default_branch_files": ["spec/10-requirements.md"],
-                "approvals": {
-                    "spec/10-requirements.md": [
-                        {"identity": "github:alice"},
-                        {"identity": "github:bob"},
-                    ]
-                },
+                "approvals": {"spec/10-requirements.md": approvals},
                 "blob_hashes": {"spec/10-requirements.md": "abc123"},
-            },
-            f,
-        )
-        f.flush()
-        try:
-            facts = InjectedGitFacts.from_file(f.name)
-            approvals = facts.approvals("spec/10-requirements.md")
-            assert len(approvals) == 2
-            assert approvals[0] == Approval(identity="github:alice")
-            assert approvals[1] == Approval(identity="github:bob")
-        finally:
-            Path(f.name).unlink()
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
-def test_injected_facts_rejects_approvals_without_identity() -> None:
+def test_injected_facts_parses_valid_approvals(tmp_path: Path) -> None:
+    """Approvals with identity field parse successfully."""
+    path = _facts_file(tmp_path, [{"identity": "github:alice"}, {"identity": "github:bob"}])
+    facts = InjectedGitFacts.from_file(path)
+    approvals = facts.approvals("spec/10-requirements.md")
+    assert len(approvals) == 2
+    assert approvals[0] == Approval(identity="github:alice")
+    assert approvals[1] == Approval(identity="github:bob")
+
+
+def test_injected_facts_rejects_approvals_without_identity(tmp_path: Path) -> None:
     """Approvals missing 'identity' field fail parsing."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            {
-                "default_branch_files": ["spec/10-requirements.md"],
-                "approvals": {"spec/10-requirements.md": [{"other_field": "value"}]},
-                "blob_hashes": {},
-            },
-            f,
-        )
-        f.flush()
-        try:
-            with pytest.raises(FactsError, match="identity"):
-                InjectedGitFacts.from_file(f.name)
-        finally:
-            Path(f.name).unlink()
+    path = _facts_file(tmp_path, [{"other_field": "value"}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
 
 
-def test_injected_facts_rejects_empty_identity() -> None:
+def test_injected_facts_rejects_empty_identity(tmp_path: Path) -> None:
     """Approvals with empty identity string fail parsing."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            {
-                "default_branch_files": ["spec/10-requirements.md"],
-                "approvals": {"spec/10-requirements.md": [{"identity": ""}]},
-                "blob_hashes": {},
-            },
-            f,
-        )
-        f.flush()
-        try:
-            with pytest.raises(FactsError, match="identity"):
-                InjectedGitFacts.from_file(f.name)
-        finally:
-            Path(f.name).unlink()
+    path = _facts_file(tmp_path, [{"identity": ""}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
 
 
-def test_injected_facts_rejects_non_string_identity() -> None:
+def test_injected_facts_rejects_non_string_identity(tmp_path: Path) -> None:
     """Approvals with non-string identity fail parsing."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            {
-                "default_branch_files": ["spec/10-requirements.md"],
-                "approvals": {"spec/10-requirements.md": [{"identity": 123}]},
-                "blob_hashes": {},
-            },
-            f,
-        )
-        f.flush()
-        try:
-            with pytest.raises(FactsError, match="identity"):
-                InjectedGitFacts.from_file(f.name)
-        finally:
-            Path(f.name).unlink()
+    path = _facts_file(tmp_path, [{"identity": 123}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
 
 
-def test_injected_facts_rejects_old_approval_shape() -> None:
+def test_injected_facts_rejects_old_approval_shape(tmp_path: Path) -> None:
     """Old-shape approvals with handle/role fields fail parsing with error naming identity."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            {
-                "default_branch_files": ["spec/10-requirements.md"],
-                "approvals": {"spec/10-requirements.md": [{"handle": "@alice", "role": "product"}]},
-                "blob_hashes": {},
-            },
-            f,
-        )
-        f.flush()
-        try:
-            with pytest.raises(FactsError, match="identity"):
-                InjectedGitFacts.from_file(f.name)
-        finally:
-            Path(f.name).unlink()
+    path = _facts_file(tmp_path, [{"handle": "@alice", "role": "product"}])
+    with pytest.raises(FactsError, match="identity"):
+        InjectedGitFacts.from_file(path)
 
 
-def test_injected_facts_rejects_approvals_with_unknown_keys() -> None:
+def test_injected_facts_rejects_approvals_with_unknown_keys(tmp_path: Path) -> None:
     """Approvals with unknown keys fail parsing."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            {
-                "default_branch_files": ["spec/10-requirements.md"],
-                "approvals": {
-                    "spec/10-requirements.md": [
-                        {"identity": "github:alice", "extra_field": "value"}
-                    ]
-                },
-                "blob_hashes": {},
-            },
-            f,
-        )
-        f.flush()
-        try:
-            with pytest.raises(FactsError, match="unknown keys"):
-                InjectedGitFacts.from_file(f.name)
-        finally:
-            Path(f.name).unlink()
+    path = _facts_file(tmp_path, [{"identity": "github:alice", "extra_field": "value"}])
+    with pytest.raises(FactsError, match="unknown keys"):
+        InjectedGitFacts.from_file(path)

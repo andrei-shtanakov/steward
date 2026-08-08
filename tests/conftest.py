@@ -45,8 +45,8 @@ def write_roles(tmp_path: Path) -> Path:
 
 # DEC-007 D7 (PR-3): role-assignments.yaml is a mandatory sibling of the
 # profile for every non-solo `gate-check` run (CLI loads it unconditionally,
-# regardless of whether any artifact is approved). Identities match
-# DEFAULT_ROLES's slugs so any test's approvals fixtures resolve cleanly.
+# regardless of whether any artifact is approved). The granted roles are
+# DEFAULT_ROLES slugs so any test's approvals fixtures resolve cleanly.
 DEFAULT_ASSIGNMENTS = (
     "version: 1\n"
     "assignments:\n"

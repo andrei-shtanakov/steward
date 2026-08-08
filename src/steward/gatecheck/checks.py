@@ -334,7 +334,8 @@ def check_status_git(
         if assignments is None:
             raise FactsError(
                 "role assignments are required to authorize approvals for "
-                f"non-solo profile {graph.profile!r} (profiles/role-assignments.yaml)"
+                f"non-solo profile {graph.profile!r} — role-assignments.yaml "
+                "is a mandatory sibling of the selected profile"
             )
         node = graph.nodes[artifact.node_id]
         # DEC-007 D7 (owner ruling): absent allowed_approver_roles → the
