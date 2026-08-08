@@ -16,15 +16,15 @@ _PROFILE = """\
 profile: test
 solo_auto_approve: false
 artifacts:
-  - {id: requirements, owner_role: "@product", upstream: []}
-  - {id: design, owner_role: "@architects", upstream: [requirements]}
+  - {id: requirements, owner_role: product, upstream: []}
+  - {id: design, owner_role: architects, upstream: [requirements]}
 """
 
 _CYCLIC = """\
 profile: broken
 artifacts:
-  - {id: a, owner_role: "@x", upstream: [b]}
-  - {id: b, owner_role: "@x", upstream: [a]}
+  - {id: a, owner_role: product, upstream: [b]}
+  - {id: b, owner_role: product, upstream: [a]}
 """
 
 
@@ -93,7 +93,7 @@ def test_no_fs_is_deterministic(tmp_path: Path, write_roles: Path) -> None:
         tmp_path,
         {
             "default_branch_files": ["des.md", "req.md"],
-            "approvals": {"des.md": [{"handle": "@a", "role": "@architects"}]},
+            "approvals": {"des.md": [{"handle": "@a", "role": "architects"}]},
         },
     )
     args = [
@@ -130,8 +130,8 @@ def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path, write_roles: Path) 
         {
             "default_branch_files": ["des.md", "req.md"],
             "approvals": {
-                "req.md": [{"handle": "@p", "role": "@product"}],
-                "des.md": [{"handle": "@a", "role": "@architects"}],
+                "req.md": [{"handle": "@p", "role": "product"}],
+                "des.md": [{"handle": "@a", "role": "architects"}],
             },
             "blob_hashes": {"req.md": "new456"},
         },

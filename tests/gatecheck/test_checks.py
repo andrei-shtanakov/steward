@@ -16,21 +16,33 @@ from steward.gatecheck.checks import (
 )
 from steward.gatecheck.git_facts import Approval, InjectedGitFacts, LiveGitFacts
 from steward.graph import load_profile_data
+from steward.roles import Role, RolesCatalog
 
 _PROFILE = {
     "profile": "team-test",
     "solo_auto_approve": False,
     "artifacts": [
-        {"id": "requirements", "owner_role": "@product", "upstream": []},
-        {"id": "design", "owner_role": "@architects", "upstream": ["requirements"]},
+        {"id": "requirements", "owner_role": "product", "upstream": []},
+        {"id": "design", "owner_role": "architects", "upstream": ["requirements"]},
         {
             "id": "task",
-            "owner_role": "@stream-owner",
+            "owner_role": "stream-owner",
             "upstream": ["design"],
             "delegate": "spec-runner",
         },
     ],
 }
+
+_CATALOG = RolesCatalog(
+    version=1,
+    slug_pattern="^[a-z][a-z0-9-]{1,31}$",
+    roles=(
+        Role("product", "Product"),
+        Role("architects", "Architecture"),
+        Role("stream-owner", "Workstream owner"),
+        Role("qa", "QA"),
+    ),
+)
 
 
 class FakeGitFacts:
@@ -55,7 +67,7 @@ class FakeGitFacts:
 
 
 def _graph():
-    return load_profile_data(_PROFILE)
+    return load_profile_data(_PROFILE, _CATALOG)
 
 
 def _write(
@@ -152,7 +164,7 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
         artifacts,
         FakeGitFacts(
             on_default={"req.md"},
-            approvals={"req.md": (Approval("@bob", "@qa"),)},
+            approvals={"req.md": (Approval("@bob", "qa"),)},
         ),
     )
     assert {f.rule_id for f in wrong_role} == {"GC-GIT-ROLE"}
@@ -162,7 +174,7 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
         artifacts,
         FakeGitFacts(
             on_default={"req.md"},
-            approvals={"req.md": (Approval("@alice", "@product"),)},
+            approvals={"req.md": (Approval("@alice", "product"),)},
         ),
     )
     assert clean == []
@@ -207,7 +219,7 @@ def test_status_git_injected_correct_role_is_clean(tmp_path: Path) -> None:
     artifacts, _ = collect_bundle(_graph(), tmp_path)
     facts = InjectedGitFacts(
         default_branch_files=frozenset({"req.md"}),
-        approvals={"req.md": (Approval("@alice", "@product"),)},
+        approvals={"req.md": (Approval("@alice", "product"),)},
         blob_hashes={},
     )
     findings = check_status_git(_graph(), artifacts, facts)
@@ -215,7 +227,7 @@ def test_status_git_injected_correct_role_is_clean(tmp_path: Path) -> None:
 
 
 def test_solo_auto_approve_skips_role_check(tmp_path: Path) -> None:
-    solo = load_profile_data({**_PROFILE, "solo_auto_approve": True})
+    solo = load_profile_data({**_PROFILE, "solo_auto_approve": True}, _CATALOG)
     _write(tmp_path, "req.md", "requirements", "approved")
     artifacts, _ = collect_bundle(solo, tmp_path)
     findings = check_status_git(solo, artifacts, FakeGitFacts(on_default={"req.md"}))

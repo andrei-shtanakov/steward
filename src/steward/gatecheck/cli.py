@@ -43,7 +43,7 @@ from steward.gatecheck.trace_matrix import (
     render_matrix_json,
     render_matrix_text,
 )
-from steward.graph import ProfileError, SpecGraph, load_profile
+from steward.graph import ProfileError, load_profile
 from steward.roles import RolesCatalog, RolesError, load_roles_catalog
 from steward.verdicts import EmitError, emit_verdicts
 
@@ -78,22 +78,19 @@ def _resolve_stage(stage: str | None, arch_stage: str | None) -> str:
     return resolved
 
 
-def _resolve_profile(profile: str) -> tuple[SpecGraph, Path]:
-    """Resolve a profile name/path to its graph AND the YAML path it loaded from.
+def _resolve_profile_path(profile: str) -> Path:
+    """Resolve a profile name/path to the YAML path (no loading).
 
-    The path anchors sibling policy files (arch-policy.yaml) so they resolve
-    relative to the profiles directory actually used, not the current CWD.
+    The path anchors sibling policy files (arch-policy.yaml, roles.yaml) so
+    they resolve relative to the profiles directory actually used, not the
+    current CWD.
     """
     candidate = Path(profile)
     if not candidate.is_file():
         candidate = Path("profiles") / f"{profile}.yaml"
     if not candidate.is_file():
         _fail_config(f"profile {profile!r} not found (looked for {candidate})")
-    try:
-        return load_profile(candidate), candidate
-    except ProfileError as err:
-        _fail_config(str(err))
-        raise AssertionError from None  # unreachable; keeps type-checkers calm
+    return candidate
 
 
 def _load_roles(profile_path: Path) -> RolesCatalog:
@@ -115,7 +112,7 @@ def _load_catalog(profile_path: Path, roles: RolesCatalog) -> GateCatalog:
 
     Sibling files (gate-catalog.yaml) resolve relative to the profile
     directory actually in use, not the current CWD — the same anchoring
-    ``_resolve_profile`` documents for arch-policy.yaml.
+    ``_resolve_profile_path`` documents for arch-policy.yaml.
     """
     try:
         return load_catalog(profile_path.parent / "gate-catalog.yaml", roles)
@@ -230,12 +227,17 @@ def main(
             "and cannot run under --no-fs"
         )
 
-    graph, profile_path = _resolve_profile(profile)
+    profile_path = _resolve_profile_path(profile)
+    roles_catalog = _load_roles(profile_path)
+    try:
+        graph = load_profile(profile_path, roles_catalog)
+    except ProfileError as err:
+        _fail_config(str(err))
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
     git = _git_facts(no_fs, spec_dir)
 
     artifacts, findings = collect_bundle(graph, spec_dir)
 
-    roles_catalog = _load_roles(profile_path)
     role_problems = unresolved_role_refs(artifacts, roles_catalog)
     if role_problems:
         roles_path = profile_path.parent / "roles.yaml"

@@ -15,19 +15,26 @@ from pathlib import Path
 from steward.gatecheck.checks import collect_bundle, run_checks
 from steward.gatecheck.git_facts import LiveGitFacts
 from steward.graph import load_profile_data
+from steward.roles import Role, RolesCatalog
 
 _PROFILE = {
     "profile": "team-exp-live",
     "solo_auto_approve": True,  # keeps GC-GIT-ROLE out of a forge-less test repo
     "artifacts": [
-        {"id": "requirements", "owner_role": "@product", "upstream": []},
+        {"id": "requirements", "owner_role": "product", "upstream": []},
         {
             "id": "behaviour-spec",
-            "owner_role": "@qa",
+            "owner_role": "qa",
             "upstream": ["requirements"],
         },
     ],
 }
+
+_CATALOG = RolesCatalog(
+    version=1,
+    slug_pattern="^[a-z][a-z0-9-]{1,31}$",
+    roles=(Role("product", "Product"), Role("qa", "QA")),
+)
 
 _REQUIREMENTS = """---
 spec_stage: requirements
@@ -64,7 +71,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _run(repo: Path, spec: Path) -> list:
-    graph = load_profile_data(_PROFILE)
+    graph = load_profile_data(_PROFILE, _CATALOG)
     artifacts, findings = collect_bundle(graph, spec)
     findings.extend(run_checks(graph, artifacts, LiveGitFacts(repo, spec)))
     return findings

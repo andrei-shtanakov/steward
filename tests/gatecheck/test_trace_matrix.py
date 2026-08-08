@@ -16,6 +16,7 @@ from steward.gatecheck.trace_matrix import (
 )
 from steward.graph import load_profile_data
 from steward.meta import parse_artifact
+from steward.roles import Role, RolesCatalog
 
 runner = CliRunner()
 
@@ -23,14 +24,25 @@ _PROFILE = {
     "profile": "team-exp-test",
     "solo_auto_approve": True,
     "artifacts": [
-        {"id": "requirements", "owner_role": "@product", "upstream": []},
+        {"id": "requirements", "owner_role": "product", "upstream": []},
         {
             "id": "behaviour-spec",
-            "owner_role": "@product,@qa",
+            "owner_role": "product",
+            "reviewer_roles": ["qa"],
             "upstream": ["requirements"],
         },
     ],
 }
+
+_CATALOG = RolesCatalog(
+    version=1,
+    slug_pattern="^[a-z][a-z0-9-]{1,31}$",
+    roles=(
+        Role("product", "Product"),
+        Role("qa", "QA"),
+        Role("owner", "Solo owner"),
+    ),
+)
 
 _REQUIREMENTS = """---
 spec_stage: requirements
@@ -82,7 +94,7 @@ def _artifacts() -> list[Artifact]:
 
 
 def _matrix() -> dict:
-    matrix = build_trace_matrix(load_profile_data(_PROFILE), _artifacts())
+    matrix = build_trace_matrix(load_profile_data(_PROFILE, _CATALOG), _artifacts())
     assert matrix is not None
     return matrix
 
@@ -90,12 +102,12 @@ def _matrix() -> dict:
 def test_matrix_none_without_behaviour_node() -> None:
     data = {
         "profile": "lite-test",
-        "artifacts": [{"id": "requirements", "owner_role": "@owner", "upstream": []}],
+        "artifacts": [{"id": "requirements", "owner_role": "owner", "upstream": []}],
     }
     meta = parse_artifact(_REQUIREMENTS)
     assert meta is not None
     artifacts = [Artifact(path="r.md", node_id="requirements", meta=meta, text=_REQUIREMENTS)]
-    assert build_trace_matrix(load_profile_data(data), artifacts) is None
+    assert build_trace_matrix(load_profile_data(data, _CATALOG), artifacts) is None
 
 
 def test_matrix_rows_are_id_sorted_and_complete() -> None:
@@ -131,7 +143,7 @@ def test_invalid_declarations_never_reach_the_matrix() -> None:
     artifacts[1] = Artifact(
         path="15-behaviour.md", node_id="behaviour-spec", meta=meta, text=behaviour
     )
-    matrix = build_trace_matrix(load_profile_data(_PROFILE), artifacts)
+    matrix = build_trace_matrix(load_profile_data(_PROFILE, _CATALOG), artifacts)
     assert matrix is not None
     rows = {row["id"]: row for row in matrix["requirements"]}
     assert rows["FR-02"]["structural"] == []
@@ -154,8 +166,8 @@ def _write_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
     profile = tmp_path / "team-exp-test.yaml"
     profile.write_text(
         "profile: team-exp-test\nsolo_auto_approve: true\nartifacts:\n"
-        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
-        '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
+        "  - {id: requirements, owner_role: product, upstream: []}\n"
+        "  - {id: behaviour-spec, owner_role: qa, upstream: [requirements]}\n"
     )
     spec = tmp_path / "spec"
     spec.mkdir()
@@ -211,7 +223,7 @@ def test_cli_trace_matrix_without_behaviour_node_is_config_error(
     profile, spec, facts = _write_bundle(tmp_path)
     profile.write_text(
         "profile: no-beh\nsolo_auto_approve: true\nartifacts:\n"
-        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
+        "  - {id: requirements, owner_role: product, upstream: []}\n"
     )
     result = runner.invoke(
         app, [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--trace-matrix"]

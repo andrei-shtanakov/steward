@@ -15,6 +15,7 @@ from steward.gatecheck.checks import Finding, collect_bundle, run_checks
 from steward.gatecheck.cli import app
 from steward.gatecheck.git_facts import LiveGitFacts
 from steward.graph import load_profile_data
+from steward.roles import load_roles_catalog
 from steward.verdicts import EmitError, ProvenanceError, emit_verdicts
 
 runner = CliRunner()
@@ -23,6 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SCHEMA = json.loads((_REPO_ROOT / "contracts/gate-verdicts/v1/SCHEMA.json").read_text())
 
+ROLES = load_roles_catalog(_REPO_ROOT / "profiles/roles.yaml")
 CATALOG = load_catalog_files(
     _REPO_ROOT / "profiles/gate-catalog.yaml", _REPO_ROOT / "profiles/roles.yaml"
 )
@@ -31,8 +33,13 @@ _PROFILE = {
     "profile": "team-exp-emit",
     "solo_auto_approve": True,
     "artifacts": [
-        {"id": "requirements", "owner_role": "@product,@architects", "upstream": []},
-        {"id": "behaviour-spec", "owner_role": "@qa", "upstream": ["requirements"]},
+        {
+            "id": "requirements",
+            "owner_role": "product",
+            "reviewer_roles": ["architects"],
+            "upstream": [],
+        },
+        {"id": "behaviour-spec", "owner_role": "qa", "upstream": ["requirements"]},
     ],
 }
 
@@ -73,7 +80,7 @@ def _repo(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _emit(repo: Path, spec: Path) -> list[dict]:
-    graph = load_profile_data(_PROFILE)
+    graph = load_profile_data(_PROFILE, ROLES)
     artifacts, findings = collect_bundle(graph, spec)
     findings.extend(run_checks(graph, artifacts, LiveGitFacts(repo, spec)))
     out = emit_verdicts(graph, artifacts, findings, spec, CATALOG)
@@ -112,7 +119,9 @@ def test_artifact_inventory_and_role_slugs(tmp_path: Path) -> None:
     req = artifacts["10-requirements.md"]
     assert req["node_id"] == "requirements"
     assert req["status"] == "approved"
-    assert req["owner_roles"] == ["product", "architects"]  # DEC-007 slugs, no '@'
+    # DEC-007 canonical: exactly one accountable owner slug, no '@'; the former
+    # architects co-owner now lives in reviewer_roles (not surfaced here).
+    assert req["owner_roles"] == ["product"]
     assert artifacts["15-behaviour.md"]["owner_roles"] == ["qa"]
 
 
@@ -147,7 +156,7 @@ def test_active_finding_record_carries_obligation_from_catalog(tmp_path: Path) -
 
 def test_unknown_rule_id_raises_emit_error_and_writes_nothing(tmp_path: Path) -> None:
     repo, spec = _repo(tmp_path)
-    graph = load_profile_data(_PROFILE)
+    graph = load_profile_data(_PROFILE, ROLES)
     artifacts, findings = collect_bundle(graph, spec)
     findings.append(Finding(severity="error", rule_id="GC-GHOST", artifact="x", message="m"))
     with pytest.raises(EmitError, match="GC-GHOST"):
@@ -179,7 +188,7 @@ def test_declared_rule_id_is_refused_like_unknown(tmp_path: Path) -> None:
         catalog_dir / "gate-catalog.yaml", catalog_dir / "roles.yaml"
     )
 
-    graph = load_profile_data(_PROFILE)
+    graph = load_profile_data(_PROFILE, ROLES)
     artifacts, findings = collect_bundle(graph, spec)
     findings.append(Finding(severity="error", rule_id="GC-FUTURE", artifact="x", message="m"))
     with pytest.raises(EmitError, match="declared") as exc_info:
@@ -201,7 +210,7 @@ def test_no_git_means_no_file(tmp_path: Path) -> None:
     spec = tmp_path / "spec"
     spec.mkdir()
     (spec / "10-requirements.md").write_text(_REQUIREMENTS)
-    graph = load_profile_data(_PROFILE)
+    graph = load_profile_data(_PROFILE, ROLES)
     artifacts, findings = collect_bundle(graph, spec)
     with pytest.raises(ProvenanceError):
         emit_verdicts(graph, artifacts, findings, spec, CATALOG)
@@ -213,7 +222,7 @@ def test_unwritable_target_is_a_config_error_not_a_crash(tmp_path: Path) -> None
     # (CLI exit 2), never as an uncaught crash.
     repo, spec = _repo(tmp_path)
     (repo / ".steward").write_text("a file where the directory must go")
-    graph = load_profile_data(_PROFILE)
+    graph = load_profile_data(_PROFILE, ROLES)
     artifacts, findings = collect_bundle(graph, spec)
     with pytest.raises(EmitError, match="cannot write verdicts file"):
         emit_verdicts(graph, artifacts, findings, spec, CATALOG)
@@ -224,8 +233,8 @@ def test_cli_emit_writes_file_and_keeps_exit_semantics(tmp_path: Path) -> None:
     profile = repo / "p.yaml"
     profile.write_text(
         "profile: team-exp-emit\nsolo_auto_approve: true\nartifacts:\n"
-        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
-        '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
+        "  - {id: requirements, owner_role: product, upstream: []}\n"
+        "  - {id: behaviour-spec, owner_role: qa, upstream: [requirements]}\n"
     )
     # gate-catalog.yaml/roles.yaml resolve relative to the profile actually
     # used (CWD-independent), so the tmp profile needs the real catalog as
@@ -246,8 +255,8 @@ def test_cli_emit_with_missing_catalog_exits_two_not_traceback(tmp_path: Path) -
     profile = repo / "p.yaml"
     profile.write_text(
         "profile: team-exp-emit\nsolo_auto_approve: true\nartifacts:\n"
-        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
-        '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
+        "  - {id: requirements, owner_role: product, upstream: []}\n"
+        "  - {id: behaviour-spec, owner_role: qa, upstream: [requirements]}\n"
     )
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
     assert result.exit_code == 2, result.output
@@ -260,8 +269,8 @@ def test_cli_emit_with_malformed_catalog_exits_two_not_traceback(tmp_path: Path)
     profile = repo / "p.yaml"
     profile.write_text(
         "profile: team-exp-emit\nsolo_auto_approve: true\nartifacts:\n"
-        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
-        '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
+        "  - {id: requirements, owner_role: product, upstream: []}\n"
+        "  - {id: behaviour-spec, owner_role: qa, upstream: [requirements]}\n"
     )
     (repo / "gate-catalog.yaml").write_text(":\n  not: [valid, yaml")
     (repo / "roles.yaml").write_bytes((_REPO_ROOT / "profiles" / "roles.yaml").read_bytes())
@@ -276,7 +285,7 @@ def test_cli_emit_refuses_no_fs(tmp_path: Path) -> None:
     facts.write_text('{"default_branch_files": [], "approvals": {}, "blob_hashes": {}}')
     profile = repo / "p.yaml"
     profile.write_text(
-        'profile: t\nartifacts:\n  - {id: requirements, owner_role: "@product", upstream: []}\n'
+        "profile: t\nartifacts:\n  - {id: requirements, owner_role: product, upstream: []}\n"
     )
     result = runner.invoke(
         app,
