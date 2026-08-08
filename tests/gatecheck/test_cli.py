@@ -287,6 +287,9 @@ def test_unresolvable_frontmatter_role_is_config_error(tmp_path: Path, write_rol
     assert result.exit_code == 2
     err = result.output
     assert "des.md" in err and "owner_role" in err and "ghost" in err
+    # The message names the catalog actually consulted (a sibling of the
+    # selected profile), not a hardcoded profiles/roles.yaml hint.
+    assert str(write_roles) in err
 
 
 def test_missing_sibling_roles_yaml_is_config_error(tmp_path: Path) -> None:

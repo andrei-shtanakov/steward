@@ -41,4 +41,6 @@ def _check(problems: list[str], roles: RolesCatalog, path: str, field: str, slug
 
 
 def _message(path: str, field: str, slug: str) -> str:
-    return f"{path}: {field}: role {slug!r} is not in the roles catalog (profiles/roles.yaml)"
+    # The catalog's actual location is the caller's knowledge (a sibling of the
+    # selected profile, not necessarily profiles/) — the CLI appends it once.
+    return f"{path}: {field}: role {slug!r} is not in the roles catalog"

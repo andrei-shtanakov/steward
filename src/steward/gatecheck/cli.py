@@ -238,7 +238,8 @@ def main(
     roles_catalog = _load_roles(profile_path)
     role_problems = unresolved_role_refs(artifacts, roles_catalog)
     if role_problems:
-        _fail_config("\n".join(role_problems))
+        roles_path = profile_path.parent / "roles.yaml"
+        _fail_config("\n".join([*role_problems, f"roles catalog: {roles_path}"]))
 
     findings.extend(run_checks(graph, artifacts, git))
 
