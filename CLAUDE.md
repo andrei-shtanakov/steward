@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Implemented so far: profiles + `graph.py` (WS-001), `meta.py` + vendored SpecMeta, the gate-check linter with CI dogfood (WS-002), the compile-down emitters (WS-004), the risk-model classifier + waivers (WS-006), and `profiles/authority.yaml` as the authority-policy SSOT (RD-006 M2, vendored by arbiter). Sources of truth, in order:
 
-- `TODO.md` — the open-items surface: what is actually left, tagged `@owner:` / `@blocked_by:` / `@trigger:` (format: `../_cowork_output/2026-07-26-plan-fields-and-todo-coverage-handoff.md` §3). Read this first; it is also what Robin's ecosystem digest reads.
+- `TODO.md` — the open-items surface: what is actually left, tagged on checkbox lines with typed `@owner:<principal>` / `@blocked_by:<reference>` / `@trigger:"…"` / `@id:<node-id>`. Owner principals are `github:<login>`, `github-team:<org>/<team>`, `repo:<manifest-key>`, or `TBD`; an absent owner is `missing`, not `TBD`. Read this first; it is also what Robin's ecosystem digest reads.
 - `NEXT-STEPS.md` — the phase roadmap and its rationale (Phase 0–3, items D1/V1/C1–C5); explains *why* the order is what it is.
 - `BOOTSTRAP.md` — the bootstrap blueprint: target structure, file skeletons, dependency decision. Apply structure from it rather than inventing.
 - `spec/` — steward's own dogfood spec (`00-charter` … `40-decomposition`), written in its own format. `spec/20-design.md` holds the frontmatter schema and key decisions DEC-001…DEC-006.
