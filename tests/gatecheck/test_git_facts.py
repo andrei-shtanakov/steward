@@ -51,3 +51,11 @@ def test_changed_paths_since_returns_paths_on_success(tmp_path: Path) -> None:
     _git(repo, "commit", "-q", "-m", "second")
     facts = LiveGitFacts(repo, repo)
     assert facts.changed_paths_since(base) == ["b.txt"]
+
+
+def test_approvals_are_unavailable_not_empty(tmp_path: Path) -> None:
+    """approvals() -> None (facts unavailable), not () (authoritative empty) —
+    only an authoritative source may prove a role violation downstream."""
+    repo = _init_repo(tmp_path)
+    facts = LiveGitFacts(repo, repo)
+    assert facts.approvals("a.txt") is None

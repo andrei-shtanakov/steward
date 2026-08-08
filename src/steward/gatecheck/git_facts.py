@@ -6,9 +6,11 @@ Checks depend only on the :class:`GitFacts` protocol. Two implementations:
   runs (REQ-207): fully deterministic, no git, no network.
 - :class:`LiveGitFacts` — local-dev convenience over the ``git`` CLI. It can
   confirm presence on the default branch and blob hashes, but NOT PR approvals
-  (that needs forge API access) — ``approvals`` returns an empty tuple, so an
-  ``approved`` artifact under a non-solo profile will produce a finding telling
-  the operator to supply facts. CI must use ``--no-fs``.
+  (that needs forge API access) — ``approvals`` returns ``None``: the facts
+  are unavailable, not authoritatively empty. Absence of a role-mapping is
+  therefore not treated as a proven role violation — ``GC-GIT-ROLE`` skips the
+  artifact rather than emitting a finding (owner ruling). CI must use
+  ``--no-fs`` for an authoritative check.
 
 facts.json shape::
 
@@ -63,8 +65,15 @@ class GitFacts(Protocol):
         """True when the artifact exists on the default branch."""
         ...
 
-    def approvals(self, path: str) -> tuple[Approval, ...]:
-        """PR approvals recorded for the artifact (may be empty)."""
+    def approvals(self, path: str) -> tuple[Approval, ...] | None:
+        """PR approvals recorded for the artifact.
+
+        ``None`` means the facts are unavailable (no authoritative source —
+        e.g. :class:`LiveGitFacts`, which cannot reach forge APIs). An empty
+        tuple means an authoritative source confirmed there are no approvals.
+        Callers must not conflate the two: only the latter proves a role
+        violation.
+        """
         ...
 
     def blob_hash(self, path: str) -> str | None:
@@ -173,7 +182,7 @@ class InjectedGitFacts:
     def on_default_branch(self, path: str) -> bool:
         return path in self._files
 
-    def approvals(self, path: str) -> tuple[Approval, ...]:
+    def approvals(self, path: str) -> tuple[Approval, ...] | None:
         return self._approvals.get(path, ())
 
     def blob_hash(self, path: str) -> str | None:
@@ -195,7 +204,12 @@ class InjectedGitFacts:
 
 
 class LiveGitFacts:
-    """Local-dev facts over the git CLI; approvals are never available."""
+    """Local-dev facts over the git CLI; approvals are never available.
+
+    That was always true; it is now expressed through the type — ``approvals``
+    returns ``None`` (facts unavailable) rather than an empty tuple (facts
+    confirm no approvals), so callers cannot mistake the two.
+    """
 
     def __init__(self, repo_root: Path, bundle_root: Path) -> None:
         self._root = repo_root
@@ -229,8 +243,8 @@ class LiveGitFacts:
             return False
         return rel in self._default_branch_files()
 
-    def approvals(self, path: str) -> tuple[Approval, ...]:  # noqa: ARG002
-        return ()  # forge approvals need facts injection (CI uses --no-fs)
+    def approvals(self, path: str) -> tuple[Approval, ...] | None:  # noqa: ARG002
+        return None  # forge approvals need facts injection (CI uses --no-fs)
 
     def blob_hash(self, path: str) -> str | None:
         try:

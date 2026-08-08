@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from steward.gatecheck.checks import (
@@ -13,7 +14,7 @@ from steward.gatecheck.checks import (
     check_upstream_approved,
     collect_bundle,
 )
-from steward.gatecheck.git_facts import Approval
+from steward.gatecheck.git_facts import Approval, InjectedGitFacts, LiveGitFacts
 from steward.graph import load_profile_data
 
 _PROFILE = {
@@ -165,6 +166,52 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
         ),
     )
     assert clean == []
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+
+
+def test_status_git_live_facts_unavailable_skips_role_check(tmp_path: Path) -> None:
+    """LiveGitFacts.approvals -> None: no authoritative role-facts, so an
+    approved artifact produces no GC-GIT-ROLE finding (owner ruling: absence
+    of a role-mapping is not a proven role violation)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "master")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "t")
+    _write(repo, "req.md", "requirements", "approved")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "bundle")
+
+    artifacts, _ = collect_bundle(_graph(), repo)
+    findings = check_status_git(_graph(), artifacts, LiveGitFacts(repo, repo))
+    assert findings == []
+
+
+def test_status_git_injected_empty_approvals_still_finds(tmp_path: Path) -> None:
+    """Regression guard: InjectedGitFacts with a known-empty tuple is still an
+    authoritative "no approvals" and must keep producing GC-GIT-ROLE."""
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    facts = InjectedGitFacts(
+        default_branch_files=frozenset({"req.md"}), approvals={}, blob_hashes={}
+    )
+    findings = check_status_git(_graph(), artifacts, facts)
+    assert {f.rule_id for f in findings} == {"GC-GIT-ROLE"}
+
+
+def test_status_git_injected_correct_role_is_clean(tmp_path: Path) -> None:
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    facts = InjectedGitFacts(
+        default_branch_files=frozenset({"req.md"}),
+        approvals={"req.md": (Approval("@alice", "@product"),)},
+        blob_hashes={},
+    )
+    findings = check_status_git(_graph(), artifacts, facts)
+    assert findings == []
 
 
 def test_solo_auto_approve_skips_role_check(tmp_path: Path) -> None:
