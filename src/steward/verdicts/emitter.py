@@ -30,6 +30,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from steward.gatecatalog import GateCatalog
 from steward.gatecheck.checks import Artifact, Finding
 from steward.graph import SpecGraph
 from steward.meta import parse_owner_roles
@@ -55,6 +56,7 @@ def emit_verdicts(
     artifacts: list[Artifact],
     findings: list[Finding],
     spec_dir: Path,
+    catalog: GateCatalog,
 ) -> Path:
     """Write the run's verdicts file; return its path.
 
@@ -63,7 +65,15 @@ def emit_verdicts(
     :class:`ProvenanceError` when the bundle is not inside a git repository —
     verdicts without provenance would be exactly the untrustworthy 'clean' the
     capability forbids.
+
+    ``catalog`` gates the emission itself: a finding whose ``rule_id`` the
+    catalog doesn't know, or knows but hasn't marked ``active`` (e.g. a
+    ``declared`` obligation with no gate-check implementation yet), refuses
+    the whole run with :class:`EmitError` before anything is written. An
+    active finding's record carries the catalog's ``obligation`` alongside
+    its ``gate_id``.
     """
+    _check_catalog_coverage(findings, catalog)
     repo_root = _git(spec_dir, "rev-parse", "--show-toplevel")
     if repo_root is None:
         raise ProvenanceError(
@@ -105,10 +115,14 @@ def emit_verdicts(
             }
         )
     for finding in findings:
+        entry = catalog.entry(finding.rule_id)
+        if entry is None:  # pragma: no cover — _check_catalog_coverage already refused this
+            raise EmitError(f"gate_id {finding.rule_id!r} vanished from the catalog mid-emit")
         records.append(
             {
                 "kind": "finding",
                 "gate_id": finding.rule_id,
+                "obligation": entry.obligation,
                 "verdict": _SEVERITY_TO_VERDICT[finding.severity],
                 "artifact": finding.artifact,
                 "message": finding.message,
@@ -121,6 +135,33 @@ def emit_verdicts(
     except OSError as err:
         raise EmitError(f"cannot write verdicts file {out_path}: {err}") from err
     return out_path
+
+
+def _check_catalog_coverage(findings: list[Finding], catalog: GateCatalog) -> None:
+    """Refuse the whole run if any finding's rule_id isn't an active catalog entry.
+
+    Two distinct failure classes, reported separately so the fix is obvious:
+    unknown ids (typo, retired-and-forgotten check) and catalogued-but-not-
+    active ids (e.g. a ``declared`` obligation with no implementation yet —
+    emitting it as a finding would be a bug, not a possible run).
+    """
+    unknown: set[str] = set()
+    inactive: dict[str, str] = {}
+    for finding in findings:
+        entry = catalog.entry(finding.rule_id)
+        if entry is None:
+            unknown.add(finding.rule_id)
+        elif entry.status != "active":
+            inactive[finding.rule_id] = entry.status
+    if not unknown and not inactive:
+        return
+    parts = []
+    if unknown:
+        parts.append(f"unknown gate_id(s): {', '.join(sorted(unknown))}")
+    if inactive:
+        described = ", ".join(f"{gid} ({status})" for gid, status in sorted(inactive.items()))
+        parts.append(f"non-active gate_id(s): {described}")
+    raise EmitError(f"cannot emit verdicts: {'; '.join(parts)}")
 
 
 def _status(artifact: Artifact) -> str:

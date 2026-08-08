@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 
+from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
 from steward.gatecheck.architecture import (
     ArchPolicyError,
     check_arch_conformance,
@@ -61,6 +62,15 @@ def _resolve_profile(profile: str) -> tuple[SpecGraph, Path]:
     try:
         return load_profile(candidate), candidate
     except ProfileError as err:
+        _fail_config(str(err))
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
+
+
+def _load_catalog() -> GateCatalog:
+    """Load the gate-id catalog from ``profiles/``, same directory ``_resolve_profile`` uses."""
+    try:
+        return load_catalog(Path("profiles") / "gate-catalog.yaml", Path("profiles") / "roles.yaml")
+    except CatalogError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
 
@@ -162,8 +172,9 @@ def main(
         findings.extend(check_arch_conformance(arch, policy, git))
 
     if emit_verdicts_flag:
+        catalog = _load_catalog()
         try:
-            out_path = emit_verdicts(graph, artifacts, findings, spec_dir)
+            out_path = emit_verdicts(graph, artifacts, findings, spec_dir, catalog)
         except EmitError as err:
             _fail_config(str(err))
         else:

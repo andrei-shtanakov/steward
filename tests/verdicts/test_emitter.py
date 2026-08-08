@@ -10,7 +10,8 @@ import jsonschema
 import pytest
 from typer.testing import CliRunner
 
-from steward.gatecheck.checks import collect_bundle, run_checks
+from steward.gatecatalog import load_catalog
+from steward.gatecheck.checks import Finding, collect_bundle, run_checks
 from steward.gatecheck.cli import app
 from steward.gatecheck.git_facts import LiveGitFacts
 from steward.graph import load_profile_data
@@ -18,8 +19,12 @@ from steward.verdicts import EmitError, ProvenanceError, emit_verdicts
 
 runner = CliRunner()
 
-SCHEMA = json.loads(
-    (Path(__file__).resolve().parents[2] / "contracts/gate-verdicts/v1/SCHEMA.json").read_text()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+SCHEMA = json.loads((_REPO_ROOT / "contracts/gate-verdicts/v1/SCHEMA.json").read_text())
+
+CATALOG = load_catalog(
+    _REPO_ROOT / "profiles/gate-catalog.yaml", _REPO_ROOT / "profiles/roles.yaml"
 )
 
 _PROFILE = {
@@ -71,7 +76,7 @@ def _emit(repo: Path, spec: Path) -> list[dict]:
     graph = load_profile_data(_PROFILE)
     artifacts, findings = collect_bundle(graph, spec)
     findings.extend(run_checks(graph, artifacts, LiveGitFacts(repo, spec)))
-    out = emit_verdicts(graph, artifacts, findings, spec)
+    out = emit_verdicts(graph, artifacts, findings, spec, CATALOG)
     assert out == repo / ".steward" / "gate_verdicts.jsonl"
     return [json.loads(line) for line in out.read_text().splitlines()]
 
@@ -125,6 +130,44 @@ def test_findings_map_severity_to_verdict(tmp_path: Path) -> None:
         jsonschema.validate(f, SCHEMA)
 
 
+def test_active_finding_record_carries_obligation_from_catalog(tmp_path: Path) -> None:
+    repo, spec = _repo(tmp_path)
+    # force a finding the same way test_findings_map_severity_to_verdict does
+    (spec / "10-requirements.md").write_text(_REQUIREMENTS.replace("approved", "draft"))
+    (spec / "15-behaviour.md").write_text(_BEHAVIOUR.replace("status: draft", "status: approved"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "invert statuses")
+    findings = [r for r in _emit(repo, spec) if r["kind"] == "finding"]
+    assert findings
+    for f in findings:
+        entry = CATALOG.entry(f["gate_id"])
+        assert entry is not None
+        assert f["obligation"] == entry.obligation  # from the catalog, not hardcoded
+
+
+def test_unknown_rule_id_raises_emit_error_and_writes_nothing(tmp_path: Path) -> None:
+    repo, spec = _repo(tmp_path)
+    graph = load_profile_data(_PROFILE)
+    artifacts, findings = collect_bundle(graph, spec)
+    findings.append(Finding(severity="error", rule_id="GC-GHOST", artifact="x", message="m"))
+    with pytest.raises(EmitError, match="GC-GHOST"):
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
+    assert not (repo / ".steward" / "gate_verdicts.jsonl").exists()
+
+
+def test_declared_rule_id_is_refused_like_unknown(tmp_path: Path) -> None:
+    repo, spec = _repo(tmp_path)
+    graph = load_profile_data(_PROFILE)
+    artifacts, findings = collect_bundle(graph, spec)
+    findings.append(
+        Finding(severity="error", rule_id="GC-APPROVAL-MISSING", artifact="x", message="m")
+    )
+    with pytest.raises(EmitError, match="declared") as exc_info:
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
+    assert "GC-APPROVAL-MISSING" in str(exc_info.value)
+    assert not (repo / ".steward" / "gate_verdicts.jsonl").exists()
+
+
 def test_file_is_rewritten_whole_each_run(tmp_path: Path) -> None:
     repo, spec = _repo(tmp_path)
     first = _emit(repo, spec)
@@ -141,7 +184,7 @@ def test_no_git_means_no_file(tmp_path: Path) -> None:
     graph = load_profile_data(_PROFILE)
     artifacts, findings = collect_bundle(graph, spec)
     with pytest.raises(ProvenanceError):
-        emit_verdicts(graph, artifacts, findings, spec)
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
     assert not (tmp_path / ".steward").exists()  # fail-closed: no provenance, no file
 
 
@@ -153,7 +196,7 @@ def test_unwritable_target_is_a_config_error_not_a_crash(tmp_path: Path) -> None
     graph = load_profile_data(_PROFILE)
     artifacts, findings = collect_bundle(graph, spec)
     with pytest.raises(EmitError, match="cannot write verdicts file"):
-        emit_verdicts(graph, artifacts, findings, spec)
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
 
 
 def test_cli_emit_writes_file_and_keeps_exit_semantics(tmp_path: Path) -> None:
