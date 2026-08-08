@@ -2,9 +2,11 @@
 #
 # A gate is a named governance check that blocks or warns in gate-check. Every
 # gate entry is immutable by slug: slug cannot be renamed or reused; a gate
-# flagged `deprecated` carries a `since` date and exactly one `replacement`
-# pointing to its successor. The catalog is versioned; the version field bumps
-# on any change to the composition (new gates, deprecations, deletions).
+# flagged `deprecated` carries a `since` date and exactly one of
+# `replaced_by: GC-NEW` (points to its successor) or `replacement: none` (the
+# literal string "none" — no successor). The catalog is versioned; the
+# version field bumps on any change to the composition (new gates,
+# deprecations, deletions).
 #
 # Gate obligations ('quality' | 'approval') reflect the *intent* of the check:
 # quality = correctness/completeness gate (gate-check concern); approval =

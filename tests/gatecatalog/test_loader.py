@@ -114,6 +114,54 @@ def test_deprecated_with_empty_string_replaced_by_is_error(tmp_path):
         )
 
 
+def test_deprecated_with_replacement_none_loads(tmp_path):
+    cat = _load(
+        tmp_path,
+        "  GC-OLD:\n    obligation: quality\n    status: deprecated\n"
+        '    since: "2026-08-08"\n    replacement: none\n',
+    )
+    entry = cat.entry("GC-OLD")
+    assert entry.replacement_none is True
+    assert entry.replaced_by is None
+
+
+def test_replacement_non_none_value_rejected(tmp_path):
+    with pytest.raises(CatalogError, match="replacement"):
+        _load(
+            tmp_path,
+            "  GC-OLD:\n    obligation: quality\n    status: deprecated\n"
+            '    since: "2026-08-08"\n    replacement: GC-NEW\n',
+        )
+
+
+def test_replacement_null_rejected(tmp_path):
+    with pytest.raises(CatalogError, match="replacement"):
+        _load(
+            tmp_path,
+            "  GC-OLD:\n    obligation: quality\n    status: deprecated\n"
+            '    since: "2026-08-08"\n    replacement: null\n',
+        )
+
+
+def test_replacement_together_with_replaced_by_rejected(tmp_path):
+    with pytest.raises(CatalogError, match="deprecated"):
+        _load(
+            tmp_path,
+            "  GC-NEW:\n    obligation: quality\n    status: active\n"
+            "  GC-OLD:\n    obligation: quality\n    status: deprecated\n"
+            '    since: "2026-08-08"\n    replaced_by: GC-NEW\n    replacement: none\n',
+        )
+
+
+def test_replacement_none_key_rejected_spelling_forbidden(tmp_path):
+    with pytest.raises(CatalogError, match="unknown key"):
+        _load(
+            tmp_path,
+            "  GC-OLD:\n    obligation: quality\n    status: deprecated\n"
+            '    since: "2026-08-08"\n    replacement_none: true\n',
+        )
+
+
 def test_unknown_entry_key_rejected(tmp_path):
     with pytest.raises(CatalogError, match="tier"):
         _load(

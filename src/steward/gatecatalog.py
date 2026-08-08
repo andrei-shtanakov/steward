@@ -3,8 +3,9 @@
 Stability policy:
   - gate_id never changes AND never reused (after deprecated, the id is forever
     occupied by the tombstone entry).
-  - Removing a gate uses deprecated status with tombstone:
-    replaced_by: GC-NEW (points to active successor) or replacement_none: true.
+  - Removing a gate uses deprecated status with tombstone: exactly one of
+    replaced_by: GC-NEW (points to active successor) or replacement: none
+    (the literal string "none" — no other value is accepted).
   - ANY change in catalog composition (entries added/removed/status changed)
     requires version bump. Vocabulary changes (obligation/stage items
     added/removed) also require version bump.
@@ -141,22 +142,33 @@ def _check_deprecated_fields(
 ) -> tuple[str | None, str | None, bool]:
     """Validate deprecated/non-deprecated field combinations.
 
+    The YAML tombstone form for "no successor" is ``replacement: none`` — the
+    literal string "none", not the YAML null/``replacement_none``. Any other
+    ``replacement`` value (including YAML null) is an error.
+
     Returns (since, replaced_by, replacement_none).
     """
     since = entry_dict.get("since")
     replaced_by = entry_dict.get("replaced_by")
-    replacement_none = entry_dict.get("replacement_none", False)
+    has_replacement_key = "replacement" in entry_dict
+    replacement_value = entry_dict.get("replacement")
+
+    if has_replacement_key and replacement_value != "none":
+        raise CatalogError(
+            f"gate_id '{gate_id}': replacement '{replacement_value!r}' must be "
+            "the literal string 'none' (no successor)"
+        )
+    replacement_none = has_replacement_key
 
     if status == "deprecated":
         if not since:
             raise CatalogError(f"gate_id '{gate_id}': deprecated status requires 'since' field")
-        # Exactly one of replaced_by or replacement_none=true
+        # Exactly one of replaced_by or replacement: none
         has_replaced = replaced_by is not None
-        has_none = replacement_none is True
-        if not (has_replaced ^ has_none):  # XOR: exactly one
+        if not (has_replaced ^ replacement_none):  # XOR: exactly one
             raise CatalogError(
                 f"gate_id '{gate_id}': deprecated must have exactly one of "
-                "'replaced_by' or 'replacement_none: true'"
+                "'replaced_by' or 'replacement: none'"
             )
         if has_replaced:
             if not replaced_by or replaced_by not in all_gate_ids:
@@ -167,8 +179,7 @@ def _check_deprecated_fields(
         # Non-deprecated: these fields forbidden
         if since or replaced_by or replacement_none:
             raise CatalogError(
-                f"gate_id '{gate_id}': status={status} forbids "
-                "since/replaced_by/replacement_none fields"
+                f"gate_id '{gate_id}': status={status} forbids since/replaced_by/replacement fields"
             )
 
     return since, replaced_by, replacement_none
@@ -225,7 +236,7 @@ def load_catalog(catalog_path: Path, roles_path: Path) -> GateCatalog:
         "applicable_roles",
         "since",
         "replaced_by",
-        "replacement_none",
+        "replacement",
     }
 
     for gate_id, entry_dict in gates_dict.items():

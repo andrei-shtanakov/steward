@@ -207,9 +207,47 @@ def test_cli_emit_writes_file_and_keeps_exit_semantics(tmp_path: Path) -> None:
         '  - {id: requirements, owner_role: "@product", upstream: []}\n'
         '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
     )
+    # gate-catalog.yaml/roles.yaml resolve relative to the profile actually
+    # used (CWD-independent), so the tmp profile needs the real catalog as
+    # its sibling — same pattern test_cli.py uses for arch-policy.yaml.
+    (repo / "gate-catalog.yaml").write_bytes(
+        (_REPO_ROOT / "profiles" / "gate-catalog.yaml").read_bytes()
+    )
+    (repo / "roles.yaml").write_bytes((_REPO_ROOT / "profiles" / "roles.yaml").read_bytes())
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
     assert result.exit_code == 0, result.output
     assert (repo / ".steward" / "gate_verdicts.jsonl").exists()
+
+
+def test_cli_emit_with_missing_catalog_exits_two_not_traceback(tmp_path: Path) -> None:
+    # No gate-catalog.yaml/roles.yaml sibling to the profile: _load_catalog
+    # must fail closed (exit 2) instead of leaking a bare FileNotFoundError.
+    repo, spec = _repo(tmp_path)
+    profile = repo / "p.yaml"
+    profile.write_text(
+        "profile: team-exp-emit\nsolo_auto_approve: true\nartifacts:\n"
+        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
+        '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
+    )
+    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
+    assert result.exit_code == 2, result.output
+    assert "config error" in result.output
+
+
+def test_cli_emit_with_malformed_catalog_exits_two_not_traceback(tmp_path: Path) -> None:
+    # A gate-catalog.yaml that fails to parse must also fail closed, not crash.
+    repo, spec = _repo(tmp_path)
+    profile = repo / "p.yaml"
+    profile.write_text(
+        "profile: team-exp-emit\nsolo_auto_approve: true\nartifacts:\n"
+        '  - {id: requirements, owner_role: "@product", upstream: []}\n'
+        '  - {id: behaviour-spec, owner_role: "@qa", upstream: [requirements]}\n'
+    )
+    (repo / "gate-catalog.yaml").write_text(":\n  not: [valid, yaml")
+    (repo / "roles.yaml").write_bytes((_REPO_ROOT / "profiles" / "roles.yaml").read_bytes())
+    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
+    assert result.exit_code == 2, result.output
+    assert "config error" in result.output
 
 
 def test_cli_emit_refuses_no_fs(tmp_path: Path) -> None:
