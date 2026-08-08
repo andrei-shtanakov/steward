@@ -104,7 +104,7 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 
 - [x] **Governance-бандл WS-005 заведён и АППРУВНУТ насквозь** (`workstreams/WS-005-gate-verdicts/spec/`, профиль `team-exp`, линтуется в CI): бандл — PR #28; аппрув-след по DAG-порядку — PR #29 (L1) / #30 (L2) / #31 (L3), каждое ребро запиновано настоящим blob-хешом, stale-каскад покрывает полный DAG @owner:github:andrei-shtanakov @id:ws005-bundle-approvals
 - [x] Зафиксировать схему `gate_verdicts.jsonl` с версией контракта — `contracts/gate-verdicts/v1/` (schema+README+5 фикстур) + emitter `gate-check --emit-verdicts`; поля obligation/tier/phase/risk_model_version/waiver_ref объявлены reserved до каталога (PR #33) @owner:github:andrei-shtanakov @id:gate-verdicts-schema
-- [x] Каталог стабильных `gate_id` + каталог правил obligation: v1 включает 19 active/quality + GC-APPROVAL-MISSING declared/approval с матрицей применимости к owner_role / стадии; три гарантии полноты — emitter-гейт на active, sync через Finding-конструкторы, обратная сверка; obligation активирован на эмиссии @owner:github:andrei-shtanakov @id:gate-id-catalog — PR этой ветки
+- [x] Каталог стабильных `gate_id` + каталог правил obligation: v1 включает 19 active/quality + GC-APPROVAL-MISSING declared/approval с матрицей применимости к owner_role / стадии; три гарантии полноты — emitter-гейт на active, sync через Finding-конструкторы, обратная сверка; obligation активирован на эмиссии @owner:github:andrei-shtanakov @id:gate-id-catalog — steward#51
       Unblocked by steward#33 (gate-verdicts-schema доставлен; PF-BLOCKER-STALE
       снят 2026-08-06). Блокер `oq-1-approval-evidence` РЕШЁН 2026-08-08 и
       снят — каталог actionable. Порядок сработал как задумано: решение
@@ -152,7 +152,7 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
       только классифицирует прочитанные findings (ARCH-C3/D1: steward — enforcer, dispatcher
       — read model). GC-APPROVAL-MISSING active (каталог v2, 20 gates), GC-GIT-ROLE unavailable-контур
       (approvals: None = unavailable, live всегда None). Флаг `--stage` канонический, `--arch-stage`
-      deprecated. [PR этой ветки]
+      deprecated. PR #51
 - [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:github:andrei-shtanakov @id:dispatcher-bundle-status-panel
       Unblocked by steward#33 (2026-08-06). Acceptance-сверка с фактической
       панелью dispatcher (2026-08-06): 5/6 критериев подтверждены кодом —
