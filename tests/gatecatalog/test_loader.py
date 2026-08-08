@@ -105,6 +105,15 @@ def test_deprecated_requires_since_and_exactly_one_replacement(tmp_path):
         )
 
 
+def test_deprecated_with_empty_string_replaced_by_is_error(tmp_path):
+    with pytest.raises(CatalogError, match="replaced_by"):
+        _load(
+            tmp_path,
+            "  GC-OLD:\n    obligation: quality\n    status: deprecated\n"
+            '    since: "2026-08-08"\n    replaced_by: ""\n',
+        )
+
+
 def test_unknown_entry_key_rejected(tmp_path):
     with pytest.raises(CatalogError, match="tier"):
         _load(

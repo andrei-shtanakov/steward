@@ -1,8 +1,13 @@
 """Gate catalog loader with fail-closed validation.
 
-Stability policy: gate_id never changes; removing a gate uses deprecated status
-with a tombstone (replaced_by: GC-NEW or replacement_none: true). Version bumps
-on vocabulary changes (obligation/stage items added/removed).
+Stability policy:
+  - gate_id never changes AND never reused (after deprecated, the id is forever
+    occupied by the tombstone entry).
+  - Removing a gate uses deprecated status with tombstone:
+    replaced_by: GC-NEW (points to active successor) or replacement_none: true.
+  - ANY change in catalog composition (entries added/removed/status changed)
+    requires version bump. Vocabulary changes (obligation/stage items
+    added/removed) also require version bump.
 
 Rule: applicable_roles field is canonical. If absent, gate is role-agnostic
 (None). Empty list [] is an error — never conflate absence with empty.
@@ -63,7 +68,7 @@ class GateCatalog:
 def _check_version(data: dict) -> int:
     """Validate and return version field."""
     version = data.get("version")
-    if not isinstance(version, int) or version < 1:
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise CatalogError("version must be int >= 1")
     return version
 
@@ -88,10 +93,12 @@ def _check_obligation(obligation: str, vocab: tuple[str, ...], gate_id: str) -> 
         raise CatalogError(f"gate_id '{gate_id}': obligation '{obligation}' not in vocabulary")
 
 
-def _check_status(status: str) -> None:
+def _check_status(status: str, gate_id: str) -> None:
     """Validate status is one of the allowed values."""
     if status not in ("active", "declared", "deprecated"):
-        raise CatalogError(f"status '{status}' must be 'active', 'declared', or 'deprecated'")
+        raise CatalogError(
+            f"gate_id '{gate_id}': status '{status}' must be 'active', 'declared', or 'deprecated'"
+        )
 
 
 def _check_stages(
@@ -151,10 +158,11 @@ def _check_deprecated_fields(
                 f"gate_id '{gate_id}': deprecated must have exactly one of "
                 "'replaced_by' or 'replacement_none: true'"
             )
-        if replaced_by and replaced_by not in all_gate_ids:
-            raise CatalogError(
-                f"gate_id '{gate_id}': replaced_by '{replaced_by}' not found in gates"
-            )
+        if has_replaced:
+            if not replaced_by or replaced_by not in all_gate_ids:
+                raise CatalogError(
+                    f"gate_id '{gate_id}': replaced_by '{replaced_by}' not found in gates"
+                )
     else:
         # Non-deprecated: these fields forbidden
         if since or replaced_by or replacement_none:
@@ -236,7 +244,7 @@ def load_catalog(catalog_path: Path, roles_path: Path) -> GateCatalog:
         status = entry_dict.get("status")
         if not status:
             raise CatalogError(f"gate_id '{gate_id}': status field required")
-        _check_status(status)
+        _check_status(status, gate_id)
 
         title = entry_dict.get("title")
         stages = _check_stages(entry_dict.get("stages"), stage_vocab, gate_id)
