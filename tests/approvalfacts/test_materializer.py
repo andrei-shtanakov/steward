@@ -141,10 +141,18 @@ def test_materialize_merged_pr_with_no_merged_by_raises_distinct_error(
         materialize_approval_facts("acme/widgets", prs=[1])
 
 
-def test_materialize_bad_repo_format_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(approvalfacts, "_gh", lambda args: (0, "{}"))
-    with pytest.raises(GhNotFoundError):
+def test_materialize_bad_repo_format_raises_value_error_not_gh_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed --repo is a caller bug, never a MaterializeError: gh is
+    never even called, so it must not masquerade as GhNotFoundError's
+    "asked gh, got an authoritative no" or GhUnavailableError's "gh call
+    failed"."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(approvalfacts, "_gh", lambda args: calls.append(args) or (0, "{}"))
+    with pytest.raises(ValueError, match="owner/name"):
         materialize_approval_facts("not-a-slug", merge_shas=[SHA])
+    assert calls == []
 
 
 def test_materialize_first_failure_aborts_without_partial_result(
@@ -243,6 +251,24 @@ def test_cli_gh_failure_exits_nonzero_and_writes_no_file(
     )
     assert result.exit_code != 0
     assert not out.exists(), "a failed materialization must never write a partial/empty file"
+
+
+def test_cli_bad_repo_format_is_config_error_not_materialize_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1 regression test: a malformed --repo must fail as a
+    config error (exit 2) validated before gh is ever touched — not fall
+    through to materialize_approval_facts and surface as exit 3."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(approvalfacts, "_gh", lambda args: calls.append(args) or (0, "{}"))
+    out = tmp_path / "facts.json"
+    result = runner.invoke(
+        app,
+        ["approval-facts", "--repo", "not-a-slug", "--merge-sha", SHA, "--out", str(out)],
+    )
+    assert result.exit_code == 2, result.output
+    assert not out.exists()
+    assert calls == [], "gh must never be called for a malformed --repo"
 
 
 def test_cli_no_identifiers_is_config_error(tmp_path: Path) -> None:

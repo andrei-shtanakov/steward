@@ -121,6 +121,10 @@ class MergeProvenance:
     subject: str
     current_blob_sha: str
     merge_method: str  # v1: "merge_commit"
+    # test-fixture injection only (--no-fs facts.json), never the
+    # authoritative source: that is approval-facts/v1, keyed by `sha` above.
+    # A future combinator must take actor_facts as its own argument
+    # (steward.approvalfacts.ApprovalFacts) — never read it off this field.
     actor: str | None
     actor_source: str
 

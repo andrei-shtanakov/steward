@@ -241,10 +241,19 @@ def materialize_approval_facts(
     :class:`GhUnavailableError` vs :class:`GhNotFoundError`) on the FIRST
     failure and returns nothing: never a partial mapping. ``repo`` must be
     ``"owner/name"``.
+
+    A malformed ``repo`` raises plain :class:`ValueError`, not
+    :class:`MaterializeError` — malformed input is a caller bug, not "asked
+    gh, got an authoritative no" (:class:`GhNotFoundError`'s actual
+    meaning) or "gh call failed" (:class:`GhUnavailableError`'s) — ``gh`` is
+    never invoked for this case at all. The CLI validates ``--repo`` up
+    front (config error, exit 2) before calling this function, so in
+    practice this is defense in depth for other callers of the library
+    function, not the primary path.
     """
     owner, sep, name = repo.partition("/")
     if not sep or not owner or not name:
-        raise GhNotFoundError(f"--repo must be 'owner/name', got {repo!r}")
+        raise ValueError(f"repo must be 'owner/name', got {repo!r}")
 
     actors: dict[str, ActorFact] = {}
     for sha in merge_shas or ():

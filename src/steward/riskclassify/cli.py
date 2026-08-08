@@ -147,6 +147,11 @@ def approval_facts(
         write_approval_facts,
     )
 
+    owner, sep, name = repo.partition("/")
+    if not sep or not owner or not name:
+        typer.echo(f"config error: --repo must be 'owner/name', got {repo!r}", err=True)
+        raise typer.Exit(_EXIT_CONFIG)
+
     pr_numbers: list[int] = []
     if prs:
         try:
