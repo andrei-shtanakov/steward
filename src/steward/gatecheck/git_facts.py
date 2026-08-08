@@ -54,7 +54,10 @@ this is the minimal shape Task 3 needs. Local git can prove provenance but
 never an actor (WS-003 was invalidated for that reason — no forge API
 locally), so ``actor``/``actor_source`` are not part of the minimal local
 key: readers get ``actor=None``, ``actor_source="unavailable"`` unless the
-facts file explicitly overrides them.
+facts file explicitly overrides them. The optional ``actor``/``actor_source``
+keys :meth:`InjectedGitFacts.from_file` accepts are speculative plumbing for
+a future forge-backed provider — Task 4 owns whether/how they're actually
+populated, this module makes no claim about it.
 """
 
 from __future__ import annotations
@@ -427,17 +430,24 @@ class LiveGitFacts:
         )
         return proc.stdout.strip() if proc.returncode == 0 else None
 
-    def _first_parent_chain(self, ref: str) -> list[str]:
+    def _last_first_parent_change(self, ref: str, rel: str) -> str | None:
+        """The most recent commit, walking ``ref``'s first-parent chain,
+        whose tree for ``rel`` differs from its own first parent's (git's
+        pathspec-limited ``log`` prunes TREESAME commits internally, in a
+        single call — no per-commit spawn needed to find this)."""
         proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
-            ["git", "rev-list", "--first-parent", ref],
+            ["git", "log", "--first-parent", "-1", "--format=%H", ref, "--", rel],
             cwd=self._root,
             capture_output=True,
             text=True,
             check=False,
         )
-        return proc.stdout.splitlines() if proc.returncode == 0 else []
+        if proc.returncode != 0:
+            return None
+        sha = proc.stdout.strip()
+        return sha or None
 
-    def _parent_count(self, sha: str) -> int:
+    def _parents(self, sha: str) -> list[str]:
         proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
             ["git", "rev-list", "--parents", "-n", "1", sha],
             cwd=self._root,
@@ -446,8 +456,9 @@ class LiveGitFacts:
             check=False,
         )
         if proc.returncode != 0:
-            return 0
-        return len(proc.stdout.split()) - 1  # first token is `sha` itself
+            return []
+        tokens = proc.stdout.split()
+        return tokens[1:]  # first token is `sha` itself
 
     def _subject(self, sha: str) -> str:
         proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
@@ -462,40 +473,51 @@ class LiveGitFacts:
     def merge_provenance(self, path: str) -> MergeProvenance | None:
         """First-parent-introduction search (owner ruling, AP-3).
 
-        Walks the default branch's first-parent chain from its tip backward,
-        tracking the run of commits whose blob at ``path`` equals the
-        *current* blob. The oldest commit in that unbroken run is exactly
-        the commit that made the path's content become what it is today —
-        earlier commits in the chain are, by the first-parent-chain
-        invariant (``chain[i+1]`` is ``chain[i]``'s first parent), reached
-        only once the blob has changed, so the run boundary alone already
-        proves the file's parent-side content differed right before that
-        commit (v1's check (c) — folds into the boundary, not a separate
-        pass). If that boundary commit has two parents, it is the merge
-        that introduced the blob. Otherwise (a direct/squash-like commit,
-        or a merge that happened to leave the blob untouched relative to
-        its own first parent and so isn't the boundary) provenance is
-        absent — ``None``.
+        ``current_blob`` is read from local ``HEAD`` — the same source as
+        :meth:`blob_hash` — never from the default-branch ref. A checkout
+        can diverge from the default branch (unpushed commits, a feature
+        branch checked out locally); the artifact this call is asked about
+        is whatever is actually on disk right now, not whatever the default
+        branch last saw. Searching the default branch's history for that
+        local content and finding a *different* blob there is exactly the
+        fail-closed case: provenance for the current artifact is absent,
+        not "the default branch's stale content, merged".
+
+        The introducing commit — call it the boundary — is the most recent
+        commit on the default branch's first-parent chain whose tree for
+        ``path`` differs from its own first parent's (``git log
+        --first-parent -1 -- path``, one call, no per-commit walk: git's
+        pathspec limiting already prunes TREESAME commits internally). Its
+        blob must equal ``current_blob`` (else the default branch's most
+        recent change to the path isn't what's on disk locally — absent, by
+        the fail-closed rule above). If the boundary has two parents, it is
+        the merge that introduced the blob; a direct/squash-like commit
+        (one parent) means provenance is absent. The first-parent's blob
+        differing from the boundary's is guaranteed by how the boundary was
+        selected — kept as an explicit check for defense in depth, not
+        because it can fail in practice.
         """
         try:
             rel = self._rel_to_repo(path)
         except ValueError:
             return None
-        default_ref = self._default_branch_ref()
-        current_blob = self._blob_at(default_ref, rel)
+        current_blob = self._blob_at("HEAD", rel)
         if current_blob is None:
             return None
 
-        boundary: str | None = None
-        for sha in self._first_parent_chain(default_ref):
-            if self._blob_at(sha, rel) != current_blob:
-                break
-            boundary = sha
+        default_ref = self._default_branch_ref()
+        boundary = self._last_first_parent_change(default_ref, rel)
         if boundary is None:
             return None
+        if self._blob_at(boundary, rel) != current_blob:
+            return None  # default branch's history doesn't have this content
 
-        if self._parent_count(boundary) != 2:
-            return None  # boundary commit is a direct commit, not a merge
+        parents = self._parents(boundary)
+        if len(parents) != 2:
+            return None  # boundary is a direct commit, not a merge
+
+        if self._blob_at(parents[0], rel) == current_blob:
+            return None  # defense in depth: boundary selection guarantees this
 
         return MergeProvenance(
             sha=boundary,
