@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -157,7 +158,12 @@ def test_arch_stage_alias_still_works(tmp_path: Path) -> None:
     assert "GC-ARCH-CONFORMANCE" in result.output
 
     help_result = runner.invoke(app, ["--help"])
-    assert "[deprecated alias of --stage]" in help_result.output
+    # В CI Rich рендерит help с ANSI-кодами и переносами по ширине панели —
+    # литеральная подстрока со скобками рвётся. Нормализуем: срезать ANSI,
+    # схлопнуть все пробелы/переносы, искать текст пометки без скобок.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", help_result.output)
+    normalized = " ".join(plain.split())
+    assert "deprecated alias of --stage" in normalized
 
 
 def test_conflicting_stage_flags_exit_2(tmp_path: Path) -> None:
