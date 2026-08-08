@@ -148,8 +148,13 @@ ruleset `master`. Триггер перевода — **не календарь 
 - [ ] Разобрать накопленные false-positive / false-negative срабатывания гейта @owner:github:andrei-shtanakov @id:gate-fp-fn-triage
 - [ ] Документировать рабочий break-glass / waiver path для governance-гейта (и проверить, что он работает) @owner:github:andrei-shtanakov @id:gate-break-glass-path
 - [ ] Определить runtime и ownership самого гейта (кто чинит, кто владеет правилами) @owner:github:andrei-shtanakov @id:gate-runtime-ownership
-- [ ] Перевести `governance / gate` в required status checks ruleset'а `master` @owner:github:andrei-shtanakov @blocked_by:steward#gate-promotion-evidence @trigger:"V1 выполнен + несколько реальных PR прошли гейт + FP/FN разобраны + break-glass path работает" @id:promote-gate-required
-- [ ] Перепиновать caller на `governance-v2` @owner:github:andrei-shtanakov @blocked_by:ai-orchestrators-workspace#governance-batch-2 @trigger:"в workspace-manifest.toml [tools] объявлен governance-v2" @id:repin-caller-governance-v2
+- [ ] Перевести `governance / gate` в required status checks ruleset'а `master` @owner:github:andrei-shtanakov @trigger:"V1 выполнен + несколько реальных PR прошли гейт + FP/FN разобраны + break-glass path работает" @id:promote-gate-required
+- [ ] Перепиновать caller на `governance-v2` @owner:github:andrei-shtanakov @trigger:"в workspace-manifest.toml [tools] объявлен governance-v2" @id:repin-caller-governance-v2
+
+  Оба пункта — evidence/event watches, не ссылки на принятые plan-узлы:
+  `steward#gate-promotion-evidence` и
+  `ai-orchestrators-workspace#governance-batch-2` отсутствуют в TODO/issues владельцев.
+  Готовность полностью определяется проверяемыми triggers на строках пунктов.
 
 ### 6. WS-003 · закрыть как invalidated + solo-compatible merge evidence
 
