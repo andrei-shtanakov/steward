@@ -208,11 +208,26 @@ def load_catalog(catalog_path: Path, roles_path: Path) -> GateCatalog:
     # Load roles first for validation
     with open(roles_path) as f:
         roles_data = yaml.safe_load(f)
-    available_roles = frozenset(r["slug"] for r in roles_data.get("roles", []))
+    # YAML-валидный, но не той формы файл (пустой -> None, список, роль без
+    # slug) обязан падать как CatalogError, а не AttributeError/KeyError —
+    # иначе он проскочит мимо fail-closed except-сети CLI traceback'ом.
+    if not isinstance(roles_data, dict):
+        raise CatalogError(f"roles file {roles_path} must be a mapping")
+    roles_list = roles_data.get("roles")
+    if not isinstance(roles_list, list):
+        raise CatalogError(f"roles file {roles_path}: 'roles' must be a list")
+    slugs: list[str] = []
+    for role in roles_list:
+        if not isinstance(role, dict) or not isinstance(role.get("slug"), str):
+            raise CatalogError(f"roles file {roles_path}: every role entry needs a string 'slug'")
+        slugs.append(role["slug"])
+    available_roles = frozenset(slugs)
 
     # Load catalog
     with open(catalog_path) as f:
         data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise CatalogError(f"catalog file {catalog_path} must be a mapping")
 
     # Validate top-level structure
     version = _check_version(data)

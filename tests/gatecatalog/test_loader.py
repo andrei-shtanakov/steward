@@ -168,3 +168,30 @@ def test_unknown_entry_key_rejected(tmp_path):
             tmp_path,
             "  GC-X:\n    obligation: quality\n    status: active\n    tier: high\n",
         )
+
+
+def test_empty_catalog_file_is_catalog_error_not_traceback(tmp_path):
+    catalog = tmp_path / "gate-catalog.yaml"
+    catalog.write_text("")
+    roles = tmp_path / "roles.yaml"
+    roles.write_text(ROLES)
+    with pytest.raises(CatalogError, match="mapping"):
+        load_catalog(catalog, roles)
+
+
+def test_list_toplevel_catalog_is_catalog_error(tmp_path):
+    catalog = tmp_path / "gate-catalog.yaml"
+    catalog.write_text("- just\n- a list\n")
+    roles = tmp_path / "roles.yaml"
+    roles.write_text(ROLES)
+    with pytest.raises(CatalogError, match="mapping"):
+        load_catalog(catalog, roles)
+
+
+def test_role_entry_without_slug_is_catalog_error(tmp_path):
+    catalog = tmp_path / "gate-catalog.yaml"
+    catalog.write_text(HEADER + "gates: {}\n")
+    roles = tmp_path / "roles.yaml"
+    roles.write_text("version: 1\nroles:\n  - {display: NoSlug}\n")
+    with pytest.raises(CatalogError, match="slug"):
+        load_catalog(catalog, roles)
