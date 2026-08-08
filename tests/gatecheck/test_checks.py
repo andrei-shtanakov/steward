@@ -302,6 +302,26 @@ def test_unknown_identity_has_no_roles_and_fails_closed(tmp_path: Path) -> None:
     assert "no roles" in findings[0].message
 
 
+def test_approver_union_one_allowed_identity_suffices(tmp_path: Path) -> None:
+    """Roles union across approvers: a role-less identity beside an allowed one passes.
+
+    Authorization asks "did anyone with an allowed role approve?" — an extra
+    approval by an unmapped identity must neither grant nor revoke anything.
+    """
+    _write(tmp_path, "req.md", "requirements", "approved")
+    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    findings = check_status_git(
+        _graph(),
+        artifacts,
+        FakeGitFacts(
+            on_default={"req.md"},
+            approvals={"req.md": (Approval("github:mallory"), Approval("github:alice"))},
+        ),
+        ASSIGNMENTS,
+    )
+    assert findings == []
+
+
 def test_unavailable_approvals_facts_skip(tmp_path: Path) -> None:
     """Scenario 6: approvals() -> None (unauthoritative) skips, unchanged contour."""
     _write(tmp_path, "req.md", "requirements", "approved")
