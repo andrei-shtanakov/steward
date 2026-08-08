@@ -101,12 +101,40 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 
 - [x] **Governance-бандл WS-005 заведён и АППРУВНУТ насквозь** (`workstreams/WS-005-gate-verdicts/spec/`, профиль `team-exp`, линтуется в CI): бандл — PR #28; аппрув-след по DAG-порядку — PR #29 (L1) / #30 (L2) / #31 (L3), каждое ребро запиновано настоящим blob-хешом, stale-каскад покрывает полный DAG @owner:github:andrei-shtanakov @id:ws005-bundle-approvals
 - [x] Зафиксировать схему `gate_verdicts.jsonl` с версией контракта — `contracts/gate-verdicts/v1/` (schema+README+5 фикстур) + emitter `gate-check --emit-verdicts`; поля obligation/tier/phase/risk_model_version/waiver_ref объявлены reserved до каталога (PR #33) @owner:github:andrei-shtanakov @id:gate-verdicts-schema
-- [ ] Каталог стабильных `gate_id` + маппинг `owner_role` → obligation @owner:github:andrei-shtanakov @blocked_by:todo://steward/oq-1-approval-evidence @id:gate-id-catalog
+- [ ] Каталог стабильных `gate_id` + каталог правил obligation (словарь, применимость к ролям и стадиям) @owner:github:andrei-shtanakov @id:gate-id-catalog
       Unblocked by steward#33 (gate-verdicts-schema доставлен; PF-BLOCKER-STALE
-      снят 2026-08-06). Новый блокер — по решению владельца 2026-08-06: OQ-1
-      обязан предшествовать каталогу, иначе каталог преждевременно закрепит
-      obligation-семантику, которую решение ещё может изменить.
-- [ ] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:github:andrei-shtanakov @id:oq-1-approval-evidence
+      снят 2026-08-06). Блокер `oq-1-approval-evidence` РЕШЁН 2026-08-08 и
+      снят — каталог actionable. Порядок сработал как задумано: решение
+      определило состав каталога, минимум которого (владелец, 2026-08-08):
+      (1) словарь `obligation: quality | approval`; (2) стабильные
+      `GC-APPROVAL-*` gate_id; (3) связь gate → obligation; (4) применимость
+      правила к owner_role и стадии — НЕ прямой маппинг owner_role →
+      obligation единственной функцией (одной роли может соответствовать
+      несколько obligations), а каталог правил с полями `owner_role` /
+      `applicable_roles` + `obligation`. Заголовок пункта обновлён
+      соответственно (был «маппинг owner_role → obligation»).
+- [x] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:github:andrei-shtanakov @id:oq-1-approval-evidence — РЕШЕНО владельцем 2026-08-08, вариант A с поправкой по схеме
+      **Решение (формулировка владельца):** approval enforcement и его
+      findings живут в steward `gate_verdicts.jsonl` с `obligation: approval`.
+      Steward получает merge/review-факты и применяет solo-compatible policy;
+      dispatcher НЕ вводит отдельного approval-rule и только классифицирует
+      прочитанные findings (ARCH-C3/D1: steward — enforcer, dispatcher —
+      read model). Положительные типизированные `human_merge`/`agent_merge`
+      НЕ добавляются в закрытую схему v1 — переносимый audit-record требует
+      отдельного evidence-контракта или gate-verdicts/v2.
+      Проверено по SCHEMA.json: v1 = ровно header/artifact/finding, все с
+      `additionalProperties: false`; finding требует
+      `kind/gate_id/verdict(fail|warn)/artifact/message` — позитивному
+      merge-evidence в v1 места нет; зарезервированное `obligation`
+      позволяет пометить нарушение (`GC-APPROVAL-MISSING`, verdict fail,
+      obligation approval), но не добавить новый тип записи.
+      Типизированные human_merge/agent_merge (ADR-ECO-004 D4) живут ВНУТРИ
+      fact-provider'а steward уже сейчас; наружу — только findings.
+      Отклонённый вариант B (rule в dispatcher) ломал бы ARCH-C3 манифеста
+      WS-005 и раздваивал производителей вердиктов (Maestro как второй
+      потребитель ledger не видел бы approval вовсе).
+      NB: в экосистеме два разных «OQ-1» (второй — WS-006 про Maestro-
+      контракт); ссылаться на этот — только по @id.
       Unblocked by steward#33 (2026-08-06). Первый в очереди секции: его ответ
       питает дизайн каталога (obligation-маппинг). Контекст: WS-003
       инвалидирован ADR-ECO-004 D4; замена — solo-compatible merge evidence
