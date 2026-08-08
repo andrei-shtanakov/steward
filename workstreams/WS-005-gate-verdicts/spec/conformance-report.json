@@ -21,7 +21,7 @@
       "id": "I-03",
       "reason": null,
       "type": "interface",
-      "verdict": "conformant",
+      "verdict": "unknown",
       "waived_by": null
     },
     {
@@ -84,9 +84,15 @@
       "detail": "manual-evidence element: verify by review, restated in every report",
       "element": "I-01",
       "suppressed_by": null
+    },
+    {
+      "class": "missing-required-edge",
+      "detail": "detector 'contract' observed no edge for contract.gate-verdicts-v1 -> dispatcher.contract-vendor",
+      "element": "I-03",
+      "suppressed_by": null
     }
   ],
-  "generated_at": "2026-08-08T12:31:48Z",
+  "generated_at": "2026-08-08T12:57:18Z",
   "manifest": {
     "path": "workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml",
     "project": "steward",
@@ -98,29 +104,29 @@
       "dirty": false
     },
     "steward": {
-      "commit": "c26ca38f7f318b6f4849540a50a6cacf4c98f20b",
+      "commit": "1ad0ff9f640a26d7a009b8395b37bc9cb9285042",
       "dirty": false
     }
   },
   "schema": "conformance-report/v1",
   "snapshot": {
     "complete": true,
-    "content_hash": "prograph-snapshot/v1+sha256:78037530d03d93438199b3e8a67c02aeee9806f215125bc80ebc515f1c2b7b5e",
-    "id": 11,
-    "indexed_at": "2026-08-08T12:31:46Z"
+    "content_hash": "prograph-snapshot/v1+sha256:2f0e35f1595e17149f9a2f94131c6e6594e93d331d42f9407e0e2f590d937d17",
+    "id": 12,
+    "indexed_at": "2026-08-08T12:57:17Z"
   },
   "summary": {
     "findings": {
       "expired-waiver": 0,
       "forbidden-edge": 0,
       "manual-obligation": 3,
-      "missing-required-edge": 0,
+      "missing-required-edge": 1,
       "orphan-component": 0,
       "undeclared-edge": 0
     },
     "verdicts": {
-      "conformant": 3,
-      "unknown": 5,
+      "conformant": 2,
+      "unknown": 6,
       "violation": 0
     }
   },
