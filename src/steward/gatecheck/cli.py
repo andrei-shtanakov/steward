@@ -232,9 +232,15 @@ def main(
             except ApprovalFactsError as err:
                 _fail_config(str(err))
                 raise AssertionError from None  # unreachable; keeps type-checkers calm
-        findings.extend(
-            check_approval_evidence(artifacts, git, approval_policy, actor_facts, resolved_stage)
-        )
+        try:
+            findings.extend(
+                check_approval_evidence(
+                    artifacts, git, approval_policy, actor_facts, resolved_stage
+                )
+            )
+        except FactsError as err:
+            _fail_config(str(err))
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
 
     arch = collect_arch_bundle(spec_dir)
     if arch is not None:

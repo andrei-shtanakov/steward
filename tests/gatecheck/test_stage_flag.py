@@ -209,3 +209,29 @@ def test_invalid_stage_value_exit_2(tmp_path: Path) -> None:
         [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "shipping"],
     )
     assert result.exit_code == 2, result.output
+
+
+def test_release_no_fs_missing_merge_provenance_section_exit_2(tmp_path: Path) -> None:
+    # Pre-existing facts.json files (written before AP-3) never declare a
+    # 'merge_provenance' section — the same "section absent" shape as
+    # 'ancestors'/'changed_paths_since' (D9). InjectedGitFacts.merge_provenance
+    # raises FactsError lazily, from inside GC-APPROVAL-MISSING's per-artifact
+    # loop, not at facts-load time — so it must be caught where it's raised,
+    # not just around InjectedGitFacts.from_file. An approved artifact on the
+    # default branch is required to reach that call at all.
+    profile, spec = _bundle(tmp_path, design_status="approved")
+    facts = _facts(
+        tmp_path,
+        {
+            "default_branch_files": ["des.md", "req.md"],
+            "approvals": {"des.md": [{"handle": "@a", "role": "@architects"}]},
+        },
+    )
+    result = runner.invoke(
+        app,
+        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "release"],
+    )
+    assert result.exit_code == 2, result.output
+    assert "config error" in result.output
+    assert "merge_provenance" in result.output
+    assert "Traceback" not in result.output

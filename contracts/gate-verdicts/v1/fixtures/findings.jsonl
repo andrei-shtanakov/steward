@@ -3,3 +3,4 @@
 {"kind": "artifact", "path": "15-behaviour-spec.md", "node_id": "behaviour-spec", "status": "approved", "owner_roles": ["product", "qa"]}
 {"kind": "finding", "gate_id": "GC-STALE", "verdict": "fail", "artifact": "15-behaviour-spec.md", "message": "upstream 'requirements' changed since approval — mark stale and re-approve", "obligation": "quality"}
 {"kind": "finding", "gate_id": "GC-TRACE-EMPTY", "verdict": "warn", "artifact": "10-requirements.md", "message": "downstream 'requirements' carries no traces_to link", "obligation": "quality"}
+{"kind": "finding", "gate_id": "GC-APPROVAL-MISSING", "verdict": "fail", "artifact": "15-behaviour-spec.md", "message": "required merge evidence is absent: no first-parent merge provenance for the current blob", "obligation": "approval"}

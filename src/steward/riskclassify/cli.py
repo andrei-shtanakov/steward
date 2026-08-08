@@ -26,7 +26,10 @@ import typer
 from steward.riskclassify.classify import Classification, classify_declared, classify_diff
 from steward.riskclassify.model import RiskModelError, load_risk_model
 
-app = typer.Typer(add_completion=False, help="steward: risk model tooling (WS-006)")
+app = typer.Typer(
+    add_completion=False,
+    help="steward: governance tooling — risk model, waivers, approval-facts",
+)
 
 
 @app.callback()
