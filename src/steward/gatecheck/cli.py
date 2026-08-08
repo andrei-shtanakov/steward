@@ -44,6 +44,7 @@ from steward.gatecheck.trace_matrix import (
     render_matrix_text,
 )
 from steward.graph import ProfileError, load_profile
+from steward.roleassignments import AssignmentsError, load_role_assignments
 from steward.roles import RolesCatalog, RolesError, load_roles_catalog
 from steward.verdicts import EmitError, emit_verdicts
 
@@ -234,6 +235,17 @@ def main(
     except ProfileError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
+
+    assignments = None
+    if not graph.solo_auto_approve:
+        try:
+            assignments = load_role_assignments(
+                profile_path.parent / "role-assignments.yaml", roles_catalog
+            )
+        except AssignmentsError as err:
+            _fail_config(str(err))
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
+
     git = _git_facts(no_fs, spec_dir)
 
     artifacts, findings = collect_bundle(graph, spec_dir)
@@ -243,7 +255,11 @@ def main(
         roles_path = profile_path.parent / "roles.yaml"
         _fail_config("\n".join([*role_problems, f"roles catalog: {roles_path}"]))
 
-    findings.extend(run_checks(graph, artifacts, git))
+    try:
+        findings.extend(run_checks(graph, artifacts, git, assignments))
+    except FactsError as err:
+        _fail_config(str(err))
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
 
     if resolved_stage == "release":
         approval_policy = _load_approval_policy(profile_path)

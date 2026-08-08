@@ -22,9 +22,10 @@ from steward.compile.decomposition import (
     extract_compile_block,
     parse_decomposition,
 )
-from steward.gatecheck.git_facts import GitFacts
+from steward.gatecheck.git_facts import FactsError, GitFacts
 from steward.graph import SpecGraph
-from steward.meta import ArtifactMeta, MetaError, parse_artifact, parse_owner_roles
+from steward.meta import ArtifactMeta, MetaError, parse_artifact
+from steward.roleassignments import RoleAssignments
 
 __all__ = ["Artifact", "Finding", "collect_bundle", "run_checks"]
 
@@ -99,7 +100,12 @@ def collect_bundle(graph: SpecGraph, spec_dir: Path) -> tuple[list[Artifact], li
     return artifacts, findings
 
 
-def run_checks(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> list[Finding]:
+def run_checks(
+    graph: SpecGraph,
+    artifacts: list[Artifact],
+    git: GitFacts,
+    assignments: RoleAssignments | None = None,
+) -> list[Finding]:
     """Run every check and concatenate their findings."""
     # Local import: behaviour.py imports Artifact/Finding from this module.
     from steward.gatecheck.behaviour import check_behaviour_spec
@@ -108,7 +114,7 @@ def run_checks(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> li
     findings.extend(check_completeness(graph, artifacts))
     findings.extend(check_traceability(graph, artifacts))
     findings.extend(check_upstream_approved(graph, artifacts))
-    findings.extend(check_status_git(graph, artifacts, git))
+    findings.extend(check_status_git(graph, artifacts, git, assignments))
     findings.extend(check_stale_cascade(graph, artifacts, git))
     findings.extend(check_compile_block(artifacts))
     findings.extend(check_behaviour_spec(graph, artifacts))
@@ -292,12 +298,18 @@ def check_stale_cascade(
     return findings
 
 
-def check_status_git(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts) -> list[Finding]:
+def check_status_git(
+    graph: SpecGraph,
+    artifacts: list[Artifact],
+    git: GitFacts,
+    assignments: RoleAssignments | None = None,
+) -> list[Finding]:
     """REQ-205: ``status: approved`` must be mirrored by git facts.
 
     git is primary (steward NFR-003): the artifact must exist on the default
     branch, and — unless the profile is solo_auto_approve — carry a PR
-    approval from one of the node's owner roles.
+    approval from an identity authorized by ``allowed_approver_roles``
+    (DEC-007 D7).
     """
     findings = []
     for artifact in artifacts:
@@ -316,20 +328,38 @@ def check_status_git(graph: SpecGraph, artifacts: list[Artifact], git: GitFacts)
             continue
         artifact_approvals = git.approvals(artifact.path)
         if artifact_approvals is None:
-            # No authoritative role-facts (e.g. LiveGitFacts, no forge access):
-            # absence of a role-mapping is not a proven role violation.
+            # No authoritative facts (e.g. LiveGitFacts, no forge access):
+            # absence of evidence is not a proven violation.
             continue
-        node_roles = set(parse_owner_roles(graph.nodes[artifact.node_id].owner_role))
-        approving_roles = {a.role for a in artifact_approvals}
-        if not node_roles & approving_roles:
+        if assignments is None:
+            raise FactsError(
+                "role assignments are required to authorize approvals for "
+                f"non-solo profile {graph.profile!r} (profiles/role-assignments.yaml)"
+            )
+        node = graph.nodes[artifact.node_id]
+        # DEC-007 D7 (owner ruling): absent allowed_approver_roles → the
+        # accountable owner may approve; an explicit list REPLACES that
+        # default (separation of duties — the owner may be excluded).
+        # Node-level only for now: the frontmatter-level field parses but
+        # instance-vs-node precedence awaits its own owner ruling.
+        allowed = (
+            frozenset(node.allowed_approver_roles)
+            if node.allowed_approver_roles is not None
+            else frozenset({node.owner_role})
+        )
+        approver_roles: set[str] = set()
+        for approval in artifact_approvals:
+            approver_roles |= assignments.roles_for(approval.identity)
+        if not allowed & approver_roles:
             findings.append(
                 Finding(
                     "error",
                     "GC-GIT-ROLE",
                     artifact.path,
-                    f"approved without a PR approval from an owner role "
-                    f"(need one of: {', '.join(sorted(node_roles)) or '—'}; "
-                    f"got: {', '.join(sorted(approving_roles)) or 'none'})",
+                    "approved without an approval from an allowed approver role "
+                    f"(need one of: {', '.join(sorted(allowed))}; approvers "
+                    f"{', '.join(sorted(a.identity for a in artifact_approvals)) or '—'} "
+                    f"map to: {', '.join(sorted(approver_roles)) or 'no roles'})",
                 )
             )
     return findings

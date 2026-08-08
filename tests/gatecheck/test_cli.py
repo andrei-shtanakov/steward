@@ -48,7 +48,9 @@ def _facts(tmp_path: Path, payload: dict) -> Path:
     return path
 
 
-def test_clean_bundle_exit_zero(tmp_path: Path, write_roles: Path) -> None:
+def test_clean_bundle_exit_zero(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
@@ -56,7 +58,7 @@ def test_clean_bundle_exit_zero(tmp_path: Path, write_roles: Path) -> None:
     assert "0 error(s)" in result.output
 
 
-def test_findings_exit_one(tmp_path: Path, write_roles: Path) -> None:
+def test_findings_exit_one(tmp_path: Path, write_roles: Path, write_role_assignments: Path) -> None:
     # design approved while requirements is draft and git facts are empty
     profile, spec = _bundle(tmp_path, design_status="approved")
     facts = _facts(tmp_path, {})
@@ -66,7 +68,9 @@ def test_findings_exit_one(tmp_path: Path, write_roles: Path) -> None:
     assert "GC-GIT-BRANCH" in result.output
 
 
-def test_config_errors_exit_two(tmp_path: Path, write_roles: Path) -> None:
+def test_config_errors_exit_two(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     profile, spec = _bundle(tmp_path)
     missing_profile = runner.invoke(app, [str(spec), "--profile", "nope"])
     assert missing_profile.exit_code == 2
@@ -87,13 +91,15 @@ def test_config_errors_exit_two(tmp_path: Path, write_roles: Path) -> None:
     assert missing_dir.exit_code == 2
 
 
-def test_no_fs_is_deterministic(tmp_path: Path, write_roles: Path) -> None:
+def test_no_fs_is_deterministic(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     profile, spec = _bundle(tmp_path, design_status="approved")
     facts = _facts(
         tmp_path,
         {
             "default_branch_files": ["des.md", "req.md"],
-            "approvals": {"des.md": [{"handle": "@a", "role": "architects"}]},
+            "approvals": {"des.md": [{"identity": "github:bob"}]},
         },
     )
     args = [
@@ -114,7 +120,9 @@ def test_no_fs_is_deterministic(tmp_path: Path, write_roles: Path) -> None:
     assert [f["rule_id"] for f in payload["findings"]] == ["GC-UPSTREAM", "GC-STALE-UNPINNED"]
 
 
-def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path, write_roles: Path) -> None:
+def test_stale_pinned_hash_mismatch_exit_one(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     # REQ-206 e2e: approved design pins the requirements blob; facts report a
     # different current blob -> GC-STALE error blocks the PR.
     profile, spec = _bundle(tmp_path)
@@ -130,8 +138,8 @@ def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path, write_roles: Path) 
         {
             "default_branch_files": ["des.md", "req.md"],
             "approvals": {
-                "req.md": [{"handle": "@p", "role": "product"}],
-                "des.md": [{"handle": "@a", "role": "architects"}],
+                "req.md": [{"identity": "github:alice"}],
+                "des.md": [{"identity": "github:bob"}],
             },
             "blob_hashes": {"req.md": "new456"},
         },
@@ -141,7 +149,7 @@ def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path, write_roles: Path) 
     assert "GC-STALE" in result.output
 
 
-def test_json_format_shape(tmp_path: Path, write_roles: Path) -> None:
+def test_json_format_shape(tmp_path: Path, write_roles: Path, write_role_assignments: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -235,7 +243,7 @@ def _arch_bundle(tmp_path: Path, *, with_report: bool = True) -> tuple[Path, Pat
 
 
 def test_arch_bundle_with_matching_report_exits_zero_at_authoring(
-    tmp_path: Path, write_roles: Path
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
 ) -> None:
     profile, spec = _arch_bundle(tmp_path)
     facts = _facts(tmp_path, {})
@@ -245,7 +253,7 @@ def test_arch_bundle_with_matching_report_exits_zero_at_authoring(
 
 
 def test_arch_bundle_missing_report_exits_one_with_conformance_finding(
-    tmp_path: Path, write_roles: Path
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
 ) -> None:
     profile, spec = _arch_bundle(tmp_path, with_report=False)
     facts = _facts(tmp_path, {})
@@ -254,7 +262,9 @@ def test_arch_bundle_missing_report_exits_one_with_conformance_finding(
     assert "GC-ARCH-CONFORMANCE" in result.output
 
 
-def test_arch_stage_nonsense_exits_two(tmp_path: Path, write_roles: Path) -> None:
+def test_arch_stage_nonsense_exits_two(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     profile, spec = _arch_bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -264,7 +274,9 @@ def test_arch_stage_nonsense_exits_two(tmp_path: Path, write_roles: Path) -> Non
     assert result.exit_code == 2, result.output
 
 
-def test_bundle_without_manifest_has_no_arch_findings(tmp_path: Path, write_roles: Path) -> None:
+def test_bundle_without_manifest_has_no_arch_findings(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
@@ -275,7 +287,9 @@ def test_bundle_without_manifest_has_no_arch_findings(tmp_path: Path, write_role
 # --- roles catalog resolution (Task 4, DEC-007 D3) --------------------------
 
 
-def test_unresolvable_frontmatter_role_is_config_error(tmp_path: Path, write_roles: Path) -> None:
+def test_unresolvable_frontmatter_role_is_config_error(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
     profile, spec = _bundle(tmp_path)
     (spec / "des.md").write_text(
         "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
@@ -301,3 +315,59 @@ def test_missing_sibling_roles_yaml_is_config_error(tmp_path: Path) -> None:
     )
     assert result.exit_code == 2
     assert "roles" in result.output
+
+
+# --- role-assignments.yaml wiring (Task 3, DEC-007 D7) ----------------------
+
+
+def test_non_solo_missing_role_assignments_is_config_error(
+    tmp_path: Path, write_roles: Path
+) -> None:
+    # Deliberately does NOT request write_role_assignments: this is the
+    # negative case proving the sibling is mandatory for non-solo profiles.
+    profile, spec = _bundle(tmp_path)
+    result = runner.invoke(
+        app, [str(spec), "--profile", str(profile), "--no-fs", str(_facts(tmp_path, {}))]
+    )
+    assert result.exit_code == 2
+    assert "role-assignments.yaml" in result.output
+
+
+def test_solo_profile_runs_without_role_assignments_file(tmp_path: Path, write_roles: Path) -> None:
+    profile = tmp_path / "solo.yaml"
+    profile.write_text(
+        "profile: solo-test\n"
+        "solo_auto_approve: true\n"
+        "artifacts:\n"
+        "  - {id: requirements, owner_role: product, upstream: []}\n"
+    )
+    spec = tmp_path / "spec"
+    spec.mkdir()
+    (spec / "req.md").write_text(
+        "---\nspec_stage: requirements\nstatus: draft\nversion: 1\n---\n## REQ-001\n"
+    )
+    facts = _facts(tmp_path, {})
+    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
+    assert result.exit_code == 0, result.output
+
+
+def test_gc_git_role_hit_end_to_end_via_no_fs(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    # An approval from an identity whose granted role isn't the node's owner
+    # role (and no allowed_approver_roles override) must surface GC-GIT-ROLE
+    # through the full --no-fs pipeline, using the new identity-only shape.
+    profile, spec = _bundle(tmp_path)
+    (spec / "req.md").write_text(
+        "---\nspec_stage: requirements\nstatus: approved\nversion: 1\n---\n## REQ-001\n"
+    )
+    facts = _facts(
+        tmp_path,
+        {
+            "default_branch_files": ["req.md", "des.md"],
+            "approvals": {"req.md": [{"identity": "github:quinn"}]},  # qa, not product
+        },
+    )
+    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
+    assert result.exit_code == 1, result.output
+    assert "GC-GIT-ROLE" in result.output
