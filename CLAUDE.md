@@ -66,7 +66,7 @@ Per `TODO.md` (open items) and `NEXT-STEPS.md` (why that order) — do not start
 | compile-down emitters (C5, WS-004) | ✅ done (`steward-compile`) |
 | risk model + waivers (WS-006 M1) | ✅ done (`steward risk-classify` / `waivers-check`, RD-004 verified) |
 | authority policy v1 (RD-006 M2) | ✅ done (`profiles/authority.yaml`; arbiter vendored it, M3) |
-| role identity (DEC-007) | 🟡 decided, not migrated — catalog exists, code/data still legacy (`TODO.md` §1) |
+| role identity (DEC-007) | 🟡 loader + all data canonical (§1 PR-1/PR-2); open: slug→identity mapping, GC-GIT-ROLE on `allowed_approver_roles`, dispatcher catalog handoff (`TODO.md` §1) |
 | git approval (WS-003) | ⛔ **invalidated by ADR-ECO-004 D4** — required-owner-review is structurally unsatisfiable solo. Close it as superseded rather than silently re-scoping; the replacement is a separate item, "solo-compatible merge evidence policy", built on typed `human_merge` / `agent_merge` evidence |
 | dispatcher panel (WS-005) | ⬜ open — gated on steward stabilizing the `gate_verdicts.jsonl` schema + gate-id catalog that Maestro and dispatcher both vendor; verdict records must use the DEC-007 role slugs |
 | governance gate → required check | 🟡 advisory by design until an **evidence-based promotion gate** is met (V1 live run, real PRs through the gate, FP/FN triaged, working break-glass path, named runtime owner) — not a calendar decision |
