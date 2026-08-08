@@ -48,7 +48,7 @@ def _facts(tmp_path: Path, payload: dict) -> Path:
     return path
 
 
-def test_clean_bundle_exit_zero(tmp_path: Path) -> None:
+def test_clean_bundle_exit_zero(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
@@ -56,7 +56,7 @@ def test_clean_bundle_exit_zero(tmp_path: Path) -> None:
     assert "0 error(s)" in result.output
 
 
-def test_findings_exit_one(tmp_path: Path) -> None:
+def test_findings_exit_one(tmp_path: Path, write_roles: Path) -> None:
     # design approved while requirements is draft and git facts are empty
     profile, spec = _bundle(tmp_path, design_status="approved")
     facts = _facts(tmp_path, {})
@@ -66,7 +66,7 @@ def test_findings_exit_one(tmp_path: Path) -> None:
     assert "GC-GIT-BRANCH" in result.output
 
 
-def test_config_errors_exit_two(tmp_path: Path) -> None:
+def test_config_errors_exit_two(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     missing_profile = runner.invoke(app, [str(spec), "--profile", "nope"])
     assert missing_profile.exit_code == 2
@@ -87,7 +87,7 @@ def test_config_errors_exit_two(tmp_path: Path) -> None:
     assert missing_dir.exit_code == 2
 
 
-def test_no_fs_is_deterministic(tmp_path: Path) -> None:
+def test_no_fs_is_deterministic(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path, design_status="approved")
     facts = _facts(
         tmp_path,
@@ -114,7 +114,7 @@ def test_no_fs_is_deterministic(tmp_path: Path) -> None:
     assert [f["rule_id"] for f in payload["findings"]] == ["GC-UPSTREAM", "GC-STALE-UNPINNED"]
 
 
-def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path) -> None:
+def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path, write_roles: Path) -> None:
     # REQ-206 e2e: approved design pins the requirements blob; facts report a
     # different current blob -> GC-STALE error blocks the PR.
     profile, spec = _bundle(tmp_path)
@@ -141,7 +141,7 @@ def test_stale_pinned_hash_mismatch_exit_one(tmp_path: Path) -> None:
     assert "GC-STALE" in result.output
 
 
-def test_json_format_shape(tmp_path: Path) -> None:
+def test_json_format_shape(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -234,7 +234,9 @@ def _arch_bundle(tmp_path: Path, *, with_report: bool = True) -> tuple[Path, Pat
     return profile, spec
 
 
-def test_arch_bundle_with_matching_report_exits_zero_at_authoring(tmp_path: Path) -> None:
+def test_arch_bundle_with_matching_report_exits_zero_at_authoring(
+    tmp_path: Path, write_roles: Path
+) -> None:
     profile, spec = _arch_bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
@@ -242,7 +244,9 @@ def test_arch_bundle_with_matching_report_exits_zero_at_authoring(tmp_path: Path
     assert "GC-ARCH" not in result.output
 
 
-def test_arch_bundle_missing_report_exits_one_with_conformance_finding(tmp_path: Path) -> None:
+def test_arch_bundle_missing_report_exits_one_with_conformance_finding(
+    tmp_path: Path, write_roles: Path
+) -> None:
     profile, spec = _arch_bundle(tmp_path, with_report=False)
     facts = _facts(tmp_path, {})
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
@@ -250,7 +254,7 @@ def test_arch_bundle_missing_report_exits_one_with_conformance_finding(tmp_path:
     assert "GC-ARCH-CONFORMANCE" in result.output
 
 
-def test_arch_stage_nonsense_exits_two(tmp_path: Path) -> None:
+def test_arch_stage_nonsense_exits_two(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _arch_bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -260,9 +264,37 @@ def test_arch_stage_nonsense_exits_two(tmp_path: Path) -> None:
     assert result.exit_code == 2, result.output
 
 
-def test_bundle_without_manifest_has_no_arch_findings(tmp_path: Path) -> None:
+def test_bundle_without_manifest_has_no_arch_findings(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(app, [str(spec), "--profile", str(profile), "--no-fs", str(facts)])
     assert result.exit_code == 0, result.output
     assert "GC-ARCH" not in result.output
+
+
+# --- roles catalog resolution (Task 4, DEC-007 D3) --------------------------
+
+
+def test_unresolvable_frontmatter_role_is_config_error(tmp_path: Path, write_roles: Path) -> None:
+    profile, spec = _bundle(tmp_path)
+    (spec / "des.md").write_text(
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+        "owner_role: ghost\ntraces_to: [REQ-001]\n---\n"
+    )
+    result = runner.invoke(
+        app, [str(spec), "--profile", str(profile), "--no-fs", str(_facts(tmp_path, {}))]
+    )
+    assert result.exit_code == 2
+    err = result.output
+    assert "des.md" in err and "owner_role" in err and "ghost" in err
+
+
+def test_missing_sibling_roles_yaml_is_config_error(tmp_path: Path) -> None:
+    # Deliberately does NOT request the write_roles fixture: this is the
+    # negative case proving the sibling is mandatory, not a soft skip.
+    profile, spec = _bundle(tmp_path)
+    result = runner.invoke(
+        app, [str(spec), "--profile", str(profile), "--no-fs", str(_facts(tmp_path, {}))]
+    )
+    assert result.exit_code == 2
+    assert "roles" in result.output

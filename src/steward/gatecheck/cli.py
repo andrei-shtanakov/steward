@@ -15,7 +15,7 @@ import typer
 import yaml
 
 from steward.approvalfacts import ApprovalFactsError, load_approval_facts
-from steward.gatecatalog import CatalogError, GateCatalog, load_catalog_files
+from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
 from steward.gatecheck.approval import (
     ApprovalPolicy,
     PolicyError,
@@ -37,12 +37,14 @@ from steward.gatecheck.git_facts import (
     InjectedGitFacts,
     LiveGitFacts,
 )
+from steward.gatecheck.roles_refs import unresolved_role_refs
 from steward.gatecheck.trace_matrix import (
     build_trace_matrix,
     render_matrix_json,
     render_matrix_text,
 )
 from steward.graph import ProfileError, SpecGraph, load_profile
+from steward.roles import RolesCatalog, RolesError, load_roles_catalog
 from steward.verdicts import EmitError, emit_verdicts
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -94,18 +96,29 @@ def _resolve_profile(profile: str) -> tuple[SpecGraph, Path]:
         raise AssertionError from None  # unreachable; keeps type-checkers calm
 
 
-def _load_catalog(profile_path: Path) -> GateCatalog:
-    """Load the gate-id catalog anchored to ``profile_path``'s directory.
+def _load_roles(profile_path: Path) -> RolesCatalog:
+    """Load the roles catalog anchored to ``profile_path``'s directory.
 
-    Sibling files (gate-catalog.yaml, roles.yaml) resolve relative to the
-    profile directory actually in use, not the current CWD — the same
-    anchoring ``_resolve_profile`` documents for arch-policy.yaml.
+    roles.yaml is a MANDATORY sibling of the profile on every run since
+    DEC-007 D3 — role references in frontmatter are validated against it,
+    so its absence is a configuration error, not a soft skip.
     """
     try:
-        return load_catalog_files(
-            profile_path.parent / "gate-catalog.yaml",
-            profile_path.parent / "roles.yaml",
-        )
+        return load_roles_catalog(profile_path.parent / "roles.yaml")
+    except RolesError as err:
+        _fail_config(str(err))
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
+
+
+def _load_catalog(profile_path: Path, roles: RolesCatalog) -> GateCatalog:
+    """Load the gate-id catalog anchored to ``profile_path``'s directory, reusing ``roles``.
+
+    Sibling files (gate-catalog.yaml) resolve relative to the profile
+    directory actually in use, not the current CWD — the same anchoring
+    ``_resolve_profile`` documents for arch-policy.yaml.
+    """
+    try:
+        return load_catalog(profile_path.parent / "gate-catalog.yaml", roles)
     except (CatalogError, OSError, yaml.YAMLError) as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
@@ -221,6 +234,12 @@ def main(
     git = _git_facts(no_fs, spec_dir)
 
     artifacts, findings = collect_bundle(graph, spec_dir)
+
+    roles_catalog = _load_roles(profile_path)
+    role_problems = unresolved_role_refs(artifacts, roles_catalog)
+    if role_problems:
+        _fail_config("\n".join(role_problems))
+
     findings.extend(run_checks(graph, artifacts, git))
 
     if resolved_stage == "release":
@@ -254,7 +273,7 @@ def main(
         findings.extend(check_arch_conformance(arch, policy, git))
 
     if emit_verdicts_flag:
-        catalog = _load_catalog(profile_path)
+        catalog = _load_catalog(profile_path, roles_catalog)
         try:
             out_path = emit_verdicts(graph, artifacts, findings, spec_dir, catalog)
         except EmitError as err:
