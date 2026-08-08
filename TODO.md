@@ -110,8 +110,8 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
       `GC-APPROVAL-*` gate_id; (3) связь gate → obligation; (4) применимость
       правила к owner_role и стадии — НЕ прямой маппинг owner_role →
       obligation единственной функцией (одной роли может соответствовать
-      несколько obligations), а каталог правил с полями
-      owner_role/applicable_roles + obligation. Заголовок пункта обновлён
+      несколько obligations), а каталог правил с полями `owner_role` /
+      `applicable_roles` + `obligation`. Заголовок пункта обновлён
       соответственно (был «маппинг owner_role → obligation»).
 - [x] Решить OQ-1 про approval-evidence: `obligation: approval` в тех же записях против нового типа правила в dispatcher @owner:github:andrei-shtanakov @id:oq-1-approval-evidence — РЕШЕНО владельцем 2026-08-08, вариант A с поправкой по схеме
       **Решение (формулировка владельца):** approval enforcement и его
