@@ -43,10 +43,30 @@ app = typer.Typer(add_completion=False, help=__doc__)
 _EXIT_FINDINGS = 1
 _EXIT_CONFIG = 2
 
+_STAGES = frozenset({"authoring", "release"})
+_DEFAULT_STAGE = "authoring"
+
 
 def _fail_config(message: str) -> None:
     typer.echo(f"config error: {message}", err=True)
     raise typer.Exit(_EXIT_CONFIG)
+
+
+def _resolve_stage(stage: str | None, arch_stage: str | None) -> str:
+    """Normalize `--stage` and its deprecated alias `--arch-stage` (D4а).
+
+    Both set with different values is a config error; both set with the
+    same value is not a conflict; either one alone wins; neither set falls
+    back to ``"authoring"``. The resolved value must be a known stage.
+    """
+    if stage is not None and arch_stage is not None and stage != arch_stage:
+        _fail_config(f"--stage and --arch-stage conflict ({stage!r} vs {arch_stage!r})")
+    resolved = stage if stage is not None else arch_stage
+    if resolved is None:
+        resolved = _DEFAULT_STAGE
+    if resolved not in _STAGES:
+        _fail_config(f"unknown stage {resolved!r} (expected one of {sorted(_STAGES)})")
+    return resolved
 
 
 def _resolve_profile(profile: str) -> tuple[SpecGraph, Path]:
@@ -145,13 +165,20 @@ def main(
         "(contract gate-verdicts/v1). Requires live git provenance — incompatible "
         "with --no-fs. Exit codes still reflect the findings.",
     ),
-    arch_stage: str = typer.Option(
-        "authoring",
+    stage: str | None = typer.Option(
+        None,
+        "--stage",
+        help="Governance stage: authoring | release. Selects the GC-ARCH-CONFORMANCE "
+        "policy (profiles/arch-policy.yaml). Default: authoring.",
+    ),
+    arch_stage: str | None = typer.Option(
+        None,
         "--arch-stage",
-        help="GC-ARCH-CONFORMANCE stage policy: authoring | release (profiles/arch-policy.yaml).",
+        help=r"\[deprecated alias of --stage]",
     ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
+    resolved_stage = _resolve_stage(stage, arch_stage)
     if output not in ("text", "json"):
         _fail_config(f"unknown format {output!r} (expected text or json)")
     if not spec_dir.is_dir():
@@ -172,7 +199,7 @@ def main(
     arch = collect_arch_bundle(spec_dir)
     if arch is not None:
         try:
-            policy = load_arch_policy(profile_path.parent / "arch-policy.yaml", arch_stage)
+            policy = load_arch_policy(profile_path.parent / "arch-policy.yaml", resolved_stage)
         except ArchPolicyError as err:
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm
