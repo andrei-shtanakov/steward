@@ -77,7 +77,7 @@
       2026-08-08: GC-GIT-ROLE запускается только при авторитетных role-facts
       (approvals: None = unavailable, live всегда None) — ложные got:none в live
       сняты; полный fix — после DEC-007 mapping.
-- [ ] Handoff в dispatcher: их предложение (одна строка-роль без `@`) принято; прислать пиненую копию каталога @owner:github:andrei-shtanakov @id:dispatcher-roles-catalog-handoff
+- [x] Handoff в dispatcher: их предложение (одна строка-роль без `@`) принято; прислать пиненую копию каталога @owner:github:andrei-shtanakov @id:dispatcher-roles-catalog-handoff — dispatcher#128 (2026-08-08): пиненая копия roles.yaml @ `b79c858` + канон к следующему перепину gate-check (canonical-профиль в смоуке, реальные слаги в sibling roles.yaml, role-assignments только для non-solo, identity без case-folding); ход за dispatcher
 - [ ] 15-behaviour-spec.md несёт вложенные `structural_coverage[].obligation.owner_role: "@architects"` — это ОТДЕЛЬНАЯ схема (per-obligation architecture owner, не governance owner артефакта), в DEC-007-миграцию сознательно не вошла; решить её каноникализацию явным решением (не молча) @owner:github:andrei-shtanakov @id:structural-coverage-owner-role-form
 
 ### 2. C2 (хвост): ре-вендоринг SpecMeta v2
@@ -91,7 +91,7 @@ steward-часть закрыта 2026-07-15. `_vendor/spec_meta.py` держи�
 singular slug без `@`. spec-runner пишет это прямо сейчас — правка ask'а срочная, иначе v2
 зафиксирует форму, от которой мы отказались.
 
-- [ ] Довести до spec-runner пересмотренный ask: `owner_role: <slug>` singular, `@` не входит в значение @owner:github:andrei-shtanakov @id:spec-runner-owner-role-ask
+- [x] Довести до spec-runner пересмотренный ask: `owner_role: <slug>` singular, `@` не входит в значение @owner:github:andrei-shtanakov @id:spec-runner-owner-role-ask — spec-runner#125 (2026-08-08): старый ask 2026-07-15 явно отменён, грамматика слага и правило «reviewer_roles/allowed_approver_roles только после согласования контракта» переданы; ход за spec-runner
 - [ ] Ре-вендорить `split_frontmatter`/`SpecMeta`/`meta_from_dict` как contract v2 @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @trigger:"SPEC_META_CONTRACT = 2 в master spec-runner" @id:revendor-specmeta-v2
 - [ ] Убрать обход «`owner_role` из сырого frontmatter-dict» в `meta.py` @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:remove-owner-role-raw-workaround
 - [ ] Round-trip тест: `upstream_hashes`, `reviewer_roles`, `allowed_approver_roles` переживают v2-парсер как pass-through @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:specmeta-v2-roundtrip-test
