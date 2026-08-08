@@ -24,6 +24,8 @@ from typing import Literal
 
 import yaml
 
+from steward.roles import RolesCatalog, RolesError, load_roles_catalog
+
 
 class CatalogError(ValueError):
     """Catalog validation error, always names gate_id and field."""
@@ -192,12 +194,13 @@ def _check_unknown_keys(entry_dict: dict, allowed_keys: set[str], gate_id: str) 
         raise CatalogError(f"gate_id '{gate_id}': unknown key(s) {sorted(unknown)}")
 
 
-def load_catalog(catalog_path: Path, roles_path: Path) -> GateCatalog:
-    """Load and validate gate catalog from YAML files.
+def load_catalog(catalog_path: Path, roles: RolesCatalog) -> GateCatalog:
+    """Load and validate gate catalog from YAML, resolving roles against ``roles``.
 
     Args:
         catalog_path: Path to gate-catalog.yaml
-        roles_path: Path to roles.yaml (for role slug validation)
+        roles: Already-loaded roles catalog (see ``steward.roles``), used to
+            validate ``applicable_roles`` entries against known slugs.
 
     Returns:
         GateCatalog with all entries validated.
@@ -205,23 +208,7 @@ def load_catalog(catalog_path: Path, roles_path: Path) -> GateCatalog:
     Raises:
         CatalogError: On any validation failure.
     """
-    # Load roles first for validation
-    with open(roles_path) as f:
-        roles_data = yaml.safe_load(f)
-    # YAML-валидный, но не той формы файл (пустой -> None, список, роль без
-    # slug) обязан падать как CatalogError, а не AttributeError/KeyError —
-    # иначе он проскочит мимо fail-closed except-сети CLI traceback'ом.
-    if not isinstance(roles_data, dict):
-        raise CatalogError(f"roles file {roles_path} must be a mapping")
-    roles_list = roles_data.get("roles")
-    if not isinstance(roles_list, list):
-        raise CatalogError(f"roles file {roles_path}: 'roles' must be a list")
-    slugs: list[str] = []
-    for role in roles_list:
-        if not isinstance(role, dict) or not isinstance(role.get("slug"), str):
-            raise CatalogError(f"roles file {roles_path}: every role entry needs a string 'slug'")
-        slugs.append(role["slug"])
-    available_roles = frozenset(slugs)
+    available_roles = roles.slugs()
 
     # Load catalog
     with open(catalog_path) as f:
@@ -300,3 +287,16 @@ def load_catalog(catalog_path: Path, roles_path: Path) -> GateCatalog:
         stage_vocabulary=stage_vocab,
         gates=entries,
     )
+
+
+def load_catalog_files(catalog_path: Path, roles_path: Path) -> GateCatalog:
+    """File-level convenience: load roles.yaml, then the catalog.
+
+    Converts RolesError to CatalogError so callers keep a single
+    configuration-error type (no copied validation, no traceback).
+    """
+    try:
+        roles = load_roles_catalog(roles_path)
+    except RolesError as err:
+        raise CatalogError(str(err)) from err
+    return load_catalog(catalog_path, roles)

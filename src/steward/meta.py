@@ -3,7 +3,15 @@
 Reuses spec-runner's frontmatter parser and ``SpecMeta`` state shape (vendored,
 DEC-003) and layers steward-only governance fields on top:
 
-- ``owner_role`` → :attr:`ArtifactMeta.owner_roles` (CODEOWNERS roles, REQ-004)
+- ``owner_role`` → :attr:`ArtifactMeta.owner_role` and :attr:`ArtifactMeta.owner_roles`
+  (DEC-007 canonical v2, 2026-08-08). Canonical form: single slug without '@' or ',' →
+  ``owner_role="slug"`` and ``owner_roles=("slug",)``. Legacy form ("@a[,@b]" or comma
+  multiplicity): ``owner_role=None``, ``owner_roles=tuple``. The reader never silently
+  picks an accountable owner from a legacy tuple (REQ-004, DEC-007 D3).
+- ``reviewer_roles`` → :attr:`ArtifactMeta.reviewer_roles` (canonical-only array; absent
+  → ``()``, explicit empty → MetaError)
+- ``allowed_approver_roles`` → :attr:`ArtifactMeta.allowed_approver_roles` (canonical-only;
+  ``None`` = absent—downstream default applies; explicit empty → MetaError)
 - ``traces_to`` → :attr:`ArtifactMeta.traces_to` (upstream artifact / REQ / DEC /
   AC ids used by the traceability gate, REQ-003)
 - ``upstream_hashes`` → :attr:`ArtifactMeta.upstream_hashes` (git blob hash of
@@ -59,6 +67,15 @@ class ArtifactMeta:
     owner_roles: tuple[str, ...] = ()
     traces_to: tuple[str, ...] = ()
     upstream_hashes: tuple[tuple[str, str], ...] = ()  # (upstream node id, blob hash) pairs
+    # DEC-007 canonical v2 (2026-08-08). owner_role is set ONLY when the
+    # frontmatter carries the canonical singular form (one slug, no '@');
+    # a legacy "@a[,@b]" string parses into owner_roles alone — the reader
+    # never picks an accountable owner from a legacy tuple.
+    owner_role: str | None = None
+    reviewer_roles: tuple[str, ...] = ()
+    # None = field absent (downstream default: {owner_role}); an explicit
+    # empty list is a MetaError — absent and empty are different states.
+    allowed_approver_roles: tuple[str, ...] | None = None
 
     @property
     def spec_stage(self) -> str:
@@ -90,6 +107,42 @@ def parse_owner_roles(raw: object) -> tuple[str, ...]:
     return tuple(role.strip() for role in raw.split(",") if role.strip())
 
 
+def _split_owner_role(raw: object) -> tuple[str | None, tuple[str, ...]]:
+    """Return (canonical_owner_role, owner_roles) per DEC-007.
+
+    Canonical: a single slug with no '@' and no ',' → ``(slug, (slug,))``.
+    Legacy ``"@a[,@b]"`` (or any comma form): preserved as a tuple with NO
+    automatic choice of accountable owner → ``(None, tuple)``.
+    """
+    roles = parse_owner_roles(raw)
+    if len(roles) == 1 and "@" not in roles[0]:
+        return roles[0], roles
+    return None, roles
+
+
+def _parse_role_array(raw: object, field: str) -> tuple[str, ...] | None:
+    """Parse a canonical-only role array (``reviewer_roles`` etc.).
+
+    Absent → None (caller decides the default). Present must be a non-empty
+    list of unique slugs without '@' — the legacy spelling never leaks in.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise MetaError(f"'{field}' must be a non-empty list of role slugs (or absent)")
+    slugs: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise MetaError(f"'{field}' must be a non-empty list of role slugs (or absent)")
+        slug = item.strip()
+        if "@" in slug:
+            raise MetaError(f"'{field}' carries legacy '@' spelling: {slug!r} (use bare slugs)")
+        if slug in slugs:
+            raise MetaError(f"'{field}' has duplicate slug {slug!r}")
+        slugs.append(slug)
+    return tuple(slugs)
+
+
 def parse_artifact(text: str) -> ArtifactMeta | None:
     """Parse artifact text into :class:`ArtifactMeta`, or ``None`` when unmanaged.
 
@@ -110,11 +163,18 @@ def parse_artifact(text: str) -> ArtifactMeta | None:
     if not isinstance(stage, str):
         raise MetaError("'spec_stage' must be a string")
 
+    owner_role, owner_roles = _split_owner_role(meta_dict.get("owner_role"))
+    reviewer_roles = _parse_role_array(meta_dict.get("reviewer_roles"), "reviewer_roles")
     return ArtifactMeta(
         base=meta_from_dict(meta_dict),
-        owner_roles=parse_owner_roles(meta_dict.get("owner_role")),
+        owner_roles=owner_roles,
         traces_to=_parse_traces_to(meta_dict.get("traces_to")),
         upstream_hashes=_parse_upstream_hashes(meta_dict.get("upstream_hashes")),
+        owner_role=owner_role,
+        reviewer_roles=reviewer_roles if reviewer_roles is not None else (),
+        allowed_approver_roles=_parse_role_array(
+            meta_dict.get("allowed_approver_roles"), "allowed_approver_roles"
+        ),
     )
 
 

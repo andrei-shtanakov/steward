@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from steward.gatecatalog import load_catalog
+from steward.gatecatalog import load_catalog_files
 
 PROFILES = Path(__file__).resolve().parents[2] / "profiles"
 
@@ -36,7 +36,7 @@ EXPECTED_ACTIVE = EXPECTED_ACTIVE_QUALITY | {"GC-APPROVAL-MISSING"}
 
 
 def _catalog():
-    return load_catalog(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
+    return load_catalog_files(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
 
 
 def test_v2_composition_20_active_19_quality_plus_1_approval():

@@ -166,7 +166,7 @@ def _write_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
     return profile, spec, facts
 
 
-def test_cli_trace_matrix_json(tmp_path: Path) -> None:
+def test_cli_trace_matrix_json(tmp_path: Path, write_roles: Path) -> None:
     profile, spec, facts = _write_bundle(tmp_path)
     result = runner.invoke(
         app,
@@ -187,7 +187,7 @@ def test_cli_trace_matrix_json(tmp_path: Path) -> None:
     assert [row["id"] for row in payload["requirements"]] == ["FR-01", "FR-02", "FR-03", "NFR-01"]
 
 
-def test_cli_trace_matrix_still_exits_1_on_findings(tmp_path: Path) -> None:
+def test_cli_trace_matrix_still_exits_1_on_findings(tmp_path: Path, write_roles: Path) -> None:
     profile, spec, facts = _write_bundle(tmp_path)
     # Break coverage: drop the FR-02 structural block entirely.
     behaviour = (spec / "15-behaviour.md").read_text()
@@ -205,7 +205,9 @@ def test_cli_trace_matrix_still_exits_1_on_findings(tmp_path: Path) -> None:
     assert "Trace matrix" in result.output
 
 
-def test_cli_trace_matrix_without_behaviour_node_is_config_error(tmp_path: Path) -> None:
+def test_cli_trace_matrix_without_behaviour_node_is_config_error(
+    tmp_path: Path, write_roles: Path
+) -> None:
     profile, spec, facts = _write_bundle(tmp_path)
     profile.write_text(
         "profile: no-beh\nsolo_auto_approve: true\nartifacts:\n"

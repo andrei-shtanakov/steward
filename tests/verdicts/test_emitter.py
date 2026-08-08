@@ -10,7 +10,7 @@ import jsonschema
 import pytest
 from typer.testing import CliRunner
 
-from steward.gatecatalog import load_catalog
+from steward.gatecatalog import load_catalog_files
 from steward.gatecheck.checks import Finding, collect_bundle, run_checks
 from steward.gatecheck.cli import app
 from steward.gatecheck.git_facts import LiveGitFacts
@@ -23,7 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SCHEMA = json.loads((_REPO_ROOT / "contracts/gate-verdicts/v1/SCHEMA.json").read_text())
 
-CATALOG = load_catalog(
+CATALOG = load_catalog_files(
     _REPO_ROOT / "profiles/gate-catalog.yaml", _REPO_ROOT / "profiles/roles.yaml"
 )
 
@@ -164,7 +164,7 @@ def test_declared_rule_id_is_refused_like_unknown(tmp_path: Path) -> None:
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     (catalog_dir / "roles.yaml").write_text(
-        'version: 1\nslug_pattern: "^[a-z][a-z0-9-]{1,31}$"\nroles: []\n'
+        'version: 1\nslug_pattern: "^[a-z][a-z0-9-]{1,31}$"\nroles:\n  - {slug: qa, display: QA}\n'
     )
     (catalog_dir / "gate-catalog.yaml").write_text(
         "version: 1\n"
@@ -175,7 +175,9 @@ def test_declared_rule_id_is_refused_like_unknown(tmp_path: Path) -> None:
         "    obligation: approval\n"
         "    status: declared\n"
     )
-    declared_catalog = load_catalog(catalog_dir / "gate-catalog.yaml", catalog_dir / "roles.yaml")
+    declared_catalog = load_catalog_files(
+        catalog_dir / "gate-catalog.yaml", catalog_dir / "roles.yaml"
+    )
 
     graph = load_profile_data(_PROFILE)
     artifacts, findings = collect_bundle(graph, spec)

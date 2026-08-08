@@ -13,10 +13,14 @@
 # risk-model.yaml and authority.yaml. dispatcher and spec-runner vendor a pinned copy;
 # they carry role slugs, they do not define the form.
 #
-# STATUS 2026-07-26: catalog declared; the profile loader and gate-check do not yet
-# validate against it, and profiles/*.yaml still carry the legacy "@role[,@role]" form.
-# Wiring + migration are tracked in TODO.md ("Role identity model (DEC-007)") and are
-# deliberately not done silently.
+# STATUS 2026-08-08 (PR-1 of DEC-007 §1): steward loads and validates this file
+# fail-closed (src/steward/roles.py) — slug uniqueness, slug_pattern fullmatch,
+# closed key set — and gate-check resolves every frontmatter role reference
+# against it (unresolvable slug = config error, exit 2). Composition is pinned
+# to `version` by tests/roles/test_catalog_data.py: any composition change
+# requires a version bump. Still legacy (PR-2): profiles/*.yaml and the repo's
+# own spec/*.md frontmatter carry "@role[,@role]"; the reader accepts that form
+# transitionally, the accountable-owner choice is never made by tooling.
 #
 # Validation owed by steward tooling (TODO): slug uniqueness; every slug matches
 # slug_pattern; every owner_role/reviewer_roles/allowed_approver_roles reference resolves;

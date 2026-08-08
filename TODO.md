@@ -67,7 +67,7 @@
 
 Коллизия разрешена: `requirements` → `owner_role: product`, `reviewer_roles: [architects]`.
 
-- [ ] Загрузчик читает `profiles/roles.yaml` и валидирует: уникальность slug, соответствие `slug_pattern`, разрешимость ссылок `owner_role`/`reviewer_roles`/`allowed_approver_roles` @owner:github:andrei-shtanakov @id:roles-catalog-loader
+- [x] Загрузчик читает `profiles/roles.yaml` и валидирует: уникальность slug, соответствие `slug_pattern`, разрешимость ссылок `owner_role`/`reviewer_roles`/`allowed_approver_roles` @owner:github:andrei-shtanakov @id:roles-catalog-loader — PR этой ветки (D1+D3+D5): `src/steward/roles.py` fail-closed, canonical-v2 поля в `ArtifactMeta` (legacy reader сохранён, без молчаливого выбора владельца), разрешимость frontmatter-ссылок в gate-check (exit 2), composition-pin `roles.yaml`; `roles.yaml` — обязательный сосед профиля на каждом прогоне
 - [ ] Запрет удаления используемой роли без явной миграции и бампа `version` каталога @owner:github:andrei-shtanakov @id:role-deletion-guard
 - [ ] `meta.py`: reader принимает legacy `"@a,@b"`, writer выпускает только canonical v2; `parse_owner_roles` уходит в legacy-путь @owner:github:andrei-shtanakov @id:meta-owner-roles-v2
 - [ ] Мигрировать `profiles/{team,lite}.yaml` на singular + `reviewer_roles` (`requirements` → owner `product`, reviewer `architects`) @owner:github:andrei-shtanakov @blocked_by:todo://steward/roles-catalog-loader @id:migrate-profiles-singular-roles

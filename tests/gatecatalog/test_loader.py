@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from steward.gatecatalog import CatalogError, load_catalog
+from steward.gatecatalog import CatalogError, load_catalog, load_catalog_files
+from steward.roles import load_roles_catalog
 
 ROLES = (
     'version: 1\nslug_pattern: "^[a-z][a-z0-9-]{1,31}$"\n'
@@ -30,7 +31,7 @@ def _load(tmp_path: Path, gates_yaml: str, header: str = HEADER):
     catalog.write_text(header + "gates:\n" + gates_yaml)
     roles = tmp_path / "roles.yaml"
     roles.write_text(ROLES)
-    return load_catalog(catalog, roles)
+    return load_catalog(catalog, load_roles_catalog(roles))
 
 
 def test_minimal_active_entry_loads(tmp_path):
@@ -176,7 +177,7 @@ def test_empty_catalog_file_is_catalog_error_not_traceback(tmp_path):
     roles = tmp_path / "roles.yaml"
     roles.write_text(ROLES)
     with pytest.raises(CatalogError, match="mapping"):
-        load_catalog(catalog, roles)
+        load_catalog_files(catalog, roles)
 
 
 def test_list_toplevel_catalog_is_catalog_error(tmp_path):
@@ -185,13 +186,29 @@ def test_list_toplevel_catalog_is_catalog_error(tmp_path):
     roles = tmp_path / "roles.yaml"
     roles.write_text(ROLES)
     with pytest.raises(CatalogError, match="mapping"):
-        load_catalog(catalog, roles)
+        load_catalog_files(catalog, roles)
 
 
 def test_role_entry_without_slug_is_catalog_error(tmp_path):
+    # Now routed through the roles loader (Task 1): a shape defect in
+    # roles.yaml surfaces as CatalogError, converted, no traceback.
     catalog = tmp_path / "gate-catalog.yaml"
     catalog.write_text(HEADER + "gates: {}\n")
     roles = tmp_path / "roles.yaml"
-    roles.write_text("version: 1\nroles:\n  - {display: NoSlug}\n")
+    roles.write_text('version: 1\nslug_pattern: "^[a-z]+$"\nroles:\n  - {display: NoSlug}\n')
     with pytest.raises(CatalogError, match="slug"):
-        load_catalog(catalog, roles)
+        load_catalog_files(catalog, roles)
+
+
+def test_duplicate_role_slug_now_fails_via_roles_loader(tmp_path: Path) -> None:
+    # Before D1 the inline parser accepted duplicate slugs silently; the
+    # roles loader must make this a CatalogError (converted, no traceback).
+    catalog = tmp_path / "gate-catalog.yaml"
+    catalog.write_text(HEADER + "gates: {}\n")
+    roles = tmp_path / "roles.yaml"
+    roles.write_text(
+        'version: 1\nslug_pattern: "^[a-z]+$"\n'
+        "roles:\n  - {slug: qa, display: A}\n  - {slug: qa, display: B}\n"
+    )
+    with pytest.raises(CatalogError, match="duplicate"):
+        load_catalog_files(catalog, roles)

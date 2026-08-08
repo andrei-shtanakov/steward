@@ -134,7 +134,7 @@ def _arch_bundle(tmp_path: Path, *, with_report: bool = True) -> tuple[Path, Pat
     return profile, spec
 
 
-def test_stage_flag_selects_release(tmp_path: Path) -> None:
+def test_stage_flag_selects_release(tmp_path: Path, write_roles: Path) -> None:
     # --stage release must pick the exact same policy branch --arch-stage
     # release used to (self-freshness + max-snapshot-age errors on this bundle).
     profile, spec = _arch_bundle(tmp_path)
@@ -147,7 +147,7 @@ def test_stage_flag_selects_release(tmp_path: Path) -> None:
     assert "GC-ARCH-CONFORMANCE" in new_flag.output
 
 
-def test_arch_stage_alias_still_works(tmp_path: Path) -> None:
+def test_arch_stage_alias_still_works(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _arch_bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -166,7 +166,7 @@ def test_arch_stage_alias_still_works(tmp_path: Path) -> None:
     assert "deprecated alias of --stage" in normalized
 
 
-def test_conflicting_stage_flags_exit_2(tmp_path: Path) -> None:
+def test_conflicting_stage_flags_exit_2(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -187,7 +187,7 @@ def test_conflicting_stage_flags_exit_2(tmp_path: Path) -> None:
     assert "conflict" in result.output
 
 
-def test_equal_duplicate_flags_allowed(tmp_path: Path) -> None:
+def test_equal_duplicate_flags_allowed(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -207,7 +207,7 @@ def test_equal_duplicate_flags_allowed(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_invalid_stage_value_exit_2(tmp_path: Path) -> None:
+def test_invalid_stage_value_exit_2(tmp_path: Path, write_roles: Path) -> None:
     profile, spec = _bundle(tmp_path)
     facts = _facts(tmp_path, {})
     result = runner.invoke(
@@ -217,7 +217,9 @@ def test_invalid_stage_value_exit_2(tmp_path: Path) -> None:
     assert result.exit_code == 2, result.output
 
 
-def test_release_no_fs_missing_merge_provenance_section_exit_2(tmp_path: Path) -> None:
+def test_release_no_fs_missing_merge_provenance_section_exit_2(
+    tmp_path: Path, write_roles: Path
+) -> None:
     # Pre-existing facts.json files (written before AP-3) never declare a
     # 'merge_provenance' section — the same "section absent" shape as
     # 'ancestors'/'changed_paths_since' (D9). InjectedGitFacts.merge_provenance
