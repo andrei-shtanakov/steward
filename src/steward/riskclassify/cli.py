@@ -35,6 +35,7 @@ def _root() -> None:
 
 
 _EXIT_CONFIG = 2
+_EXIT_MATERIALIZE_FAILED = 3
 _DEFAULT_MODEL = Path("profiles/risk-model.yaml")
 
 
@@ -122,6 +123,49 @@ def waivers_check(
     if any(f.severity == "error" for f in findings):
         raise typer.Exit(1)
     typer.echo(f"ok: {len(waivers)} waiver(s) valid for {head[:12]}")
+
+
+@app.command("approval-facts")
+def approval_facts(
+    repo: str = typer.Option(..., "--repo", help="owner/name"),
+    out: Path = typer.Option(..., "--out", help="approval-facts/v1 output file"),
+    merge_sha: list[str] = typer.Option(
+        [], "--merge-sha", help="Merge commit SHA to resolve (repeatable)."
+    ),
+    prs: str | None = typer.Option(None, "--prs", help="Comma-separated PR numbers to resolve."),
+) -> None:
+    """Materialize typed merge-actor facts (GitHub `mergedBy`) via `gh`.
+
+    Exit codes: ``0`` file written, ``2`` config error (bad --repo, no
+    identifiers given), ``3`` materialization failed (gh unavailable or a
+    requested PR/commit could not be resolved) — honest and distinct from
+    a silently empty/partial output file, which this command never writes.
+    """
+    from steward.approvalfacts import (
+        MaterializeError,
+        materialize_approval_facts,
+        write_approval_facts,
+    )
+
+    pr_numbers: list[int] = []
+    if prs:
+        try:
+            pr_numbers = [int(p.strip()) for p in prs.split(",") if p.strip()]
+        except ValueError as exc:
+            typer.echo(f"config error: --prs must be comma-separated integers: {exc}", err=True)
+            raise typer.Exit(_EXIT_CONFIG) from exc
+    if not merge_sha and not pr_numbers:
+        typer.echo("config error: at least one of --merge-sha / --prs is required", err=True)
+        raise typer.Exit(_EXIT_CONFIG)
+
+    try:
+        actors = materialize_approval_facts(repo, merge_shas=list(merge_sha), prs=pr_numbers)
+    except MaterializeError as exc:
+        typer.echo(f"approval-facts materialize failed: {exc}", err=True)
+        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
+
+    write_approval_facts(out, actors)
+    typer.echo(f"ok: {len(actors)} actor(s) written to {out}")
 
 
 def _classify_live(

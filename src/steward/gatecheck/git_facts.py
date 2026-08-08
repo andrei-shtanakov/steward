@@ -49,15 +49,29 @@ as ``ancestors``::
 A path absent from the mapping means provenance was checked and found
 absent (mirrors ``LiveGitFacts.merge_provenance`` returning ``None``); the
 whole key absent from the facts file means it was never computed — see
-:meth:`InjectedGitFacts.merge_provenance`. Task 4 owns the full v2 schema;
-this is the minimal shape Task 3 needs. Local git can prove provenance but
-never an actor (WS-003 was invalidated for that reason — no forge API
+:meth:`InjectedGitFacts.merge_provenance`. Local git can prove provenance
+but never an actor (WS-003 was invalidated for that reason — no forge API
 locally), so ``actor``/``actor_source`` are not part of the minimal local
 key: readers get ``actor=None``, ``actor_source="unavailable"`` unless the
-facts file explicitly overrides them. The optional ``actor``/``actor_source``
-keys :meth:`InjectedGitFacts.from_file` accepts are speculative plumbing for
-a future forge-backed provider — Task 4 owns whether/how they're actually
-populated, this module makes no claim about it.
+facts file explicitly overrides them.
+
+**Resolved schema decision (AP-4, Task 4 owns this):** the optional
+``actor``/``actor_source`` keys on a ``merge_provenance`` entry remain a
+direct-injection path — useful for deterministic ``--no-fs`` test fixtures
+that want to assert a specific actor without a separate evidence file — and
+this module makes no claim about how they get populated in a real run.
+The *authoritative* production path is a wholly separate typed file,
+schema ``approval-facts/v1`` (:mod:`steward.approvalfacts`), keyed by merge
+commit SHA and materialized independently via GitHub's ``mergedBy`` (the
+``steward approval-facts`` CLI). It is decoupled from facts.json on
+purpose: merge-actor evidence comes from a different authority (forge API,
+not git) than everything else in this file, is fetched per merge SHA
+rather than per artifact path, and needs to be cacheable/reusable across
+runs without recomputing every other fact. Combining a live
+:class:`MergeProvenance`'s ``sha`` with an ``approval-facts/v1`` mapping —
+and turning "sha not present" / "identity present but unclassifiable" into
+the ``unknown`` vs ``unavailable`` distinction — is the consuming check's
+job (:mod:`steward.gatecheck.approval`), not this module's.
 """
 
 from __future__ import annotations
