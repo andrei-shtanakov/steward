@@ -166,10 +166,20 @@ def _node_from_entry(entry: Any, roles_catalog: RolesCatalog) -> SpecNode:
 def _role_array(
     entry: dict, field: str, node_id: str, roles_catalog: RolesCatalog
 ) -> tuple[str, ...] | None:
-    """Parse a role-slug array field: absent → None, present → exact non-empty unique list."""
-    raw = entry.get(field)
-    if raw is None:
+    """Parse a role-slug array field: absent → None, present → exact non-empty unique list.
+
+    Absent and explicit ``null`` are NOT the same: absence is the only spelling
+    of "use the default" — an explicit null would be a second representation of
+    that state and is rejected fail-closed.
+    """
+    if field not in entry:
         return None
+    raw = entry[field]
+    if raw is None:
+        raise ProfileError(
+            f"artifact {node_id!r}: {field} is explicitly null — omit the field "
+            "entirely (absent → default) or give a non-empty list of role slugs"
+        )
     if not isinstance(raw, list) or not raw:
         raise ProfileError(
             f"artifact {node_id!r}: {field} must be a non-empty list of role slugs (or absent)"

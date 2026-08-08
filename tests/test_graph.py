@@ -255,6 +255,20 @@ def test_bad_role_arrays_rejected(field, bad) -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
+def test_explicit_null_role_array_rejected(field) -> None:
+    # Absent is the ONLY spelling of "use the default" — an explicit null
+    # (reviewer_roles: null / bare `reviewer_roles:` in YAML) would be a second
+    # representation of absence and must fail, not silently pass as absent.
+    with pytest.raises(ProfileError, match="null"):
+        _graph(
+            {
+                "profile": "p",
+                "artifacts": [{"id": "a", "owner_role": "product", field: None, "upstream": []}],
+            }
+        )
+
+
 def test_allowed_approver_roles_exact_allowlist_stored() -> None:
     # Owner's ruling: an explicit list REPLACES the {owner_role} default —
     # separation of duties must be expressible. The loader stores it verbatim;

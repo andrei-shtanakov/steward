@@ -258,6 +258,17 @@ def test_explicit_empty_reviewer_roles_is_error() -> None:
 
 
 @pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
+def test_explicit_null_role_array_rejected(field: str) -> None:
+    # A bare `reviewer_roles:` line in YAML parses as explicit null — that is
+    # a second spelling of absence and must fail, not silently mean "absent".
+    with pytest.raises(MetaError, match="null"):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            f"owner_role: product\n{field}:\n---\n"
+        )
+
+
+@pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
 def test_at_sign_in_canonical_arrays_rejected(field: str) -> None:
     # The new arrays are canonical-only fields — the legacy "@" spelling
     # never leaks into them.

@@ -120,14 +120,22 @@ def _split_owner_role(raw: object) -> tuple[str | None, tuple[str, ...]]:
     return None, roles
 
 
-def _parse_role_array(raw: object, field: str) -> tuple[str, ...] | None:
+def _parse_role_array(meta: dict, field: str) -> tuple[str, ...] | None:
     """Parse a canonical-only role array (``reviewer_roles`` etc.).
 
-    Absent → None (caller decides the default). Present must be a non-empty
+    Absent → None (caller decides the default). An explicit ``null`` is a
+    MetaError — absence is the only spelling of "no value" (one state, one
+    representation). Present must be a non-empty
     list of unique slugs without '@' — the legacy spelling never leaks in.
     """
-    if raw is None:
+    if field not in meta:
         return None
+    raw = meta[field]
+    if raw is None:
+        raise MetaError(
+            f"'{field}' is explicitly null — omit the field entirely (absent) "
+            "or give a non-empty list of role slugs"
+        )
     if not isinstance(raw, list) or not raw:
         raise MetaError(f"'{field}' must be a non-empty list of role slugs (or absent)")
     slugs: list[str] = []
@@ -164,7 +172,7 @@ def parse_artifact(text: str) -> ArtifactMeta | None:
         raise MetaError("'spec_stage' must be a string")
 
     owner_role, owner_roles = _split_owner_role(meta_dict.get("owner_role"))
-    reviewer_roles = _parse_role_array(meta_dict.get("reviewer_roles"), "reviewer_roles")
+    reviewer_roles = _parse_role_array(meta_dict, "reviewer_roles")
     return ArtifactMeta(
         base=meta_from_dict(meta_dict),
         owner_roles=owner_roles,
@@ -172,9 +180,7 @@ def parse_artifact(text: str) -> ArtifactMeta | None:
         upstream_hashes=_parse_upstream_hashes(meta_dict.get("upstream_hashes")),
         owner_role=owner_role,
         reviewer_roles=reviewer_roles if reviewer_roles is not None else (),
-        allowed_approver_roles=_parse_role_array(
-            meta_dict.get("allowed_approver_roles"), "allowed_approver_roles"
-        ),
+        allowed_approver_roles=_parse_role_array(meta_dict, "allowed_approver_roles"),
     )
 
 
