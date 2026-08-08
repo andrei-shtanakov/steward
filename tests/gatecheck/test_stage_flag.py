@@ -22,8 +22,8 @@ _PROFILE = """\
 profile: test
 solo_auto_approve: false
 artifacts:
-  - {id: requirements, owner_role: "@product", upstream: []}
-  - {id: design, owner_role: "@architects", upstream: [requirements]}
+  - {id: requirements, owner_role: product, upstream: []}
+  - {id: design, owner_role: architects, upstream: [requirements]}
 """
 
 
@@ -232,7 +232,7 @@ def test_release_no_fs_missing_merge_provenance_section_exit_2(
         tmp_path,
         {
             "default_branch_files": ["des.md", "req.md"],
-            "approvals": {"des.md": [{"handle": "@a", "role": "@architects"}]},
+            "approvals": {"des.md": [{"handle": "@a", "role": "architects"}]},
         },
     )
     result = runner.invoke(

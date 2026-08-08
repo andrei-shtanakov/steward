@@ -2,7 +2,7 @@
 spec_stage: charter
 status: approved
 version: 1
-owner_role: "@product"
+owner_role: product
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
 approved_by: andrei-shtanakov

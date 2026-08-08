@@ -12,21 +12,35 @@ from steward.gatecheck.behaviour import check_behaviour_spec
 from steward.gatecheck.checks import Artifact
 from steward.graph import load_profile, load_profile_data
 from steward.meta import parse_artifact
+from steward.roles import Role, RolesCatalog, load_roles_catalog
 
-PROFILES_DIR = Path(__file__).resolve().parent.parent.parent / "profiles"
+PROFILES = Path(__file__).resolve().parents[2] / "profiles"
 
 _PROFILE = {
     "profile": "team-exp-test",
     "solo_auto_approve": False,
     "artifacts": [
-        {"id": "requirements", "owner_role": "@product", "upstream": []},
+        {"id": "requirements", "owner_role": "product", "upstream": []},
         {
             "id": "behaviour-spec",
-            "owner_role": "@product,@qa",
+            "owner_role": "product",
+            "reviewer_roles": ["qa"],
             "upstream": ["requirements"],
         },
     ],
 }
+
+_CATALOG = RolesCatalog(
+    version=1,
+    slug_pattern="^[a-z][a-z0-9-]{1,31}$",
+    roles=(
+        Role("product", "Product"),
+        Role("qa", "QA"),
+        Role("owner", "Solo owner"),
+        Role("architects", "Architecture"),
+        Role("tech-lead", "Tech lead"),
+    ),
+)
 
 _REQUIREMENTS = """---
 spec_stage: requirements
@@ -79,7 +93,7 @@ structural_coverage:
 
 
 def _graph(data: dict | None = None):
-    return load_profile_data(data or _PROFILE)
+    return load_profile_data(data or _PROFILE, _CATALOG)
 
 
 def _artifacts(requirements: str, behaviour: str) -> list[Artifact]:
@@ -98,14 +112,44 @@ def _rule_ids(findings) -> list[str]:
     return [f.rule_id for f in findings]
 
 
-def test_team_exp_profile_loads_with_behaviour_node() -> None:
-    graph = load_profile(PROFILES_DIR / "team-exp.yaml")
+def test_team_exp_profile_loads_with_behaviour_node(tmp_path: Path) -> None:
+    # Mirrors profiles/team-exp.yaml's DAG shape (charter -> requirements ->
+    # behaviour-spec -> design/acceptance -> decomposition) with inline
+    # canonical data, independent of the shipped file — see
+    # test_shipped_team_exp_profile_loads_canonical below for the real file.
+    profile_path = tmp_path / "team-exp.yaml"
+    profile_path.write_text(
+        "profile: team-exp\n"
+        "solo_auto_approve: true\n"
+        "artifacts:\n"
+        "  - {id: charter, owner_role: product, upstream: []}\n"
+        "  - {id: requirements, owner_role: product, reviewer_roles: [architects], "
+        "upstream: [charter]}\n"
+        "  - {id: behaviour-spec, owner_role: product, reviewer_roles: [qa], "
+        "upstream: [requirements]}\n"
+        "  - {id: design, owner_role: architects, upstream: [requirements, behaviour-spec]}\n"
+        "  - {id: acceptance, owner_role: qa, upstream: [requirements, behaviour-spec]}\n"
+        "  - {id: decomposition, owner_role: tech-lead, upstream: [design, acceptance]}\n",
+        encoding="utf-8",
+    )
+    graph = load_profile(profile_path, _CATALOG)
     node = graph.nodes["behaviour-spec"]
     assert node.upstream == ("requirements",)
     order = graph.topo_order()
     assert order.index("requirements") < order.index("behaviour-spec")
     assert order.index("behaviour-spec") < order.index("design")
     assert order.index("behaviour-spec") < order.index("acceptance")
+
+
+def test_shipped_team_exp_profile_loads_canonical() -> None:
+    catalog = load_roles_catalog(PROFILES / "roles.yaml")
+    graph = load_profile(PROFILES / "team-exp.yaml", catalog)
+    node = graph.nodes["behaviour-spec"]
+    assert node.owner_role == "product"
+    assert node.reviewer_roles == ("qa",)
+    assert node.upstream == ("requirements",)
+    assert "behaviour-spec" in graph.nodes["design"].upstream
+    assert "behaviour-spec" in graph.nodes["acceptance"].upstream
 
 
 def test_clean_bundle_yields_no_findings() -> None:
@@ -116,7 +160,7 @@ def test_clean_bundle_yields_no_findings() -> None:
 def test_profile_without_behaviour_node_is_skipped() -> None:
     data = {
         "profile": "lite-test",
-        "artifacts": [{"id": "requirements", "owner_role": "@owner", "upstream": []}],
+        "artifacts": [{"id": "requirements", "owner_role": "owner", "upstream": []}],
     }
     meta = parse_artifact(_REQUIREMENTS)
     assert meta is not None

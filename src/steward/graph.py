@@ -5,6 +5,11 @@ artifact DAG as data. This module loads it into a :class:`SpecGraph` and
 validates structural integrity: unique ids, upstream references that resolve,
 and no cycles. Any violation raises :class:`ProfileError`, which gate-check
 maps to exit code 2 (config error, REQ-201).
+
+Role fields are canonical v2 (DEC-007): ``owner_role`` is exactly one slug
+that must resolve in an explicitly-passed :class:`~steward.roles.RolesCatalog`
+— this module never resolves ``profiles/roles.yaml`` from the filesystem
+itself. The legacy ``"@role[,@role]"`` form is rejected, not translated.
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from steward.roles import RolesCatalog
 
 __all__ = [
     "ProfileError",
@@ -40,6 +47,13 @@ class SpecNode:
     template: str | None = None
     delegate: str | None = None
     per: str | None = None
+    # DEC-007 canonical v2: exactly one accountable owner slug; multiplicity
+    # lives in the separate arrays. reviewer_roles declares required reviewers
+    # (NOT machine-enforced until a PR-review evidence source exists).
+    reviewer_roles: tuple[str, ...] = ()
+    # None = absent → effective allowlist is {owner_role}; an explicit list is
+    # an EXACT allowlist that REPLACES that default (owner ruling 2026-08-08).
+    allowed_approver_roles: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -55,13 +69,17 @@ class SpecGraph:
         return _kahn_order(self.nodes)
 
 
-def load_profile(path: str | Path) -> SpecGraph:
-    """Load and validate a profile YAML file into a :class:`SpecGraph`."""
+def load_profile(path: str | Path, roles_catalog: RolesCatalog) -> SpecGraph:
+    """Load and validate a profile YAML file into a :class:`SpecGraph`.
+
+    The roles catalog is passed explicitly — this module never resolves
+    profiles/roles.yaml from the filesystem itself (DEC-007 D2).
+    """
     text = Path(path).read_text(encoding="utf-8")
-    return load_profile_data(yaml.safe_load(text))
+    return load_profile_data(yaml.safe_load(text), roles_catalog)
 
 
-def load_profile_data(data: Any) -> SpecGraph:
+def load_profile_data(data: Any, roles_catalog: RolesCatalog) -> SpecGraph:
     """Build and validate a :class:`SpecGraph` from parsed profile data."""
     if not isinstance(data, dict):
         raise ProfileError("profile must be a mapping")
@@ -76,7 +94,7 @@ def load_profile_data(data: Any) -> SpecGraph:
 
     nodes: dict[str, SpecNode] = {}
     for entry in raw_artifacts:
-        node = _node_from_entry(entry)
+        node = _node_from_entry(entry, roles_catalog)
         if node.id in nodes:
             raise ProfileError(f"duplicate artifact id: {node.id!r}")
         nodes[node.id] = node
@@ -94,7 +112,7 @@ def load_profile_data(data: Any) -> SpecGraph:
     )
 
 
-def _node_from_entry(entry: Any) -> SpecNode:
+def _node_from_entry(entry: Any, roles_catalog: RolesCatalog) -> SpecNode:
     if not isinstance(entry, dict):
         raise ProfileError(f"artifact entry must be a mapping, got {type(entry).__name__}")
 
@@ -105,6 +123,20 @@ def _node_from_entry(entry: Any) -> SpecNode:
     owner_role = entry.get("owner_role")
     if not isinstance(owner_role, str) or not owner_role:
         raise ProfileError(f"artifact {node_id!r} missing 'owner_role'")
+    if "@" in owner_role or "," in owner_role:
+        raise ProfileError(
+            f"artifact {node_id!r}: owner_role {owner_role!r} is the legacy "
+            "'@role[,@role]' form — profiles are canonical v2: exactly one "
+            "slug without '@' (DEC-007; multiplicity goes to reviewer_roles/"
+            "allowed_approver_roles)"
+        )
+    if not roles_catalog.has(owner_role):
+        raise ProfileError(
+            f"artifact {node_id!r}: owner_role {owner_role!r} is not in the roles catalog"
+        )
+
+    reviewer_roles = _role_array(entry, "reviewer_roles", node_id, roles_catalog)
+    allowed_approver_roles = _role_array(entry, "allowed_approver_roles", node_id, roles_catalog)
 
     upstream = entry.get("upstream")
     if upstream is None:
@@ -126,7 +158,47 @@ def _node_from_entry(entry: Any) -> SpecNode:
         template=entry.get("template"),
         delegate=entry.get("delegate"),
         per=entry.get("per"),
+        reviewer_roles=reviewer_roles or (),
+        allowed_approver_roles=allowed_approver_roles,
     )
+
+
+def _role_array(
+    entry: dict, field: str, node_id: str, roles_catalog: RolesCatalog
+) -> tuple[str, ...] | None:
+    """Parse a role-slug array field: absent → None, present → exact non-empty unique list.
+
+    Absent and explicit ``null`` are NOT the same: absence is the only spelling
+    of "use the default" — an explicit null would be a second representation of
+    that state and is rejected fail-closed.
+    """
+    if field not in entry:
+        return None
+    raw = entry[field]
+    if raw is None:
+        raise ProfileError(
+            f"artifact {node_id!r}: {field} is explicitly null — omit the field "
+            "entirely (absent → default) or give a non-empty list of role slugs"
+        )
+    if not isinstance(raw, list) or not raw:
+        raise ProfileError(
+            f"artifact {node_id!r}: {field} must be a non-empty list of role slugs (or absent)"
+        )
+    slugs: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item or "@" in item:
+            raise ProfileError(
+                f"artifact {node_id!r}: {field} must be a non-empty list of "
+                f"bare role slugs, got {item!r}"
+            )
+        if item in slugs:
+            raise ProfileError(f"artifact {node_id!r}: {field} has duplicate slug {item!r}")
+        if not roles_catalog.has(item):
+            raise ProfileError(
+                f"artifact {node_id!r}: {field} references {item!r}, not in the roles catalog"
+            )
+        slugs.append(item)
+    return tuple(slugs)
 
 
 def _validate_edges(nodes: dict[str, SpecNode]) -> None:

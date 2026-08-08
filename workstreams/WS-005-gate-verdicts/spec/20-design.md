@@ -2,14 +2,14 @@
 spec_stage: design
 status: approved
 version: 1
-owner_role: "@architects"
+owner_role: architects
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
 approved_by: andrei-shtanakov
 approved_at: 2026-08-02
 upstream_hashes:
-  requirements: 3ea49935b5f28bc21c5d65d42cb766ed2f076b54
-  behaviour-spec: 27f8b15e6c387dc1a3719e289c30f380699a4e87
+  requirements: 9ebae3b7c920d31d84fd9ca10d0ccb259cef93fb
+  behaviour-spec: 3d3738377fa0307d16b4e2208da279b4b1e27ce2
 traces_to: [requirements, behaviour-spec]
 ---
 

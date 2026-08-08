@@ -159,14 +159,17 @@ def test_load_real_dogfood_design_spec() -> None:
     meta = load_artifact(SPEC_DIR / "20-design.md")
     assert meta is not None
     assert meta.spec_stage == "design"
-    assert meta.owner_roles == ("@architects",)
+    assert meta.owner_role == "architects"
+    assert meta.owner_roles == ("architects",)
     assert "REQ-001" in meta.traces_to
 
 
-def test_load_real_dogfood_requirements_multi_owner() -> None:
+def test_load_real_dogfood_requirements_owner_and_reviewer() -> None:
     meta = load_artifact(SPEC_DIR / "10-requirements.md")
     assert meta is not None
-    assert meta.owner_roles == ("@product", "@architects")
+    assert meta.owner_role == "product"
+    assert meta.owner_roles == ("product",)
+    assert meta.reviewer_roles == ("architects",)
 
 
 def test_all_dogfood_specs_are_managed() -> None:
@@ -251,6 +254,17 @@ def test_explicit_empty_reviewer_roles_is_error() -> None:
         parse_artifact(
             "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
             "owner_role: product\nreviewer_roles: []\n---\n"
+        )
+
+
+@pytest.mark.parametrize("field", ["reviewer_roles", "allowed_approver_roles"])
+def test_explicit_null_role_array_rejected(field: str) -> None:
+    # A bare `reviewer_roles:` line in YAML parses as explicit null — that is
+    # a second spelling of absence and must fail, not silently mean "absent".
+    with pytest.raises(MetaError, match="null"):
+        parse_artifact(
+            "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
+            f"owner_role: product\n{field}:\n---\n"
         )
 
 

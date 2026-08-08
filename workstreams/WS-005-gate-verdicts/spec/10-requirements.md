@@ -2,13 +2,14 @@
 spec_stage: requirements
 status: approved
 version: 1
-owner_role: "@product,@architects"
+owner_role: product
+reviewer_roles: [architects]
 generated_by: claude@claude-fable-5
 generated_at: 2026-08-02
 approved_by: andrei-shtanakov
 approved_at: 2026-08-02
 upstream_hashes:
-  charter: af247ce25f442bd7115172b20c15be991ef05cfd
+  charter: 9b126afcdc391d489efa6233e2bd68499a85bf0c
 traces_to: [charter]
 ---
 

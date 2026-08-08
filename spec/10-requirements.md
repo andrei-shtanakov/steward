@@ -2,7 +2,8 @@
 spec_stage: requirements
 status: draft
 version: 1
-owner_role: "@product,@architects"
+owner_role: product
+reviewer_roles: [architects]
 generated_by: claude@claude-opus-4-8
 generated_at: 2026-07-05
 approved_by: null
