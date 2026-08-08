@@ -16,7 +16,7 @@ facts.json shape::
 
     {
       "default_branch_files": ["spec/10-requirements.md", ...],
-      "approvals": {"spec/10-requirements.md": [{"handle": "@alice", "role": "@product"}]},
+      "approvals": {"spec/10-requirements.md": [{"handle": "@alice", "role": "product"}]},
       "blob_hashes": {"spec/10-requirements.md": "abc123..."},
       "ancestors": ["<sha>", ...],
       "changed_paths_since": {"<sha>": ["path", ...]}

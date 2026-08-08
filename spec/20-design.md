@@ -99,21 +99,27 @@ upstream_hashes: {<upstream id>: <git blob hash>}  # пиновка при ап�
                                                    # база stale-cascade (REQ-206, DESIGN-207 WS-002)
 ```
 
-Форма выше — **canonical v2**. На 2026-07-26 код и данные (`profiles/*.yaml`, собственный
-`spec/*.md`, `parse_owner_roles`) ещё несут legacy-форму `"@role[,@role]"`; миграция ведётся
-пунктами в `TODO.md` и не делается молча.
+Форма выше — **canonical v2**. Миграция состоялась 2026-08-08 (TODO §1, PR-1/PR-2):
+`profiles/*.yaml` и frontmatter обоих бандлов канонические, loader строгий; legacy-форму
+`"@role[,@role]"` принимает только reader `meta.py` — для внешних данных (spec-runner
+пишет legacy до SpecMeta v2, §2). Ни один инструмент не выбирает accountable-владельца
+из legacy-tuple молча.
 
 ## Профиль `team` (REQ-001)
 
 ```yaml
 profile: team
 artifacts:
-  - {id: charter,        template: charter.md,        owner_role: "@product",              upstream: []}
-  - {id: requirements,   template: requirements.md,   owner_role: "@product,@architects",  upstream: [charter]}
-  - {id: design,         template: design.md,         owner_role: "@architects",           upstream: [requirements]}
-  - {id: acceptance,     template: acceptance.md,     owner_role: "@qa",                    upstream: [requirements]}
-  - {id: decomposition,  template: decomposition.md,  owner_role: "@tech-lead",            upstream: [design, acceptance]}
-  - {id: task,           owner_role: "@stream-owner", upstream: [decomposition], delegate: spec-runner, per: workstream}
+  - {id: charter,        template: charter.md,        owner_role: product,      upstream: []}
+  - id: requirements
+    template: requirements.md
+    owner_role: product
+    reviewer_roles: [architects]   # объявленный обязательный ревьюер; машинно НЕ энфорсится до review-facts
+    upstream: [charter]
+  - {id: design,         template: design.md,         owner_role: architects,   upstream: [requirements]}
+  - {id: acceptance,     template: acceptance.md,     owner_role: qa,           upstream: [requirements]}
+  - {id: decomposition,  template: decomposition.md,  owner_role: tech-lead,    upstream: [design, acceptance]}
+  - {id: task,           owner_role: stream-owner,    upstream: [decomposition], delegate: spec-runner, per: workstream}
 compile:
   decomposition: {to: maestro,     artifact: project.yaml}
   task:          {to: spec-runner, artifact: tasks.md}
