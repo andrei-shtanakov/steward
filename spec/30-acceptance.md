@@ -2,7 +2,7 @@
 spec_stage: acceptance
 status: draft
 version: 1
-owner_role: "@qa"
+owner_role: qa
 generated_by: claude@claude-opus-4-8
 generated_at: 2026-07-05
 approved_by: null

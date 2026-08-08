@@ -2,7 +2,7 @@
 spec_stage: decomposition
 status: draft
 version: 1
-owner_role: "@tech-lead"
+owner_role: tech-lead
 generated_by: claude@claude-opus-4-8
 generated_at: 2026-07-05
 approved_by: null

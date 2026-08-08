@@ -159,14 +159,17 @@ def test_load_real_dogfood_design_spec() -> None:
     meta = load_artifact(SPEC_DIR / "20-design.md")
     assert meta is not None
     assert meta.spec_stage == "design"
-    assert meta.owner_roles == ("@architects",)
+    assert meta.owner_role == "architects"
+    assert meta.owner_roles == ("architects",)
     assert "REQ-001" in meta.traces_to
 
 
-def test_load_real_dogfood_requirements_multi_owner() -> None:
+def test_load_real_dogfood_requirements_owner_and_reviewer() -> None:
     meta = load_artifact(SPEC_DIR / "10-requirements.md")
     assert meta is not None
-    assert meta.owner_roles == ("@product", "@architects")
+    assert meta.owner_role == "product"
+    assert meta.owner_roles == ("product",)
+    assert meta.reviewer_roles == ("architects",)
 
 
 def test_all_dogfood_specs_are_managed() -> None:

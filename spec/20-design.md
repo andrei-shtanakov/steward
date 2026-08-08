@@ -2,7 +2,7 @@
 spec_stage: design
 status: draft
 version: 1
-owner_role: "@architects"
+owner_role: architects
 generated_by: claude@claude-opus-4-8
 generated_at: 2026-07-05
 approved_by: null
