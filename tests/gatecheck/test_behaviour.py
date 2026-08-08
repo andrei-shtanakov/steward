@@ -12,7 +12,9 @@ from steward.gatecheck.behaviour import check_behaviour_spec
 from steward.gatecheck.checks import Artifact
 from steward.graph import load_profile, load_profile_data
 from steward.meta import parse_artifact
-from steward.roles import Role, RolesCatalog
+from steward.roles import Role, RolesCatalog, load_roles_catalog
+
+PROFILES = Path(__file__).resolve().parents[2] / "profiles"
 
 _PROFILE = {
     "profile": "team-exp-test",
@@ -111,10 +113,10 @@ def _rule_ids(findings) -> list[str]:
 
 
 def test_team_exp_profile_loads_with_behaviour_node(tmp_path: Path) -> None:
-    # profiles/team-exp.yaml still carries legacy owner_role data (migrated in
-    # a later task of this workstream); this mirrors its DAG shape (charter ->
-    # requirements -> behaviour-spec -> design/acceptance -> decomposition)
-    # with canonical data instead of depending on that migration.
+    # Mirrors profiles/team-exp.yaml's DAG shape (charter -> requirements ->
+    # behaviour-spec -> design/acceptance -> decomposition) with inline
+    # canonical data, independent of the shipped file — see
+    # test_shipped_team_exp_profile_loads_canonical below for the real file.
     profile_path = tmp_path / "team-exp.yaml"
     profile_path.write_text(
         "profile: team-exp\n"
@@ -137,6 +139,17 @@ def test_team_exp_profile_loads_with_behaviour_node(tmp_path: Path) -> None:
     assert order.index("requirements") < order.index("behaviour-spec")
     assert order.index("behaviour-spec") < order.index("design")
     assert order.index("behaviour-spec") < order.index("acceptance")
+
+
+def test_shipped_team_exp_profile_loads_canonical() -> None:
+    catalog = load_roles_catalog(PROFILES / "roles.yaml")
+    graph = load_profile(PROFILES / "team-exp.yaml", catalog)
+    node = graph.nodes["behaviour-spec"]
+    assert node.owner_role == "product"
+    assert node.reviewer_roles == ("qa",)
+    assert node.upstream == ("requirements",)
+    assert "behaviour-spec" in graph.nodes["design"].upstream
+    assert "behaviour-spec" in graph.nodes["acceptance"].upstream
 
 
 def test_clean_bundle_yields_no_findings() -> None:

@@ -12,13 +12,25 @@ profile: team-exp
 # (human_merge/agent_merge, ADR-ECO-004) появится с merge evidence policy (TODO §6).
 solo_auto_approve: true
 artifacts:
-  - {id: charter,        template: charter.md,        owner_role: "@product",             upstream: []}
-  - {id: requirements,   template: requirements.md,   owner_role: "@product,@architects", upstream: [charter]}
-  - {id: behaviour-spec, template: behaviour-spec.md, owner_role: "@product,@qa",         upstream: [requirements]}
-  - {id: design,         template: design.md,         owner_role: "@architects",          upstream: [requirements, behaviour-spec]}
-  - {id: acceptance,     template: acceptance.md,     owner_role: "@qa",                  upstream: [requirements, behaviour-spec]}
-  - {id: decomposition,  template: decomposition.md,  owner_role: "@tech-lead",           upstream: [design, acceptance]}
-  - {id: task,           owner_role: "@stream-owner", upstream: [decomposition], delegate: spec-runner, per: workstream}
+  - {id: charter,        template: charter.md,        owner_role: product,    upstream: []}
+  - id: requirements
+    template: requirements.md
+    owner_role: product
+    # reviewer_roles declares the required reviewer role (DEC-007). It is NOT
+    # machine-enforced yet: enforcement needs a PR-review evidence source
+    # (review-facts), which does not exist — merge-actor evidence (mergedBy)
+    # is a different fact and does not prove a QA review happened.
+    reviewer_roles: [architects]
+    upstream: [charter]
+  - id: behaviour-spec
+    template: behaviour-spec.md
+    owner_role: product
+    reviewer_roles: [qa]
+    upstream: [requirements]
+  - {id: design,         template: design.md,         owner_role: architects, upstream: [requirements, behaviour-spec]}
+  - {id: acceptance,     template: acceptance.md,     owner_role: qa,         upstream: [requirements, behaviour-spec]}
+  - {id: decomposition,  template: decomposition.md,  owner_role: tech-lead,  upstream: [design, acceptance]}
+  - {id: task,           owner_role: stream-owner,    upstream: [decomposition], delegate: spec-runner, per: workstream}
 compile:
   decomposition: {to: maestro,     artifact: project.yaml}
   task:          {to: spec-runner, artifact: tasks.md}

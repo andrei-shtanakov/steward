@@ -1,5 +1,7 @@
 """Tests for the profile loader and SpecGraph (WS-001, REQ-201)."""
 
+from pathlib import Path
+
 import pytest
 
 from steward.graph import (
@@ -9,13 +11,15 @@ from steward.graph import (
     load_profile,
     load_profile_data,
 )
-from steward.roles import Role, RolesCatalog
+from steward.roles import Role, RolesCatalog, load_roles_catalog
 
 CATALOG = RolesCatalog(
     version=1,
     slug_pattern="^[a-z][a-z0-9-]{1,31}$",
     roles=(Role("product", "Product"), Role("qa", "QA"), Role("architects", "Architecture")),
 )
+
+PROFILES = Path(__file__).resolve().parents[1] / "profiles"
 
 
 def _graph(data):
@@ -173,9 +177,10 @@ def test_topo_order_covers_all_nodes() -> None:
 
 
 def test_load_profile_reads_file(tmp_path) -> None:
-    # profiles/*.yaml still carry legacy owner_role data (migrated in a later
-    # task of this workstream); this exercises load_profile's file-reading
-    # path against canonical data instead of depending on that migration.
+    # Exercises load_profile's file-reading path with an inline sample,
+    # independent of shipped profile data — see test_shipped_lite_profile_
+    # loads_canonical / test_shipped_team_profile_loads_canonical below for
+    # the real files.
     profile_path = tmp_path / "sample.yaml"
     profile_path.write_text(
         "profile: sample\n"
@@ -269,3 +274,26 @@ def test_allowed_approver_roles_exact_allowlist_stored() -> None:
     )
     assert g.nodes["a"].allowed_approver_roles == ("qa",)
     assert "product" not in g.nodes["a"].allowed_approver_roles
+
+
+def test_shipped_lite_profile_loads_canonical() -> None:
+    catalog = load_roles_catalog(PROFILES / "roles.yaml")
+    graph = load_profile(PROFILES / "lite.yaml", catalog)
+    assert graph.profile == "lite"
+    assert graph.solo_auto_approve is True
+    for node_id in ("requirements", "design", "task"):
+        assert graph.nodes[node_id].owner_role == "owner"
+        assert graph.nodes[node_id].reviewer_roles == ()
+
+
+def test_shipped_team_profile_loads_canonical() -> None:
+    catalog = load_roles_catalog(PROFILES / "roles.yaml")
+    graph = load_profile(PROFILES / "team.yaml", catalog)
+    assert graph.profile == "team"
+    requirements = graph.nodes["requirements"]
+    assert requirements.owner_role == "product"
+    assert requirements.reviewer_roles == ("architects",)
+    assert graph.nodes["design"].owner_role == "architects"
+    assert graph.nodes["acceptance"].owner_role == "qa"
+    assert graph.nodes["decomposition"].owner_role == "tech-lead"
+    assert graph.nodes["task"].owner_role == "stream-owner"
