@@ -1,0 +1,17 @@
+# Role assignments v1 — identity → roles at the CODEOWNERS boundary (DEC-007 D6,
+# approved 2026-08-08). This file is the ONLY place identities acquire roles:
+# a role claimed inside injected approval facts is never authoritative —
+# steward computes roles from this mapping, alone. Unknown identities get no
+# roles, so authorization fails closed.
+#
+# GOVERNANCE DATA — changes go through PR review like roles.yaml and the gate
+# profiles. Identity grammar: "github:<login>" (machine accounts keep their
+# literal "[bot]" suffix). Roles must resolve in profiles/roles.yaml.
+#
+# Solo reality: one human holds every role. Separation of duties becomes
+# expressible the moment a second identity appears here.
+
+version: 1
+assignments:
+  github:andrei-shtanakov:
+    roles: [product, architects, qa, tech-lead, stream-owner, owner]
