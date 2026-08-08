@@ -156,15 +156,33 @@ def test_unknown_rule_id_raises_emit_error_and_writes_nothing(tmp_path: Path) ->
 
 
 def test_declared_rule_id_is_refused_like_unknown(tmp_path: Path) -> None:
+    # AP-5 (2026-08-08) activated GC-APPROVAL-MISSING, so the real catalog no
+    # longer has a live "declared" example — build a synthetic one-off
+    # catalog with a declared gate (same tmp-YAML pattern as
+    # tests/gatecatalog/test_loader.py) to keep exercising this refusal path.
     repo, spec = _repo(tmp_path)
+    catalog_dir = tmp_path / "catalog"
+    catalog_dir.mkdir()
+    (catalog_dir / "roles.yaml").write_text(
+        'version: 1\nslug_pattern: "^[a-z][a-z0-9-]{1,31}$"\nroles: []\n'
+    )
+    (catalog_dir / "gate-catalog.yaml").write_text(
+        "version: 1\n"
+        "obligation_vocabulary: [quality, approval]\n"
+        "stage_vocabulary: [authoring, release]\n"
+        "gates:\n"
+        "  GC-FUTURE:\n"
+        "    obligation: approval\n"
+        "    status: declared\n"
+    )
+    declared_catalog = load_catalog(catalog_dir / "gate-catalog.yaml", catalog_dir / "roles.yaml")
+
     graph = load_profile_data(_PROFILE)
     artifacts, findings = collect_bundle(graph, spec)
-    findings.append(
-        Finding(severity="error", rule_id="GC-APPROVAL-MISSING", artifact="x", message="m")
-    )
+    findings.append(Finding(severity="error", rule_id="GC-FUTURE", artifact="x", message="m"))
     with pytest.raises(EmitError, match="declared") as exc_info:
-        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
-    assert "GC-APPROVAL-MISSING" in str(exc_info.value)
+        emit_verdicts(graph, artifacts, findings, spec, declared_catalog)
+    assert "GC-FUTURE" in str(exc_info.value)
     assert not (repo / ".steward" / "gate_verdicts.jsonl").exists()
 
 

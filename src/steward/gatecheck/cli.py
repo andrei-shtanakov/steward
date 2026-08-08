@@ -14,7 +14,14 @@ from pathlib import Path
 import typer
 import yaml
 
+from steward.approvalfacts import ApprovalFactsError, load_approval_facts
 from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
+from steward.gatecheck.approval import (
+    ApprovalPolicy,
+    PolicyError,
+    check_approval_evidence,
+    load_approval_policy,
+)
 from steward.gatecheck.architecture import (
     ArchPolicyError,
     check_arch_conformance,
@@ -104,6 +111,19 @@ def _load_catalog(profile_path: Path) -> GateCatalog:
         raise AssertionError from None  # unreachable; keeps type-checkers calm
 
 
+def _load_approval_policy(profile_path: Path) -> ApprovalPolicy:
+    """Load ``approval-policy.yaml`` anchored to ``profile_path``'s directory.
+
+    Same anchoring discipline as ``_load_catalog``/arch-policy.yaml — resolves
+    relative to the profile directory actually in use, not the current CWD.
+    """
+    try:
+        return load_approval_policy(profile_path.parent / "approval-policy.yaml")
+    except PolicyError as err:
+        _fail_config(str(err))
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
+
+
 def _git_facts(no_fs: Path | None, spec_dir: Path) -> GitFacts:
     if no_fs is not None:
         try:
@@ -176,6 +196,13 @@ def main(
         "--arch-stage",
         help=r"\[deprecated alias of --stage]",
     ),
+    approval_facts: Path | None = typer.Option(
+        None,
+        "--approval-facts",
+        help="Materialized merge-actor evidence (schema approval-facts/v1, "
+        "written by `steward approval-facts`). Only consulted at --stage "
+        "release; absent means every merge actor is unavailable, not unknown.",
+    ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
     resolved_stage = _resolve_stage(stage, arch_stage)
@@ -195,6 +222,19 @@ def main(
 
     artifacts, findings = collect_bundle(graph, spec_dir)
     findings.extend(run_checks(graph, artifacts, git))
+
+    if resolved_stage == "release":
+        approval_policy = _load_approval_policy(profile_path)
+        actor_facts = None
+        if approval_facts is not None:
+            try:
+                actor_facts = load_approval_facts(approval_facts)
+            except ApprovalFactsError as err:
+                _fail_config(str(err))
+                raise AssertionError from None  # unreachable; keeps type-checkers calm
+        findings.extend(
+            check_approval_evidence(artifacts, git, approval_policy, actor_facts, resolved_stage)
+        )
 
     arch = collect_arch_bundle(spec_dir)
     if arch is not None:

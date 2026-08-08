@@ -29,6 +29,12 @@ artifacts:
 def _bundle(tmp_path: Path, design_status: str = "draft") -> tuple[Path, Path]:
     profile = tmp_path / "test.yaml"
     profile.write_text(_PROFILE)
+    # --stage release loads approval-policy.yaml as a sibling of the profile
+    # actually used (AP-5, same anchoring as arch-policy.yaml below) — every
+    # test in this module that reaches release stage needs the real policy
+    # vendored in, even the ones with no approved artifacts.
+    repo_approval_policy = Path(__file__).resolve().parents[2] / "profiles" / "approval-policy.yaml"
+    (profile.parent / "approval-policy.yaml").write_bytes(repo_approval_policy.read_bytes())
     spec = tmp_path / "spec"
     spec.mkdir()
     (spec / "req.md").write_text(
