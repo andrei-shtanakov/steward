@@ -257,9 +257,9 @@ class ArchPolicy:
     """Declarative GC-ARCH-CONFORMANCE stage policy (design D4).
 
     Loaded from ``profiles/arch-policy.yaml`` for a given stage
-    (``authoring`` / ``release``, selected via ``--arch-stage``). All
-    vocabulary fields are validated at load time against prograph's closed
-    vocabulary (:data:`FINDING_CLASSES`, :data:`VERDICTS`,
+    (``authoring`` / ``release``, selected via ``--stage``; ``--arch-stage`` is
+    deprecated alias). All vocabulary fields are validated at load time against
+    prograph's closed vocabulary (:data:`FINDING_CLASSES`, :data:`VERDICTS`,
     :data:`UNKNOWN_REASONS`) — unknown entries are a config error, not a
     silently-ignored typo.
     """
