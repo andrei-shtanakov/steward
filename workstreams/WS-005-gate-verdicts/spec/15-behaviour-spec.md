@@ -17,14 +17,14 @@ structural_coverage:
     obligation:
       detector: import
       expected_verdict: conformant
-      owner_role: "@architects"
+      owner_role: architects
       release_gate: block
   - fr: FR-02
     constraint: ARCH-C3
     obligation:
       detector: manual-evidence
       evidence_target: dispatcher:tests/test_governance_collector.py::test_dispatcher_never_imports_steward + review dispatcher#107
-      owner_role: "@architects"
+      owner_role: architects
       release_gate: block
 ---
 

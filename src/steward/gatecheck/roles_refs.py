@@ -4,10 +4,18 @@ DEC-007 D3: an unresolvable role slug in a managed artifact's frontmatter is
 a defect of governance DATA — a configuration error (exit 2), not a finding
 about the checked product. Messages must name the artifact path, the field,
 and the offending slug so the defect is fixable from the message alone.
+
+DEC-009 extends the same rule to the nested behaviour-spec fields
+``structural_coverage[].obligation.owner_role``: a separate schema
+(per-obligation accountable role, NOT the artifact's governance owner), but
+the role identity is shared — the value is a canonical slug without ``@``
+that must resolve in the catalog. No normalization: a legacy ``"@architects"``
+simply fails to resolve and is reported verbatim.
 """
 
 from __future__ import annotations
 
+from steward._vendor.spec_meta import split_frontmatter
 from steward.gatecheck.checks import Artifact
 from steward.roles import RolesCatalog
 
@@ -32,7 +40,39 @@ def unresolved_role_refs(artifacts: list[Artifact], roles: RolesCatalog) -> list
             _check(problems, roles, artifact.path, "reviewer_roles", slug)
         for slug in meta.allowed_approver_roles or ():
             _check(problems, roles, artifact.path, "allowed_approver_roles", slug)
+        if meta.spec_stage == "behaviour-spec":
+            _check_structural_coverage(problems, roles, artifact)
     return problems
+
+
+def _check_structural_coverage(
+    problems: list[str], roles: RolesCatalog, artifact: Artifact
+) -> None:
+    """DEC-009: resolve nested obligation owner_role slugs against the catalog.
+
+    Called for behaviour-spec artifacts only — ``structural_coverage`` is
+    meaningful solely there (DEC-009), and the reparse below is not free.
+    Only well-shaped string values are resolved here — shape defects
+    (missing/non-string owner_role, malformed entries) stay with the
+    behaviour-spec checks, which already refuse to count such entries.
+    """
+    meta_dict, _ = split_frontmatter(artifact.text)
+    if not isinstance(meta_dict, dict):
+        return
+    entries = meta_dict.get("structural_coverage")
+    if not isinstance(entries, list):
+        return
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        obligation = entry.get("obligation")
+        if not isinstance(obligation, dict):
+            continue
+        value = obligation.get("owner_role")
+        if isinstance(value, str) and value.strip() and not roles.has(value):
+            problems.append(
+                _message(artifact.path, f"structural_coverage[{i}].obligation.owner_role", value)
+            )
 
 
 def _check(problems: list[str], roles: RolesCatalog, path: str, field: str, slug: str) -> None:

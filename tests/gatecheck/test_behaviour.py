@@ -76,7 +76,7 @@ structural_coverage:
     obligation:
       detector: import
       expected_verdict: conformant
-      owner_role: "@architects"
+      owner_role: architects
       release_gate: block
 ---
 # Behaviour Spec
@@ -234,7 +234,7 @@ def test_constraint_without_obligation_is_not_coverage() -> None:
         """    obligation:
       detector: import
       expected_verdict: conformant
-      owner_role: "@architects"
+      owner_role: architects
       release_gate: block
 """,
         "",

@@ -68,7 +68,7 @@ structural_coverage:
     obligation:
       detector: import
       expected_verdict: conformant
-      owner_role: "@architects"
+      owner_role: architects
       release_gate: block
 coverage_waivers:
   - {fr: FR-03, reason: freshness deferred to WS-C}

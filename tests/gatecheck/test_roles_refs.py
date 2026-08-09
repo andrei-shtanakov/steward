@@ -58,3 +58,68 @@ def test_one_message_per_defect() -> None:
     art = _artifact("spec/a.md", "owner_role: ghost\nreviewer_roles: [phantom]\n")
     msgs = unresolved_role_refs([art], _CATALOG)
     assert len(msgs) == 2
+
+
+def _behaviour_artifact(path: str, coverage_yaml: str) -> Artifact:
+    text = (
+        "---\nspec_stage: behaviour-spec\nstatus: draft\nversion: 1\n"
+        f"owner_role: product\nstructural_coverage:\n{coverage_yaml}---\n"
+    )
+    meta = parse_artifact(text)
+    assert meta is not None
+    return Artifact(path=path, node_id="behaviour-spec", meta=meta, text=text)
+
+
+def test_structural_coverage_resolvable_slug_passes() -> None:
+    """DEC-009: a canonical, catalog-resolving nested owner_role is clean."""
+    art = _behaviour_artifact(
+        "spec/b.md",
+        "  - fr: FR-01\n    constraint: c\n    obligation: {owner_role: qa}\n",
+    )
+    assert unresolved_role_refs([art], _CATALOG) == []
+
+
+def test_structural_coverage_unknown_slug_is_named_with_index() -> None:
+    art = _behaviour_artifact(
+        "spec/b.md",
+        "  - fr: FR-01\n    constraint: c\n    obligation: {owner_role: qa}\n"
+        "  - fr: FR-02\n    constraint: c\n    obligation: {owner_role: ghost}\n",
+    )
+    (msg,) = unresolved_role_refs([art], _CATALOG)
+    assert "spec/b.md" in msg
+    assert "structural_coverage[1].obligation.owner_role" in msg
+    assert "ghost" in msg
+
+
+def test_structural_coverage_legacy_at_form_fails_verbatim() -> None:
+    """DEC-009: no normalization — "@architects" fails to resolve, reported as-is."""
+    art = _behaviour_artifact(
+        "spec/b.md",
+        '  - fr: FR-01\n    constraint: c\n    obligation: {owner_role: "@architects"}\n',
+    )
+    (msg,) = unresolved_role_refs([art], _CATALOG)
+    assert "@architects" in msg and "structural_coverage[0]" in msg
+
+
+def test_structural_coverage_shape_defects_left_to_behaviour_checks() -> None:
+    """Missing/non-string owner_role is a behaviour-spec shape defect, not ours."""
+    art = _behaviour_artifact(
+        "spec/b.md",
+        "  - fr: FR-01\n    constraint: c\n    obligation: {release_gate: block}\n"
+        "  - fr: FR-02\n    constraint: c\n    obligation: {owner_role: 7}\n"
+        "  - not-a-mapping\n",
+    )
+    assert unresolved_role_refs([art], _CATALOG) == []
+
+
+def test_structural_coverage_scan_scoped_to_behaviour_spec() -> None:
+    """DEC-009 scopes the nested field to behaviour-spec — other stages skip the scan."""
+    text = (
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: product\n"
+        "structural_coverage:\n"
+        "  - fr: FR-01\n    constraint: c\n    obligation: {owner_role: ghost}\n---\n"
+    )
+    meta = parse_artifact(text)
+    assert meta is not None
+    art = Artifact(path="spec/d.md", node_id="design", meta=meta, text=text)
+    assert unresolved_role_refs([art], _CATALOG) == []
