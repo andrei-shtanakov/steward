@@ -68,9 +68,7 @@ def _check_structural_coverage(
         value = obligation.get("owner_role")
         if isinstance(value, str) and value.strip() and not roles.has(value):
             problems.append(
-                _message(
-                    artifact.path, f"structural_coverage[{i}].obligation.owner_role", value
-                )
+                _message(artifact.path, f"structural_coverage[{i}].obligation.owner_role", value)
             )
 
 
