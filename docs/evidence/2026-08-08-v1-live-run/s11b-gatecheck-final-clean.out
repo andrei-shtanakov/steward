@@ -1,0 +1,4 @@
+WARN  GC-STAGE         tasks.md: spec_stage 'tasks' is not a node of profile 'lite'
+WARN  GC-TRACE-EMPTY   design.md: downstream 'design' carries no traces_to link
+WARN  GC-STALE-UNPINNED design.md: approved without a pinned upstream_hashes entry for 'requirements' — stale-cascade cannot verify this edge
+gate-check: 0 error(s), 3 warning(s)

@@ -1,0 +1,3 @@
+ERROR GC-COMPLETENESS  design: required artifact 'design' is missing from the bundle
+ERROR GC-GIT-BRANCH    requirements.md: approved in frontmatter but not confirmed on the default branch
+gate-check: 2 error(s), 0 warning(s)

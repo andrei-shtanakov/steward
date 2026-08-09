@@ -1,0 +1,8 @@
+run_case_positive: PASS
+  risk-classify: uv run --project "$STEWARD_DIR" steward risk-classify --declared <scope.json> --repo "$STEWARD_DIR" --risk-model "$STEWARD_DIR/profiles/risk-model.yaml" -> exit 0, contains "tier": "medium"
+  waivers-check: uv run --project "$STEWARD_DIR" steward waivers-check fixtures/waiver-valid-noncritical --repo "$STEWARD_DIR" --risk-model "$STEWARD_DIR/profiles/risk-model.yaml" -> exit 0, contains "1 waiver(s) valid for <sha12>"
+run_case_stale_sha: PASS
+  waivers-check: uv run --project "$STEWARD_DIR" steward waivers-check fixtures/waiver-stale-sha --repo "$STEWARD_DIR" --risk-model "$STEWARD_DIR/profiles/risk-model.yaml" -> exit != 0, contains "error waiver-stale-sha:"
+run_case_critical: PASS
+  waivers-check: uv run --project "$STEWARD_DIR" steward waivers-check fixtures/waiver-critical-tier --repo "$STEWARD_DIR" --risk-model "$STEWARD_DIR/profiles/risk-model.yaml" -> exit != 0, contains "error waiver-forbidden-tier:"
+verify_break_glass: PASS (STEWARD_DIR=<workspace>/steward, fixtures=<workspace>/_cowork_output/v1-live-run-2026-08-08/project/scripts/../fixtures)
