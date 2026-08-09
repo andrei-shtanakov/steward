@@ -31,6 +31,7 @@ from pathlib import Path
 from steward._vendor.spec_meta import (
     SPEC_META_CONTRACT,
     SpecMeta,
+    SpecMetaError,
     meta_from_dict,
     split_frontmatter,
 )
@@ -171,10 +172,18 @@ def parse_artifact(text: str) -> ArtifactMeta | None:
     if not isinstance(stage, str):
         raise MetaError("'spec_stage' must be a string")
 
-    owner_role, owner_roles = _split_owner_role(meta_dict.get("owner_role"))
+    try:
+        base = meta_from_dict(meta_dict)
+    except SpecMetaError as err:
+        raise MetaError(str(err)) from err
+    # DEC-007/re-vendor (SPEC_META_CONTRACT v2): owner_role is first-class on
+    # the vendored SpecMeta now — read it from there, not the raw dict. The
+    # value and its validation (string-or-null) are identical either way;
+    # this removes the documented v1 workaround (CLAUDE.md, TODO §2).
+    owner_role, owner_roles = _split_owner_role(base.owner_role)
     reviewer_roles = _parse_role_array(meta_dict, "reviewer_roles")
     return ArtifactMeta(
-        base=meta_from_dict(meta_dict),
+        base=base,
         owner_roles=owner_roles,
         traces_to=_parse_traces_to(meta_dict.get("traces_to")),
         upstream_hashes=_parse_upstream_hashes(meta_dict.get("upstream_hashes")),

@@ -295,3 +295,22 @@ def test_non_list_role_arrays_rejected(field: str) -> None:
             "---\nspec_stage: design\nstatus: draft\nversion: 1\n"
             f"owner_role: product\n{field}: qa\n---\n"
         )
+
+
+def test_spec_meta_error_translated_to_meta_error() -> None:
+    """A v2-canonical-field defect (SpecMetaError) surfaces as MetaError, never
+    as a raw traceback — parse_artifact stays the single config-error contour."""
+    with pytest.raises(MetaError, match="status"):
+        parse_artifact("---\nspec_stage: design\nstatus: not-a-real-status\nversion: 1\n---\n")
+
+
+def test_owner_role_read_from_vendored_specmeta_not_raw_dict() -> None:
+    """DEC-007/re-vendor: owner_role flows through base.owner_role (v2
+    first-class), not a second read of the raw frontmatter dict — the
+    v1 workaround this replaced is gone (TODO §2)."""
+    meta = parse_artifact(
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: product\n---\n"
+    )
+    assert meta is not None
+    assert meta.base.owner_role == "product"
+    assert meta.owner_role == "product"
