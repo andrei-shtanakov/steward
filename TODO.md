@@ -80,24 +80,15 @@
 - [x] Handoff в dispatcher: их предложение (одна строка-роль без `@`) принято; прислать пиненую копию каталога @owner:github:andrei-shtanakov @id:dispatcher-roles-catalog-handoff — dispatcher#128 (2026-08-08): пиненая копия roles.yaml @ `b79c858` + канон к следующему перепину gate-check (canonical-профиль в смоуке, реальные слаги в sibling roles.yaml, role-assignments только для non-solo, identity без case-folding); ход за dispatcher
 - [x] 15-behaviour-spec.md несёт вложенные `structural_coverage[].obligation.owner_role: "@architects"` — РЕШЕНО 2026-08-09 (DEC-009, `spec/20-design.md`): канонический slug без `@`, без множественности, резолвится через roles.yaml (неизвестный slug = config error), поле не переименовывается. Осталась ИМПЛЕМЕНТАЦИЯ: миграция значений в 15-behaviour-spec (×2, с пересчётом пин-каскада design/acceptance/decomposition), резолюция slug'а в валидации structural_coverage — СДЕЛАНО в PR этой ветки: значения canonical (architects ×2), пин-каскад пересчитан (оракул 0/0), резолюция в unresolved_role_refs (config error exit 2 с индексом entry) @owner:github:andrei-shtanakov @id:structural-coverage-owner-role-form
 
-### 2. C2 (хвост): ре-вендоринг SpecMeta v2
+### 2. C2 (хвост): ре-вендоринг SpecMeta v2 — ЗАКРЫТ ЦЕЛИКОМ 2026-08-09
 
-steward-часть закрыта 2026-07-15. `_vendor/spec_meta.py` держится на `SPEC_META_CONTRACT = 1`,
-`owner_role` читается временным обходом из сырого frontmatter-dict (`meta.py::parse_artifact`).
-Формат принадлежит spec-runner (DEC-003). Статус там (проверено 2026-07-26): ветка
-`feat/specmeta-contract-v2`, `owner_role` уже first-class (`35f47ff`), в master не влито.
-
-⚠️ **Ask изменился после DEC-007**: handoff от 2026-07-15 просил `"@role[,@role]"`; теперь нужен
-singular slug без `@`. spec-runner пишет это прямо сейчас — правка ask'а срочная, иначе v2
-зафиксирует форму, от которой мы отказались.
+steward-часть была закрыта 2026-07-15; полный ре-вендоринг — этой веткой, PR #61.
+Формат принадлежит spec-runner (DEC-003).
 
 - [x] Довести до spec-runner пересмотренный ask: `owner_role: <slug>` singular, `@` не входит в значение @owner:github:andrei-shtanakov @id:spec-runner-owner-role-ask — spec-runner#125 (2026-08-08): старый ask 2026-07-15 явно отменён, грамматика слага и правило «reviewer_roles/allowed_approver_roles только после согласования контракта» переданы; ход за spec-runner
-- [ ] Ре-вендорить `split_frontmatter`/`SpecMeta`/`meta_from_dict` как contract v2 @owner:github:andrei-shtanakov @id:revendor-specmeta-v2
-      2026-08-09: ТРИГГЕР СРАБОТАЛ — V1-прогон обнаружил `SPEC_META_CONTRACT = 2`
-      в spec-runner v2.21.0 (`13e7667b`), owner_role там first-class с
-      DEC-007-комментарием. Пункт разблокирован; blocked_by/trigger сняты.
-- [ ] Убрать обход «`owner_role` из сырого frontmatter-dict» в `meta.py` @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:remove-owner-role-raw-workaround
-- [ ] Round-trip тест: `upstream_hashes`, `reviewer_roles`, `allowed_approver_roles` переживают v2-парсер как pass-through @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:specmeta-v2-roundtrip-test
+- [x] Ре-вендорить `split_frontmatter`/`SpecMeta`/`meta_from_dict` как contract v2 @owner:github:andrei-shtanakov @id:revendor-specmeta-v2 — PR этой ветки: пин spec-runner тег `v2.22.0` (`de9a31c4`, чистый клон), copy-integrity проверена AST-сверкой байт-в-байт всех шести символов + всех модульных констант против апстрима; scope расширен (`SpecMetaError`, `canonical_fields`) — write-side (`meta_to_dict`/`_render`/`write_spec`) и профильная система spec-runner сознательно НЕ вендорятся (steward их не использует; DEC-008 — steward только валидатор, не переписывает артефакты)
+- [x] Убрать обход «`owner_role` из сырого frontmatter-dict» в `meta.py` @owner:github:andrei-shtanakov @id:remove-owner-role-raw-workaround — СДЕЛАНО в PR этой ветки: `parse_artifact` читает `base.owner_role` (первоклассное поле v2), `SpecMetaError` транслируется в `MetaError` (config error, не traceback)
+- [x] Round-trip тест: `upstream_hashes`, `reviewer_roles`, `allowed_approver_roles` переживают v2-парсер как pass-through @owner:github:andrei-shtanakov @id:specmeta-v2-roundtrip-test — СДЕЛАНО: `tests/test_spec_meta_vendor.py` (13 тестов: pass-through всех четырёх steward-полей в `SpecMeta.extra`, owner_role first-class, SpecMetaError на всех отказах v2-матрицы, нормализация unquoted-date — реальный кейс всех spec/*.md файлов репо)
 
 ### 3. WS-005 · gate catalog + `gate_verdicts.jsonl`
 
