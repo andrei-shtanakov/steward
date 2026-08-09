@@ -94,8 +94,8 @@ singular slug без `@`. spec-runner пишет это прямо сейчас 
 - [x] Довести до spec-runner пересмотренный ask: `owner_role: <slug>` singular, `@` не входит в значение @owner:github:andrei-shtanakov @id:spec-runner-owner-role-ask — spec-runner#125 (2026-08-08): старый ask 2026-07-15 явно отменён, грамматика слага и правило «reviewer_roles/allowed_approver_roles только после согласования контракта» переданы; ход за spec-runner
 - [ ] Ре-вендорить `split_frontmatter`/`SpecMeta`/`meta_from_dict` как contract v2 @owner:github:andrei-shtanakov @id:revendor-specmeta-v2
       2026-08-09: ТРИГГЕР СРАБОТАЛ — V1-прогон обнаружил `SPEC_META_CONTRACT = 2`
-      в spec-runner v2.21.0 (`13e7667b`), owner_role там first-class с DEC-007-
-      комментарием. Пункт разблокирован; blocked_by/trigger сняты.
+      в spec-runner v2.21.0 (`13e7667b`), owner_role там first-class с
+      DEC-007-комментарием. Пункт разблокирован; blocked_by/trigger сняты.
 - [ ] Убрать обход «`owner_role` из сырого frontmatter-dict» в `meta.py` @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:remove-owner-role-raw-workaround
 - [ ] Round-trip тест: `upstream_hashes`, `reviewer_roles`, `allowed_approver_roles` переживают v2-парсер как pass-through @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:specmeta-v2-roundtrip-test
 
