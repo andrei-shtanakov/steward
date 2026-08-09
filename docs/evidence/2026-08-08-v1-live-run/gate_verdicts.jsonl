@@ -1,0 +1,7 @@
+{"kind": "header", "schema_version": "1", "source_commit": "a02eba8dd2b4f47bef7fc7e5de36d105a622b034", "dirty": false, "generated_at": "2026-08-09T03:38:24.643121+00:00", "profile": "lite", "bundle": "spec"}
+{"kind": "artifact", "path": "design.md", "node_id": "design", "status": "approved", "owner_roles": ["owner"]}
+{"kind": "artifact", "path": "requirements.md", "node_id": "requirements", "status": "approved", "owner_roles": ["owner"]}
+{"kind": "artifact", "path": "tasks.md", "node_id": null, "status": "approved", "owner_roles": []}
+{"kind": "finding", "gate_id": "GC-STAGE", "obligation": "quality", "verdict": "warn", "artifact": "tasks.md", "message": "spec_stage 'tasks' is not a node of profile 'lite'"}
+{"kind": "finding", "gate_id": "GC-TRACE-EMPTY", "obligation": "quality", "verdict": "warn", "artifact": "design.md", "message": "downstream 'design' carries no traces_to link"}
+{"kind": "finding", "gate_id": "GC-STALE-UNPINNED", "obligation": "quality", "verdict": "warn", "artifact": "design.md", "message": "approved without a pinned upstream_hashes entry for 'requirements' — stale-cascade cannot verify this edge"}

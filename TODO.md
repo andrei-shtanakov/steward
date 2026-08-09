@@ -92,7 +92,10 @@ singular slug без `@`. spec-runner пишет это прямо сейчас 
 зафиксирует форму, от которой мы отказались.
 
 - [x] Довести до spec-runner пересмотренный ask: `owner_role: <slug>` singular, `@` не входит в значение @owner:github:andrei-shtanakov @id:spec-runner-owner-role-ask — spec-runner#125 (2026-08-08): старый ask 2026-07-15 явно отменён, грамматика слага и правило «reviewer_roles/allowed_approver_roles только после согласования контракта» переданы; ход за spec-runner
-- [ ] Ре-вендорить `split_frontmatter`/`SpecMeta`/`meta_from_dict` как contract v2 @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @trigger:"SPEC_META_CONTRACT = 2 в master spec-runner" @id:revendor-specmeta-v2
+- [ ] Ре-вендорить `split_frontmatter`/`SpecMeta`/`meta_from_dict` как contract v2 @owner:github:andrei-shtanakov @id:revendor-specmeta-v2
+      2026-08-09: ТРИГГЕР СРАБОТАЛ — V1-прогон обнаружил `SPEC_META_CONTRACT = 2`
+      в spec-runner v2.21.0 (`13e7667b`), owner_role там first-class с DEC-007-
+      комментарием. Пункт разблокирован; blocked_by/trigger сняты.
 - [ ] Убрать обход «`owner_role` из сырого frontmatter-dict» в `meta.py` @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:remove-owner-role-raw-workaround
 - [ ] Round-trip тест: `upstream_hashes`, `reviewer_roles`, `allowed_approver_roles` переживают v2-парсер как pass-through @owner:github:andrei-shtanakov @blocked_by:spec-runner#specmeta-v2 @id:specmeta-v2-roundtrip-test
 
@@ -181,7 +184,8 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
 - ссылка на evidence добавлена сюда и в run journal владельца;
 - обнаруженные frictions заведены **отдельными пунктами**, а не спрятаны в описании V1.
 
-- [ ] Выполнить живой прогон и приложить evidence по DoD выше @owner:github:andrei-shtanakov @id:v1-live-gated-run
+- [x] Выполнить живой прогон и приложить evidence по DoD выше @owner:github:andrei-shtanakov @id:v1-live-gated-run — выполнен 2026-08-08/09, PR этой ветки: evidence `docs/evidence/2026-08-08-v1-live-run/` (manifest с пинами steward `c2414f7`+spec-runner v2.21.0+claude 2.1.226/sonnet; steps.md — команды/exit/классификация; verdicts JSONL с корреляцией gate_id↔каталог, owner_roles↔roles.yaml, identity↔бандл). Итог: **PASS** — оба негативных среза дали ожидаемые отказы (pre-commit GC-GIT-BRANCH; pre-approval run --strict, но с exit 0 — дефект spec-runner), позитив 12/12 задач, break-glass верификация PASS против живого steward (waiver valid / stale-sha rejected / critical-tier rejected), финальный gate-check 0 err / 3 warn — все три warn = измеренный шов (см. пункты ниже). Журнал: handoff в prograph-vault (derived/journal/steward)
+- [ ] Шов authoring-контракта spec-runner↔steward, измеренный V1 (решение владельца, не «починка стенда»): (а) имя стадии `tasks` vs узел `task` в lite → GC-STAGE, для tasks.md не восстановим profile-side owner_role (verdicts: node_id null, owner_roles []); (б) gated approve не пишет `traces_to` → GC-TRACE-EMPTY; (в) не пинует `upstream_hashes` → GC-STALE-UNPINNED (stale-cascade слеп на ребре). Варианты: узел/алиас в профиле vs переименование стадии vs steward-расширения в spec-runner-шаблонах — решить явно @owner:github:andrei-shtanakov @id:authoring-seam-ruling
 
 ### 5. Promotion гейта: advisory → required
 

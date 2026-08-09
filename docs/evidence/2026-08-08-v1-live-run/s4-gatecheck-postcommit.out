@@ -1,0 +1,2 @@
+ERROR GC-COMPLETENESS  design: required artifact 'design' is missing from the bundle
+gate-check: 1 error(s), 0 warning(s)
