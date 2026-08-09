@@ -42,7 +42,7 @@ CI runs two workflows: `ci.yml` (ruff format/check, `pyrefly check`, pytest — 
 
 ## Architecture (target)
 
-- `profiles/*.yaml` — governance profiles (`lite`, `team`): declarative data, not code. Each defines the artifact DAG (charter → requirements → design → acceptance → decomposition → task) with `owner_role`, `upstream` edges, and optional `delegate`/`compile` targets. `lite` (requirements → design → tasks, solo auto-approve) is the default — ceremony is risk #1.
+- `profiles/*.yaml` — governance profiles (`lite`, `team`): declarative data, not code. Each defines the artifact DAG (charter → requirements → design → acceptance → decomposition → tasks) with `owner_role`, `upstream` edges, and optional `delegate`/`compile` targets. `lite` (requirements → design → tasks, solo auto-approve) is the default — ceremony is risk #1.
 - `src/steward/meta.py` — thin wrapper over spec-runner's `split_frontmatter`/`SpecMeta` plus governance fields (`owner_role`, `traces_to`, `upstream_hashes`). Dependency strategy: **vendored pinned copy** in `src/steward/_vendor/spec_meta.py` (DEC-003; supersedes BOOTSTRAP.md option A) — re-vendor when spec-runner's `SPEC_META_CONTRACT` bumps.
 - `src/steward/graph.py` — SpecGraph + profile loader (WS-001).
 - `src/steward/gatecheck/` — WS-002 linter: completeness / traceability / status↔git / stale cascade, `--no-fs` mode, exit codes for CI (`checks.py`, `git_facts.py`, `cli.py` as a Typer app exposed as the `gate-check` script). CI workflow needs `fetch-depth: 0`.

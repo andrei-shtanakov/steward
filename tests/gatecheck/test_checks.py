@@ -28,7 +28,7 @@ _PROFILE = {
         {"id": "requirements", "owner_role": "product", "upstream": []},
         {"id": "design", "owner_role": "architects", "upstream": ["requirements"]},
         {
-            "id": "task",
+            "id": "tasks",
             "owner_role": "stream-owner",
             "upstream": ["design"],
             "delegate": "spec-runner",

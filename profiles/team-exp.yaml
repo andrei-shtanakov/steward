@@ -30,7 +30,7 @@ artifacts:
   - {id: design,         template: design.md,         owner_role: architects, upstream: [requirements, behaviour-spec]}
   - {id: acceptance,     template: acceptance.md,     owner_role: qa,         upstream: [requirements, behaviour-spec]}
   - {id: decomposition,  template: decomposition.md,  owner_role: tech-lead,  upstream: [design, acceptance]}
-  - {id: task,           owner_role: stream-owner,    upstream: [decomposition], delegate: spec-runner, per: workstream}
+  - {id: tasks,           owner_role: stream-owner,    upstream: [decomposition], delegate: spec-runner, per: workstream}
 compile:
   decomposition: {to: maestro,     artifact: project.yaml}
-  task:          {to: spec-runner, artifact: tasks.md}
+  tasks:          {to: spec-runner, artifact: tasks.md}

@@ -34,7 +34,7 @@ def _lite_data() -> dict:
             {"id": "requirements", "owner_role": "product", "upstream": []},
             {"id": "design", "owner_role": "product", "upstream": ["requirements"]},
             {
-                "id": "task",
+                "id": "tasks",
                 "owner_role": "product",
                 "upstream": ["design"],
                 "delegate": "spec-runner",
@@ -48,7 +48,7 @@ def test_load_data_builds_graph_with_all_nodes() -> None:
     assert isinstance(graph, SpecGraph)
     assert graph.profile == "lite"
     assert graph.solo_auto_approve is True
-    assert set(graph.nodes) == {"requirements", "design", "task"}
+    assert set(graph.nodes) == {"requirements", "design", "tasks"}
 
 
 def test_nodes_are_specnodes() -> None:
@@ -64,7 +64,7 @@ def test_upstream_edges_parsed() -> None:
 
 def test_delegate_field_parsed() -> None:
     graph = _graph(_lite_data())
-    assert graph.nodes["task"].delegate == "spec-runner"
+    assert graph.nodes["tasks"].delegate == "spec-runner"
     assert graph.nodes["design"].delegate is None
 
 
@@ -168,7 +168,7 @@ def test_duplicate_upstream_raises_profile_error() -> None:
 def test_topo_order_upstream_before_downstream() -> None:
     order = _graph(_lite_data()).topo_order()
     assert order.index("requirements") < order.index("design")
-    assert order.index("design") < order.index("task")
+    assert order.index("design") < order.index("tasks")
 
 
 def test_topo_order_covers_all_nodes() -> None:
@@ -295,7 +295,7 @@ def test_shipped_lite_profile_loads_canonical() -> None:
     graph = load_profile(PROFILES / "lite.yaml", catalog)
     assert graph.profile == "lite"
     assert graph.solo_auto_approve is True
-    for node_id in ("requirements", "design", "task"):
+    for node_id in ("requirements", "design", "tasks"):
         assert graph.nodes[node_id].owner_role == "owner"
         assert graph.nodes[node_id].reviewer_roles == ()
 
@@ -310,4 +310,4 @@ def test_shipped_team_profile_loads_canonical() -> None:
     assert graph.nodes["design"].owner_role == "architects"
     assert graph.nodes["acceptance"].owner_role == "qa"
     assert graph.nodes["decomposition"].owner_role == "tech-lead"
-    assert graph.nodes["task"].owner_role == "stream-owner"
+    assert graph.nodes["tasks"].owner_role == "stream-owner"
