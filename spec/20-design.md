@@ -22,7 +22,7 @@ CODEOWNERS ──────▶ [role resolver]   ├─▶ [gate-check linter]
 spec/*.md (frontmatter) ─────────────┘         │
                                                ▼ approved bundle
                               [compile-down] ──┬─▶ Maestro project.yaml (decomposition)
-                                               └─▶ spec-runner authoring (task)
+                                               └─▶ spec-runner authoring (tasks)
 dispatcher ◀── читает spec/*.md + git state (read-only панель)
 ```
 
@@ -55,6 +55,20 @@ dispatcher ◀── читает spec/*.md + git state (read-only панель)
   spec-runner вендорят пиненую копию, но собственной формы не определяют. → REQ-002, REQ-004.
   Причина: singular-форма согласуется со SpecMeta v2 и dispatcher'ом и убирает преобразования
   на границах; `authority.yaml` описывает **полномочия** и не должен владеть идентичностью ролей.
+- **DEC-008 (решено 2026-08-09, owner; вход — измеренный шов V1-прогона)** Канонические имена
+  стадий принадлежат **spec-runner**: `requirements → design → tasks`. steward переименовывает
+  профильный узел `task` → `tasks`; **постоянный alias не вводится** — он скрыл бы drift.
+  Материализация `traces_to` и `upstream_hashes` в сгенерированных артефактах — upstream-работа
+  spec-runner как владельца формата SpecMeta; steward остаётся **валидатором** этих полей и
+  никогда не переписывает сгенерированные артефакты. V1-findings (GC-STAGE / GC-TRACE-EMPTY /
+  GC-STALE-UNPINNED на spec-runner-авторенном бандле) подтверждают контрактный разрыв, а не
+  необходимость расширять шаблоны на стороне steward.
+- **DEC-009 (решено 2026-08-09, owner)** `structural_coverage[].obligation.owner_role`
+  (behaviour-spec) — отдельная схема, но role identity общая: значение — канонический slug
+  без `@` (напр. `architects`); смысл — per-obligation accountable role; множественность в
+  этом поле не разрешается; это НЕ `reviewer_roles` артефакта и не влияет на его governance
+  owner; slug обязан резолвиться через `profiles/roles.yaml` — неизвестный slug = ошибка
+  конфигурации. Поле не переименовывается: контекст уже снимает неоднозначность.
 
 ## Модель идентичности ролей (DEC-007)
 
@@ -97,7 +111,7 @@ gate не срабатывает вживую до появления автор
 ## Frontmatter-схема артефакта (REQ-002)
 
 ```yaml
-spec_stage: charter|requirements|design|acceptance|decomposition|task
+spec_stage: charter|requirements|design|acceptance|decomposition|tasks
 status: draft|approved|stale
 version: <int>
 owner_role: <role-slug>                 # ровно одна accountable роль (DEC-007)
@@ -131,14 +145,14 @@ artifacts:
   - {id: design,         template: design.md,         owner_role: architects,   upstream: [requirements]}
   - {id: acceptance,     template: acceptance.md,     owner_role: qa,           upstream: [requirements]}
   - {id: decomposition,  template: decomposition.md,  owner_role: tech-lead,    upstream: [design, acceptance]}
-  - {id: task,           owner_role: stream-owner,    upstream: [decomposition], delegate: spec-runner, per: workstream}
+  - {id: tasks,           owner_role: stream-owner,    upstream: [decomposition], delegate: spec-runner, per: workstream}
 compile:
   decomposition: {to: maestro,     artifact: project.yaml}
-  task:          {to: spec-runner, artifact: tasks.md}
+  tasks:          {to: spec-runner, artifact: tasks.md}
 solo_auto_approve: false
 ```
 
-Профиль `lite`: `[requirements → design → task]`, `charter` опционален, `solo_auto_approve: true`. (NFR-001)
+Профиль `lite`: `[requirements → design → tasks]`, `charter` опционален, `solo_auto_approve: true`. (NFR-001)
 
 ## gate-check контракт (REQ-003, REQ-006)
 
