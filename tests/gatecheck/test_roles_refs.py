@@ -110,3 +110,16 @@ def test_structural_coverage_shape_defects_left_to_behaviour_checks() -> None:
         "  - not-a-mapping\n",
     )
     assert unresolved_role_refs([art], _CATALOG) == []
+
+
+def test_structural_coverage_scan_scoped_to_behaviour_spec() -> None:
+    """DEC-009 scopes the nested field to behaviour-spec — other stages skip the scan."""
+    text = (
+        "---\nspec_stage: design\nstatus: draft\nversion: 1\nowner_role: product\n"
+        "structural_coverage:\n"
+        "  - fr: FR-01\n    constraint: c\n    obligation: {owner_role: ghost}\n---\n"
+    )
+    meta = parse_artifact(text)
+    assert meta is not None
+    art = Artifact(path="spec/d.md", node_id="design", meta=meta, text=text)
+    assert unresolved_role_refs([art], _CATALOG) == []

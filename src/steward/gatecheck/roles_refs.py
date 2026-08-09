@@ -40,7 +40,8 @@ def unresolved_role_refs(artifacts: list[Artifact], roles: RolesCatalog) -> list
             _check(problems, roles, artifact.path, "reviewer_roles", slug)
         for slug in meta.allowed_approver_roles or ():
             _check(problems, roles, artifact.path, "allowed_approver_roles", slug)
-        _check_structural_coverage(problems, roles, artifact)
+        if meta.spec_stage == "behaviour-spec":
+            _check_structural_coverage(problems, roles, artifact)
     return problems
 
 
@@ -49,6 +50,8 @@ def _check_structural_coverage(
 ) -> None:
     """DEC-009: resolve nested obligation owner_role slugs against the catalog.
 
+    Called for behaviour-spec artifacts only — ``structural_coverage`` is
+    meaningful solely there (DEC-009), and the reparse below is not free.
     Only well-shaped string values are resolved here — shape defects
     (missing/non-string owner_role, malformed entries) stay with the
     behaviour-spec checks, which already refuse to count such entries.
