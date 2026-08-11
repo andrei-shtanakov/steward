@@ -107,6 +107,28 @@ def test_reserved_tokens_mirror_divergence_rejected(tmp_path):
         _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
 
 
+@pytest.mark.parametrize(
+    "declared",
+    [
+        "mandatory",  # строка: set(...) распался бы на символы
+        "7",  # скаляр: set(...) — TypeError вместо конфиг-ошибки
+        "[mandatory, mandatory, advisory]",  # дубль: зеркало перестаёт быть зеркалом
+        "{mandatory: true, advisory: true}",  # мэппинг вместо списка
+    ],
+)
+def test_reserved_tokens_mirror_shape_is_config_error_not_traceback(tmp_path, declared: str):
+    header = HEADER + f"obligation_reserved_tokens: {declared}\n"
+    with pytest.raises(CatalogError, match="obligation_reserved_tokens"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+def test_non_string_toplevel_key_is_config_error_not_traceback(tmp_path):
+    # Смешанные типы ключей: sorted() без key=repr дал бы TypeError.
+    header = HEADER + "7: whatever\nenforcement: mandatory\n"
+    with pytest.raises(CatalogError, match="unknown top-level key"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
 def test_declared_entry_is_not_active(tmp_path):
     cat = _load(
         tmp_path,

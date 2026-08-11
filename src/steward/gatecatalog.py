@@ -121,7 +121,10 @@ def _check_toplevel_keys(data: dict) -> None:
     """
     unknown = set(data.keys()) - set(TOPLEVEL_KEYS)
     if unknown:
-        raise CatalogError(f"unknown top-level key(s) {sorted(unknown)}")
+        # key=repr: a YAML mapping may mix string and non-string keys, and a
+        # bare sorted() would then raise TypeError — a defect must surface as
+        # a configuration error, never as a traceback.
+        raise CatalogError(f"unknown top-level key(s) {sorted(unknown, key=repr)}")
 
 
 def _check_namespaces(data: dict) -> tuple[str, str]:
@@ -172,13 +175,26 @@ def _check_obligation_vocabulary(data: dict) -> tuple[str, ...]:
             "obligation carries intent; enforcement belongs to the consumer"
         )
     declared = data.get("obligation_reserved_tokens")
-    if declared is not None and set(declared) != RESERVED_OBLIGATION_TOKENS:
+    if declared is not None and not _mirrors_reserved_tokens(declared):
         raise CatalogError(
-            "obligation_reserved_tokens must be exactly "
+            "obligation_reserved_tokens must be a list of unique strings equal to "
             f"{sorted(RESERVED_OBLIGATION_TOKENS)} — it is a published mirror "
             "of the loader rule, not a knob"
         )
     return vocab
+
+
+def _mirrors_reserved_tokens(declared: object) -> bool:
+    """Whether ``declared`` is a faithful list mirror of the reserved tokens.
+
+    Shape is checked before the comparison: a bare ``set(declared)`` would
+    turn a string into its characters and a non-iterable into a TypeError,
+    trading a configuration error for a traceback. Duplicates are rejected —
+    a mirror with two entries for one token no longer mirrors anything.
+    """
+    if not isinstance(declared, list) or not all(isinstance(t, str) for t in declared):
+        return False
+    return len(set(declared)) == len(declared) and set(declared) == RESERVED_OBLIGATION_TOKENS
 
 
 def _check_gate_id(gate_id: str, canonical_pattern: str, producer_pattern: str) -> None:
