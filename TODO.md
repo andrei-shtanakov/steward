@@ -148,6 +148,32 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
       — read model). GC-APPROVAL-MISSING active (каталог v2, 20 gates), GC-GIT-ROLE unavailable-контур
       (approvals: None = unavailable, live всегда None). Флаг `--stage` канонический, `--arch-stage`
       deprecated. PR #51
+- [x] Ответить Maestro как владелец контракта: оси obligation/enforcement и gate_id вне каталога @owner:github:andrei-shtanakov @id:maestro-gate-catalog-contract-ruling — steward#62 (зеркало maestro#160), решение владельца 2026-08-12
+      **Q1 — две оси, два поля.** `obligation: quality|approval` — интент и часть
+      идентичности гейта, принадлежит steward; `enforcement: mandatory|advisory` —
+      политика прогона потребителя, принадлежит Maestro и живёт в его схеме
+      `maestro.gate-verdict-record/v1` (дискриминатор сохраняется). Вариант (a)
+      Maestro принят; расширение словаря steward отклонено — смешивает статическую
+      идентичность гейта с контекстной runtime-политикой. Встречное обязательство
+      steward зафиксировано как часть контракта: каталог никогда не заводит ключ
+      `enforcement` и никогда не принимает токены `mandatory`/`advisory` в
+      `obligation_vocabulary`.
+      **Q2 — правило namespace, без маппинга.** `GC-` зарезервирован и закрыт
+      (минтит только каталог; неизвестный `GC-*` — fail-closed у любого писателя);
+      producer-specific id разрешены как `<namespace>.<name>`; наличие `obligation`
+      не означает членства в каталоге — членство даёт только резолв id. Трём
+      существующим id Maestro (`steward.risk_classify_*`, `human.owner_approval`,
+      `maestro.validate_strict`) канонические соответствия НЕ выдаются: это точки
+      энфорсмента чужого рантайма, а не гейты gate-check, и GC-псевдоним передал бы
+      steward владение проверками, которых он не исполняет. Форма их уже конформна —
+      переименование не требуется.
+      Фиксация (PR этой ветки): машиночитаемое зеркало `gate_id_namespaces` +
+      `obligation_reserved_tokens` в `profiles/gate-catalog.yaml`, проверки в
+      `gatecatalog.py` (закрытый набор top-level ключей — им и держится запрет на
+      `enforcement`; producer-форма в каталоге отвергается адресно), нормативный
+      раздел в `contracts/gate-verdicts/v1/README.md`. **Композиция каталога не
+      менялась → `version: 2` остаётся** — потребителю пересматривать состав не
+      нужно, только перевендорить файл.
 - [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:github:andrei-shtanakov @id:dispatcher-bundle-status-panel
       Unblocked by steward#33 (2026-08-06). Acceptance-сверка с фактической
       панелью dispatcher (2026-08-06): 5/6 критериев подтверждены кодом —

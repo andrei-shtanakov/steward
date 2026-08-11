@@ -13,6 +13,18 @@ Stability policy:
 Rule: applicable_roles field is canonical. If absent, gate is role-agnostic
 (None). Empty list [] is an error — never conflate absence with empty.
 Non-empty lists must resolve to existing role slugs from roles.yaml.
+
+Namespace ruling (owner, 2026-08-12, steward#62 / maestro#160):
+  - ``GC-`` is a reserved, closed namespace minted only by this catalog.
+  - Producer-specific ids are allowed outside it as ``<namespace>.<name>``
+    (PRODUCER_ID_PATTERN), owned by the emitting producer; steward defines
+    neither their semantics nor an alias into GC-*. Lowercase-initial by
+    construction, so the two namespaces are disjoint on case alone.
+  - ``obligation`` carries INTENT and is catalog-owned; ENFORCEMENT
+    (blocking vs advisory) is a per-run policy of the consumer. Standing
+    cross-repo commitment, enforced by RESERVED_OBLIGATION_TOKENS and the
+    closed top-level key set: this catalog never defines an ``enforcement``
+    key and never admits ``mandatory`` / ``advisory`` as obligations.
 """
 
 from __future__ import annotations
@@ -25,6 +37,28 @@ from typing import Literal
 import yaml
 
 from steward.roles import RolesCatalog, RolesError, load_roles_catalog
+
+
+CANONICAL_ID_PATTERN = r"^GC-[A-Z0-9]+(-[A-Z0-9]+)*$"
+"""Reserved namespace: only this catalog mints ids matching it."""
+
+PRODUCER_ID_PATTERN = r"^[a-z][a-z0-9-]*\.[a-z0-9_]+(\.[a-z0-9_]+)*$"
+"""Producer-specific ids, owned by their emitting producer, never by steward."""
+
+RESERVED_OBLIGATION_TOKENS = frozenset({"mandatory", "advisory"})
+"""Enforcement-axis tokens permanently barred from obligation_vocabulary."""
+
+TOPLEVEL_KEYS = frozenset(
+    {
+        "version",
+        "gate_id_namespaces",
+        "obligation_vocabulary",
+        "obligation_reserved_tokens",
+        "stage_vocabulary",
+        "gates",
+    }
+)
+"""Closed top-level key set — this is what bars a future ``enforcement:`` key."""
 
 
 class CatalogError(ValueError):
@@ -56,6 +90,8 @@ class GateCatalog:
     obligation_vocabulary: tuple[str, ...]
     stage_vocabulary: tuple[str, ...]
     gates: dict[str, GateEntry]
+    canonical_id_pattern: str = CANONICAL_ID_PATTERN
+    producer_id_pattern: str = PRODUCER_ID_PATTERN
 
     def active_ids(self) -> frozenset[str]:
         """Return frozenset of gate_ids with status='active'."""
@@ -76,6 +112,49 @@ def _check_version(data: dict) -> int:
     return version
 
 
+def _check_toplevel_keys(data: dict) -> None:
+    """Fail on unknown top-level keys (closed form, mirrors per-entry rule).
+
+    This is the mechanism behind the standing cross-repo commitment: an
+    ``enforcement:`` key cannot appear here without an explicit code change,
+    so a consumer owning that axis can never collide with the catalog.
+    """
+    unknown = set(data.keys()) - set(TOPLEVEL_KEYS)
+    if unknown:
+        raise CatalogError(f"unknown top-level key(s) {sorted(unknown)}")
+
+
+def _check_namespaces(data: dict) -> tuple[str, str]:
+    """Validate the optional ``gate_id_namespaces`` published mirror.
+
+    The block is a mirror of the loader's rule for consumers vendoring a
+    pinned copy, not a knob: any divergence from the module constants is an
+    error, because a locally widened pattern would open the reserved
+    ``GC-`` namespace to a producer.
+    """
+    block = data.get("gate_id_namespaces")
+    if block is None:
+        return CANONICAL_ID_PATTERN, PRODUCER_ID_PATTERN
+    if not isinstance(block, dict):
+        raise CatalogError("gate_id_namespaces must be a mapping")
+    expected = {
+        "canonical_pattern": CANONICAL_ID_PATTERN,
+        "producer_pattern": PRODUCER_ID_PATTERN,
+    }
+    if set(block.keys()) != set(expected):
+        raise CatalogError(
+            f"gate_id_namespaces keys must be exactly {sorted(expected)}, "
+            f"got {sorted(block.keys())}"
+        )
+    for key, canonical in expected.items():
+        if block[key] != canonical:
+            raise CatalogError(
+                f"gate_id_namespaces.{key} diverges from the loader rule "
+                f"{canonical!r} — the block is a published mirror, not a knob"
+            )
+    return expected["canonical_pattern"], expected["producer_pattern"]
+
+
 def _check_vocabulary(vocab: list, name: str) -> tuple[str, ...]:
     """Validate vocabulary list is non-empty and return as tuple."""
     if not vocab or not isinstance(vocab, list):
@@ -83,11 +162,40 @@ def _check_vocabulary(vocab: list, name: str) -> tuple[str, ...]:
     return tuple(vocab)
 
 
-def _check_gate_id(gate_id: str) -> None:
-    """Validate gate_id matches pattern ^GC-[A-Z0-9]+(-[A-Z0-9]+)*$."""
-    pattern = r"^GC-[A-Z0-9]+(-[A-Z0-9]+)*$"
-    if not re.match(pattern, gate_id):
-        raise CatalogError(f"gate_id '{gate_id}' does not match pattern {pattern}")
+def _check_obligation_vocabulary(data: dict) -> tuple[str, ...]:
+    """Validate the obligation vocabulary and its reserved-token commitment."""
+    vocab = _check_vocabulary(data.get("obligation_vocabulary"), "obligation_vocabulary")
+    reserved = sorted(RESERVED_OBLIGATION_TOKENS & set(vocab))
+    if reserved:
+        raise CatalogError(
+            f"obligation_vocabulary contains enforcement-axis token(s) {reserved} — "
+            "obligation carries intent; enforcement belongs to the consumer"
+        )
+    declared = data.get("obligation_reserved_tokens")
+    if declared is not None and set(declared) != RESERVED_OBLIGATION_TOKENS:
+        raise CatalogError(
+            "obligation_reserved_tokens must be exactly "
+            f"{sorted(RESERVED_OBLIGATION_TOKENS)} — it is a published mirror "
+            "of the loader rule, not a knob"
+        )
+    return vocab
+
+
+def _check_gate_id(gate_id: str, canonical_pattern: str, producer_pattern: str) -> None:
+    """Validate gate_id lives in the reserved ``GC-`` namespace.
+
+    A producer-shaped id is rejected with its own message: such ids are
+    legal on the wire but are owned by their producer, so the catalog is
+    exactly the wrong place to declare one.
+    """
+    if re.fullmatch(canonical_pattern, gate_id):
+        return
+    if re.fullmatch(producer_pattern, gate_id):
+        raise CatalogError(
+            f"gate_id '{gate_id}' is producer-specific — such ids are owned by "
+            "their producer and are never declared in this catalog"
+        )
+    raise CatalogError(f"gate_id '{gate_id}' does not match pattern {canonical_pattern}")
 
 
 def _check_obligation(obligation: str, vocab: tuple[str, ...], gate_id: str) -> None:
@@ -217,8 +325,10 @@ def load_catalog(catalog_path: Path, roles: RolesCatalog) -> GateCatalog:
         raise CatalogError(f"catalog file {catalog_path} must be a mapping")
 
     # Validate top-level structure
+    _check_toplevel_keys(data)
     version = _check_version(data)
-    obligation_vocab = _check_vocabulary(data.get("obligation_vocabulary"), "obligation_vocabulary")
+    canonical_pattern, producer_pattern = _check_namespaces(data)
+    obligation_vocab = _check_obligation_vocabulary(data)
     stage_vocab = _check_vocabulary(data.get("stage_vocabulary"), "stage_vocabulary")
 
     gates_dict = data.get("gates", {})
@@ -242,7 +352,7 @@ def load_catalog(catalog_path: Path, roles: RolesCatalog) -> GateCatalog:
     }
 
     for gate_id, entry_dict in gates_dict.items():
-        _check_gate_id(gate_id)
+        _check_gate_id(gate_id, canonical_pattern, producer_pattern)
 
         if not isinstance(entry_dict, dict):
             raise CatalogError(f"gate_id '{gate_id}': entry must be a dict")
@@ -286,6 +396,8 @@ def load_catalog(catalog_path: Path, roles: RolesCatalog) -> GateCatalog:
         obligation_vocabulary=obligation_vocab,
         stage_vocabulary=stage_vocab,
         gates=entries,
+        canonical_id_pattern=canonical_pattern,
+        producer_id_pattern=producer_pattern,
     )
 
 
