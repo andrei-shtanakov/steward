@@ -11,7 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from steward.gatecatalog import CatalogError, load_catalog, load_catalog_files
+from steward.gatecatalog import (
+    CANONICAL_ID_PATTERN,
+    PRODUCER_ID_PATTERN,
+    CatalogError,
+    load_catalog,
+    load_catalog_files,
+)
 from steward.roles import load_roles_catalog
 
 ROLES = (
@@ -41,6 +47,86 @@ def test_minimal_active_entry_loads(tmp_path):
     entry = cat.entry("GC-TRACE")
     assert entry is not None
     assert entry.applicable_roles is None and entry.stages is None
+
+
+def test_namespace_block_absent_falls_back_to_loader_rule(tmp_path):
+    # HEADER не несёт gate_id_namespaces: блок опционален, правило — в коде.
+    cat = _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n")
+    assert cat.canonical_id_pattern == CANONICAL_ID_PATTERN
+    assert cat.producer_id_pattern == PRODUCER_ID_PATTERN
+
+
+def test_producer_specific_id_rejected_in_catalog(tmp_path):
+    # Ruling 2 (2026-08-12): такие id легальны на проводе, но принадлежат
+    # producer'у — каталог именно то место, где их объявлять нельзя.
+    with pytest.raises(CatalogError, match="producer-specific"):
+        _load(
+            tmp_path,
+            "  maestro.validate_strict:\n    obligation: quality\n    status: active\n",
+        )
+
+
+def test_unknown_toplevel_key_rejected(tmp_path):
+    # Механизм встречного обязательства: enforcement сюда не пролезет молча.
+    header = HEADER + "enforcement: mandatory\n"
+    with pytest.raises(CatalogError, match="enforcement"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+def test_enforcement_token_in_obligation_vocabulary_rejected(tmp_path):
+    header = (
+        "version: 1\n"
+        "obligation_vocabulary: [quality, approval, mandatory]\n"
+        "stage_vocabulary: [authoring, release]\n"
+    )
+    with pytest.raises(CatalogError, match="enforcement-axis"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+def test_namespace_mirror_divergence_rejected(tmp_path):
+    # Блок — опубликованное зеркало правила, не ручка: расширенный паттерн
+    # открыл бы зарезервированное пространство GC- чужому писателю.
+    header = HEADER + (
+        "gate_id_namespaces:\n"
+        "  canonical_pattern: '^GC-.*$'\n"
+        f"  producer_pattern: '{PRODUCER_ID_PATTERN}'\n"
+    )
+    with pytest.raises(CatalogError, match="published mirror"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+def test_namespace_mirror_partial_keys_rejected(tmp_path):
+    header = HEADER + f"gate_id_namespaces:\n  canonical_pattern: '{CANONICAL_ID_PATTERN}'\n"
+    with pytest.raises(CatalogError, match="gate_id_namespaces keys"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+def test_reserved_tokens_mirror_divergence_rejected(tmp_path):
+    header = HEADER + "obligation_reserved_tokens: [mandatory]\n"
+    with pytest.raises(CatalogError, match="obligation_reserved_tokens"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        "mandatory",  # строка: set(...) распался бы на символы
+        "7",  # скаляр: set(...) — TypeError вместо конфиг-ошибки
+        "[mandatory, mandatory, advisory]",  # дубль: зеркало перестаёт быть зеркалом
+        "{mandatory: true, advisory: true}",  # мэппинг вместо списка
+    ],
+)
+def test_reserved_tokens_mirror_shape_is_config_error_not_traceback(tmp_path, declared: str):
+    header = HEADER + f"obligation_reserved_tokens: {declared}\n"
+    with pytest.raises(CatalogError, match="obligation_reserved_tokens"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
+
+
+def test_non_string_toplevel_key_is_config_error_not_traceback(tmp_path):
+    # Смешанные типы ключей: sorted() без key=repr дал бы TypeError.
+    header = HEADER + "7: whatever\nenforcement: mandatory\n"
+    with pytest.raises(CatalogError, match="unknown top-level key"):
+        _load(tmp_path, "  GC-TRACE:\n    obligation: quality\n    status: active\n", header)
 
 
 def test_declared_entry_is_not_active(tmp_path):
