@@ -25,6 +25,7 @@ cross-repo trap (impresario friction #10).
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -190,8 +191,8 @@ def _load_decisions(
         findings.extend(schema_findings)
         if not schema_findings and isinstance(doc, dict):
             valid.append((rel, doc))
-    ids = [doc["decision_id"] for _, doc in valid]
-    for dup in sorted({i for i in ids if ids.count(i) > 1}):
+    id_counts = Counter(doc["decision_id"] for _, doc in valid)
+    for dup in sorted(i for i, n in id_counts.items() if n > 1):
         # Ambiguous supersedes graph — fail closed rather than pick a record.
         findings.append(
             IntakeFinding(
