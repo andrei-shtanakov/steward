@@ -1,0 +1,4 @@
+source: impresario@a2672a8 contracts/gate-decision/v1/schema.json
+sha256: f68390fa7b6eea9a700ed351b43d4430df98d276a9b137e46ce99db3c58de422
+vendored: 2026-08-12
+purpose: proposal-intake step 2: admission evidence must be gate-decision/v1 records

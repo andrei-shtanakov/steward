@@ -1,0 +1,72 @@
+# Scheduled-НАБЛЮДЕНИЕ (guarantee B, two-contract-guarantees), НЕ PR-гейт:
+# workflow никогда не добавлять required-чеком. Copy-integrity (guarantee A)
+# живёт отдельно — offline-тест tests/contract/test_vendored_schemas_pinned.py.
+# Владелец вендоренных копий hostит свою вахту (прецеденты: advisory-watcher
+# dispatcher#110, arch-evidence-freshness этого репо). Сравниваются байты
+# контрактной поверхности upstream HEAD против вендоренной копии, не коммиты:
+# движение master impresario без правки схем — честный clean.
+name: impresario-contract-drift
+
+on:
+  schedule:
+    - cron: "50 5 * * *" # ежедневно 05:50 UTC; фактический старт дрейфует на 40-70 мин (очередь GitHub)
+  workflow_dispatch:
+    inputs:
+      synthetic:
+        description: "Синтетический кейс: drift правит вендоренную копию в ephemeral-чекауте"
+        default: "none"
+        type: choice
+        options: ["none", "drift"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: impresario-contract-drift
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ws/steward
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: andrei-shtanakov/impresario
+          path: ws/impresario
+
+      - name: synthetic non-clean (только ручной прогон)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.synthetic == 'drift' }}
+        run: printf '\n' >> ws/steward/contracts/impresario-product-proposal/v1/schema.json
+
+      - name: compare vendored copies to upstream HEAD
+        run: |
+          status=0
+          compare() {
+            local vendored="$1" upstream="$2"
+            if cmp -s "$vendored" "$upstream"; then
+              echo "clean: $vendored == impresario HEAD $upstream"
+            else
+              status=1
+              echo "DRIFT: $vendored != impresario HEAD $upstream"
+              {
+                echo "### DRIFT: $vendored"
+                echo '```'
+                diff -u "$vendored" "$upstream" || true
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+          compare ws/steward/contracts/impresario-product-proposal/v1/schema.json \
+                  ws/impresario/contracts/product-proposal/v1/schema.json
+          compare ws/steward/contracts/impresario-gate-decision/v1/schema.json \
+                  ws/impresario/contracts/gate-decision/v1/schema.json
+          if [ "$status" -eq 0 ]; then
+            echo "## impresario-contract-drift: clean" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Дрейф апстрима — решение о ре-вендоре за владельцем steward" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"

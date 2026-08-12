@@ -176,6 +176,39 @@ def approval_facts(
     typer.echo(f"ok: {len(actors)} actor(s) written to {out}")
 
 
+@app.command("proposal-intake")
+def proposal_intake(
+    bundle_dir: Path = typer.Argument(
+        ...,
+        help="proposal bundle: proposal.yaml + decisions/*.yaml (impresario layout)",
+    ),
+) -> None:
+    """Admission check for an approved ProductProposal (steward#64).
+
+    Evidence, not status: admit only when the proposal is a schema-valid
+    ``product-proposal/v1`` with ``status: approved`` AND both QG-5 gates
+    (``qg5_business``, ``qg5_committee``) have an active — not superseded —
+    ``approve`` gate-decision/v1 referencing exactly this proposal. Exit
+    codes mirror gate-check: 0 admit, 1 reject (findings), 2 config error.
+    """
+    from steward.proposalintake import IntakeConfigError, check_intake
+
+    try:
+        result = check_intake(bundle_dir)
+    except IntakeConfigError as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from exc
+    for f in result.findings:
+        typer.echo(f"{f.severity} {f.rule_id}: {f.path}: {f.message}")
+    if not result.admitted:
+        typer.echo(f"reject: {result.proposal_id or 'proposal'} is not admissible")
+        raise typer.Exit(1)
+    typer.echo(
+        f"admit: {result.proposal_id} v{result.proposal_version} "
+        "(active approve for qg5_business + qg5_committee)"
+    )
+
+
 def _classify_live(
     model, diff: str, repo: Path, project: str | None, profile: str
 ) -> Classification:
