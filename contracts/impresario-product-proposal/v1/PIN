@@ -1,0 +1,4 @@
+source: impresario@a2672a8 contracts/product-proposal/v1/schema.json
+sha256: 9d54ddb980e2cad354ecb2b0af49cde2dd36109090a97b6bebe49a8a93ee2619
+vendored: 2026-08-12
+purpose: proposal-intake step 1: the submitted proposal must be a product-proposal/v1

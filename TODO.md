@@ -326,6 +326,18 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 - [ ] **D2 · лицензия sdd** — спросить Dmytro Honcharuk, можно ли брать тексты шаблонов (LICENSE в репо нет); до ответа берём только идею гейтов @owner:github:andrei-shtanakov @id:sdd-license-question
 - [ ] **REQ-209 · OSS-мост в gate-check** (P2): presence через repolinter, ownership через codeowners-validator; `gate-check` остаётся оркестратором @owner:github:andrei-shtanakov @id:req-209-oss-bridge
 
+### 8. Product-governance вход: приём approved ProductProposal (impresario)
+
+Запрос steward#64 (inbox, from: impresario). Канонический handoff контура product-governance:
+инициатива принимается только по evidence — `status: approved` + два АКТИВНЫХ (не перекрытых
+`supersedes`) `approve` GateDecision (`qg5_business`, `qg5_committee`) про ровно этот proposal.
+Статусное поле без decision-evidence не авторитетно; waiver steward не переиспользуется как
+product decision record (и наоборот). Как approved proposal становится charter/spec-бандлом —
+отдельное будущее решение владельца, не этот пункт.
+
+- [x] Вендорить пинованные копии `product-proposal/v1` + `gate-decision/v1` (impresario@`a2672a8`) и команду `steward proposal-intake <bundle>` с evidence-проверкой @owner:github:andrei-shtanakov @id:product-proposal-intake — PR этой ветки: `contracts/impresario-*/v1` (PIN), copy-integrity тест обобщён автообнаружением PIN-каталогов, `src/steward/proposalintake.py` (INTAKE-* findings, exit 0/1/2; `GC-*` не минтится — closed namespace каталога, steward#62), 14 тестов-мутаций; живой смоук: настоящий PP-101 → admit, де-approved копия → reject
+- [ ] Приёмка drift-вахты `impresario-contract-drift.yml` (guarantee B): smoke workflow_dispatch + контролируемый synthetic=drift красный + первый штатный cron-прогон clean; закрывать по наблюдаемым прогонам, не по мержу @owner:github:andrei-shtanakov @id:impresario-contract-drift-acceptance
+
 ---
 
 ## Ждём от других проектов
