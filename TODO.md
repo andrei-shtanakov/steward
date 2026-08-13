@@ -336,7 +336,14 @@ product decision record (и наоборот). Как approved proposal стан
 отдельное будущее решение владельца, не этот пункт.
 
 - [x] Вендорить пинованные копии `product-proposal/v1` + `gate-decision/v1` (impresario@`a2672a8`) и команду `steward proposal-intake <bundle>` с evidence-проверкой @owner:github:andrei-shtanakov @id:product-proposal-intake — PR этой ветки: `contracts/impresario-*/v1` (PIN), copy-integrity тест обобщён автообнаружением PIN-каталогов, `src/steward/proposalintake.py` (INTAKE-* findings, exit 0/1/2; `GC-*` не минтится — closed namespace каталога, steward#62), 14 тестов-мутаций; живой смоук: настоящий PP-101 → admit, де-approved копия → reject
-- [ ] Приёмка drift-вахты `impresario-contract-drift.yml` (guarantee B): smoke workflow_dispatch + контролируемый synthetic=drift красный + первый штатный cron-прогон clean; закрывать по наблюдаемым прогонам, не по мержу @owner:github:andrei-shtanakov @id:impresario-contract-drift-acceptance
+- [x] Приёмка drift-вахты `impresario-contract-drift.yml` (guarantee B): smoke workflow_dispatch + контролируемый synthetic=drift красный + первый штатный cron-прогон clean; закрывать по наблюдаемым прогонам, не по мержу @owner:github:andrei-shtanakov @id:impresario-contract-drift-acceptance — приёмка 2026-08-13, все три прогона наблюдены:
+      ✅ smoke workflow_dispatch clean — run 31568781929 (2026-08-12); clean честный
+         при уехавшем master impresario (сравниваются байты схем по PIN, не коммиты);
+      ✅ synthetic=drift — run 31568789553 (2026-08-12): красный ровно на шаге
+         `compare vendored copies to upstream HEAD`;
+      ✅ штатный cron-прогон №1 — run 31676218838 (2026-08-13 07:03 UTC,
+         event=schedule): conclusion=success, compare clean. Задержка 07:03 vs
+         05:50 — штатный дрейф очереди GitHub cron (как у arch-evidence-freshness).
 
 ---
 
