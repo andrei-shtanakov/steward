@@ -232,7 +232,7 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 - [ ] Решить судьбу `WS-003` в compile-блоке и DAG: `git-approval-integration` всё ещё узел `steward-compile` и upstream для `dispatcher-panel-dogfood`. Удаление/замена меняет `project.yaml` → регенерация emitter'ом + обновление golden-тестов; висячий `depends_on` поймает `GC-COMPILE` @owner:github:andrei-shtanakov @blocked_by:todo://steward/solo-merge-evidence-policy @id:ws-003-compile-dag-fate
 - [ ] **Определить solo-compatible merge evidence policy** — опереться на будущие `human_merge` / `agent_merge` (I1–I4), а не имитировать невозможный owner review; `solo-mode` = значение конфига (набор аппруверов из одного + явно разрешённое и логируемое self-approval) @owner:github:andrei-shtanakov @id:solo-merge-evidence-policy
 - [ ] Типизированное evidence `human_merge`: merge существует, actor ∈ humans, чеки зелёные (GitHub API) @owner:github:andrei-shtanakov @blocked_by:todo://steward/solo-merge-evidence-policy @id:human-merge-evidence
-- [ ] Evidence `agent_merge` с инвариантами I1–I4 (scoped change-class, agent-immutable authority root, adversarial verifier, ревокация) @owner:github:andrei-shtanakov @blocked_by:prograph-vault#adr-eco-004-deferred @trigger:"ADR-ECO-004 снял deferred после batch-2" @id:agent-merge-evidence
+- [ ] Evidence `agent_merge` с инвариантами I1–I4 (scoped change-class, agent-immutable authority root, adversarial verifier, ревокация) @owner:github:andrei-shtanakov @blocked_by:todo://prograph-vault/adr-eco-004-deferred @trigger:"ADR-ECO-004 снял deferred после batch-2" @id:agent-merge-evidence
 
 ### 6b. ADR behaviour-lifecycle · Фаза 1 (slice утверждён 2026-08-02)
 
