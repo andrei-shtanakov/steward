@@ -127,3 +127,37 @@ def test_load_policy_unknown_key_fails_closed(tmp_path: Path) -> None:
 def test_load_policy_missing_file_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(PolicyError):
         load_approval_policy(tmp_path / "nope.yaml")
+
+
+def test_canonical_policy_denies_agent_merge_by_default() -> None:
+    """The shipped policy must keep agent_merge denied: ADR-ECO-008 is
+    `proposed`, and merging that document is not ratifying it."""
+    assert load_approval_policy(CANONICAL).agent_merge_allowed is False
+
+
+def test_absent_agent_merge_allowed_defaults_to_denied(tmp_path: Path) -> None:
+    """Fail-closed default: a policy written before the field existed must
+    not silently start permitting agent merges."""
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text("version: 1\nhuman_identities: []\nagent_identities: []\n")
+    assert load_approval_policy(path).agent_merge_allowed is False
+
+
+def test_agent_merge_allowed_true_is_loaded(tmp_path: Path) -> None:
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text(
+        "version: 1\nhuman_identities: []\nagent_identities: []\nagent_merge_allowed: true\n"
+    )
+    assert load_approval_policy(path).agent_merge_allowed is True
+
+
+@pytest.mark.parametrize("value", ["'yes'", "1", "[]", "null"])
+def test_non_bool_agent_merge_allowed_fails_closed(tmp_path: Path, value: str) -> None:
+    """Permission is granted by a real boolean only — a truthy YAML scalar
+    must never be coerced into allowing agent merges."""
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text(
+        f"version: 1\nhuman_identities: []\nagent_identities: []\nagent_merge_allowed: {value}\n"
+    )
+    with pytest.raises(PolicyError):
+        load_approval_policy(path)

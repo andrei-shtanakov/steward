@@ -24,6 +24,13 @@ _POLICY = ApprovalPolicy(
     agent_identities=frozenset({"github:dependabot[bot]"}),
 )
 
+_ALLOWING_POLICY = ApprovalPolicy(
+    version=1,
+    human_identities=frozenset({"github:andrei-shtanakov"}),
+    agent_identities=frozenset({"github:dependabot[bot]"}),
+    agent_merge_allowed=True,
+)
+
 _SHA = "a" * 40
 
 
@@ -143,17 +150,48 @@ def test_unknown_actor_gives_unknown_finding() -> None:
     assert "unknown" in finding.message
 
 
-def test_agent_actor_gives_agent_finding() -> None:
-    artifacts = [_artifact("approved")]
-    git = FakeGitFacts(on_default={"20-design.md"}, provenance={"20-design.md": _provenance()})
-    actor_facts = ApprovalFacts(
-        actors={_SHA: ActorFact(identity="github:dependabot[bot]", actor_type_hint="Bot")}
+def _agent_case(policy: ApprovalPolicy) -> list:
+    """One approved artifact merged by a correctly classified agent actor."""
+    return check_approval_evidence(
+        [_artifact("approved")],
+        FakeGitFacts(on_default={"20-design.md"}, provenance={"20-design.md": _provenance()}),
+        policy,
+        ApprovalFacts(
+            actors={_SHA: ActorFact(identity="github:dependabot[bot]", actor_type_hint="Bot")}
+        ),
+        "release",
     )
-    findings = check_approval_evidence(artifacts, git, _POLICY, actor_facts, "release")
+
+
+def test_agent_actor_gives_agent_finding_under_denying_policy() -> None:
+    """The denial is a *policy value*, and the message must name the field
+    an operator would change — not a decision baked into the code."""
+    finding = _one_finding(_agent_case(_POLICY))
+    assert finding.rule_id == "GC-APPROVAL-MISSING"
+    assert "agent_merge" in finding.message
+    assert "agent_merge_allowed" in finding.message
+
+
+def test_agent_actor_satisfies_policy_when_explicitly_allowed() -> None:
+    """ADR-ECO-008 D1: in automatic runs the agent merges. Once the policy
+    says so, an agent merge satisfies the release policy exactly as a human
+    one does — the gate must not keep blocking what the policy permits."""
+    assert _agent_case(_ALLOWING_POLICY) == []
+
+
+def test_unknown_actor_stays_fail_closed_under_allowing_policy() -> None:
+    """Permitting agent_merge widens exactly one classification. Absence of
+    evidence must never become "agent by default" and slip through."""
+    findings = check_approval_evidence(
+        [_artifact("approved")],
+        FakeGitFacts(on_default={"20-design.md"}, provenance={"20-design.md": _provenance()}),
+        _ALLOWING_POLICY,
+        ApprovalFacts(actors={_SHA: ActorFact("github:stranger", "User")}),
+        "release",
+    )
     finding = _one_finding(findings)
     assert finding.rule_id == "GC-APPROVAL-MISSING"
-    assert "agent_merge is disabled by policy" in finding.message
-    assert "ADR-ECO-004" in finding.message
+    assert "unknown" in finding.message
 
 
 def test_human_actor_gives_no_finding() -> None:
