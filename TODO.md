@@ -356,7 +356,7 @@ product decision record (и наоборот). Как approved proposal стан
 внутреннего формата в переносимый evidence-контракт, а не расширение сегодняшнего payload:
 `approval-facts/v1` существует только как Python (`src/steward/approvalfacts.py`), в `contracts/`
 его нет, вендорить пиненой копией нечего. Оба обходных пути dispatcher отвергнуты по делу:
-чтение нашего `approval-policy.yaml` из чекаута — нарушение границ полирепо, а повтор
+чтение нашего `profiles/approval-policy.yaml` из чекаута — нарушение границ полирепо, а повтор
 `classify_actor` у себя сделал бы steward и dispatcher двумя policy engine, способными
 разойтись. Уровень работы — отдельный архитектурный workstream масштаба `gate-verdicts/v1`.
 
