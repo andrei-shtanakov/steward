@@ -251,8 +251,9 @@ def check_approval_evidence(
                     "GC-APPROVAL-MISSING",
                     artifact.path,
                     f"merge actor {actor_fact.identity!r} is an agent, but "
-                    "agent_merge does not satisfy the release policy "
-                    "('agent_merge_allowed' is not set in the approval policy)",
+                    "agent_merge does not satisfy the release policy: the "
+                    "approval policy has 'agent_merge_allowed' false — set it "
+                    "to true there to permit agent merges",
                 )
             )
         # human, and agent under an allowing policy -> the release policy
