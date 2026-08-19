@@ -350,6 +350,42 @@ product decision record (и наоборот). Как approved proposal стан
 
 ---
 
+### 9. `approval-facts` как внешний контракт (dispatcher)
+
+Запрос steward#72 (inbox, from `dispatcher#agent-merge-observability`). Задача — **graduation**
+внутреннего формата в переносимый evidence-контракт, а не расширение сегодняшнего payload:
+`approval-facts/v1` существует только как Python (`src/steward/approvalfacts.py`), в `contracts/`
+его нет, вендорить пиненой копией нечего. Оба обходных пути dispatcher отвергнуты по делу:
+чтение нашего `profiles/approval-policy.yaml` из чекаута — нарушение границ полирепо, а повтор
+`classify_actor` у себя сделал бы steward и dispatcher двумя policy engine, способными
+разойтись. Уровень работы — отдельный архитектурный workstream масштаба `gate-verdicts/v1`.
+
+Четыре обязательных свойства (решение владельца 2026-08-19):
+
+1. **Контракт не зависит от появления GitHub App.** `human | agent | unknown` — стабильный
+   словарь; отсутствие сегодняшнего agent-субъекта не блокирует реализацию. Отсюда: пункт
+   намеренно БЕЗ `@blocked_by` на `agent-merge-app-identity`.
+2. **steward остаётся единственным классификатором.** Наружу выходят raw facts, итоговый
+   `actor_class` И provenance применённой политики — чтобы потребителю не пришлось
+   воспроизводить policy-семантику.
+3. **`unknown` означает только успешную классификацию при доступной политике.** Отсутствие,
+   неполнота или ошибка materialization выражаются ОТДЕЛЬНЫМ состоянием и не сваливаются в
+   `unknown`: outage классификатора не должен читаться как характеристика актора.
+4. **Публикация в `.steward/` атомарна и защищена от ложной свежести.** Одного
+   temp-file + `os.replace` мало: после неудачного нового прогона прежний успешный файл
+   остаётся целым и выглядит актуальным.
+
+Из (4) следует требование к envelope — читатель должен уметь ДОКАЗАТЬ свежесть и полноту, а не
+предположить их: `generated_at`, `repository`, `policy_version` / `policy_digest`, объявленный
+**scope materialization** (какие PR / merge SHA запрашивались) и признак полного успешного
+результата. Без объявленного scope пустой `actors: {}` неотличим от «ничего не запрашивали», а
+старый файл — от текущего результата.
+
+- [ ] Опубликовать `contracts/approval-facts/v1` в дисциплине `gate-verdicts/v1` (SCHEMA + fixtures + README + PIN), пригодный к вендорингу пиненой копией @owner:github:andrei-shtanakov @id:approval-facts-external-contract — приём входящего steward#72; четыре свойства выше обязательны, свойство 3 — дизайн, а не переупаковка: сегодня развилка «unavailable vs unknown» живёт в `check_approval_evidence`, а не в самом файле фактов
+- [ ] Материализация в `.steward/` рядом с `gate_verdicts.jsonl` — файл попадает в наблюдаемый бандл, а не остаётся артефактом вызова с `--out` @owner:github:andrei-shtanakov @blocked_by:todo://steward/approval-facts-external-contract @id:approval-facts-bundle-emission — сохранить honesty rule («никакого файла при любом сбое») и добавить защиту от ложной свежести: envelope со scope + provenance политики
+
+---
+
 ## Ждём от других проектов
 
 - **spec-runner → C2**: `owner_role` + `SPEC_META_CONTRACT = 2`. В работе (ветка
@@ -362,6 +398,10 @@ product decision record (и наоборот). Как approved proposal стан
   meta-enforcer `check-release-drift`. После него — тег `governance-v2`.
 - **dispatcher**: `owner_role` проброшен; ждёт схему verdict-записей и каталог ролей, чтобы
   вендорить пиненые копии. Свою governance-модель не строит (анти-цель).
+  Отдельно ждёт от нас `approval-facts` как внешний контракт (§9, steward#72): их
+  `agent-merge-observability` разблокирует именно ОПУБЛИКОВАННАЯ и пиннуемая версия,
+  а не мерж кода у нас. До неё их модель остаётся «источника нет», и по ADR-ECO-008 D6
+  прогон обязан вести себя как `merge_authority: human`.
 - **arbiter**: RD-006 M3 сделан — `config/authority.toml` вендорен, `AUTHORITY_PINNED_SHA` в CI.
 
 ## НЕ делаем здесь
