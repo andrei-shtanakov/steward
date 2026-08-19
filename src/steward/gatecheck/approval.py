@@ -10,10 +10,17 @@ There is no default-human path: an identity absent from both
 ``human_identities`` and ``agent_identities`` — and not hinted ``Bot`` — is
 ``"unknown"``, never assumed human because it merely fails to look like a
 bot ("doesn't look like a bot" = human is fail-open, rejected by the owner
-2026-08-08). ``agent_merge`` is disabled by policy in v1 (ADR-ECO-004): a
-correctly classified ``"agent"`` actor still does not satisfy the release
-policy — that consuming decision belongs to ``check_approval_evidence``
-(a later task in this workstream), not to this module.
+2026-08-08).
+
+Whether a correctly classified ``"agent"`` actor *satisfies* the release
+policy is a separate question from classification, and it is a **policy
+value**, not a constant in this code: ``agent_merge_allowed`` in
+``profiles/approval-policy.yaml``. ADR-ECO-008 D1 puts merges in automatic
+runs on an agent, so the gate must be able to permit exactly that; ADR-ECO-008
+is still ``status: proposed``, so the default — including for a policy file
+written before the field existed — is denied. Permission has to arrive as an
+explicit ``true``; it never appears on its own. Consuming the value belongs
+to ``check_approval_evidence``, not to ``classify_actor``.
 """
 
 from __future__ import annotations
@@ -71,6 +78,7 @@ class ApprovalPolicy:
     version: int
     human_identities: frozenset[str]
     agent_identities: frozenset[str]
+    agent_merge_allowed: bool = False
 
 
 def classify_actor(identity: str | None, hint: str | None, policy: ApprovalPolicy) -> ActorType:
@@ -99,7 +107,7 @@ def _check_identity_list(value: object, field: str, path: Path) -> frozenset[str
     return frozenset(value)
 
 
-_ALLOWED_KEYS = {"version", "human_identities", "agent_identities"}
+_ALLOWED_KEYS = {"version", "human_identities", "agent_identities", "agent_merge_allowed"}
 
 
 def load_approval_policy(path: Path) -> ApprovalPolicy:
@@ -110,6 +118,11 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
     lists, or non-string list entries all raise :class:`PolicyError` naming
     the file and field. Empty ``human_identities``/``agent_identities``
     lists are accepted — they mean "no known actors yet", not an error.
+
+    ``agent_merge_allowed`` is optional and defaults to ``False``; when
+    present it must be a real ``bool``. A truthy scalar (``1``, ``"yes"``)
+    is a :class:`PolicyError`, never a coerced grant — permission is
+    something a policy states, not something a parser infers.
     """
     try:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -134,10 +147,15 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
     human_identities = _check_identity_list(data["human_identities"], "human_identities", path)
     agent_identities = _check_identity_list(data["agent_identities"], "agent_identities", path)
 
+    agent_merge_allowed = data.get("agent_merge_allowed", False)
+    if not isinstance(agent_merge_allowed, bool):
+        raise PolicyError(f"{path}: 'agent_merge_allowed' must be a bool")
+
     return ApprovalPolicy(
         version=version,
         human_identities=human_identities,
         agent_identities=agent_identities,
+        agent_merge_allowed=agent_merge_allowed,
     )
 
 
@@ -168,8 +186,10 @@ def check_approval_evidence(
       approval-facts``.
     - an actor identity present but :func:`classify_actor` returns
       ``"unknown"`` (not in the closed allowlist policy) -> **unknown**.
-    - a correctly classified ``"agent"`` actor -> **agent** — still a
-      finding: ``agent_merge`` is disabled by policy in v1 (ADR-ECO-004).
+    - a correctly classified ``"agent"`` actor -> **agent** — a finding
+      unless ``policy.agent_merge_allowed`` is set, which is the one
+      classification the policy value widens. Permitting it does not touch
+      the other outcomes: **unknown** stays fail-closed either way.
     - a correctly classified ``"human"`` actor -> no finding.
 
     This combinator takes ``actor_facts`` as its own argument and never
@@ -224,14 +244,18 @@ def check_approval_evidence(
                     "classification (unknown)",
                 )
             )
-        elif actor_type == "agent":
+        elif actor_type == "agent" and not policy.agent_merge_allowed:
             findings.append(
                 Finding(
                     "error",
                     "GC-APPROVAL-MISSING",
                     artifact.path,
-                    "agent_merge is disabled by policy (ADR-ECO-004)",
+                    f"merge actor {actor_fact.identity!r} is an agent, but "
+                    "agent_merge does not satisfy the release policy: the "
+                    "approval policy has 'agent_merge_allowed' false — set it "
+                    "to true there to permit agent merges",
                 )
             )
-        # human -> no finding: the release policy is satisfied.
+        # human, and agent under an allowing policy -> the release policy
+        # is satisfied.
     return findings

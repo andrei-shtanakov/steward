@@ -1,9 +1,21 @@
 # Закрытая классификация merge-акторов (решение владельца 2026-08-08).
 # Точное совпадение, никаких default-human: неизвестный актор = unknown,
-# unknown НЕ удовлетворяет release-policy. agent_merge disabled by default
-# (ADR-ECO-004): в v1 agent тоже не удовлетворяет policy.
+# unknown НЕ удовлетворяет release-policy — и остаётся fail-closed независимо
+# от значения `agent_merge_allowed` ниже.
 version: 1
 human_identities:
   - github:andrei-shtanakov
 agent_identities:
   - github:dependabot[bot]
+
+# Удовлетворяет ли агентский мерж release-policy. Значение политики, а не
+# константа кода (steward#69): ADR-ECO-008 D1 переводит мерж в автопрогонах на
+# агента, но сам ADR в статусе `proposed` — мерж документа не равен ратификации,
+# поэтому дефолт `false` и включать его нельзя до ратификации.
+#
+# Включение имеет смысл только вместе с различимой merge-личностью: агенты флота
+# сегодня ходят на GitHub под личностью владельца, а `human_identities` проверяется
+# первым, поэтому их мерж классифицируется как `human` и до этого флага не доходит.
+# Целевая личность — GitHub App (отдельный субъект `…[bot]`, хинт "Bot" уже даёт
+# `agent`); её строку внести в `agent_identities`, когда App будет заведён.
+agent_merge_allowed: false
