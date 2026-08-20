@@ -1,0 +1,144 @@
+# codex-review — независимое ревью дифа другой моделью (ADR-ECO-004 I3).
+#
+# Зачем не «ещё один линтер»: код в этом репо пишет преимущественно Claude, а I3
+# говорит прямо — «a same-model/same-prompt reviewer buys ~zero independence».
+# Ценность здесь ровно в том, что модель другого вендора, а рамка — опровержение.
+#
+# Чек, НЕ аппрув. По I3 adversarial verifier может быть «one more required-check,
+# never the sole authority». Аппрув агентом — отдельный, ещё не принятый разговор.
+#
+# Кого блокирует: брокер требует зелёным ВЕСЬ rollup, поэтому красный чек
+# останавливает агентский мерж. Человеческий путь не затронут — в ruleset этот
+# чек намеренно не вносится, пока не посмотрим на качество вердиктов.
+#
+# Порог: красным делают только `blocker` и `major`. `minor`/`nit` уезжают в
+# сводный комментарий и никого не держат — иначе контур станет ручным на каждом
+# придиразме.
+name: codex-review
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Джоб 1 читает недоверенный текст (диф) и держит ключ. Поэтому у него НЕТ
+  # прав на запись и НЕТ checkout'а кода PR: инъекция через содержимое PR
+  # обезврежена отсутствием того, чем можно воспользоваться, а не бдительностью.
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Checkout BASE, а не PR: промпт и схема — вход ревьюера, и версия из PR
+      # позволила бы автору патча переписать инструкции своему же ревьюеру.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Забрать только диф (без checkout кода PR)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR" -H "Accept: application/vnd.github.v3.diff" > diff.patch
+          bytes=$(wc -c < diff.patch)
+          echo "diff bytes: $bytes"
+          # Диф без изменений — не «ревью прошло», а нечего ревьюить: это
+          # определённое состояние, и оно легитимно зелёное.
+          [ "$bytes" -gt 0 ] || echo "empty diff"
+
+      - name: Собрать промпт
+        run: |
+          set -euo pipefail
+          # Промпт и диф склеиваются в файл: диф НИКОГДА не попадает ни в
+          # аргумент командной строки, ни в подстановку выражений workflow —
+          # иначе его содержимое интерпретировалось бы как часть команды.
+          {
+            cat .github/codex/review-prompt.md
+            printf '\n\n--- ДИФ НАЧАЛО ---\n'
+            cat diff.patch
+            printf '\n--- ДИФ КОНЕЦ ---\n'
+          } > prompt.txt
+
+      - name: Ревью
+        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56  # v1.11
+        with:
+          openai-api-key: ${{ secrets.CODEX_REVIEW_API_KEY }}
+          prompt-file: prompt.txt
+          output-file: verdict.json
+          output-schema-file: .github/codex/review-schema.json
+          permission-profile: ":read-only"
+
+      - name: Сохранить вердикт
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: codex-verdict
+          path: verdict.json
+          if-no-files-found: error
+
+  # Джоб 2 имеет право писать, но НЕ видит ни ключа, ни дифа — только вердикт.
+  # Он же и есть красный/зелёный чек по порогу серьёзности.
+  report:
+    needs: review
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: codex-verdict
+
+      - name: Опубликовать сводку и применить порог
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Невалидный или отсутствующий вердикт — отказ, а не «замечаний нет».
+          jq -e '.findings | type == "array"' verdict.json > /dev/null \
+            || { echo "::error::вердикт нечитаем — считаем чек красным"; exit 1; }
+
+          blocking=$(jq '[.findings[] | select(.severity == "blocker" or .severity == "major")] | length' verdict.json)
+          total=$(jq '.findings | length' verdict.json)
+
+          {
+            echo "## Ревью Codex — независимый чек"
+            echo
+            jq -r '.note // ""' verdict.json
+            echo
+            if [ "$total" = 0 ]; then
+              echo "Находок нет."
+            else
+              echo "| уровень | файл | находка | сценарий отказа |"
+              echo "|---|---|---|---|"
+              # Текст вердикта пишет модель: перевод строки или `|` внутри поля
+              # разорвал бы таблицу молча. Схлопываем и экранируем.
+              jq -r '
+                def cell: (. // "") | gsub("\\r?\\n"; " ") | gsub("\\|"; "\\|");
+                .findings[] | "| \(.severity|cell) | `\(.file|cell)` | \(.summary|cell) | \(.failure|cell) |"
+              ' verdict.json
+            fi
+            echo
+            echo "_Порог: красным делают \`blocker\` и \`major\`. Это чек, не аппрув —"
+            echo "и не замена ревью человека._"
+          } > body.md
+
+          # Сводным комментарием, а не review-threads: threads блокируют брокер до
+          # разрешения человеком, и `nit` останавливал бы мерж наравне с дефектом.
+          gh pr comment "$PR" --repo "$REPO" --body-file body.md
+
+          if [ "$blocking" -gt 0 ]; then
+            echo "::error::$blocking находк(и) уровня blocker/major — чек красный"
+            exit 1
+          fi
+          echo "находок всего: $total, блокирующих: 0"
