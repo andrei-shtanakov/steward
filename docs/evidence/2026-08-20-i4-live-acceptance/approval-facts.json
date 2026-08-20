@@ -1,0 +1,13 @@
+{
+  "actors": {
+    "221457933968be9e95acd51d548e080f739c794c": {
+      "identity": "github:merge-broker",
+      "type_hint": "Bot"
+    },
+    "e04b0c9f30e4670b29afa1af598e5b4d7be48938": {
+      "identity": "github:andrei-shtanakov",
+      "type_hint": "User"
+    }
+  },
+  "schema": "approval-facts/v1"
+}
