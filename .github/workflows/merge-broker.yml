@@ -53,6 +53,8 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PR: ${{ inputs.pr }}
           REPO: ${{ github.repository }}
+          POLL_ATTEMPTS: "5"
+          POLL_DELAY: "6"
         run: |
           set -euo pipefail
 
@@ -60,33 +62,58 @@ jobs:
             ''|*[!0-9]*) echo "::error::PR must be a number, got: $PR"; exit 1 ;;
           esac
 
+          # Параметры опроса — тоже вход, хоть и заданный в этом же файле: нечисло
+          # уронило бы скрипт изнутри `seq`/`sleep` невнятной ошибкой вместо отказа,
+          # а `$PR` двумя строками выше проверяется ровно из этих соображений.
+          case "$POLL_ATTEMPTS" in
+            ''|*[!0-9]*|0) echo "::error::POLL_ATTEMPTS must be a positive integer, got: $POLL_ATTEMPTS"; exit 1 ;;
+          esac
+          case "$POLL_DELAY" in
+            ''|*[!0-9]*) echo "::error::POLL_DELAY must be a non-negative integer, got: $POLL_DELAY"; exit 1 ;;
+          esac
+
           owner=${REPO%%/*}
           name=${REPO##*/}
 
-          # shellcheck disable=SC2016  # $owner/$name/$pr — переменные GraphQL, не shell
-          gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query='
-            query($owner:String!, $name:String!, $pr:Int!) {
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$pr) {
-                  state isDraft mergeable headRefOid
-                  files(first:100) { nodes { path } pageInfo { hasNextPage } }
-                  reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
-                  reviews(first:100) { nodes { state author { login } } pageInfo { hasNextPage } }
-                  commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
-                }
-              }
-            }' > pr.json
-
-          pr=$(jq -e '.data.repository.pullRequest' pr.json)
-
           refuse() { echo "::error::ОТКАЗ: $1"; exit 1; }
+
+          fetch() {
+            # shellcheck disable=SC2016  # $owner/$name/$pr — переменные GraphQL, не shell
+            gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query='
+              query($owner:String!, $name:String!, $pr:Int!) {
+                repository(owner:$owner, name:$name) {
+                  pullRequest(number:$pr) {
+                    state isDraft mergeable headRefOid
+                    files(first:100) { nodes { path } pageInfo { hasNextPage } }
+                    reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
+                    reviews(first:100) { nodes { state author { login } } pageInfo { hasNextPage } }
+                    commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
+                  }
+                }
+              }' > pr.json
+          }
+
+          # `mergeable: UNKNOWN` — GitHub ещё не досчитал mergeability; после мержа
+          # соседнего PR в base это состояние возникает штатно и держится секунды.
+          # Правило «неизвестность не есть разрешение» не смягчается: неизвестность
+          # доводится до определённости ДО применения правила. Сам запрос и есть
+          # триггер пересчёта на стороне GitHub.
+          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
+            fetch
+            pr=$(jq -e '.data.repository.pullRequest' pr.json)
+            mergeable=$(jq -r .mergeable <<<"$pr")
+            [ "$mergeable" != UNKNOWN ] && break
+            if [ "$attempt" -lt "$POLL_ATTEMPTS" ]; then
+              echo "mergeable=UNKNOWN — попытка $attempt/$POLL_ATTEMPTS, ждём ${POLL_DELAY}s"
+              sleep "$POLL_DELAY"
+            fi
+          done
 
           [ "$(jq -r .state <<<"$pr")" = OPEN ] || refuse "PR не открыт"
           [ "$(jq -r .isDraft <<<"$pr")" = false ] || refuse "PR — черновик"
 
-          # CONFLICTING — конфликт; UNKNOWN — GitHub ещё считает mergeability,
-          # это неизвестность, а не разрешение: перезапустить прогон позже.
-          mergeable=$(jq -r .mergeable <<<"$pr")
+          # CONFLICTING — конфликт; UNKNOWN здесь означает, что GitHub не досчитал за
+          # весь опрос выше: это по-прежнему отказ, а не разрешение.
           [ "$mergeable" = MERGEABLE ] || refuse "mergeable=$mergeable"
 
           # Пустой rollup (`null`) — это «чеков нет», а не «чеки прошли». Репо без CI
