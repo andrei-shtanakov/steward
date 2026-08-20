@@ -90,9 +90,7 @@ def test_materialize_bot_hint_round_trips_for_downstream_classification(
     """The materialized fact carries the raw "Bot" hint through unchanged
     — classification (human/agent/unknown) is `classify_actor`'s job, not
     the materializer's; this only proves the hint survives the trip."""
-    monkeypatch.setattr(
-        approvalfacts, "_gh", lambda args: (0, _sha_response("dependabot[bot]", "Bot"))
-    )
+    monkeypatch.setattr(approvalfacts, "_gh", lambda args: (0, _sha_response("dependabot", "Bot")))
     actors = materialize_approval_facts("acme/widgets", merge_shas=[SHA])
     assert actors[SHA].actor_type_hint == "Bot"
 
