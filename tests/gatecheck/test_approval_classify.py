@@ -69,7 +69,20 @@ def test_load_canonical_policy() -> None:
     policy = load_approval_policy(CANONICAL)
     assert policy.version == 1
     assert "github:andrei-shtanakov" in policy.human_identities
-    assert "github:dependabot[bot]" in policy.agent_identities
+    assert "github:merge-broker" in policy.agent_identities
+
+
+def test_canonical_agent_identities_carry_no_bot_suffix() -> None:
+    """Regression: identities in the policy must use the grammar the fact
+    provider emits — `github:{login}` from GraphQL, where a Bot's login is the
+    bare slug (`merge-broker`), not the REST form (`merge-broker[bot]`).
+    A suffixed entry never matches `classify_actor`'s exact comparison, and the
+    mismatch is invisible because the "Bot" hint classifies the actor as an agent
+    anyway: the declared identity is dead while behaviour looks correct.
+    Observed on the live merge of steward#75 (2026-08-20)."""
+    policy = load_approval_policy(CANONICAL)
+    suffixed = [i for i in policy.agent_identities | policy.human_identities if i.endswith("[bot]")]
+    assert suffixed == [], f"identities in REST grammar will never match facts: {suffixed}"
 
 
 def test_load_policy_empty_lists_are_legitimate(tmp_path: Path) -> None:
