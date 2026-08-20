@@ -111,15 +111,19 @@ jobs:
 
           # I2: агент не мержит то, что определяет его собственные полномочия.
           # Список зеркалит DEFAULT_GLOBS из ci/governance/authority_root_guard.py
-          # зонтика плюс два пути, которых там нет: сам этот workflow и профиль,
-          # объявляющий личности и `agent_merge_allowed`.
+          # зонтика плюс пути, которых там нет: сам этот workflow; профиль,
+          # объявляющий личности и `agent_merge_allowed`; и codex-review вместе с
+          # его промптом и схемой — он определяет гейт, через который агент обязан
+          # пройти, и держит ключ, а при событии `pull_request` запускается версия
+          # ИЗ PR. Значит правку этого гейта агент мержить не вправе.
           jq -e '.files.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
             || refuse "больше 100 файлов — authority-root не проверить целиком"
           authority=$(jq -r '.files.nodes[].path' <<<"$pr" | grep -E \
             -e '(^|/)governance\.yaml$' \
             -e '(^|/)rulesets/' \
             -e '(^|/)required-check-defs/' \
-            -e '^\.github/workflows/(governance-gate|merge-broker)\.yml$' \
+            -e '^\.github/workflows/(governance-gate|merge-broker|codex-review)\.yml$' \
+            -e '^\.github/codex/' \
             -e '^ci/governance/' \
             -e '(^|/)CODEOWNERS$' \
             -e '^profiles/(approval-policy|authority)\.yaml$' || true)

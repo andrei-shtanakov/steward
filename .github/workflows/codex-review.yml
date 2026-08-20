@@ -33,6 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Чтение PR (`GET /repos/{}/pulls/{}`) требует именно этого права. Сегодня
+      # шаг проходит и без него, потому что репозиторий публичный, — но это
+      # послабление форджа, а не наше право: закроют репо, и диф отвалится молча.
+      pull-requests: read
     steps:
       # Checkout BASE, а не PR: промпт и схема — вход ревьюера, и версия из PR
       # позволила бы автору патча переписать инструкции своему же ревьюеру.
@@ -42,6 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Забрать только диф (без checkout кода PR)
+        id: diff
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
@@ -51,13 +56,36 @@ jobs:
           gh api "repos/$REPO/pulls/$PR" -H "Accept: application/vnd.github.v3.diff" > diff.patch
           bytes=$(wc -c < diff.patch)
           echo "diff bytes: $bytes"
-          # Диф без изменений — не «ревью прошло», а нечего ревьюить: это
-          # определённое состояние, и оно легитимно зелёное.
-          [ "$bytes" -gt 0 ] || echo "empty diff"
+          # Диф без изменений — не «ревью прошло», а нечего ревьюить: состояние
+          # определённое и легитимно зелёное. Но зелёным оно должно стать ЯВНО, а
+          # не пройдя к модели с пустым входом: иначе вердикт о пустоте выносит
+          # модель, и «нечего смотреть» станет неотличимо от «посмотрел, чисто».
+          if [ "$bytes" -gt 0 ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            printf '{"findings":[],"note":"диф пуст — ревьюировать нечего"}' > verdict.json
+          fi
 
       - name: Собрать промпт
+        if: steps.diff.outputs.skip == 'false'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+
+          # Инструкции ревьюера берутся из base намеренно (см. checkout выше), и у
+          # этого есть прямое следствие: PR, который их ВВОДИТ или МЕНЯЕТ, сам собой
+          # не проверяется — в base их ещё нет или они другие. Это не обходится, это
+          # цена того, что автор патча не может переписать промпт своему ревьюеру.
+          # Отказ должен объяснять себя, иначе читается как поломка инфраструктуры.
+          for f in .github/codex/review-prompt.md .github/codex/review-schema.json; do
+            [ -f "$f" ] && continue
+            echo "::error::$f нет в base ($BASE_SHA). Инструкции ревьюера читаются из"\
+                 "base по построению, поэтому PR, вводящий их, этим чеком не"\
+                 "проверяется. Смержите его — на следующих PR чек заработает."
+            exit 1
+          done
           # Промпт и диф склеиваются в файл: диф НИКОГДА не попадает ни в
           # аргумент командной строки, ни в подстановку выражений workflow —
           # иначе его содержимое интерпретировалось бы как часть команды.
@@ -69,6 +97,7 @@ jobs:
           } > prompt.txt
 
       - name: Ревью
+        if: steps.diff.outputs.skip == 'false'
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56  # v1.11
         with:
           openai-api-key: ${{ secrets.CODEX_REVIEW_API_KEY }}
