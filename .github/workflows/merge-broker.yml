@@ -71,7 +71,7 @@ jobs:
                   state isDraft mergeable headRefOid
                   files(first:100) { nodes { path } pageInfo { hasNextPage } }
                   reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
-                  reviews(first:100) { nodes { state author { login } } }
+                  reviews(first:100) { nodes { state author { login } } pageInfo { hasNextPage } }
                   commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
                 }
               }
@@ -103,6 +103,8 @@ jobs:
 
           # I3: App не аппрувит то, что мержит. Сегодня он не ревьюит вовсе — проверка
           # держит это свойство, если брокеру когда-нибудь добавят ревью.
+          jq -e '.reviews.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
+            || refuse "больше 100 reviews — отсутствие self-approval не доказать"
           self_approved=$(jq '[.reviews.nodes[]
             | select(.state == "APPROVED" and .author.login == "merge-broker[bot]")] | length' <<<"$pr")
           [ "$self_approved" = 0 ] || refuse "I3: merge-broker[bot] аппрувил этот PR"
