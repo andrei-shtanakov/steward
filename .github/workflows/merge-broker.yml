@@ -135,6 +135,11 @@ jobs:
           HEAD_SHA: ${{ steps.check.outputs.head }}
         run: |
           set -euo pipefail
-          # --match-head-commit: если PR обновился между проверкой и мержем, мерж
-          # отменяется. Иначе проверялось бы одно содержимое, а мержилось другое.
-          gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$HEAD_SHA"
+          # Прямой вызов merge-эндпоинта, а НЕ `gh pr merge`: gh сам, на своей стороне,
+          # проверяет `mergeStateStatus` и при `BLOCKED` отказывает, не обращаясь к API.
+          # Для брокера это ложный отказ — PR блокирован требованием аппрува, которое
+          # App обходит по ruleset-bypass, но до проверки bypass дело не доходит.
+          # `sha` здесь — точный аналог `--match-head-commit`: GitHub откажет, если голова
+          # PR уже не та, что проверялась выше.
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
+            -f merge_method=squash -f sha="$HEAD_SHA" --jq '.sha'
