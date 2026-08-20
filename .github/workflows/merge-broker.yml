@@ -1,0 +1,138 @@
+# merge-broker — агентский мерж (ADR-ECO-008 D1 + ADR-ECO-008a).
+#
+# Ключ App лежит в secrets ЭТОГО репо; оркестратор ключа не видит и инициирует мерж
+# только через `workflow_dispatch`. Мерж выполняется installation-токеном, поэтому в
+# `PullRequest.mergedBy` встаёт `merge-broker[bot]` — это и есть выполнение I4
+# (различимость агентского мержа от человеческого).
+#
+# Файл — authority-root по I2: он определяет, ЧТО агенту позволено мержить, поэтому его
+# собственные правки агент мержить не вправе (см. guard ниже) — их мержит человек.
+#
+# Fail-closed по построению: каждое условие должно быть доказано положительно. Любая
+# неизвестность (пустой rollup, `mergeable: UNKNOWN`, непрочитанная страница файлов)
+# — отказ, а не «вероятно можно».
+name: merge-broker
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Номер PR для мержа"
+        required: true
+        type: string
+
+# GITHUB_TOKEN не нужен вовсе: всё делает токен App. Репозиторий не выкачивается —
+# брокер не должен исполнять код PR, который он мержит.
+permissions: {}
+
+concurrency:
+  group: merge-broker-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Выпустить installation-токен
+        id: token
+        # Пин по SHA, не по тегу: тег подвижен, а это workflow с ключом мержа.
+        # v3.2.0 = bcd2ba49218906704ab6c1aa796996da409d3eb1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          # TODO: `app-id` в v3 помечен deprecated в пользу `client-id`; переход требует
+          # раскатать ещё одну переменную по флоту (см. TODO.md), до тех пор — app-id.
+          app-id: ${{ vars.MERGE_BROKER_APP_ID }}
+          private-key: ${{ secrets.MERGE_BROKER_APP_KEY }}
+          # Токен сужается ниже прав установки: брокеру нужен ровно мерж, не больше.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Проверить предусловия мержа
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ inputs.pr }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          case "$PR" in
+            ''|*[!0-9]*) echo "::error::PR must be a number, got: $PR"; exit 1 ;;
+          esac
+
+          owner=${REPO%%/*}
+          name=${REPO##*/}
+
+          # shellcheck disable=SC2016  # $owner/$name/$pr — переменные GraphQL, не shell
+          gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query='
+            query($owner:String!, $name:String!, $pr:Int!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$pr) {
+                  state isDraft mergeable headRefOid
+                  files(first:100) { nodes { path } pageInfo { hasNextPage } }
+                  reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
+                  reviews(first:100) { nodes { state author { login } } }
+                  commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
+                }
+              }
+            }' > pr.json
+
+          pr=$(jq -e '.data.repository.pullRequest' pr.json)
+
+          refuse() { echo "::error::ОТКАЗ: $1"; exit 1; }
+
+          [ "$(jq -r .state <<<"$pr")" = OPEN ] || refuse "PR не открыт"
+          [ "$(jq -r .isDraft <<<"$pr")" = false ] || refuse "PR — черновик"
+
+          # CONFLICTING — конфликт; UNKNOWN — GitHub ещё считает mergeability,
+          # это неизвестность, а не разрешение: перезапустить прогон позже.
+          mergeable=$(jq -r .mergeable <<<"$pr")
+          [ "$mergeable" = MERGEABLE ] || refuse "mergeable=$mergeable"
+
+          # Пустой rollup (`null`) — это «чеков нет», а не «чеки прошли». Репо без CI
+          # не получает мерж даром.
+          rollup=$(jq -r '.commits.nodes[0].commit.statusCheckRollup.state // "NONE"' <<<"$pr")
+          [ "$rollup" = SUCCESS ] || refuse "статус чеков: $rollup"
+
+          # Операционализация «ревью Copilot отработано» (008a): нет неразрешённых
+          # review threads. Подмена на «ревью запрошено» запрещена ADR явно.
+          jq -e '.reviewThreads.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
+            || refuse "больше 100 review threads — полноту проверки не доказать"
+          unresolved=$(jq '[.reviewThreads.nodes[] | select(.isResolved == false)] | length' <<<"$pr")
+          [ "$unresolved" = 0 ] || refuse "$unresolved неразрешённых review threads"
+
+          # I3: App не аппрувит то, что мержит. Сегодня он не ревьюит вовсе — проверка
+          # держит это свойство, если брокеру когда-нибудь добавят ревью.
+          self_approved=$(jq '[.reviews.nodes[]
+            | select(.state == "APPROVED" and .author.login == "merge-broker[bot]")] | length' <<<"$pr")
+          [ "$self_approved" = 0 ] || refuse "I3: merge-broker[bot] аппрувил этот PR"
+
+          # I2: агент не мержит то, что определяет его собственные полномочия.
+          # Список зеркалит DEFAULT_GLOBS из ci/governance/authority_root_guard.py
+          # зонтика плюс два пути, которых там нет: сам этот workflow и профиль,
+          # объявляющий личности и `agent_merge_allowed`.
+          jq -e '.files.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
+            || refuse "больше 100 файлов — authority-root не проверить целиком"
+          authority=$(jq -r '.files.nodes[].path' <<<"$pr" | grep -E \
+            -e '(^|/)governance\.yaml$' \
+            -e '(^|/)rulesets/' \
+            -e '(^|/)required-check-defs/' \
+            -e '^\.github/workflows/(governance-gate|merge-broker)\.yml$' \
+            -e '^ci/governance/' \
+            -e '(^|/)CODEOWNERS$' \
+            -e '^profiles/(approval-policy|authority)\.yaml$' || true)
+          [ -z "$authority" ] || refuse "PR трогает authority-root — мержит человек: $(tr '\n' ' ' <<<"$authority")"
+
+          echo "head=$(jq -r .headRefOid <<<"$pr")" >> "$GITHUB_OUTPUT"
+
+      - name: Смержить
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ inputs.pr }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.check.outputs.head }}
+        run: |
+          set -euo pipefail
+          # --match-head-commit: если PR обновился между проверкой и мержем, мерж
+          # отменяется. Иначе проверялось бы одно содержимое, а мержилось другое.
+          gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$HEAD_SHA"
