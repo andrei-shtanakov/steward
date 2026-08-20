@@ -1,16 +1,24 @@
-# merge-broker — агентский мерж (ADR-ECO-008 D1 + ADR-ECO-008a).
+# Merge-broker caller (ADR-ECO-008a). Тонкий каллер: пиненая ссылка на канонический
+# исполнитель ai-orchestrators-workspace/.github/workflows/merge-broker.yml@97c84db38a38e4911699c88a2ff6e9f0cc5d6f6f.
+# Код сюда НЕ копируется — предусловия мержа живут в одном месте на весь флот.
 #
-# Ключ App лежит в secrets ЭТОГО репо; оркестратор ключа не видит и инициирует мерж
-# только через `workflow_dispatch`. Мерж выполняется installation-токеном, поэтому в
-# `PullRequest.mergedBy` встаёт `merge-broker[bot]` — это и есть выполнение I4
-# (различимость агентского мержа от человеческого).
+# Файл authority-root по I2 (он объявляет, что репозиторий делегирует право мержа) —
+# сторож GOV-009 помечает его правки, и мержит их человек. Реализация лежит в зонтике
+# за неподвижным тегом, поэтому предусловия мержа агент изменить не может.
 #
-# Файл — authority-root по I2: он определяет, ЧТО агенту позволено мержить, поэтому его
-# собственные правки агент мержить не вправе (см. guard ниже) — их мержит человек.
+# ВАЖНО, чего это НЕ даёт: `workflow_dispatch` исполняет версию файла с указанного
+# `ref`, а секреты репозитория доступны прогону на любой ветке. Значит ветка с
+# подменённым `uses:` уводит ключ App в чужой workflow — без мержа, то есть в обход
+# и authority-root, и сторожа. Диспатчить брокер можно ТОЛЬКО по дефолтной ветке
+# (`gh workflow run` без `--ref` так и делает), и это соглашение, а не гарантия.
+# Гарантию даёт лишь центральный брокер без ключа в целевом репо —
+# `todo://steward/broker-key-exposure-per-repo`.
 #
-# Fail-closed по построению: каждое условие должно быть доказано положительно. Любая
-# неизвестность (пустой rollup, `mergeable: UNKNOWN`, непрочитанная страница файлов)
-# — отказ, а не «вероятно можно».
+# Предпосылки в репозитории (все три — действия владельца, не кода):
+#   1. merge-App установлен на репозиторий;
+#   2. secret `MERGE_BROKER_APP_KEY` и variable `MERGE_BROKER_APP_ID` заведены;
+#   3. App внесён в bypass ruleset'а ветки — иначе требование аппрува не пускает
+#      мерж, и брокер честно упрётся в политику.
 name: merge-broker
 
 on:
@@ -21,156 +29,13 @@ on:
         required: true
         type: string
 
-# GITHUB_TOKEN не нужен вовсе: всё делает токен App. Репозиторий не выкачивается —
-# брокер не должен исполнять код PR, который он мержит.
-permissions: {}
-
-concurrency:
-  group: merge-broker-${{ github.repository }}
-  cancel-in-progress: false
-
 jobs:
   merge:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Выпустить installation-токен
-        id: token
-        # Пин по SHA, не по тегу: тег подвижен, а это workflow с ключом мержа.
-        # v3.2.0 = bcd2ba49218906704ab6c1aa796996da409d3eb1
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          # TODO: `app-id` в v3 помечен deprecated в пользу `client-id`; переход требует
-          # раскатать ещё одну переменную по флоту (см. TODO.md), до тех пор — app-id.
-          app-id: ${{ vars.MERGE_BROKER_APP_ID }}
-          private-key: ${{ secrets.MERGE_BROKER_APP_KEY }}
-          # Токен сужается ниже прав установки: брокеру нужен ровно мерж, не больше.
-          permission-contents: write
-          permission-pull-requests: write
-
-      - name: Проверить предусловия мержа
-        id: check
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          PR: ${{ inputs.pr }}
-          REPO: ${{ github.repository }}
-          POLL_ATTEMPTS: "5"
-          POLL_DELAY: "6"
-        run: |
-          set -euo pipefail
-
-          case "$PR" in
-            ''|*[!0-9]*) echo "::error::PR must be a number, got: $PR"; exit 1 ;;
-          esac
-
-          # Параметры опроса — тоже вход, хоть и заданный в этом же файле: нечисло
-          # уронило бы скрипт изнутри `seq`/`sleep` невнятной ошибкой вместо отказа,
-          # а `$PR` двумя строками выше проверяется ровно из этих соображений.
-          case "$POLL_ATTEMPTS" in
-            ''|*[!0-9]*|0) echo "::error::POLL_ATTEMPTS must be a positive integer, got: $POLL_ATTEMPTS"; exit 1 ;;
-          esac
-          case "$POLL_DELAY" in
-            ''|*[!0-9]*) echo "::error::POLL_DELAY must be a non-negative integer, got: $POLL_DELAY"; exit 1 ;;
-          esac
-
-          owner=${REPO%%/*}
-          name=${REPO##*/}
-
-          refuse() { echo "::error::ОТКАЗ: $1"; exit 1; }
-
-          fetch() {
-            # shellcheck disable=SC2016  # $owner/$name/$pr — переменные GraphQL, не shell
-            gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query='
-              query($owner:String!, $name:String!, $pr:Int!) {
-                repository(owner:$owner, name:$name) {
-                  pullRequest(number:$pr) {
-                    state isDraft mergeable headRefOid
-                    files(first:100) { nodes { path } pageInfo { hasNextPage } }
-                    reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
-                    reviews(first:100) { nodes { state author { login } } pageInfo { hasNextPage } }
-                    commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
-                  }
-                }
-              }' > pr.json
-          }
-
-          # `mergeable: UNKNOWN` — GitHub ещё не досчитал mergeability; после мержа
-          # соседнего PR в base это состояние возникает штатно и держится секунды.
-          # Правило «неизвестность не есть разрешение» не смягчается: неизвестность
-          # доводится до определённости ДО применения правила. Сам запрос и есть
-          # триггер пересчёта на стороне GitHub.
-          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
-            fetch
-            pr=$(jq -e '.data.repository.pullRequest' pr.json)
-            mergeable=$(jq -r .mergeable <<<"$pr")
-            [ "$mergeable" != UNKNOWN ] && break
-            if [ "$attempt" -lt "$POLL_ATTEMPTS" ]; then
-              echo "mergeable=UNKNOWN — попытка $attempt/$POLL_ATTEMPTS, ждём ${POLL_DELAY}s"
-              sleep "$POLL_DELAY"
-            fi
-          done
-
-          [ "$(jq -r .state <<<"$pr")" = OPEN ] || refuse "PR не открыт"
-          [ "$(jq -r .isDraft <<<"$pr")" = false ] || refuse "PR — черновик"
-
-          # CONFLICTING — конфликт; UNKNOWN здесь означает, что GitHub не досчитал за
-          # весь опрос выше: это по-прежнему отказ, а не разрешение.
-          [ "$mergeable" = MERGEABLE ] || refuse "mergeable=$mergeable"
-
-          # Пустой rollup (`null`) — это «чеков нет», а не «чеки прошли». Репо без CI
-          # не получает мерж даром.
-          rollup=$(jq -r '.commits.nodes[0].commit.statusCheckRollup.state // "NONE"' <<<"$pr")
-          [ "$rollup" = SUCCESS ] || refuse "статус чеков: $rollup"
-
-          # Операционализация «ревью Copilot отработано» (008a): нет неразрешённых
-          # review threads. Подмена на «ревью запрошено» запрещена ADR явно.
-          jq -e '.reviewThreads.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
-            || refuse "больше 100 review threads — полноту проверки не доказать"
-          unresolved=$(jq '[.reviewThreads.nodes[] | select(.isResolved == false)] | length' <<<"$pr")
-          [ "$unresolved" = 0 ] || refuse "$unresolved неразрешённых review threads"
-
-          # I3: App не аппрувит то, что мержит. Сегодня он не ревьюит вовсе — проверка
-          # держит это свойство, если брокеру когда-нибудь добавят ревью.
-          jq -e '.reviews.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
-            || refuse "больше 100 reviews — отсутствие self-approval не доказать"
-          self_approved=$(jq '[.reviews.nodes[]
-            | select(.state == "APPROVED" and .author.login == "merge-broker[bot]")] | length' <<<"$pr")
-          [ "$self_approved" = 0 ] || refuse "I3: merge-broker[bot] аппрувил этот PR"
-
-          # I2: агент не мержит то, что определяет его собственные полномочия.
-          # Список зеркалит DEFAULT_GLOBS из ci/governance/authority_root_guard.py
-          # зонтика плюс пути, которых там нет: сам этот workflow; профиль,
-          # объявляющий личности и `agent_merge_allowed`; и codex-review вместе с
-          # его промптом и схемой — он определяет гейт, через который агент обязан
-          # пройти, и держит ключ, а при событии `pull_request` запускается версия
-          # ИЗ PR. Значит правку этого гейта агент мержить не вправе.
-          jq -e '.files.pageInfo.hasNextPage == false' <<<"$pr" >/dev/null \
-            || refuse "больше 100 файлов — authority-root не проверить целиком"
-          authority=$(jq -r '.files.nodes[].path' <<<"$pr" | grep -E \
-            -e '(^|/)governance\.yaml$' \
-            -e '(^|/)rulesets/' \
-            -e '(^|/)required-check-defs/' \
-            -e '^\.github/workflows/(governance-gate|merge-broker|codex-review)\.yml$' \
-            -e '^\.github/codex/' \
-            -e '^ci/governance/' \
-            -e '(^|/)CODEOWNERS$' \
-            -e '^profiles/(approval-policy|authority)\.yaml$' || true)
-          [ -z "$authority" ] || refuse "PR трогает authority-root — мержит человек: $(tr '\n' ' ' <<<"$authority")"
-
-          echo "head=$(jq -r .headRefOid <<<"$pr")" >> "$GITHUB_OUTPUT"
-
-      - name: Смержить
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          PR: ${{ inputs.pr }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ steps.check.outputs.head }}
-        run: |
-          set -euo pipefail
-          # Прямой вызов merge-эндпоинта, а НЕ `gh pr merge`: gh сам, на своей стороне,
-          # проверяет `mergeStateStatus` и при `BLOCKED` отказывает, не обращаясь к API.
-          # Для брокера это ложный отказ — PR блокирован требованием аппрува, которое
-          # App обходит по ruleset-bypass, но до проверки bypass дело не доходит.
-          # `sha` здесь — точный аналог `--match-head-commit`: GitHub откажет, если голова
-          # PR уже не та, что проверялась выше.
-          gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
-            -f merge_method=squash -f sha="$HEAD_SHA" --jq '.sha'
+    uses: andrei-shtanakov/ai-orchestrators-workspace/.github/workflows/merge-broker.yml@97c84db38a38e4911699c88a2ff6e9f0cc5d6f6f
+    with:
+      pr: ${{ inputs.pr }}
+      # `vars` каллера разрешается однозначно — в отличие от чтения переменных
+      # внутри вызванного workflow, поэтому App ID передаётся отсюда явно.
+      app-id: ${{ vars.MERGE_BROKER_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.MERGE_BROKER_APP_KEY }}
