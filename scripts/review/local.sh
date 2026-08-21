@@ -29,10 +29,18 @@ base=""
 head_ref="HEAD"
 do_fetch=0
 format="text"
+# "origin" — умолчание, не жёсткая привязка: `git clone -o github` или
+# переименованный remote раньше молча ломали угадывание ветки по умолчанию
+# (жёстко зашитое "origin"), а при наличии и origin, и upstream (пуш реально
+# идёт в upstream) диапазон считался бы от НЕ ТОГО remote'а — локальный
+# зелёный относился бы к другому remote, чем тот, куда ветка реально уходит.
+# Git передаёт имя remote хуку первым аргументом; --remote — явный канал для
+# той же информации при прогоне без хука.
+remote="origin"
 
 usage() {
-    echo "usage: local.sh [--base <ref>] [--head <ref>] [--fetch]" \
-        "[--format markdown|text]" >&2
+    echo "usage: local.sh [--base <ref>] [--head <ref>] [--remote <name>]" \
+        "[--fetch] [--format markdown|text]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -43,6 +51,7 @@ while [ $# -gt 0 ]; do
         # shell мимо usage() — платформозависимое поведение опаснее прямого exit 2.
         --base)   [ $# -ge 2 ] || { usage; exit 2; }; base="$2"; shift 2 ;;
         --head)   [ $# -ge 2 ] || { usage; exit 2; }; head_ref="$2"; shift 2 ;;
+        --remote) [ $# -ge 2 ] || { usage; exit 2; }; remote="$2"; shift 2 ;;
         --format) [ $# -ge 2 ] || { usage; exit 2; }; format="$2"; shift 2 ;;
         --fetch)  do_fetch=1; shift ;;
         *) usage; exit 2 ;;
@@ -55,13 +64,13 @@ done
 # двум активным.
 default_branch=""
 if [ -z "$base" ]; then
-    if ! ref=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null); then
-        echo "не задан refs/remotes/origin/HEAD — ветку по умолчанию не угадываем." >&2
-        echo "выполните: git remote set-head origin -a   (или укажите --base)" >&2
+    if ! ref=$(git symbolic-ref "refs/remotes/$remote/HEAD" 2>/dev/null); then
+        echo "не задан refs/remotes/$remote/HEAD — ветку по умолчанию не угадываем." >&2
+        echo "выполните: git remote set-head $remote -a   (или укажите --base)" >&2
         exit 2
     fi
-    default_branch="${ref#refs/remotes/origin/}"
-    base="refs/remotes/origin/$default_branch"
+    default_branch="${ref#refs/remotes/$remote/}"
+    base="refs/remotes/$remote/$default_branch"
 fi
 
 if [ "$do_fetch" -eq 1 ] && [ -z "$default_branch" ]; then
@@ -79,33 +88,33 @@ fi
 # Три разных исхода `ls-remote`, и они не взаимозаменимы: "не смогли
 # проверить" (сети нет, `ls-remote` сам упал ненулевым кодом) и
 # "определённо нет" (`ls-remote` отработал успешно кодом 0, но вернул
-# пусто — ветки с этим именем на origin больше нет, например
-# `refs/remotes/origin/HEAD` не обновился после переименования ветки по
+# пусто — ветки с этим именем на remote больше нет, например
+# `refs/remotes/$remote/HEAD` не обновился после переименования ветки по
 # умолчанию: сам он локальная ссылка и не обновляется собой) — РАЗНЫЕ
 # состояния с разной причиной, и сваливать их в одно сообщение нельзя:
 # второе — сигнал сильнее первого.
 #
 # ls-remote проверяется ЗДЕСЬ, ДО попытки --fetch, а не наоборот: иначе
-# `git fetch` ветки, которой на origin уже нет, сам падает сырым кодом
+# `git fetch` ветки, которой на remote уже нет, сам падает сырым кодом
 # git, guard превращает это в "не удалось обновить" — и до диагностики,
 # которая назвала бы настоящую причину (ветки нет, `set-head`), управление
 # не доходит. Порядок — часть контракта: при переименованной ветке причина
 # обязана быть настоящей что с `--fetch`, что без него.
 if [ -n "$default_branch" ]; then
     ls_remote_ok=1
-    if ! remote_line=$(git ls-remote --heads origin "$default_branch" 2>/dev/null); then
+    if ! remote_line=$(git ls-remote --heads "$remote" "$default_branch" 2>/dev/null); then
         ls_remote_ok=0
     fi
 
     if [ "$ls_remote_ok" -eq 1 ] && [ -z "$remote_line" ]; then
-        # Ветки на origin больше нет — тянуть нечего, и молчать об
+        # Ветки на remote больше нет — тянуть нечего, и молчать об
         # истинной причине нельзя. --fetch здесь не помог бы, поэтому
         # попытка фетча ниже намеренно пропущена.
-        echo "ВНИМАНИЕ: ветки '$default_branch' нет на origin —" \
-            "refs/remotes/origin/HEAD устарел (например, после" \
+        echo "ВНИМАНИЕ: ветки '$default_branch' нет на $remote —" \
+            "refs/remotes/$remote/HEAD устарел (например, после" \
             "переименования ветки по умолчанию)." >&2
-        echo "  диапазон посчитан против несуществующей на origin ветки." >&2
-        echo "  выполните: git remote set-head origin -a" >&2
+        echo "  диапазон посчитан против несуществующей на $remote ветки." >&2
+        echo "  выполните: git remote set-head $remote -a" >&2
     elif [ "$do_fetch" -eq 1 ]; then
         # Отсутствие сети, протухшие credential'ы — `git fetch` сам падает
         # сырым кодом git (обычно 128) на команде, которую README же и
@@ -113,8 +122,8 @@ if [ -n "$default_branch" ]; then
         # объявленного §7 набора 0/1/2/3 — тот же класс, что уже правили
         # (repo-root, построение диапазона, схема/промпт). Сбой fetch —
         # ошибка конфигурации/окружения, код 2.
-        if ! fetch_err=$(git fetch -q origin "$default_branch" 2>&1); then
-            echo "не удалось обновить $default_branch с origin:" >&2
+        if ! fetch_err=$(git fetch -q "$remote" "$default_branch" 2>&1); then
+            echo "не удалось обновить $default_branch с $remote:" >&2
             echo "$fetch_err" >&2
             exit 2
         fi
@@ -130,11 +139,11 @@ if [ -n "$default_branch" ]; then
             behind=$(git rev-list --count "$base..$remote_sha" 2>/dev/null || echo "?")
             echo "ВНИМАНИЕ: локальная база устарела." >&2
             echo "  локально:  $local_sha" >&2
-            echo "  на origin: $remote_sha  (отстаём на $behind коммит(ов))" >&2
+            echo "  на $remote: $remote_sha  (отстаём на $behind коммит(ов))" >&2
             echo "  диапазон посчитан по устаревшей базе; --fetch обновит." >&2
         fi
     elif [ "$ls_remote_ok" -eq 0 ]; then
-        echo "ВНИМАНИЕ: свежесть базы не проверена (нет связи с origin)." >&2
+        echo "ВНИМАНИЕ: свежесть базы не проверена (нет связи с $remote)." >&2
     fi
 fi
 

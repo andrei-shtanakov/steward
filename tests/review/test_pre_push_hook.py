@@ -63,11 +63,14 @@ def test_ref_whose_sha_is_not_head_is_unsupported(tmp_path: Path) -> None:
     line = f"refs/heads/other {'b' * 40} refs/heads/other {ZERO}\n"
     result = run_hook(line, "a" * 40, tmp_path)
     assert result.returncode != 0
-    # Не порознь "--head" и sha где-то в выводе — а ОДНА исполнимая строка:
-    # копипастнуть можно сразу, не подставляя ничего руками.
-    assert f"--head {'b' * 40} [--base <ref>]" in result.stderr, (
+    # Не порознь "--head" и sha где-то в выводе — а ОДНА исполнимая строка
+    # (без скобочной нотации: "[--base <ref>]" для `sh` — редирект, не
+    # опциональный аргумент): копипастнуть можно сразу, не подставляя ничего
+    # руками и не редактируя вывод.
+    assert f"--head {'b' * 40} --remote origin" in result.stderr, (
         "подсказка обязана быть одной исполнимой строкой с настоящим sha"
     )
+    assert "[--base" not in result.stderr, "скобочная нотация ломает исполнимость"
     assert "unbound variable" not in result.stderr, "не должна падать по чужой причине"
 
 
@@ -78,7 +81,7 @@ def test_tag_is_unsupported(tmp_path: Path) -> None:
     line = f"refs/tags/v1 {sha} refs/tags/v1 {ZERO}\n"
     result = run_hook(line, sha, tmp_path)
     assert result.returncode != 0
-    assert f"--head {sha} [--base <ref>]" in result.stderr
+    assert f"--head {sha} --remote origin" in result.stderr
 
 
 def test_branch_deletion_is_unsupported(tmp_path: Path) -> None:
@@ -485,16 +488,19 @@ def test_real_push_reviews_the_sha_that_was_actually_pushed_despite_a_head_race(
 def test_unsupported_hint_is_executable_as_is_when_kit_path_has_a_space(
     tmp_path: Path,
 ) -> None:
-    """Третий раз чиним одно и то же свойство подсказки `unsupported()`
-    (плейсхолдер вместо sha, база вместо головы — теперь пробел в пути):
-    напечатанная команда обязана запускаться КАК ЕСТЬ. Без кавычек вокруг
-    `$kit_dir/local.sh` shell режет путь по пробелу, и `sh` получает
-    несуществующий обрезанный путь первым аргументом.
+    """Четвёртый заход на одно и то же свойство подсказки `unsupported()`
+    (плейсхолдер вместо sha, база вместо головы, путь без кавычек — теперь
+    скобочная "[--base <ref>]" нотация): напечатанная команда обязана
+    запускаться КАК ЕСТЬ, целиком, без отрезания хвоста. `<ref>` для `sh` —
+    оператор редиректа stdin, а не документационный плейсхолдер, и команда с
+    ним падала бы до запуска кита. `--base` теперь отдельной строкой прозой,
+    вне исполняемой команды; сама команда несёт --remote явно (git передаёт
+    его хуку) и без всякой скобочной нотации.
 
     Живой прогон: `REVIEW_KIT_DIR` указывает на каталог с пробелом в имени,
     хук блокирует пуш тега (unsupported-путь), подсказка реально извлекается
-    из stderr и ИСПОЛНЯЕТСЯ отдельным `sh -c` — не просто проверяется на
-    наличие кавычек в тексте."""
+    из stderr и ИСПОЛНЯЕТСЯ ЦЕЛИКОМ отдельным `sh -c` — не просто
+    проверяется на наличие кавычек в тексте и не с отрезанным хвостом."""
     _, local = make_bare_remote_and_clone(tmp_path)
     install_hook_via_installer(local)
 
@@ -534,31 +540,28 @@ def test_unsupported_hint_is_executable_as_is_when_kit_path_has_a_space(
     assert len(hint_lines) == 1, f"ожидалась ровно одна строка-подсказка, вышло: {hint_lines}"
     hint = hint_lines[0]
     assert str(kit_with_space) in hint, "подсказка обязана называть реальный (с пробелом) путь"
-
-    # "[--base <ref>]" в хвосте — документационная нотация для человека
-    # (квадратные скобки = опционально), не буквальный shell-синтаксис: `<ref>`
-    # для самого `sh` — оператор редиректа. Это отдельное, всегда так и было,
-    # не то свойство, что чиним здесь. Исполняем ИСПОЛНИМУЮ часть — до неё —
-    # ровно то, что человек реально запустит (bracket-нотацию он подставит
-    # своим значением или уберёт, а не скопирует буквально).
-    executable_prefix = hint.split(" [--base")[0]
+    assert "[--base" not in hint, "скобочная нотация не должна быть частью команды"
+    assert "--remote origin" in hint, "команда обязана называть remote явно"
 
     assert not marker.exists(), "маркер не должен появиться раньше своего срабатывания"
-    exec_result = subprocess.run(["sh", "-c", executable_prefix], capture_output=True, text=True)
+    # Исполняем ВСЮ строку, без отрезания хвоста — это и есть заявленное
+    # свойство, не его приближение.
+    exec_result = subprocess.run(["sh", "-c", hint], capture_output=True, text=True)
     assert "No such file or directory" not in exec_result.stderr, (
         f"подсказка не исполнилась как есть: {exec_result.stderr!r}"
     )
     assert marker.exists(), "local.sh из подсказки обязан был реально запуститься"
 
 
-def test_unsupported_placeholder_hint_is_executable_as_is_when_kit_path_has_a_space(
-    tmp_path: Path,
-) -> None:
-    """Тот же класс, что тест выше, но для ВТОРОЙ, отдельной строки echo в
-    unsupported() — той, что печатается при пустом hint_sha (плейсхолдер
-    `<sha нужной ссылки>`, путь удаления ветки). Две разные строки исходника
-    с одинаковым намерением легко расходятся в правке — этот тест закрывает
-    именно эту, вторую."""
+def test_unsupported_without_a_sha_prints_no_fake_command(tmp_path: Path) -> None:
+    """Вторая, отдельная ветка `unsupported()` — та, что срабатывает при
+    пустом hint_sha (удаление ветки: local_sha сплошные нули, подставлять в
+    --head нечего). Раньше здесь печаталась заведомо неисполнимая строка с
+    плейсхолдером `<sha нужной ссылки>`. Теперь — честная проза "нечего
+    проверить вручную", и НИКАКОЙ строки, начинающейся с `sh `, вообще не
+    печатается: заявленное свойство "исполнима как есть" не может быть
+    выполнено для формы пуша, у которой нет дерева для ревью — значит не
+    заявляется вовсе, а не заявляется и нарушается."""
     _, local = make_bare_remote_and_clone(tmp_path)
     install_hook_via_installer(local)
     green_kit = make_stub_kit(tmp_path, "kit-green", STUB_GREEN)
@@ -578,16 +581,11 @@ def test_unsupported_placeholder_hint_is_executable_as_is_when_kit_path_has_a_sp
     )
     assert landed.returncode == 0, landed.stderr
 
-    kit_with_space = tmp_path / "kit with space"
-    kit_with_space.mkdir()
-    marker = tmp_path / "started-placeholder.marker"
-    stub_local = kit_with_space / "local.sh"
-    stub_local.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
-    stub_local.chmod(0o755)
-
-    env["REVIEW_KIT_DIR"] = str(kit_with_space)
-    # Удаление ветки: local_sha сплошные нули, sha_hint="" — вторая, "пустая"
-    # ветка unsupported().
+    # Кит подставлен STUB_WOULD_BLOCK: если бы хук всё же его вызвал (форма
+    # признана поддержанной), пуш точно упал бы с другим сообщением, и мы
+    # отличили бы "не вызывался" от "вызвался и провалился".
+    would_block_kit = make_stub_kit(tmp_path, "kit-would-block", STUB_WOULD_BLOCK)
+    env["REVIEW_KIT_DIR"] = str(would_block_kit)
     result = subprocess.run(
         ["git", "-C", str(local), "push", "origin", "--delete", "feature"],
         capture_output=True,
@@ -595,17 +593,207 @@ def test_unsupported_placeholder_hint_is_executable_as_is_when_kit_path_has_a_sp
         env=env,
     )
     assert result.returncode != 0
+    assert "не должен был вызываться" not in result.stderr
 
-    hint_lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip().startswith("sh ")]
-    assert len(hint_lines) == 1, f"ожидалась ровно одна строка-подсказка, вышло: {hint_lines}"
-    hint = hint_lines[0]
-    assert str(kit_with_space) in hint
-    assert "<sha нужной ссылки>" in hint, "это обязана быть ИМЕННО плейсхолдер-ветка"
+    hint_lines = [ln for ln in result.stderr.splitlines() if ln.strip().startswith("sh ")]
+    assert hint_lines == [], f"неисполнимая команда не должна печататься вовсе: {hint_lines}"
+    assert "нечего проверить вручную" in result.stderr.lower()
+    assert "--no-verify" in result.stderr
 
-    executable_prefix = hint.split(" --head")[0]
-    assert not marker.exists()
-    exec_result = subprocess.run(["sh", "-c", executable_prefix], capture_output=True, text=True)
-    assert "No such file or directory" not in exec_result.stderr, (
-        f"подсказка не исполнилась как есть: {exec_result.stderr!r}"
+
+# --- находка 26: --remote — git передаёт имя remote хуку первым аргументом -
+
+REVIEW_CMD_STUB_OK = (
+    "#!/bin/sh\n"
+    'out=""\n'
+    "while [ $# -gt 0 ]; do\n"
+    '    case "$1" in\n'
+    '        -o|--output-last-message) out="$2"; shift 2 ;;\n'
+    "        *) shift ;;\n"
+    "    esac\n"
+    "done\n"
+    "cat > /dev/null\n"
+    'printf \'{"findings":[],"note":"stub"}\' > "$out"\n'
+)
+
+
+def make_real_kit_env(tmp_path: Path) -> dict[str, str]:
+    """REVIEW_KIT_DIR = настоящий кит, REVIEW_CMD = подставной ревьюер без
+    находок. Проверяет реальную логику local.sh (remote-осведомлённость), а
+    не просто факт вызова, как стабы STUB_GREEN/STUB_WOULD_BLOCK выше."""
+    review_cmd = tmp_path / "review-cmd-stub"
+    review_cmd.write_text(REVIEW_CMD_STUB_OK, encoding="utf-8")
+    review_cmd.chmod(0o755)
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
+    env["REVIEW_CMD"] = str(review_cmd)
+    env["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
+    env["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    return env
+
+
+def test_real_push_to_a_non_origin_remote_is_reviewed_correctly(tmp_path: Path) -> None:
+    """`git clone -o github` (или переименованный remote) — раньше local.sh
+    искал `refs/remotes/origin/HEAD`, которого нет, и валился с подсказкой
+    про `set-head origin -a`, хотя реальный remote называется иначе и
+    настроен штатно. Git передаёт имя remote хуку первым аргументом — ключ
+    к починке был уже доступен, просто не использовался.
+
+    Живой прогон настоящим local.sh (не стабом): клон с remote `github`,
+    push в него обязан пройти зелёным, используя `refs/remotes/github/HEAD`,
+    а не `origin`."""
+    remote_repo = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(remote_repo)], check=True)
+    subprocess.run(
+        ["git", "clone", "-q", "-o", "github", str(remote_repo), str(tmp_path / "seed")],
+        check=True,
+        capture_output=True,
     )
-    assert marker.exists(), "local.sh из подсказки обязан был реально запуститься"
+    seed = tmp_path / "seed"
+    git(seed, "config", "user.email", "t@t")
+    git(seed, "config", "user.name", "t")
+    (seed / "base.txt").write_text("base\n", encoding="utf-8")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-qm", "base")
+    git(seed, "push", "-q", "github", "master")
+
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", "-q", "-o", "github", str(remote_repo), str(local)],
+        check=True,
+        capture_output=True,
+    )
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    git(local, "remote", "set-head", "github", "-a")
+    install_hook_via_installer(local)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = make_real_kit_env(tmp_path)
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "github", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "не задан refs/remotes/origin/HEAD" not in (result.stdout + result.stderr)
+
+
+def test_real_push_to_upstream_reviews_against_upstream_not_origin(tmp_path: Path) -> None:
+    """Оба remote'а настроены (`origin` и `upstream`), пуш идёт в `upstream`
+    — диапазон обязан считаться от `upstream`, а не молча от `origin`, иначе
+    локальный зелёный относится к другому remote, чем тот, куда ветка
+    реально уходит. `origin` и `upstream` намеренно разведены (разное
+    содержимое default branch), чтобы несовпадение было доказуемым, а не
+    случайным совпадением."""
+    origin_repo = tmp_path / "origin.git"
+    upstream_repo = tmp_path / "upstream.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(origin_repo)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(upstream_repo)], check=True)
+
+    # origin получает один базовый коммит, upstream — другой (расходящаяся
+    # история): если хук по ошибке возьмёт origin/HEAD как базу, merge-base с
+    # upstream либо не найдётся, либо диапазон окажется не тем.
+    origin_seed = tmp_path / "origin-seed"
+    subprocess.run(
+        ["git", "clone", "-q", str(origin_repo), str(origin_seed)], check=True, capture_output=True
+    )
+    git(origin_seed, "config", "user.email", "t@t")
+    git(origin_seed, "config", "user.name", "t")
+    (origin_seed / "origin-only.txt").write_text("только на origin\n", encoding="utf-8")
+    git(origin_seed, "add", "-A")
+    git(origin_seed, "commit", "-qm", "origin base")
+    git(origin_seed, "push", "-q", "origin", "master")
+
+    upstream_seed = tmp_path / "upstream-seed"
+    subprocess.run(
+        ["git", "clone", "-q", str(upstream_repo), str(upstream_seed)],
+        check=True,
+        capture_output=True,
+    )
+    git(upstream_seed, "config", "user.email", "t@t")
+    git(upstream_seed, "config", "user.name", "t")
+    (upstream_seed / "upstream-only.txt").write_text("только на upstream\n", encoding="utf-8")
+    git(upstream_seed, "add", "-A")
+    git(upstream_seed, "commit", "-qm", "upstream base")
+    git(upstream_seed, "push", "-q", "origin", "master")
+    upstream_tip = git(upstream_seed, "rev-parse", "--short", "master")
+
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", "-q", str(origin_repo), str(local)], check=True, capture_output=True
+    )
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    git(local, "remote", "set-head", "origin", "-a")
+    git(local, "remote", "add", "upstream", str(upstream_repo))
+    git(local, "fetch", "-q", "upstream")
+    git(local, "remote", "set-head", "upstream", "-a")
+    install_hook_via_installer(local)
+
+    # Ветвимся от upstream/master, не от origin/master — реалистичная схема
+    # "форк отслеживает upstream": если хук возьмёт origin как базу, общего
+    # предка с этой веткой может не быть вовсе.
+    git(local, "switch", "-qc", "feature", "upstream/master")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = make_real_kit_env(tmp_path)
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "upstream", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert f"база:     {upstream_tip}" in combined, (
+        f"диапазон обязан считаться от upstream ({upstream_tip}), вывод: {combined!r}"
+    )
+
+
+# --- находка 27 гейта: install-hook.sh и ещё не созданный core.hooksPath ---
+#
+# Гейт заявил, что установщик рапортует успех, поставив хук туда, откуда git
+# его не читает (core.hooksPath игнорируется, хук всегда уходит в
+# .git/hooks). Прогон опроверг это буквально: `git rev-parse --git-path
+# hooks` уже уважает core.hooksPath (проверено на относительном пути,
+# абсолютном пути, из подкаталога, при локальном И при глобальном конфиге —
+# установщик кладёт хук именно туда, и хук реально срабатывает оттуда на
+# push). Настоящий, отдельный дефект: если каталог из core.hooksPath ЕЩЁ НЕ
+# СОЗДАН (в отличие от .git/hooks, git init его не создаёт), `cp` падала
+# сырой системной ошибкой под set -eu вместо понятного отказа. Это чинится
+# ниже.
+
+
+def test_installer_creates_missing_hookspath_directory(tmp_path: Path) -> None:
+    """`core.hooksPath` указывает на каталог, которого ещё нет на диске —
+    штатная ситуация (git его не создаёт сам, в отличие от `.git/hooks`).
+    Установщик обязан создать каталог и поставить хук, а не упасть сырой
+    ошибкой `cp`."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(remote)], check=True)
+    local = tmp_path / "local"
+    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True, capture_output=True)
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+
+    hooks_src_dir = local / ".github" / "hooks"
+    hooks_src_dir.mkdir(parents=True)
+    dest = hooks_src_dir / "pre-push"
+    dest.write_text(HOOK.read_text(encoding="utf-8"), encoding="utf-8")
+    dest.chmod(0o755)
+
+    git(local, "config", "core.hooksPath", "myhooks")
+    myhooks = local / "myhooks"
+    assert not myhooks.exists(), "проверяем сценарий именно ЕЩЁ НЕ созданного каталога"
+
+    result = subprocess.run(["sh", str(INSTALLER)], cwd=str(local), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (myhooks / "pre-push").is_file()
