@@ -45,11 +45,20 @@ esac
 # `.severity` и не падать рантайм-ошибкой jq — сбой всё равно был бы поймён
 # ниже через `||` и превращён в код 2, но чистое `false` предпочтительнее
 # случайного кода выхода jq, просочившегося сквозь редирект.
+#
+# `file`/`summary`/`failure` обязаны быть строкой либо отсутствовать (null —
+# `cell` ниже подставляет вместо него пустую строку): нестроковое значение
+# (число, объект, массив) проходило бы этот guard и падало бы ПОЗЖЕ, внутри
+# `gsub` в `cell`, уже после того как заголовок и `note` напечатаны — вызывающий
+# получил бы частично заполненный `body.md` и код 5, вне объявленного §7
+# набора. `severity` в этот список не входит: его форма уже держится
+# отдельной строкой выше через `IN(...)`.
 jq -e '(.findings | type == "array")
        and all(.findings[]; type == "object"
-               and (.severity | IN("blocker", "major", "minor", "nit")))' \
+               and (.severity | IN("blocker", "major", "minor", "nit"))
+               and ([.file, .summary, .failure] | all(. == null or type == "string")))' \
     "$verdict" >/dev/null 2>&1 \
-    || { echo "вердикт нечитаем: находка без пригодного severity" >&2; exit 2; }
+    || { echo "вердикт нечитаем: находка без пригодного severity/file/summary/failure" >&2; exit 2; }
 
 total=$(jq '.findings | length' "$verdict")
 blocking=$(jq '[.findings[]

@@ -88,6 +88,51 @@ def test_finding_that_is_not_an_object_is_config_error(tmp_path: Path) -> None:
     assert result.returncode == 2
 
 
+def test_non_string_file_is_config_error(tmp_path: Path) -> None:
+    """Числовой `file` проходит проверку `severity`, но падает ПОЗЖЕ внутри
+    `gsub` в `cell` — вызывающий получил бы частично напечатанный body.md
+    (заголовок + note + начало таблицы) и код 5, вне набора §7."""
+    payload = {
+        "findings": [{"severity": "major", "file": 123, "summary": "s", "failure": "f"}],
+        "note": "n",
+    }
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+def test_non_string_summary_is_config_error(tmp_path: Path) -> None:
+    payload = {
+        "findings": [{"severity": "major", "file": "a.py", "summary": {"x": 1}, "failure": "f"}],
+        "note": "n",
+    }
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+def test_non_string_failure_is_config_error(tmp_path: Path) -> None:
+    payload = {
+        "findings": [{"severity": "major", "file": "a.py", "summary": "s", "failure": [1, 2]}],
+        "note": "n",
+    }
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+def test_null_file_summary_failure_still_render(tmp_path: Path) -> None:
+    """`null` — легитимное отсутствие поля: `cell` подставляет пустую строку,
+    а не крашится. Guard обязан пропускать null наравне со строкой."""
+    payload = {
+        "findings": [{"severity": "minor", "file": None, "summary": None, "failure": None}],
+        "note": "n",
+    }
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 0
+    assert "| minor | `` |  |  |" in result.stdout
+
+
 def test_valid_verdict_rendering_is_unchanged(tmp_path: Path) -> None:
     """Контрольный: ужесточение проверки не должно тронуть рендер годного
     вердикта — сверка байт-в-байт с ожидаемым выводом."""
