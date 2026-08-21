@@ -66,7 +66,17 @@ fi
 
 if [ "$do_fetch" -eq 1 ]; then
     if [ -n "$default_branch" ]; then
-        git fetch -q origin "$default_branch"
+        # Отсутствие сети, протухшие credential'ы — `git fetch` сам падает
+        # сырым кодом git (обычно 128) на команде, которую README же и
+        # рекомендует. Под `set -e` это утекло бы наружу как есть, вне
+        # объявленного §7 набора 0/1/2/3 — тот же класс, что уже правили
+        # (repo-root, построение диапазона, схема/промпт). Сбой fetch —
+        # ошибка конфигурации/окружения, код 2.
+        if ! fetch_err=$(git fetch -q origin "$default_branch" 2>&1); then
+            echo "не удалось обновить $default_branch с origin:" >&2
+            echo "$fetch_err" >&2
+            exit 2
+        fi
     else
         # Явный --base — не наша ветка по умолчанию; молча не сработавший
         # флаг был бы той же несопоставимостью диапазонов, ради которой

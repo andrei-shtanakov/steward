@@ -287,6 +287,24 @@ def test_fetch_with_fresh_base_still_works(tmp_path: Path) -> None:
     assert "устарел" not in (result.stdout + result.stderr).lower()
 
 
+def test_fetch_against_unreachable_remote_is_config_error_not_raw_git_code(
+    tmp_path: Path,
+) -> None:
+    """`git fetch` сам падает сырым кодом git (обычно 128) на недоступном
+    remote — команда, которую README же и рекомендует. Guard обязан дать код
+    кита (2), а не дать 128 утечь наружу вне объявленного §7 набора."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    git(local, "remote", "set-url", "origin", str(tmp_path / "нет-такого-remote.git"))
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--fetch")
+    assert result.returncode == 2
+    assert "128" not in result.stderr
+    assert "не удалось обновить" in result.stderr
+
+
 def test_fetch_with_explicit_base_reports_being_ignored(tmp_path: Path) -> None:
     """При явном --base `--fetch` не резолвит default_branch и ничего не
     обновляет — молчание здесь было бы той же несопоставимостью диапазонов,
