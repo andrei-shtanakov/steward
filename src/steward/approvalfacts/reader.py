@@ -75,6 +75,7 @@ _RESULT_ALLOWED_KEYS = _RESULT_BASE_KEYS | _RESULT_OPTIONAL_KEYS
 
 _MERGE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _POLICY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REPOSITORY_RE = re.compile(r"^[^/]+/[^/]+$")
 
 #: Единая каноническая форма провода (контракт, инвариант 8): UTC, суффикс
 #: `Z`, секундная точность. Схема проверяет ту же форму через `pattern`; этот
@@ -262,13 +263,19 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
     if header_positions[0] != 0:
         raise UnreadableFacts(f"{path}: header обязан быть первой строкой файла")
     raw_header = records[0]
-    _validate_header_shape(raw_header, path)
 
-    if raw_header["schema_version"] != SCHEMA_VERSION:
+    # schema_version проверяется ДО закрытого набора ключей: будущий v3-header
+    # почти наверняка несёт другой набор полей, и без этого порядка он был бы
+    # диагностирован как «неверный набор полей», а не как «неверная версия» —
+    # README требует от потребителя явно классифицировать именно версию.
+    # `.get()`, а не `[...]`: набор ключей ещё не проверен закрытым, версии
+    # может не быть вовсе.
+    if raw_header.get("schema_version") != SCHEMA_VERSION:
         raise UnreadableFacts(
-            f"{path}: неверный schema_version {raw_header['schema_version']!r}, "
+            f"{path}: неверный schema_version {raw_header.get('schema_version')!r}, "
             f"ожидался {SCHEMA_VERSION!r}"
         )
+    _validate_header_shape(raw_header, path)
 
     # `complete` — заявление продюсера (§ README), а не доказательство: сама
     # заявка обязана быть `true`, иначе producer явно признаёт файл неполным.
@@ -276,10 +283,16 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
         raise UnreadableFacts(f"{path}: поле complete обязано быть true")
 
     # Инвариант 11 — совпадение с наблюдаемым репозиторием (внешнее ожидание).
+    # Форма (owner/repo) проверяется отдельно от совпадения: без этого
+    # `repository: "steward"` при `expected_repository="steward"` (оба без
+    # `/`) совпали бы друг с другом, хотя схема такую форму отвергает —
+    # реальный владелец/репо не мог бы называться так в принципе.
     repository = raw_header["repository"]
-    if not isinstance(repository, str) or _normalize_repo(repository) != _normalize_repo(
-        expected_repository
-    ):
+    if not isinstance(repository, str) or not _REPOSITORY_RE.fullmatch(repository):
+        raise UnreadableFacts(
+            f"{path}: репозиторий в заголовке {repository!r} не соответствует форме owner/repo"
+        )
+    if _normalize_repo(repository) != _normalize_repo(expected_repository):
         raise UnreadableFacts(
             f"{path}: репозиторий в заголовке {repository!r} не совпадает с ожидаемым "
             f"{expected_repository!r}"
@@ -329,7 +342,7 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
             raise UnreadableFacts(f"{path}:{number}: неизвестный kind {raw['kind']!r}")
         request = _request(raw["request"], f"{path}:{number}")
         state = raw["state"]
-        if state not in _STATE_FIELD_RULES:
+        if not isinstance(state, str) or state not in _STATE_FIELD_RULES:
             raise UnreadableFacts(f"{path}:{number}: неизвестное состояние {state!r}")
         only_for = STATE_ONLY_FOR.get(state)
         if only_for is not None and request.kind != only_for:

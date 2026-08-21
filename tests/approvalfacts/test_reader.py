@@ -140,6 +140,19 @@ def test_repository_comparison_ignores_case(tmp_path: Path) -> None:
     assert load_facts(path, expected_repository=REPO, now=NOW).results
 
 
+def test_repository_without_slash_is_unreadable_even_if_equal(tmp_path: Path) -> None:
+    """Out-of-scope-turned-in-scope parity gap: the schema pins
+    `repository` to `^[^/]+/[^/]+$`. Without shape validation,
+    `repository: "steward"` would pass whenever `expected_repository` is
+    also the bare string `"steward"` — the two sides matching each other is
+    not the same as either one being a valid `owner/repo` pair, and no real
+    GitHub repository can be named without an owner."""
+    scope = [RequestId("merge_sha", SHA)]
+    path = _write(tmp_path, [_header(scope, repository="steward"), _merged(scope[0])])
+    with pytest.raises(UnreadableFacts, match="не соответствует форме owner/repo"):
+        load_facts(path, expected_repository="steward", now=NOW)
+
+
 def test_future_generated_at_beyond_skew_is_unreadable(tmp_path: Path) -> None:
     scope = [RequestId("merge_sha", SHA)]
     future = (NOW + timedelta(seconds=301)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -246,6 +259,40 @@ def test_actor_unavailable_requires_merge_sha_but_forbids_actor_fields(tmp_path:
     }
     path = _write(tmp_path, [_header(scope), missing_sha])
     with pytest.raises(UnreadableFacts, match="требует явное поле merge_sha"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_negative_state_with_merge_sha_present_is_unreadable(tmp_path: Path) -> None:
+    """Инвариант 7: negative states require an EXPLICIT `merge_sha: null` —
+    a resolved 40-hex `merge_sha` on `not_found` must be rejected too, not
+    only an absent key (that half is covered by
+    `test_missing_merge_sha_key_fixture_shape_is_unreadable`). Without this
+    check a `not_found` record carrying a resolved SHA lands in
+    `by_merge_sha()` — the release gate's lookup index — under `state:
+    'not_found'`, which is exactly what the gate must never see."""
+    scope = [RequestId("pr", 42)]
+    bad = {
+        "kind": "result",
+        "request": scope[0].as_dict(),
+        "state": "not_found",
+        "merge_sha": SHA,
+    }
+    path = _write(tmp_path, [_header(scope), bad])
+    with pytest.raises(UnreadableFacts, match="требует merge_sha: null"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_merged_identity_and_type_hint_wrong_type_is_unreadable(tmp_path: Path) -> None:
+    """Инвариант 7: `identity`/`type_hint` are schema-typed as strings — the
+    round-0 parity table's "merged: identity/type_hint wrong type (int)"
+    row, re-tested here as a dedicated pin rather than relying on the parity
+    probe alone."""
+    scope = [RequestId("merge_sha", SHA)]
+    bad = _merged(scope[0])
+    bad["identity"] = 7
+    bad["type_hint"] = 9
+    path = _write(tmp_path, [_header(scope), bad])
+    with pytest.raises(UnreadableFacts, match="обязаны быть строками"):
         load_facts(path, expected_repository=REPO, now=NOW)
 
 
@@ -376,6 +423,33 @@ def test_result_with_unknown_field_is_unreadable(tmp_path: Path) -> None:
         load_facts(path, expected_repository=REPO, now=NOW)
 
 
+def test_result_missing_state_key_is_unreadable(tmp_path: Path) -> None:
+    """`_RESULT_BASE_KEYS` guard: a result record missing `state` entirely
+    (but otherwise well-formed) must be rejected by the base-keys check
+    before `raw["state"]` is ever indexed — the fail-closed contract fix
+    from round 1 (finding 2) depends on this guard staying in place."""
+    scope = [RequestId("merge_sha", SHA)]
+    bad = _merged(scope[0])
+    del bad["state"]
+    path = _write(tmp_path, [_header(scope), bad])
+    with pytest.raises(UnreadableFacts, match="не хватает обязательных полей"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_result_kind_must_be_result_is_unreadable(tmp_path: Path) -> None:
+    """`raw["kind"] != "result"` must reject a record whose `kind` is
+    present (so the base/allowed-key checks pass) but wrong — this used to
+    be covered incidentally via a header appearing mid-file; the header
+    first/only split (round 1) removed that incidental coverage without a
+    deliberate replacement."""
+    scope = [RequestId("merge_sha", SHA)]
+    bad = _merged(scope[0])
+    bad["kind"] = "banana"
+    path = _write(tmp_path, [_header(scope), bad])
+    with pytest.raises(UnreadableFacts, match="неизвестный kind"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
 def test_merged_result_with_malformed_merge_sha_is_unreadable(tmp_path: Path) -> None:
     """`merge_sha` on `merged` is the key `by_merge_sha()` looks up by the
     release gate — it must be shape-validated, not merely `isinstance(str)`."""
@@ -398,6 +472,55 @@ def test_scope_pr_value_zero_is_unreadable(tmp_path: Path) -> None:
     scope = [RequestId("pr", 0)]
     path = _write(tmp_path, [_header(scope)])
     with pytest.raises(UnreadableFacts, match="недопустимая пара"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_unknown_state_value_is_unreadable(tmp_path: Path) -> None:
+    """A `state` that is a valid string but not one of the five terminal
+    states must be rejected — found unpinned by the round-2 exhaustive
+    mutation sweep (`reader.py:345`, was reachable only incidentally
+    before)."""
+    scope = [RequestId("merge_sha", SHA)]
+    bad = _merged(scope[0])
+    bad["state"] = "bogus"
+    path = _write(tmp_path, [_header(scope), bad])
+    with pytest.raises(UnreadableFacts, match="неизвестное состояние"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_state_non_string_value_is_unreadable_not_type_error(tmp_path: Path) -> None:
+    """Minor 5 from the re-review: `state not in _STATE_FIELD_RULES` alone
+    raises `TypeError: unhashable type` for a non-hashable `state` such as a
+    list — `isinstance(state, str)` must short-circuit before the membership
+    test runs."""
+    scope = [RequestId("merge_sha", SHA)]
+    bad = _merged(scope[0])
+    bad["state"] = ["merged"]
+    path = _write(tmp_path, [_header(scope), bad])
+    with pytest.raises(UnreadableFacts, match="неизвестное состояние"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_empty_file_is_unreadable(tmp_path: Path) -> None:
+    """Found unpinned by the round-2 exhaustive mutation sweep
+    (`reader.py:241`)."""
+    path = tmp_path / "approval_facts.jsonl"
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(UnreadableFacts, match="пустой файл"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_scope_request_malformed_shape_is_unreadable(tmp_path: Path) -> None:
+    """`_request`'s own shape guard (`{kind, value}` and nothing else) —
+    found unpinned by the round-2 exhaustive mutation sweep (`reader.py:124`).
+    Only reachable by building the raw header directly: `RequestId.as_dict()`
+    always produces the correct shape, so no test using the `_header()`
+    helper's normal path can exercise this branch."""
+    scope = [RequestId("merge_sha", SHA)]
+    header = _header(scope)
+    header["scope"] = [{"kind": "merge_sha", "value": SHA, "extra": "surprise"}]
+    path = _write(tmp_path, [header])
+    with pytest.raises(UnreadableFacts, match="request должен быть"):
         load_facts(path, expected_repository=REPO, now=NOW)
 
 
