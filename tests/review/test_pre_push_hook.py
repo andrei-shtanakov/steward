@@ -353,3 +353,58 @@ def test_real_push_origin_head_is_reviewed_and_succeeds(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "ревью выполнено" in (result.stdout + result.stderr)
+
+
+def test_real_push_origin_head_to_a_tag_is_blocked(tmp_path: Path) -> None:
+    """Регресс от предыдущей правки: `git push origin HEAD:refs/tags/v1`
+    даёт local_ref=HEAD (безопасная форма, принятая ради `git push origin
+    HEAD`) и remote_ref=refs/tags/v1 — тег ушёл бы на remote непровизьюенным,
+    хотя пуш тега заявлен неподдержанным (§8.1) и README обещает его
+    блокировку. Кит подставлен STUB_WOULD_BLOCK: если бы хук всё же вызвал
+    local.sh, пуш точно упал бы, и мы не отличили бы "заблокирован формой" от
+    "заблокирован китом"."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+    kit = make_stub_kit(tmp_path, "kit-would-block", STUB_WOULD_BLOCK)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(kit)
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "HEAD:refs/tags/v1"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "не должен был вызываться" not in result.stderr
+    assert "--no-verify" in result.stderr
+
+
+def test_real_push_origin_head_to_a_branch_still_succeeds(tmp_path: Path) -> None:
+    """Контрольный к находке выше: `git push origin HEAD:feature` — тоже
+    local_ref=HEAD, но remote_ref=refs/heads/feature — обязан по-прежнему
+    проходить, страж на remote_ref не должен зацепить безопасный случай."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+    kit = make_stub_kit(tmp_path, "kit-green", STUB_GREEN)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(kit)
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "HEAD:feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ревью выполнено" in (result.stdout + result.stderr)
