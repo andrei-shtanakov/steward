@@ -53,6 +53,25 @@ def _git_repo(tmp_path: Path, *, origin: str | None) -> Path:
     return root
 
 
+def _hermetic_root(tmp_path: Path) -> Path:
+    """`--repo-root` без `profiles/` — гарантированно НЕ настоящий репозиторий.
+
+    Round 1 review: тесты, не передававшие `--repo-root`, получали дефолт
+    `.`, который во время прогона pytest резолвится в РЕАЛЬНЫЙ, валидный
+    `profiles/approval-policy.yaml` ЭТОГО репозитория. Из-за этого шаг 4
+    (загрузка политики) никогда не падал в этих тестах — не потому что
+    порядок preflight соблюдён, а потому что дефолтный путь случайно вёл к
+    годному файлу. Перестановка шагов 3 и 4 оставалась незамеченной.
+
+    Каждый вызов CLI в этом файле обязан передавать `--repo-root` явно и
+    внутрь `tmp_path` — тест обязан вести себя одинаково независимо от
+    того, из какого каталога запущен pytest.
+    """
+    root = tmp_path / "hermetic-root"
+    root.mkdir(exist_ok=True)
+    return root
+
+
 def _fake_gh(responses: list[tuple[int, object]]):
     it: Iterator[tuple[int, object]] = iter(responses)
 
@@ -70,11 +89,52 @@ def test_bad_repo_is_config_error_and_keeps_previous(tmp_path: Path) -> None:
     previous = tmp_path / "facts.jsonl"
     previous.write_text("prior", encoding="utf-8")
     result = runner.invoke(
-        app, ["approval-facts", "--repo", "bad", "--prs", "1", "--out", str(previous)]
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "bad",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "1",
+            "--out",
+            str(previous),
+        ],
     )
     assert result.exit_code == 2
     assert previous.read_text(encoding="utf-8") == "prior", "прежняя публикация уничтожена"
     assert "'owner/name'" in result.output
+
+
+def test_step1_repo_shape_checked_before_step2_target_resolution(tmp_path: Path) -> None:
+    """Шаги 1 и 2 невалидны ОДНОВРЕМЕННО: сообщение обязано быть от более
+    раннего шага (1 — форма `--repo`), а не от шага 2 (`--repo-root` не
+    git-репозиторий). Это и есть проверка ОТНОСИТЕЛЬНОГО порядка: каждый
+    шаг по отдельности уже падает (см. `test_bad_repo_...` и
+    `test_bundle_target_not_a_git_repo_...`), но по отдельности они не
+    доказывают, в каком порядке preflight их проверяет.
+    """
+    not_a_repo = tmp_path / "not-a-repo"  # шаг 2 тоже невалиден: не git
+
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "bad",  # шаг 1 тоже невалиден: нет '/'
+            "--repo-root",
+            str(not_a_repo),
+            "--prs",
+            "1",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "'owner/name'" in result.output, (
+        "сообщение должно быть о форме --repo (шаг 1); если оно про "
+        "git-репозиторий — шаг 2 сработал первым, порядок нарушен"
+    )
+    assert "git-репозитори" not in result.output
 
 
 # --- Step 2: bundle target (git-root + origin) / --out override ------------
@@ -146,7 +206,17 @@ def test_out_parent_missing_is_config_error_and_keeps_previous(tmp_path: Path) -
     missing_parent = tmp_path / "nonexistent-dir" / "facts.jsonl"
     result = runner.invoke(
         app,
-        ["approval-facts", "--repo", "o/n", "--prs", "1", "--out", str(missing_parent)],
+        [
+            "approval-facts",
+            "--repo",
+            "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "1",
+            "--out",
+            str(missing_parent),
+        ],
     )
     assert result.exit_code == 2
     assert not missing_parent.exists()
@@ -163,7 +233,17 @@ def test_out_parent_not_writable_is_config_error_and_keeps_previous(tmp_path: Pa
     try:
         result = runner.invoke(
             app,
-            ["approval-facts", "--repo", "o/n", "--prs", "1", "--out", str(previous)],
+            [
+                "approval-facts",
+                "--repo",
+                "o/n",
+                "--repo-root",
+                str(_hermetic_root(tmp_path)),
+                "--prs",
+                "1",
+                "--out",
+                str(previous),
+            ],
         )
     finally:
         readonly_dir.chmod(0o755)
@@ -173,13 +253,32 @@ def test_out_parent_not_writable_is_config_error_and_keeps_previous(tmp_path: Pa
 
 
 # --- Step 3: declared scope --------------------------------------------------
+#
+# Все тесты этой секции передают `--repo-root` в `_hermetic_root` (нет
+# `profiles/approval-policy.yaml`) и НЕ передают `--policy`. Это не только
+# hermeticity: если preflight регрессирует и шаг 4 (загрузка политики)
+# начнёт выполняться раньше шага 3, дефолтный путь политики в
+# `_hermetic_root` не найдётся, и сообщение будет про политику, а не про
+# scope — то есть каждый из этих тестов уже сам по себе чувствителен к
+# перестановке 3↔4 (плюс отдельный именованный тест ниже).
 
 
 def test_duplicate_scope_is_config_error(tmp_path: Path) -> None:
     previous = tmp_path / "f.jsonl"
     previous.write_text("prior", encoding="utf-8")
     result = runner.invoke(
-        app, ["approval-facts", "--repo", "o/n", "--prs", "1,1", "--out", str(previous)]
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "1,1",
+            "--out",
+            str(previous),
+        ],
     )
     assert result.exit_code == 2
     assert "дубл" in result.output or "duplicate" in result.output
@@ -189,7 +288,18 @@ def test_duplicate_scope_is_config_error(tmp_path: Path) -> None:
 def test_no_identifiers_is_config_error(tmp_path: Path) -> None:
     previous = tmp_path / "f.jsonl"
     previous.write_text("prior", encoding="utf-8")
-    result = runner.invoke(app, ["approval-facts", "--repo", "o/n", "--out", str(previous)])
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--out",
+            str(previous),
+        ],
+    )
     assert result.exit_code == 2
     assert previous.read_text(encoding="utf-8") == "prior"
 
@@ -203,6 +313,8 @@ def test_malformed_merge_sha_is_config_error_and_keeps_previous(tmp_path: Path) 
             "approval-facts",
             "--repo",
             "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
             "--merge-sha",
             "not-a-sha",
             "--out",
@@ -218,11 +330,50 @@ def test_non_positive_pr_is_config_error_and_keeps_previous(tmp_path: Path) -> N
     previous = tmp_path / "f.jsonl"
     previous.write_text("prior", encoding="utf-8")
     result = runner.invoke(
-        app, ["approval-facts", "--repo", "o/n", "--prs", "0", "--out", str(previous)]
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "0",
+            "--out",
+            str(previous),
+        ],
     )
     assert result.exit_code == 2
     assert previous.read_text(encoding="utf-8") == "prior"
     assert "положительным" in result.output
+
+
+def test_step3_scope_checked_before_step4_policy_load(tmp_path: Path) -> None:
+    """Шаги 3 и 4 невалидны ОДНОВРЕМЕННО: сообщение обязано быть про scope
+    (шаг 3), а не про политику (шаг 4). `_hermetic_root` не содержит
+    `profiles/approval-policy.yaml`, так что шаг 4 тоже упал бы, если бы
+    выполнился, — если сообщение вдруг окажется про политику, значит
+    порядок нарушен и шаг 4 сработал первым.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "1,1",  # шаг 3 тоже невалиден: дубли
+            "--out",
+            str(tmp_path / "f.jsonl"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "дубл" in result.output, (
+        "сообщение должно быть про scope (шаг 3); если оно про политику — "
+        "шаг 4 сработал первым, порядок нарушен"
+    )
 
 
 # --- Step 4/5: policy load + lease ------------------------------------------
@@ -244,6 +395,8 @@ def test_bad_lease_config_is_caught_before_delete(tmp_path: Path) -> None:
             "approval-facts",
             "--repo",
             "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
             "--prs",
             "1",
             "--out",
@@ -379,6 +532,8 @@ def test_successful_run_removes_previous_and_publishes(
             "approval-facts",
             "--repo",
             "andrei-shtanakov/steward",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
             "--prs",
             "42",
             "--out",
@@ -426,6 +581,8 @@ def test_mechanical_materialize_failure_is_exit_3_and_previous_already_gone(
             "approval-facts",
             "--repo",
             "andrei-shtanakov/steward",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
             "--prs",
             "42",
             "--out",
