@@ -529,6 +529,74 @@ def test_policy_defaults_to_repo_root_profiles(
     assert record["actor_class"] == "human"
 
 
+def test_policy_default_anchors_on_resolved_root_not_raw_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--repo-root` может быть ПОДКАТАЛОГОМ чекаута, а не только его корнем.
+
+    Codex-гейт на PR #86: `resolve_bundle_target` резолвит `repo_root` до
+    настоящего git top-level (через `rev-parse --show-toplevel`), а дефолт
+    `--policy` считался от СЫРОГО `repo_root` — при `--repo-root <подкаталог>`
+    бандл уходил в `<git-root>/.steward/`, а политика по умолчанию искалась в
+    `<подкаталог>/profiles/approval-policy.yaml`, которого там нет. Тест
+    воспроизводит именно это: `--repo-root` — вложенный `spec/`-каталог,
+    `profiles/approval-policy.yaml` — только в НАСТОЯЩЕМ корне репозитория.
+    Герметичный: свой чекаут в `tmp_path`, никакой зависимости от политики
+    этого репозитория (см. `_hermetic_root`).
+    """
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/steward-real.git")
+    (repo_root / "profiles").mkdir()
+    (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
+    subdir = repo_root / "spec"
+    subdir.mkdir()
+
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "mergeCommit": {"oid": SHA},
+                                    "mergedBy": {
+                                        "login": "andrei-shtanakov",
+                                        "__typename": "User",
+                                    },
+                                }
+                            }
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "andrei-shtanakov/steward-real",
+            "--repo-root",
+            str(subdir),
+            "--prs",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # Бандл — на настоящем git-корне, НЕ под подкаталогом.
+    published = repo_root / ".steward" / "approval_facts.jsonl"
+    assert published.exists()
+    assert not (subdir / ".steward").exists()
+    record = json.loads(published.read_text(encoding="utf-8").splitlines()[1])
+    assert record["state"] == "merged"
+    assert record["actor_class"] == "human"
+
+
 # --- Step 6: destructive phase, ordering after full preflight succeeds -----
 
 

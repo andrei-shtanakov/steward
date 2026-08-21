@@ -165,11 +165,12 @@ def approval_facts(
     from steward.approvalfacts.model import RequestId
     from steward.approvalfacts.producer import MechanicalFailure, classify_results, materialize
     from steward.approvalfacts.publish import (
+        FACTS_RELPATH,
         ConfigError,
         build_header,
         publish,
         remove_previous,
-        resolve_bundle_target,
+        resolve_repo_root,
     )
     from steward.gatecheck.approval import PolicyError, load_approval_policy
     from steward.gatecheck.approval import policy_digest as compute_policy_digest
@@ -211,6 +212,15 @@ def approval_facts(
 
         # 2: цель — bundle-target (git-root + сверка origin) либо явный
         #    --out (сверка origin пропущена, путь всё равно валидируется).
+        #
+        # `policy_root` — тот же самый якорь, из которого по умолчанию
+        # берётся `--policy`, а не пересчитанный отдельно: `--repo-root`
+        # может быть ЛЮБЫМ подкаталогом чекаута (например, `spec/`), и
+        # `resolve_repo_root` уходит к настоящему git top-level. Если бы
+        # дефолт политики считался от сырого `repo_root`, а цель публикации —
+        # от резолвленного корня, они разъехались бы на два разных каталога
+        # ровно при `--repo-root <подкаталог>` — найдено Codex-гейтом на
+        # PR #86, см. TODO.md/final-fix-report.md.
         if out is not None:
             target = Path(out)
             parent = target.parent
@@ -218,8 +228,16 @@ def approval_facts(
                 raise ConfigError(f"--out: родительский каталог {parent} не существует")
             if not os.access(parent, os.W_OK):
                 raise ConfigError(f"--out: родительский каталог {parent} недоступен для записи")
+            # `--out` явно освобождён от сверки origin (и, значит, от
+            # доказательства, что `repo_root` вообще внутри git-репозитория —
+            # это законный режим публикации вне чекаута). Резолвить корень
+            # здесь означало бы требовать git там, где команда обещала его не
+            # требовать; дефолт политики поэтому анкорится на СЫРОЙ
+            # `repo_root`, как и до этой правки.
+            policy_root = repo_root
         else:
-            target = resolve_bundle_target(repo, repo_root)
+            policy_root = resolve_repo_root(repo, repo_root)
+            target = policy_root / FACTS_RELPATH
 
         # 3: объявленный scope — непуст, без дублей, форма.
         scope = parse_scope()
@@ -227,7 +245,7 @@ def approval_facts(
         # 4: политика + policy_digest. 5: approval_facts_lease_seconds
         #    валидируется внутри load_approval_policy.
         policy_path = (
-            policy if policy is not None else repo_root / "profiles" / "approval-policy.yaml"
+            policy if policy is not None else policy_root / "profiles" / "approval-policy.yaml"
         )
         approval_policy = load_approval_policy(policy_path)
         digest = compute_policy_digest(policy_path)

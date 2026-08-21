@@ -20,6 +20,7 @@ from steward.approvalfacts.publish import (
     publish,
     remove_previous,
     resolve_bundle_target,
+    resolve_repo_root,
 )
 from steward.approvalfacts.reader import UnreadableFacts, detect_legacy_v1, load_facts
 
@@ -43,5 +44,6 @@ __all__ = [
     "publish",
     "remove_previous",
     "resolve_bundle_target",
+    "resolve_repo_root",
     "scope_digest",
 ]

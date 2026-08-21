@@ -62,8 +62,19 @@ def _git(cwd: Path, *args: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def resolve_bundle_target(repo: str, repo_root: Path) -> Path:
-    """Разрешить путь бандла и доказать, что это тот самый репозиторий."""
+def resolve_repo_root(repo: str, repo_root: Path) -> Path:
+    """Разрешить `repo_root` в git top-level и доказать, что это тот самый репозиторий.
+
+    Единственная точка разрешения «где на самом деле лежит этот чекаут» —
+    `repo_root`, переданный вызывающим, может быть ЛЮБЫМ подкаталогом
+    репозитория (например, `spec/`), а не обязательно его корнем.
+    `resolve_bundle_target` и дефолтный путь политики CLI обязаны
+    анкориться на РЕЗУЛЬТАТ этой функции, а не каждый пересчитывать корень
+    по-своему — иначе бандл и политика по умолчанию способны разъехаться
+    на два разных каталога при `--repo-root <подкаталог>` (найдено
+    Codex-гейтом на PR #86: `resolve_bundle_target` уходил к git top-level,
+    а дефолт `--policy` брал сырой `repo_root`).
+    """
     top = _git(repo_root, "rev-parse", "--show-toplevel")
     if top is None:
         raise ConfigError(f"{repo_root} не внутри git-репозитория")
@@ -79,7 +90,12 @@ def resolve_bundle_target(repo: str, repo_root: Path) -> Path:
             f"{top}: origin указывает на {owner}/{name}, а --repo говорит {repo} — "
             "публикация в чужой бандл запрещена"
         )
-    return Path(top) / FACTS_RELPATH
+    return Path(top)
+
+
+def resolve_bundle_target(repo: str, repo_root: Path) -> Path:
+    """Разрешить путь бандла и доказать, что это тот самый репозиторий."""
+    return resolve_repo_root(repo, repo_root) / FACTS_RELPATH
 
 
 def build_header(
