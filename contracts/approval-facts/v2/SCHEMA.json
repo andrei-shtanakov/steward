@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "approval-facts/v2 record",
+  "oneOf": [{"$ref": "#/$defs/header"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"enum": ["pr", "merge_sha"]},
+        "value": {}
+      },
+      "oneOf": [
+        {"properties": {"kind": {"const": "pr"}, "value": {"type": "integer", "minimum": 1}}},
+        {"properties": {"kind": {"const": "merge_sha"},
+                        "value": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}}
+      ]
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "repository", "generated_at", "valid_until",
+                   "policy_version", "policy_digest", "complete", "scope_sha256", "scope"],
+      "properties": {
+        "kind": {"const": "header"},
+        "schema_version": {"const": "2"},
+        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "valid_until": {"type": "string", "format": "date-time"},
+        "policy_version": {"type": "integer", "minimum": 1},
+        "policy_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "complete": {"const": true},
+        "scope_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "scope": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/request"}}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "request", "state"],
+      "properties": {
+        "kind": {"const": "result"},
+        "request": {"$ref": "#/$defs/request"},
+        "state": {"enum": ["merged", "not_merged", "not_found", "no_matching_pr",
+                           "actor_unavailable"]},
+        "merge_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "identity": {"type": "string"},
+        "type_hint": {"type": "string"},
+        "actor_class": {"enum": ["human", "agent", "unknown"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "merged"}}},
+          "then": {"required": ["merge_sha", "identity", "type_hint", "actor_class"],
+                   "properties": {"merge_sha": {"type": "string"}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "actor_unavailable"}}},
+          "then": {"required": ["merge_sha"],
+                   "properties": {"merge_sha": {"type": "string"}},
+                   "not": {"anyOf": [{"required": ["identity"]},
+                                     {"required": ["type_hint"]},
+                                     {"required": ["actor_class"]}]}}
+        },
+        {
+          "if": {"properties": {"state": {"enum": ["not_merged", "not_found", "no_matching_pr"]}}},
+          "then": {"properties": {"merge_sha": {"type": "null"}},
+                   "not": {"anyOf": [{"required": ["identity"]},
+                                     {"required": ["type_hint"]},
+                                     {"required": ["actor_class"]}]}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "not_merged"}}},
+          "then": {"properties": {"request": {"properties": {"kind": {"const": "pr"}}}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "no_matching_pr"}}},
+          "then": {"properties": {"request": {"properties": {"kind": {"const": "merge_sha"}}}}}
+        }
+      ]
+    }
+  }
+}

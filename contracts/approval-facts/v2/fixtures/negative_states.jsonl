@@ -1,0 +1,5 @@
+{"kind":"header","schema_version":"2","repository":"andrei-shtanakov/steward","generated_at":"2026-08-21T09:00:00Z","valid_until":"2026-08-22T09:00:00Z","policy_version":1,"policy_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","complete":true,"scope_sha256":"sha256:af8c6de048547345b2ebba112ea7707d69fe59310a5d7c3993c453f762944277","scope":[{"kind":"pr","value":101},{"kind":"pr","value":102},{"kind":"merge_sha","value":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"kind":"merge_sha","value":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}
+{"kind":"result","request":{"kind":"pr","value":101},"state":"not_merged","merge_sha":null}
+{"kind":"result","request":{"kind":"pr","value":102},"state":"not_found","merge_sha":null}
+{"kind":"result","request":{"kind":"merge_sha","value":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"state":"no_matching_pr","merge_sha":null}
+{"kind":"result","request":{"kind":"merge_sha","value":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"state":"actor_unavailable","merge_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
