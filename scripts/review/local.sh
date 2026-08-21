@@ -97,8 +97,21 @@ if [ -n "$default_branch" ]; then
 fi
 
 # --- диапазон --------------------------------------------------------------
-head_sha=$(git rev-parse "$head_ref")
-mb=$(git merge-base "$base" "$head_sha")
+# Обе команды могут упасть сырым кодом git (128 у rev-parse на неизвестной
+# ссылке, 1 у merge-base без общего предка) — под `set -e` это утекло бы
+# наружу как есть, а 1 в нашем контракте означает "есть находки уровня
+# blocker/major": инвертированный сигнал, диапазон не построился, а хук
+# скажет человеку, что ревью нашло проблемы. Оба вызова обёрнуты кодом 2.
+if ! head_sha=$(git rev-parse "$head_ref" 2>/dev/null); then
+    echo "не удалось разрешить --head $head_ref: неизвестная ссылка." >&2
+    exit 2
+fi
+if ! mb=$(git merge-base "$base" "$head_sha" 2>/dev/null); then
+    base_hint=$(git rev-parse --short "$base" 2>/dev/null || echo "$base")
+    echo "не удалось построить диапазон между $base_hint и $head_sha:" \
+        "нет общего предка либо база не разрешается." >&2
+    exit 2
+fi
 echo "база:     $(git rev-parse --short "$base")"
 echo "голова:   $(git rev-parse --short "$head_sha")"
 echo "диапазон: ${mb}..${head_sha}"

@@ -159,6 +159,36 @@ def test_missing_origin_head_is_config_error(tmp_path: Path) -> None:
     assert "set-head" in result.stderr
 
 
+def test_unknown_head_ref_is_config_error_not_raw_git_code(tmp_path: Path) -> None:
+    """`git rev-parse` на неизвестной ссылке сам падает 128 — страж обязан
+    перевести это в код кита (2) с понятным сообщением, а не дать 128
+    утечь наружу вне объявленного §7 набора 0/1/2/3."""
+    _, local = make_repo(tmp_path)
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", "totally-unknown-ref")
+    assert result.returncode == 2
+    assert "128" not in result.stderr
+    assert "totally-unknown-ref" in result.stderr
+
+
+def test_orphan_head_gives_config_error_not_findings_code(tmp_path: Path) -> None:
+    """У orphan-ветки нет общего предка с базой — `git merge-base` сам падает
+    кодом 1, а 1 в нашем контракте означает "есть находки уровня
+    blocker/major". Диапазон не построился — это обязано быть код 2
+    (конфигурационный отказ), а не инвертированный сигнал "ревью нашло
+    проблемы"."""
+    _, local = make_repo(tmp_path)
+    git(local, "checkout", "-q", "--orphan", "orphanbranch")
+    (local / "orphan.txt").write_text("orphan\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "orphan")
+
+    result = run_local(
+        local, make_stub(tmp_path, STUB_OK), "--base", "master", "--head", "orphanbranch"
+    )
+    assert result.returncode == 2
+    assert "не удалось построить диапазон" in result.stderr
+
+
 def test_range_uses_merge_base_not_raw_base_when_base_moved_ahead(tmp_path: Path) -> None:
     """База ушла вперёд после ответвления — диапазон обязан идти от точки
     расхождения (merge-base), а не от текущей головы базовой ветки: иначе в
