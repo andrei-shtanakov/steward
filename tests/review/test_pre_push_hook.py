@@ -408,3 +408,75 @@ def test_real_push_origin_head_to_a_branch_still_succeeds(tmp_path: Path) -> Non
     )
     assert result.returncode == 0, result.stderr
     assert "ревью выполнено" in (result.stdout + result.stderr)
+
+
+def test_real_push_reviews_the_sha_that_was_actually_pushed_despite_a_head_race(
+    tmp_path: Path,
+) -> None:
+    """TOCTOU: без явного `--head` local.sh резолвил бы СВОЙ собственный `git
+    rev-parse HEAD` заново — и если HEAD уедет между проверкой хука и этим
+    вызовом (`commit --amend`, вторая консоль, фоновый процесс), ревью пойдёт
+    по НОВОМУ дереву, а git отправит то, что было зафиксировано на входе.
+    Ровно «проверили одно, отправили другое».
+
+    Стенд реально двигает HEAD внутри стаба local.sh (после того как git уже
+    зафиксировал, что именно отправлять, но до того как ревью успело бы
+    посмотреть на дерево) и проверяет, что local.sh получил АРГУМЕНТОМ именно
+    ту sha, что была на входе хука, а не ту, чем HEAD стала после гонки —
+    иначе тест закрепил бы только форму вызова, не свойство."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "оригинальный коммит")
+    original_sha = git(local, "rev-parse", "HEAD")
+
+    args_file = tmp_path / "received-args.txt"
+    stub_kit = tmp_path / "kit-race"
+    stub_kit.mkdir()
+    stub_local = stub_kit / "local.sh"
+    stub_local.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null\n"
+        f'printf \'%s\\n\' "$@" > "{args_file}"\n'
+        # Гонка: HEAD уезжает ПОСЛЕ того, как git уже решил, что отправлять
+        # (это решается до вызова хука), но ДО того, как ревью посмотрело бы
+        # на дерево.
+        "git commit --allow-empty -qm 'гонка: коммит после проверки хука'\n"
+        "echo 'ревью выполнено'\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub_local.chmod(0o755)
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(stub_kit)
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    head_after_race = git(local, "rev-parse", "HEAD")
+    assert head_after_race != original_sha, (
+        "гонка не сработала — тест ничего не доказывает без реального сдвига HEAD"
+    )
+
+    received_args = args_file.read_text(encoding="utf-8").splitlines()
+    assert "--head" in received_args, "local.sh обязан получить --head явным аргументом"
+    head_index = received_args.index("--head")
+    received_head = received_args[head_index + 1]
+    assert received_head == original_sha, (
+        "local.sh обязан ревьюить ТУ sha, что git зафиксировал на входе хука, "
+        "а не то, чем HEAD стала после гонки"
+    )
+    assert received_head != head_after_race
+
+    # Довод от противного: что РЕАЛЬНО уехало на remote — тот же original_sha,
+    # не амменженный коммит. Хук и git сходятся в том, что было отправлено.
+    remote_tip = git(local, "ls-remote", "origin", "feature").split()[0]
+    assert remote_tip == original_sha
