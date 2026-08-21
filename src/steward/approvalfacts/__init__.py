@@ -1,4 +1,4 @@
-"""`approval-facts/v2`: контракт merge-акторов, продюсер и читатель."""
+"""`approval-facts/v2`: контракт merge-акторов, продюсер, читатель, публикация."""
 
 from steward.approvalfacts.model import (
     MAX_CLOCK_SKEW_SECONDS,
@@ -12,20 +12,36 @@ from steward.approvalfacts.model import (
     canonical_scope_bytes,
     scope_digest,
 )
+from steward.approvalfacts.publish import (
+    FACTS_RELPATH,
+    ConfigError,
+    build_header,
+    parse_origin,
+    publish,
+    remove_previous,
+    resolve_bundle_target,
+)
 from steward.approvalfacts.reader import UnreadableFacts, detect_legacy_v1, load_facts
 
 __all__ = [
+    "FACTS_RELPATH",
     "MAX_CLOCK_SKEW_SECONDS",
     "MAX_LEASE_SECONDS",
     "ApprovalFactsV2",
+    "ConfigError",
     "Header",
     "ObservationState",
     "RequestId",
     "RequestKind",
     "Result",
     "UnreadableFacts",
+    "build_header",
     "canonical_scope_bytes",
     "detect_legacy_v1",
     "load_facts",
+    "parse_origin",
+    "publish",
+    "remove_previous",
+    "resolve_bundle_target",
     "scope_digest",
 ]
