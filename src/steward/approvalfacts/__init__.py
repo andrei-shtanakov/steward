@@ -12,6 +12,7 @@ from steward.approvalfacts.model import (
     canonical_scope_bytes,
     scope_digest,
 )
+from steward.approvalfacts.reader import UnreadableFacts, detect_legacy_v1, load_facts
 
 __all__ = [
     "MAX_CLOCK_SKEW_SECONDS",
@@ -22,6 +23,9 @@ __all__ = [
     "RequestId",
     "RequestKind",
     "Result",
+    "UnreadableFacts",
     "canonical_scope_bytes",
+    "detect_legacy_v1",
+    "load_facts",
     "scope_digest",
 ]
