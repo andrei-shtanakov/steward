@@ -28,10 +28,15 @@ unsupported() {
     hint_sha="${2:-}"
     echo "pre-push review: форма пуша не поддержана — $reason" >&2
     echo "Проверить нужное вручную:" >&2
+    # Путь к киту заэкранирован кавычками: третий раз чиним это же свойство
+    # подсказки (был плейсхолдер вместо sha, была база вместо головы) —
+    # напечатанная команда обязана быть исполнимой КАК ЕСТЬ. Без кавычек
+    # `/Users/alice/Work Repos/steward/scripts/review/local.sh` shell режет
+    # по пробелу, и единственная предложенная команда не запускается.
     if [ -n "$hint_sha" ]; then
-        echo "  sh $kit_dir/local.sh --head $hint_sha [--base <ref>]" >&2
+        echo "  sh \"$kit_dir/local.sh\" --head $hint_sha [--base <ref>]" >&2
     else
-        echo "  sh $kit_dir/local.sh --head <sha нужной ссылки> [--base <ref>]" >&2
+        echo "  sh \"$kit_dir/local.sh\" --head <sha нужной ссылки> [--base <ref>]" >&2
     fi
     echo "Либо отправить без ревью: git push --no-verify" >&2
     exit 1

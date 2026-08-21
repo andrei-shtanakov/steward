@@ -480,3 +480,132 @@ def test_real_push_reviews_the_sha_that_was_actually_pushed_despite_a_head_race(
     # не амменженный коммит. Хук и git сходятся в том, что было отправлено.
     remote_tip = git(local, "ls-remote", "origin", "feature").split()[0]
     assert remote_tip == original_sha
+
+
+def test_unsupported_hint_is_executable_as_is_when_kit_path_has_a_space(
+    tmp_path: Path,
+) -> None:
+    """Третий раз чиним одно и то же свойство подсказки `unsupported()`
+    (плейсхолдер вместо sha, база вместо головы — теперь пробел в пути):
+    напечатанная команда обязана запускаться КАК ЕСТЬ. Без кавычек вокруг
+    `$kit_dir/local.sh` shell режет путь по пробелу, и `sh` получает
+    несуществующий обрезанный путь первым аргументом.
+
+    Живой прогон: `REVIEW_KIT_DIR` указывает на каталог с пробелом в имени,
+    хук блокирует пуш тега (unsupported-путь), подсказка реально извлекается
+    из stderr и ИСПОЛНЯЕТСЯ отдельным `sh -c` — не просто проверяется на
+    наличие кавычек в тексте."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+
+    kit_with_space = tmp_path / "kit with space"
+    kit_with_space.mkdir()
+    marker = tmp_path / "started.marker"
+    stub_local = kit_with_space / "local.sh"
+    stub_local.write_text(
+        "#!/bin/sh\n"
+        # Стартует и отмечается независимо от того, что дальше в argv —
+        # доказываем, что скрипт вообще НАШЁЛСЯ И ЗАПУСТИЛСЯ, а не что он
+        # отработал вердикт целиком.
+        f'touch "{marker}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub_local.chmod(0o755)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(kit_with_space)
+    # Пуш тега через HEAD:refs/tags/v1 — надёжный unsupported-путь с
+    # непустым hint_sha (sha реальный, есть что подставить в --head).
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "HEAD:refs/tags/v1"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode != 0
+
+    hint_lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip().startswith("sh ")]
+    assert len(hint_lines) == 1, f"ожидалась ровно одна строка-подсказка, вышло: {hint_lines}"
+    hint = hint_lines[0]
+    assert str(kit_with_space) in hint, "подсказка обязана называть реальный (с пробелом) путь"
+
+    # "[--base <ref>]" в хвосте — документационная нотация для человека
+    # (квадратные скобки = опционально), не буквальный shell-синтаксис: `<ref>`
+    # для самого `sh` — оператор редиректа. Это отдельное, всегда так и было,
+    # не то свойство, что чиним здесь. Исполняем ИСПОЛНИМУЮ часть — до неё —
+    # ровно то, что человек реально запустит (bracket-нотацию он подставит
+    # своим значением или уберёт, а не скопирует буквально).
+    executable_prefix = hint.split(" [--base")[0]
+
+    assert not marker.exists(), "маркер не должен появиться раньше своего срабатывания"
+    exec_result = subprocess.run(["sh", "-c", executable_prefix], capture_output=True, text=True)
+    assert "No such file or directory" not in exec_result.stderr, (
+        f"подсказка не исполнилась как есть: {exec_result.stderr!r}"
+    )
+    assert marker.exists(), "local.sh из подсказки обязан был реально запуститься"
+
+
+def test_unsupported_placeholder_hint_is_executable_as_is_when_kit_path_has_a_space(
+    tmp_path: Path,
+) -> None:
+    """Тот же класс, что тест выше, но для ВТОРОЙ, отдельной строки echo в
+    unsupported() — той, что печатается при пустом hint_sha (плейсхолдер
+    `<sha нужной ссылки>`, путь удаления ветки). Две разные строки исходника
+    с одинаковым намерением легко расходятся в правке — этот тест закрывает
+    именно эту, вторую."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+    green_kit = make_stub_kit(tmp_path, "kit-green", STUB_GREEN)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(green_kit)
+    landed = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert landed.returncode == 0, landed.stderr
+
+    kit_with_space = tmp_path / "kit with space"
+    kit_with_space.mkdir()
+    marker = tmp_path / "started-placeholder.marker"
+    stub_local = kit_with_space / "local.sh"
+    stub_local.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
+    stub_local.chmod(0o755)
+
+    env["REVIEW_KIT_DIR"] = str(kit_with_space)
+    # Удаление ветки: local_sha сплошные нули, sha_hint="" — вторая, "пустая"
+    # ветка unsupported().
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "--delete", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode != 0
+
+    hint_lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip().startswith("sh ")]
+    assert len(hint_lines) == 1, f"ожидалась ровно одна строка-подсказка, вышло: {hint_lines}"
+    hint = hint_lines[0]
+    assert str(kit_with_space) in hint
+    assert "<sha нужной ссылки>" in hint, "это обязана быть ИМЕННО плейсхолдер-ветка"
+
+    executable_prefix = hint.split(" --head")[0]
+    assert not marker.exists()
+    exec_result = subprocess.run(["sh", "-c", executable_prefix], capture_output=True, text=True)
+    assert "No such file or directory" not in exec_result.stderr, (
+        f"подсказка не исполнилась как есть: {exec_result.stderr!r}"
+    )
+    assert marker.exists(), "local.sh из подсказки обязан был реально запуститься"
