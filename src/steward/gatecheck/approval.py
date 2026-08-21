@@ -27,20 +27,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import yaml
 
 from steward.gatecheck.checks import Artifact, Finding
 from steward.gatecheck.git_facts import GitFacts
-
-if TYPE_CHECKING:
-    # steward.approvalfacts imports ActorFact from THIS module at runtime
-    # (module-level) — a real top-level import here would be circular.
-    # ApprovalFacts is only ever used as a type annotation below, so a
-    # TYPE_CHECKING-only import (PEP 563 defers annotation evaluation) is
-    # enough for pyrefly without creating a runtime cycle.
-    from steward.approvalfacts import ApprovalFacts
 
 __all__ = [
     "ActorFact",
@@ -166,7 +158,7 @@ def check_approval_evidence(
     artifacts: list[Artifact],
     git: GitFacts,
     policy: ApprovalPolicy,
-    actor_facts: ApprovalFacts | None,
+    actor_facts: object | None,
     stage: str,
 ) -> list[Finding]:
     """GC-APPROVAL-MISSING: release-stage merge-evidence gate (D5).
@@ -196,6 +188,15 @@ def check_approval_evidence(
     reads ``MergeProvenance.actor``/``actor_source`` — those fields are a
     test-fixture-only direct-injection path (see
     :mod:`steward.gatecheck.git_facts`), never the authoritative source.
+
+    .. note::
+       ``actor_facts`` is typed ``object | None`` for the duration of the
+       ``approval-facts/v2`` migration (steward TODO.md): the v1 evidence
+       source (``steward.approvalfacts.ApprovalFacts``) that used to
+       populate it is gone, and no caller passes anything but ``None`` yet.
+       Every merge therefore reports **unavailable** below. Task 8 of that
+       migration rewires this function onto ``ApprovalFactsV2`` — until
+       then the gate is disconnected and untested by design, not a bug.
     """
     if stage != "release":
         return []
@@ -220,7 +221,9 @@ def check_approval_evidence(
             )
             continue
 
-        actor_fact = actor_facts.actors.get(provenance.sha) if actor_facts is not None else None
+        # actor_facts is always None until task 8 rewires this onto
+        # ApprovalFactsV2 (see the note in this function's docstring).
+        actor_fact = None
         if actor_fact is None:
             findings.append(
                 Finding(

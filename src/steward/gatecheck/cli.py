@@ -14,7 +14,6 @@ from pathlib import Path
 import typer
 import yaml
 
-from steward.approvalfacts import ApprovalFactsError, load_approval_facts
 from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
 from steward.gatecheck.approval import (
     ApprovalPolicy,
@@ -210,9 +209,9 @@ def main(
     approval_facts: Path | None = typer.Option(
         None,
         "--approval-facts",
-        help="Materialized merge-actor evidence (schema approval-facts/v1, "
-        "written by `steward approval-facts`). Only consulted at --stage "
-        "release; absent means every merge actor is unavailable, not unknown.",
+        help="Materialized merge-actor evidence. Accepted but not yet consulted: "
+        "the approval-facts v2 migration is in progress and this option is "
+        "rewired in a later task. Every merge actor is currently unavailable.",
     ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
@@ -263,13 +262,11 @@ def main(
 
     if resolved_stage == "release":
         approval_policy = _load_approval_policy(profile_path)
+        # `approval_facts` (--approval-facts) is accepted but not yet wired
+        # to a real evidence source: the approval-facts v2 migration is in
+        # progress and this call is rewired onto it in a later task (see
+        # the CLI option help and check_approval_evidence's docstring note).
         actor_facts = None
-        if approval_facts is not None:
-            try:
-                actor_facts = load_approval_facts(approval_facts)
-            except ApprovalFactsError as err:
-                _fail_config(str(err))
-                raise AssertionError from None  # unreachable; keeps type-checkers calm
         try:
             findings.extend(
                 check_approval_evidence(

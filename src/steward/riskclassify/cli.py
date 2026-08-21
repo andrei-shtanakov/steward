@@ -131,7 +131,7 @@ def waivers_check(
 @app.command("approval-facts")
 def approval_facts(
     repo: str = typer.Option(..., "--repo", help="owner/name"),
-    out: Path = typer.Option(..., "--out", help="approval-facts/v1 output file"),
+    out: Path = typer.Option(..., "--out", help="approval-facts output file"),
     merge_sha: list[str] = typer.Option(
         [], "--merge-sha", help="Merge commit SHA to resolve (repeatable)."
     ),
@@ -139,41 +139,19 @@ def approval_facts(
 ) -> None:
     """Materialize typed merge-actor facts (GitHub `mergedBy`) via `gh`.
 
-    Exit codes: ``0`` file written, ``2`` config error (bad --repo, no
-    identifiers given), ``3`` materialization failed (gh unavailable or a
-    requested PR/commit could not be resolved) — honest and distinct from
-    a silently empty/partial output file, which this command never writes.
+    Disabled for the duration of the ``approval-facts`` v2 migration
+    (steward TODO.md): the v1 materializer this command used to call
+    (``steward.approvalfacts.materialize_approval_facts``) has been
+    deleted along with the v1 format, and its v2 replacement lands in a
+    later task of that migration. Fails fast rather than silently writing
+    a stale-format file. Exit codes: ``2`` config error — always, for now.
     """
-    from steward.approvalfacts import (
-        MaterializeError,
-        materialize_approval_facts,
-        write_approval_facts,
+    typer.echo(
+        "config error: `steward risk-classify approval-facts` is disabled — "
+        "approval-facts v2 migration in progress",
+        err=True,
     )
-
-    owner, sep, name = repo.partition("/")
-    if not sep or not owner or not name:
-        typer.echo(f"config error: --repo must be 'owner/name', got {repo!r}", err=True)
-        raise typer.Exit(_EXIT_CONFIG)
-
-    pr_numbers: list[int] = []
-    if prs:
-        try:
-            pr_numbers = [int(p.strip()) for p in prs.split(",") if p.strip()]
-        except ValueError as exc:
-            typer.echo(f"config error: --prs must be comma-separated integers: {exc}", err=True)
-            raise typer.Exit(_EXIT_CONFIG) from exc
-    if not merge_sha and not pr_numbers:
-        typer.echo("config error: at least one of --merge-sha / --prs is required", err=True)
-        raise typer.Exit(_EXIT_CONFIG)
-
-    try:
-        actors = materialize_approval_facts(repo, merge_shas=list(merge_sha), prs=pr_numbers)
-    except MaterializeError as exc:
-        typer.echo(f"approval-facts materialize failed: {exc}", err=True)
-        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
-
-    write_approval_facts(out, actors)
-    typer.echo(f"ok: {len(actors)} actor(s) written to {out}")
+    raise typer.Exit(_EXIT_CONFIG)
 
 
 @app.command("proposal-intake")
