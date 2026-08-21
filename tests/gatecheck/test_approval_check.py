@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from steward.approvalfacts.model import (
     ApprovalFactsV2,
@@ -38,8 +39,9 @@ from steward.gatecheck.approval import (
     policy_digest,
     resolve_facts,
 )
+from steward.gatecheck import cli as cli_module
 from steward.gatecheck.checks import Artifact
-from steward.gatecheck.cli import approval_facts_outcome
+from steward.gatecheck.cli import app, approval_facts_outcome
 from steward.gatecheck.git_facts import MergeProvenance
 from steward.meta import parse_artifact
 
@@ -1069,22 +1071,65 @@ def _checkout(tmp_path: Path, *, origin: str | None, name: str = "checkout") -> 
     return root
 
 
+def _bundle_dir(root: Path) -> Path:
+    """Каталог бандла — ПОДКАТАЛОГ чекаута, а не сам чекаут.
+
+    §8.4 якорит путь фактов на КОРНЕ репозитория. Пока `spec_dir` равен корню,
+    «корень» и «каталог бандла» в фикстуре неразличимы, и подмена якоря на
+    `spec_dir` остаётся зелёной — при том что обычный способ вызова
+    (`gate-check … <repo>/spec`) под ней перестаёт находить evidence, и
+    человеческий мерж начинает получать `GC-APPROVAL-MISSING`.
+    """
+    bundle = root / "spec"
+    bundle.mkdir(exist_ok=True)
+    return bundle
+
+
+def _plant(
+    dir_: Path, policy_path: Path, *, generated_at: datetime = GENERATED, repository: str = REPO
+) -> None:
+    """Положить годный файл фактов в `<dir_>/.steward/`."""
+    (dir_ / ".steward").mkdir(parents=True, exist_ok=True)
+    _write_valid(
+        dir_ / ".steward",
+        policy_path=policy_path,
+        generated_at=generated_at,
+        repository=repository,
+    )
+
+
 ORIGIN = "git@github.com:andrei-shtanakov/steward.git"
 
 
 def test_cli_reads_the_bundle_default_path(tmp_path: Path) -> None:
+    """Якорь — корень репозитория, а бандл лежит в подкаталоге."""
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin=ORIGIN)
-    (root / ".steward").mkdir()
-    _write_valid(root / ".steward", policy_path=policy_path)
-    outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
+    _plant(root, policy_path)
+    outcome = approval_facts_outcome(
+        None, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
+    )
     assert isinstance(outcome, ApprovalFactsV2)
+
+
+def test_cli_ignores_a_file_planted_inside_the_bundle(tmp_path: Path) -> None:
+    """Обратная сторона того же якоря: `.steward/` ВНУТРИ бандла источником не
+    является. Иначе подложенный в бандл файл управлял бы enforcement."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    root = _checkout(tmp_path, origin=ORIGIN)
+    bundle = _bundle_dir(root)
+    _plant(bundle, policy_path)  # корень репозитория при этом пуст
+    outcome = approval_facts_outcome(None, bundle, policy=policy, policy_path=policy_path, now=NOW)
+    assert isinstance(outcome, FactsUnavailable)
+    assert outcome.code == "absent"
 
 
 def test_cli_missing_bundle_file_is_absent(tmp_path: Path) -> None:
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin=ORIGIN)
-    outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
+    outcome = approval_facts_outcome(
+        None, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
+    )
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
 
@@ -1093,11 +1138,12 @@ def test_cli_explicit_override_wins_over_bundle_default(tmp_path: Path) -> None:
     """`--approval-facts` — override: читается указанный файл, не бандл."""
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin=ORIGIN)
-    (root / ".steward").mkdir()
-    _write_valid(root / ".steward", policy_path=policy_path)  # валидный в бандле
+    _plant(root, policy_path)  # валидный по пути бандла
     override = _write_v1(tmp_path, name="override.jsonl")  # заведомо легаси
     with pytest.raises(ConfigError):
-        approval_facts_outcome(override, root, policy=policy, policy_path=policy_path, now=NOW)
+        approval_facts_outcome(
+            override, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
+        )
 
 
 def test_cli_explicit_override_reads_a_file_outside_the_bundle(tmp_path: Path) -> None:
@@ -1106,38 +1152,30 @@ def test_cli_explicit_override_reads_a_file_outside_the_bundle(tmp_path: Path) -
     пинает выбор пути, а не поведение на невалидном файле."""
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin=ORIGIN)
-    (root / ".steward").mkdir()
-    _write_valid(  # в бандле — просроченный
-        root / ".steward", policy_path=policy_path, generated_at=NOW - timedelta(days=2)
-    )
+    _plant(root, policy_path, generated_at=NOW - timedelta(days=2))  # в бандле просроченный
     override = _write_valid(tmp_path, policy_path=policy_path, name="override.jsonl")
     outcome = approval_facts_outcome(
-        override, root, policy=policy, policy_path=policy_path, now=NOW
+        override, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
     )
     assert isinstance(outcome, ApprovalFactsV2)
 
 
-def _plant_valid_bundle_file(root: Path, policy_path: Path) -> None:
-    """Положить в бандл ЗАВЕДОМО ГОДНЫЙ файл фактов с заголовком `REPO`.
-
-    Без него тест «репозиторий неопознаваем» проходил бы у любого кода,
-    возвращающего `absent`, — включая мутанта, который вместо вывода из
-    `origin` УГАДЫВАЕТ ожидаемый репозиторий. Разница видна, только когда
-    evidence физически лежит на месте: настоящий код всё равно отказывается
-    его опознавать, угадывающий — принимает. Инвариант 11 читателя сверяет
-    заголовок с тем ожиданием, которое ему ПЕРЕДАЛИ; если ожидание угадано,
-    защита от чужого файла с совпавшим SHA выключена целиком.
-    """
-    (root / ".steward").mkdir(parents=True, exist_ok=True)
-    _write_valid(root / ".steward", policy_path=policy_path)
-
-
 def test_cli_without_origin_refuses_evidence_that_is_present(tmp_path: Path) -> None:
-    """Правило задачи: репозиторий неопознаваем — гейт не падает И не опознаёт."""
+    """Репозиторий неопознаваем — гейт не падает И не опознаёт.
+
+    Файл фактов ЛЕЖИТ на месте и заведомо годен, с заголовком `REPO`: без него
+    тест проходил бы у любого кода, возвращающего `absent`, — включая мутанта,
+    который вместо вывода из `origin` УГАДЫВАЕТ ожидаемый репозиторий.
+    Инвариант 11 читателя сверяет заголовок с тем ожиданием, которое ему
+    ПЕРЕДАЛИ; угаданное ожидание выключает защиту от чужого файла с совпавшим
+    merge SHA целиком.
+    """
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin=None)
-    _plant_valid_bundle_file(root, policy_path)
-    outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
+    _plant(root, policy_path)
+    outcome = approval_facts_outcome(
+        None, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
+    )
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
 
@@ -1145,20 +1183,26 @@ def test_cli_without_origin_refuses_evidence_that_is_present(tmp_path: Path) -> 
 def test_cli_unparseable_origin_refuses_evidence_that_is_present(tmp_path: Path) -> None:
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin="not-a-url")
-    _plant_valid_bundle_file(root, policy_path)
-    outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
+    _plant(root, policy_path)
+    outcome = approval_facts_outcome(
+        None, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
+    )
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
 
 
 def test_cli_outside_git_repository_refuses_evidence_that_is_present(tmp_path: Path) -> None:
-    """Та же половина для третьего случая: корень репозитория не выводится из
-    каталога бандла подставным способом."""
+    """Та же половина для третьего случая. Годный файл лежит и рядом с бандлом,
+    и внутри него, так что подстановка любого из двух вместо корня была бы
+    видна."""
     policy, policy_path = _loaded_policy(tmp_path)
     outside = tmp_path / "loose"
     outside.mkdir()
-    _plant_valid_bundle_file(outside, policy_path)
-    outcome = approval_facts_outcome(None, outside, policy=policy, policy_path=policy_path, now=NOW)
+    _plant(outside, policy_path)
+    bundle = outside / "spec"
+    bundle.mkdir()
+    _plant(bundle, policy_path)
+    outcome = approval_facts_outcome(None, bundle, policy=policy, policy_path=policy_path, now=NOW)
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
 
@@ -1168,8 +1212,68 @@ def test_cli_observed_repository_comes_from_origin(tmp_path: Path) -> None:
     заголовком другого владельца по пути бандла становится невалидным."""
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin="git@github.com:other-owner/steward.git")
-    (root / ".steward").mkdir()
-    _write_valid(root / ".steward", policy_path=policy_path)  # header: andrei-shtanakov/steward
-    outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
+    _plant(root, policy_path)  # header: andrei-shtanakov/steward
+    outcome = approval_facts_outcome(
+        None, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
+    )
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "unreadable"
+
+
+_CLI_PROFILE = """\
+profile: test
+solo_auto_approve: false
+artifacts:
+  - {id: requirements, owner_role: product, upstream: []}
+  - {id: design, owner_role: architects, upstream: [requirements]}
+"""
+
+
+def test_cli_typed_policy_failure_is_exit_2_not_a_traceback(
+    tmp_path: Path,
+    write_roles: Path,
+    write_role_assignments: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Вторая половина правки 4 — у ВЫЗЫВАЮЩЕГО.
+
+    Настоящую гонку (файл политики исчез между загрузкой и вычислением digest)
+    детерминированно воспроизвести нельзя, поэтому подменяется ГРАНИЦА:
+    `approval_facts_outcome` поднимает `PolicyError`. Пинается здесь не она, а
+    `except` в `main`: без `PolicyError` в кортеже прогон отдаёт exit 1 с
+    непойманным исключением вместо честного config error.
+
+    Политика, роли, назначения и бандл — свои, внутри `tmp_path`; `--no-fs`
+    убирает потребность в живом git-репозитории.
+    """
+    _policy_file(tmp_path)
+    profile = tmp_path / "test.yaml"
+    profile.write_text(_CLI_PROFILE, encoding="utf-8")
+    spec = tmp_path / "spec"
+    spec.mkdir()
+    (spec / "req.md").write_text(
+        "---\nspec_stage: requirements\nstatus: draft\nversion: 1\n---\n## REQ-001\n",
+        encoding="utf-8",
+    )
+    facts_json = tmp_path / "facts.json"
+    facts_json.write_text("{}", encoding="utf-8")
+
+    def raise_policy_error(*args: object, **kwargs: object) -> object:
+        raise PolicyError("файл политики стал нечитаем на шаге digest")
+
+    monkeypatch.setattr(cli_module, "approval_facts_outcome", raise_policy_error)
+    result = CliRunner().invoke(
+        app,
+        [
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts_json),
+            "--stage",
+            "release",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "config error" in result.output
+    assert "Traceback" not in result.output
