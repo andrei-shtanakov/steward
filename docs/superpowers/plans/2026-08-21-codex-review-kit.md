@@ -1110,19 +1110,41 @@ Expected: PASS, 6 тестов.
 
 - [ ] **Step 5: Мутационная проверка каждого условия контракта**
 
+**Рецепт поиска строки — обязательный, и он не косметика.** Искать `grep -nF` по
+ПОЛНОЙ литеральной строке и требовать ровно одно совпадение. Две ловушки, обе
+сработали в этом воркстриме на первой же попытке:
+
+- BSD `grep` (macOS) трактует неэкранированный `$` в середине BRE как якорь конца
+  строки, поэтому паттерн вида `local_sha" != "$head_sha` **не совпадает вовсе**.
+  Номер строки выходит пустым, `sed "${ln}s/.*/true/"` вырождается в
+  `sed "s/.*/true/"` и переписывает ВЕСЬ файл. Тесты краснеют — и это выглядит
+  успешной мутацией, хотя мутировано всё сразу.
+- Короткая подстрока попадает не туда: пробник `count` совпадает с присваиванием
+  `count=$(…)` раньше, чем с проверкой `[ "$count" -eq 1 ]`. Мутируется соседняя
+  строка, страж остаётся нетронутым, а набор краснеет по чужой причине.
+
 ```bash
 cp .github/hooks/pre-push /tmp/orig-h.sh
-for probe in 'count' 'refs/heads' 'local_sha" != "$head_sha'; do
-    cp /tmp/orig-h.sh .github/hooks/pre-push
-    ln=$(grep -n "$probe" .github/hooks/pre-push | head -1 | cut -d: -f1)
+mutate() {   # $1 — ПОЛНАЯ литеральная строка стража
+    hits=$(grep -cF "$1" /tmp/orig-h.sh)
+    [ "$hits" = 1 ] || { echo "ПРОБНИК НЕОДНОЗНАЧЕН ($hits совпадений): $1"; return 1; }
+    ln=$(grep -nF "$1" /tmp/orig-h.sh | cut -d: -f1)
     sed "${ln}s/.*/true/" /tmp/orig-h.sh > .github/hooks/pre-push
-    sed -n "${ln}p" .github/hooks/pre-push          # сверить подстановку
-    echo "--- мутирован '$probe' ---"
+    echo "--- строка $ln стала: $(sed -n "${ln}p" .github/hooks/pre-push)"
+    echo "--- длина: $(wc -l < /tmp/orig-h.sh) → $(wc -l < .github/hooks/pre-push)"
     uv run pytest tests/review/test_pre_push_hook.py -q || true
-done
-cp /tmp/orig-h.sh .github/hooks/pre-push
+    cp /tmp/orig-h.sh .github/hooks/pre-push
+}
+mutate '[ "$count" -eq 1 ] || unsupported'
+mutate 'refs/heads/*) ;;'
+mutate 'if [ "$local_sha" != "$head_sha" ]; then'
 ```
-Expected: каждая из трёх мутаций краснит **свой** тест. Мутация, оставившая набор зелёным, означает вакуумный тест.
+
+Expected: каждая из трёх мутаций краснит **свой** тест, длина файла не меняется,
+подставленная строка напечатана и равна `true`. Мутация, оставившая набор
+зелёным, означает вакуумный тест. Мутация, изменившая длину файла или
+напечатавшая не ту строку, означает сломанный стенд — чинить стенд, а результат
+выбросить.
 
 - [ ] **Step 6: Написать установщик**
 
