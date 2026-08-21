@@ -29,7 +29,12 @@ def test_valid_fixtures_conform(fixture: str) -> None:
 
 @pytest.mark.parametrize(
     "fixture",
-    ["bad_state_for_kind.jsonl", "extra_field_on_negative.jsonl"],
+    [
+        "bad_state_for_kind.jsonl",
+        "extra_field_on_negative.jsonl",
+        "bad_timestamp_format.jsonl",
+        "missing_merge_sha_negative.jsonl",
+    ],
 )
 def test_invalid_fixtures_are_rejected(fixture: str) -> None:
     with pytest.raises(jsonschema.ValidationError):

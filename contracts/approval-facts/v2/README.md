@@ -21,8 +21,9 @@ duplicate / missing / extra result изолируются на уровне от
 «не требуется» означает **запрещено**, а не «необязательно»).
 
 - **header** — заявка продюсера: `schema_version` (const `"2"`), `repository`
-  (`owner/repo`), `generated_at` / `valid_until` (timezone-aware RFC 3339 UTC),
-  `policy_version` / `policy_digest` (значение и sha256 сырых байтов
+  (`owner/repo`), `generated_at` / `valid_until` (единая каноническая форма
+  провода — см. ниже), `policy_version` / `policy_digest` (значение и sha256
+  сырых байтов
   `profiles/approval-policy.yaml`), `complete` (const `true` — заявление, а не
   доказательство; читатель обязан проверить его сам через инварианты 3–5),
   `scope_sha256` и `scope` — типизированный список запросов `{kind, value}`.
@@ -96,7 +97,17 @@ hex). Одно значение SHA может фигурировать в scope
    побайтовому сравнению JSON-фрагментов строки. `merge_sha` остаётся
    наблюдаемым полем, не ключом;
 7. поля соответствуют `state` (обе матрицы выше);
-8. `generated_at` и `valid_until` — timezone-aware RFC 3339 UTC;
+8. `generated_at` и `valid_until` соответствуют **единой канонической форме
+   провода**, а не произвольному RFC 3339: UTC, суффикс `Z`, секундная
+   точность — `YYYY-MM-DDTHH:MM:SSZ`. Это проверяется **схемой**
+   (`SCHEMA.json` задаёт форму через `pattern`, не через `format`, — у
+   `jsonschema` нет включённого по умолчанию чекера `date-time`, а
+   опциональный `FormatChecker` не решает эту задачу без сторонней
+   зависимости; полагаться на него значило бы сделать enforcement зависимым
+   от того, подключил ли **потребитель** необязательный пакет), а не
+   остаётся обязанностью читателя, как для многообразия форм RFC 3339 в
+   общем случае. Продюсер пишет ровно эту форму; вендорируемому контракту
+   одна каноническая форма провода полезнее произвольного RFC 3339;
 9. алиасы одного мержа (`pr:42` и `merge_sha:<oid>` в одном scope) не
    противоречат друг другу: сравнивается кортеж
    `(state, merge_sha, identity, type_hint, actor_class)` — запись целиком за
@@ -154,6 +165,8 @@ hex). Одно значение SHA может фигурировать в scope
 | `negative_states.jsonl` | header со scope из четырёх запросов + четыре отрицательных/предельных результата (`not_merged`, `not_found`, `no_matching_pr`, `actor_unavailable`) | ✅ |
 | `bad_state_for_kind.jsonl` | `state: not_merged` при `request.kind: merge_sha` — недостижимая по матрице комбинация | ❌ |
 | `extra_field_on_negative.jsonl` | `state: not_found` с посторонним полем `identity` | ❌ |
+| `bad_timestamp_format.jsonl` | `generated_at: "not-a-date"` — не канонической формы провода | ❌ |
+| `missing_merge_sha_negative.jsonl` | `state: not_found` без поля `merge_sha` вовсе (матрица требует явный `null`, не отсутствие) | ❌ |
 
 `clean.jsonl` и `negative_states.jsonl` несут **настоящий** `scope_sha256`,
 пересчитанный по рецепту выше, а не правдоподобно выглядящее значение: формат
