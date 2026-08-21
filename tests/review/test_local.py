@@ -312,6 +312,71 @@ def test_missing_origin_head_is_config_error(tmp_path: Path) -> None:
     assert "set-head" in result.stderr
 
 
+def test_single_non_origin_remote_is_used_without_explicit_flag(tmp_path: Path) -> None:
+    """`git clone -o github`, других remote'ов нет, `refs/remotes/github/HEAD`
+    настроен штатно (`git remote set-head github -a`). Хук через --remote
+    уже работает; документированный ручной `sh scripts/review/local.sh` не
+    обязан падать на буквальном "origin" в корректно настроенном
+    репозитории — единственный remote не двусмысленен, это не догадка."""
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    subprocess.run(["git", "-C", str(remote), "init", "-q", "-b", "master"], check=True)
+    git(remote, "config", "user.email", "t@t")
+    git(remote, "config", "user.name", "t")
+    (remote / "base.txt").write_text("base\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "base")
+
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", "-q", "-o", "github", str(remote), str(local)],
+        check=True,
+        capture_output=True,
+    )
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    git(local, "remote", "set-head", "github", "-a")
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK))
+    assert result.returncode == 0, result.stderr
+    assert "не задан refs/remotes/origin/HEAD" not in result.stderr
+
+
+def test_multiple_remotes_without_origin_refuses_and_lists_them(tmp_path: Path) -> None:
+    """Несколько remote'ов, `origin` среди них нет — угадывать, какой из них
+    имелся в виду, нельзя (то же машинно-зависимое поведение, против
+    которого написан §6). Отказ, перечисляющий найденные remote'ы, и
+    подсказка про --remote."""
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    subprocess.run(["git", "-C", str(remote), "init", "-q", "-b", "master"], check=True)
+    git(remote, "config", "user.email", "t@t")
+    git(remote, "config", "user.name", "t")
+    (remote / "base.txt").write_text("base\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "base")
+
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", "-q", "-o", "github", str(remote), str(local)],
+        check=True,
+        capture_output=True,
+    )
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    git(local, "remote", "set-head", "github", "-a")
+    git(local, "remote", "add", "upstream", str(remote))
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK))
+    assert result.returncode == 2
+    assert "github" in result.stderr
+    assert "upstream" in result.stderr
+    assert "--remote" in result.stderr
+
+
 def test_renamed_default_branch_on_origin_is_reported_loudly_not_as_no_connection(
     tmp_path: Path,
 ) -> None:

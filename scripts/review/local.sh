@@ -43,6 +43,7 @@ format="text"
 # Git передаёт имя remote хуку первым аргументом; --remote — явный канал для
 # той же информации при прогоне без хука.
 remote="origin"
+remote_explicit=0
 
 usage() {
     echo "usage: local.sh [--base <ref>] [--head <ref>] [--remote <name>]" \
@@ -57,12 +58,44 @@ while [ $# -gt 0 ]; do
         # shell мимо usage() — платформозависимое поведение опаснее прямого exit 2.
         --base)   [ $# -ge 2 ] || { usage; exit 2; }; base="$2"; shift 2 ;;
         --head)   [ $# -ge 2 ] || { usage; exit 2; }; head_ref="$2"; shift 2 ;;
-        --remote) [ $# -ge 2 ] || { usage; exit 2; }; remote="$2"; shift 2 ;;
+        --remote) [ $# -ge 2 ] || { usage; exit 2; }; remote="$2"; remote_explicit=1; shift 2 ;;
         --format) [ $# -ge 2 ] || { usage; exit 2; }; format="$2"; shift 2 ;;
         --fetch)  do_fetch=1; shift ;;
         *) usage; exit 2 ;;
     esac
 done
+
+# --- remote по умолчанию: единственный не двусмыслен, но не догадка --------
+# "origin" — умолчание, а не догадка сама по себе (см. комментарий выше). Но
+# если пользователь НЕ указал --remote явно, а "origin" в принципе не
+# существует как remote (не просто без настроенного HEAD — которое чинится
+# сообщением ниже) и в репозитории ровно ОДИН remote, брать его — не
+# эвристика: других кандидатов нет, это единственный непротиворечивый ответ.
+# Раньше `git clone -o github` с единственным remote'ом и корректно
+# настроенным `refs/remotes/github/HEAD` всё равно падал на буквальном
+# "origin", хотя хук через --remote уже работает — документированный ручной
+# `sh scripts/review/local.sh` был рассинхронизирован с тем же самым репо.
+# Несколько remote'ов без "origin" среди них — угадывать какой из них
+# нельзя (ровно то машинно-зависимое поведение, против которого написан
+# §6), отказ с перечислением найденных.
+if [ "$remote_explicit" -eq 0 ] && ! git remote get-url "$remote" >/dev/null 2>&1; then
+    remote_list=$(git remote)
+    remote_count=$(printf '%s\n' "$remote_list" | grep -c . || true)
+    if [ "$remote_count" -eq 1 ]; then
+        remote="$remote_list"
+    else
+        echo "remote '$remote' не настроен." >&2
+        if [ "$remote_count" -eq 0 ]; then
+            echo "В этом репозитории нет ни одного remote." >&2
+        else
+            echo "Найдены remote'ы:" >&2
+            printf '%s\n' "$remote_list" | sed 's/^/  /' >&2
+            echo "Несколько remote'ов, и среди них нет '$remote' —" \
+                "угадывать нельзя. Укажите --remote <имя>." >&2
+        fi
+        exit 2
+    fi
+fi
 
 # --- ветка по умолчанию: отказ, а не догадка -------------------------------
 # Угадывание по списку завело бы машинно-зависимое поведение. Флот за такое уже
