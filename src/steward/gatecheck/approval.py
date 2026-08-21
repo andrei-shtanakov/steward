@@ -260,22 +260,22 @@ FactsOutcome = ApprovalFactsV2 | FactsUnavailable
 #: чтобы код без своего сообщения нельзя было завести незаметно.
 _UNAVAILABLE_MESSAGES: dict[str, str] = {
     "absent": (
-        "материализованное merge-evidence отсутствует по разрешённому пути — "
-        "материализуйте его командой `steward approval-facts`"
+        "materialized merge evidence is absent at the resolved path — "
+        "materialize it with the `steward approval-facts` command"
     ),
     "legacy_v1": (
-        "источник фактов — неподдерживаемый устаревший approval-facts/v1; "
-        "перевыпустите его командой `steward approval-facts`"
+        "facts source is an unsupported legacy approval-facts/v1; "
+        "reissue it with the `steward approval-facts` command"
     ),
-    "unreadable": ("источник фактов не является валидным approval-facts/v2 и не читается целиком"),
+    "unreadable": ("facts source is not a valid approval-facts/v2 and cannot be read in full"),
     "policy_digest_mismatch": (
-        "наблюдение получено по ДРУГОЙ политике классификации: policy_digest не "
-        "совпал с текущими байтами approval-policy.yaml"
+        "observation was produced under a DIFFERENT classification policy: policy_digest "
+        "does not match the current approval-policy.yaml bytes"
     ),
     "lease_mismatch": (
-        "заявленная длительность наблюдения не равна действующему approval_facts_lease_seconds"
+        "declared observation duration does not equal the active approval_facts_lease_seconds"
     ),
-    "stale": "наблюдение просрочено: lease истекла",
+    "stale": "observation is stale: lease has expired",
 }
 
 #: Закрытый набор причин недоступности (§8.3, строки 1-5 плюс правило §8.3.1).
@@ -314,15 +314,15 @@ def resolve_facts(
     path = Path(path)
     # Строка 1.
     if not path.exists():
-        return FactsUnavailable("absent", f"файл не найден: {path}")
+        return FactsUnavailable("absent", f"file not found: {path}")
 
     # Строка 2. Легаси опознаётся отдельно от прочей невалидности: «не тот
     # формат» и «испорченный файл того же формата» требуют разных действий
     # оператора, и одно сообщение на оба случая скрывало бы это.
     if detect_legacy_v1(path):
-        detail = f"{path}: обнаружен approval-facts/v1"
+        detail = f"{path}: detected approval-facts/v1"
         if explicit:
-            raise ConfigError(f"неподдерживаемый устаревший approval-facts/v1: {path}")
+            raise ConfigError(f"unsupported legacy approval-facts/v1: {path}")
         return FactsUnavailable("legacy_v1", detail)
     try:
         facts = load_facts(path, expected_repository=expected_repository, now=now)
@@ -346,56 +346,61 @@ def resolve_facts(
     if declared != policy.approval_facts_lease_seconds:
         return FactsUnavailable(
             "lease_mismatch",
-            f"заявлено {declared:.0f} с, действует {policy.approval_facts_lease_seconds} с",
+            f"declared {declared:.0f}s, active {policy.approval_facts_lease_seconds}s",
         )
 
     # Строка 5.
     if now >= facts.header.valid_until:
         return FactsUnavailable(
-            "stale", f"valid_until {facts.header.valid_until:%Y-%m-%dT%H:%M:%SZ} уже прошёл"
+            "stale", f"valid_until {facts.header.valid_until:%Y-%m-%dT%H:%M:%SZ} has already passed"
         )
 
     return facts
 
 
 _OUT_OF_SCOPE = (
-    "мерж {sha} вне объявленного scope наблюдения — актор неизвестен независимо от возраста файла"
+    "merge {sha} is outside the declared observation scope — actor is unknown "
+    "regardless of the file's age"
 )
 
 #: Строки 7-8: SHA заявлен в scope, но определённого разрешения не получил.
 #: Два случая — два разных сообщения: они требуют разного расследования.
 _SOURCE_CONFLICT: dict[str, str] = {
     "not_found": (
-        "противоречие источников по мержу {sha}: git предъявляет merge-provenance, "
-        "а форж заявляет отсутствие коммита (not_found)"
+        "source conflict for merge {sha}: git presents merge-provenance, "
+        "but the forge reports the commit absent (not_found)"
     ),
     "no_matching_pr": (
-        "противоречие источников по мержу {sha}: коммит существует, но не является "
-        "merge-коммитом связанного PR (no_matching_pr), тогда как локально он "
-        "предъявлен как merge-provenance"
+        "source conflict for merge {sha}: the commit exists but is not the "
+        "merge commit of the linked PR (no_matching_pr), while locally it is "
+        "presented as merge-provenance"
     ),
 }
 
-_ACTOR_UNAVAILABLE = "мерж {sha} наблюдён, но актор неразрешим (actor_unavailable)"
-_ACTOR_UNKNOWN = "актор мержа {sha} ({identity}) не опознан закрытой классификацией (unknown)"
+_ACTOR_UNAVAILABLE = (
+    "merge {sha} was observed, but the actor cannot be resolved (actor_unavailable)"
+)
+_ACTOR_UNKNOWN = (
+    "actor of merge {sha} ({identity}) is not recognized by the closed classification (unknown)"
+)
 _AGENT_DENIED = (
-    "актор мержа {sha} ({identity}) классифицирован как agent, но agent_merge не "
-    "удовлетворяет release-политике: в approval-policy.yaml 'agent_merge_allowed' "
-    "равно false — поставьте true там, чтобы разрешить агентские мержи"
+    "actor of merge {sha} ({identity}) is classified as agent, but agent_merge does "
+    "not satisfy the release policy: 'agent_merge_allowed' is false in "
+    "approval-policy.yaml — set it to true there to allow agent merges"
 )
 _ACTOR_UNCLASSIFIED = (
-    "мерж {sha} наблюдён, но его классификация актора {actor_class!r} не входит в "
-    "закрытый набор human/agent/unknown — fail-closed"
+    "merge {sha} was observed, but its actor classification {actor_class!r} is not "
+    "in the closed set human/agent/unknown — fail-closed"
 )
 _PROVENANCE_ABSENT = (
-    "требуемое merge-evidence отсутствует: у текущего блоба нет merge-provenance "
-    "по первому родителю дефолтной ветки"
+    "required merge evidence is absent: the current blob has no merge-provenance "
+    "via the first parent of the default branch"
 )
 
 
 def _unavailable_message(sha: str, outcome: FactsUnavailable) -> str:
-    base = _UNAVAILABLE_MESSAGES.get(outcome.code, f"источник фактов недоступен: {outcome.code}")
-    message = f"мерж {sha}: {base}"
+    base = _UNAVAILABLE_MESSAGES.get(outcome.code, f"facts source is unavailable: {outcome.code}")
+    message = f"merge {sha}: {base}"
     return f"{message} [{outcome.detail}]" if outcome.detail else message
 
 
@@ -429,8 +434,8 @@ def _evaluate(sha: str, facts: FactsOutcome, policy: ApprovalPolicy) -> str | No
             # разрешившиеся в ДРУГОЙ merge-коммит. Наблюдение определённое и
             # всё равно не подтверждает предъявленную provenance.
             return (
-                f"противоречие источников по мержу {sha}: он заявлен в scope, но "
-                f"наблюдение в состоянии {state!r} не разрешает его в этот SHA"
+                f"source conflict for merge {sha}: it is declared in scope, but "
+                f"the observation in state {state!r} does not resolve to this SHA"
             )
         return template.format(sha=sha)  # строки 7-8
 

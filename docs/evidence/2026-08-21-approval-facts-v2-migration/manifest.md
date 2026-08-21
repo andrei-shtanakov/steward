@@ -215,6 +215,134 @@ resolver-полей вида `pullRequest(number:)`, где GitHub всегда 
   всегда была эквивалентность enforcement на реальных данных, а не
   работоспособность парсера как таковая.
 
+## Шаг 4 — §9.2 закрыт целиком: живой прогон через сам гейт (2026-08-21, final-review Important #3)
+
+Финальный whole-branch-ревью (`.superpowers/sdd/2026-08-21-approval-facts-v2/final-review.md`,
+Important #3) указал, что шаг 1 выше материализовал факты с явным `--out /tmp/…`,
+и `gate-check --stage release` ни разу не вызывался — то есть §9.2 доказал
+эквивалентность **классификации** (`classify_actor` на одних и тех же
+`identity`/`type_hint`), но не эквивалентность **enforcement**: bundle-default
+путь (`produce → <repo-root>/.steward/approval_facts.jsonl` →
+`approval_facts_outcome` → `resolve_facts` → `check_approval_evidence`) ни разу
+не исполнялся вне `tmp_path`-фикстур. Этот шаг закрывает именно это.
+
+Пины: steward HEAD `53401ea` + шесть правок финального ревью поверх (рабочее
+дерево на момент запуска содержало только эти правки — gate-check/тесты/
+контракт/README/TODO.md, без изменений в самой approval-facts/v2 логике);
+`gh` 2.83.1, аутентифицирован как `andrei-shtanakov`; политика —
+`profiles/approval-policy.yaml` этого чекаута (та же, что в шаге 1); origin —
+`git@github.com:andrei-shtanakov/steward.git`.
+
+Команда 1 — материализация БЕЗ `--out`, то есть в bundle-default путь
+(`<repo-root>/.steward/approval_facts.jsonl`, `.steward/` в `.gitignore` этого
+репозитория — файл не коммитится, это единственная причина, по которой этот
+манифест, а не git, является свидетельством):
+
+```bash
+uv run steward approval-facts --repo andrei-shtanakov/steward --repo-root . \
+  --merge-sha e04b0c9f30e4670b29afa1af598e5b4d7be48938 \
+  --merge-sha 221457933968be9e95acd51d548e080f739c794c \
+  --merge-sha 05aa16e12981b35c224c2ca28d65f0a9c15c274e
+```
+
+stdout:
+
+```
+ok: 3 result(s) published to /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/steward/.steward/approval_facts.jsonl
+```
+
+Exit code: `0`.
+
+Содержимое опубликованного `.steward/approval_facts.jsonl` (не коммитится;
+идентично по существу шагу 1 — та же политика, те же три мержа — с новыми
+`generated_at`/`valid_until`, так как lease пересчитывается на момент запуска):
+
+```json
+{"kind": "header", "schema_version": "2", "repository": "andrei-shtanakov/steward", "generated_at": "2026-08-21T08:41:47Z", "valid_until": "2026-08-22T08:41:47Z", "policy_version": 1, "policy_digest": "sha256:7ad8ec727796fdb8934a0a7f28b2125d5f01b68a9d475d7e2751c0b8d823d763", "complete": true, "scope_sha256": "sha256:5832b3719506a7ee35b52994bdd711d2cacae9660b5f32542c24d774f898fc73", "scope": [{"kind": "merge_sha", "value": "e04b0c9f30e4670b29afa1af598e5b4d7be48938"}, {"kind": "merge_sha", "value": "221457933968be9e95acd51d548e080f739c794c"}, {"kind": "merge_sha", "value": "05aa16e12981b35c224c2ca28d65f0a9c15c274e"}]}
+{"kind": "result", "request": {"kind": "merge_sha", "value": "e04b0c9f30e4670b29afa1af598e5b4d7be48938"}, "state": "merged", "merge_sha": "e04b0c9f30e4670b29afa1af598e5b4d7be48938", "identity": "github:andrei-shtanakov", "type_hint": "User", "actor_class": "human"}
+{"kind": "result", "request": {"kind": "merge_sha", "value": "221457933968be9e95acd51d548e080f739c794c"}, "state": "merged", "merge_sha": "221457933968be9e95acd51d548e080f739c794c", "identity": "github:merge-broker", "type_hint": "Bot", "actor_class": "agent"}
+{"kind": "result", "request": {"kind": "merge_sha", "value": "05aa16e12981b35c224c2ca28d65f0a9c15c274e"}, "state": "merged", "merge_sha": "05aa16e12981b35c224c2ca28d65f0a9c15c274e", "identity": "github:merge-broker", "type_hint": "Bot", "actor_class": "agent"}
+```
+
+Команда 2 — the release gate, run against the bundle-default file the CLI just wrote (no path argument to gate-check names it explicitly; `approval_facts_outcome` finds it via the repo-root anchor, exactly the path a real `--stage release` invocation would use):
+
+```bash
+uv run gate-check --profile team --stage release spec/
+```
+
+stdout:
+
+```
+gate-check: 0 error(s), 0 warning(s)
+```
+
+Exit code: `0`.
+
+**Результат: `0 error(s), 0 warning(s)`, exit `0` — но это не то доказательство,
+которое ожидалось изначально, и оно фиксируется как есть, а не подгоняется.**
+Причина зелёного результата — не «все три мержа прошли проверку `_evaluate`»,
+а то, что `spec/*.md` этого репозитория **целиком в статусе `status: draft`**
+(`grep -m1 '^status:' spec/*.md` → все пять — `draft`). `check_approval_evidence`
+пропускает артефакт до вызова `_evaluate`, если `meta.status != "approved"`
+(`approval.py`, комбинатор, первая проверка цикла) — то есть по `spec/` в этом
+чекауте цикл по артефактам не долетает ни до одного реального SHA, включая три
+материализованных выше.
+
+Диагностика, чтобы не выдавать пустое множество за доказательство:
+только что опубликованный bundle-default файл был преднамеренно испорчен
+(дописана заведомо невалидная строка), и `--stage release` прогон повторён:
+
+```bash
+echo "not valid jsonl at all {{{" >> .steward/approval_facts.jsonl
+uv run gate-check --profile team --stage release spec/
+```
+
+stdout:
+
+```
+gate-check: 0 error(s), 0 warning(s)
+```
+
+Exit code: `0` — **тот же самый результат**, что и с валидным файлом. Это
+подтверждает диагноз напрямую: если бы хоть один артефакт доходил до
+`_evaluate`, испорченный файл дал бы `FactsUnavailable("unreadable", …)` и
+находку `GC-APPROVAL-MISSING`; вместо этого `resolve_facts` вызывается
+безусловно на стадии `release` (`cli.py:333-343`, до цикла по артефактам,
+независимо от того, есть ли approved-узлы), поэтому чтение и валидация 11
+инвариантов файла реально исполняются на живых данных — но результат этого
+чтения в `spec/` этого репозитория никогда не долетает до
+`check_approval_evidence`'s `_evaluate`, потому что нечего проверять. Файл
+восстановлен побайтово (`diff` до/после — пусто) сразу после проверки.
+
+```bash
+uv run gate-check --profile team --stage release spec/
+```
+
+stdout (после восстановления файла):
+
+```
+gate-check: 0 error(s), 0 warning(s)
+```
+
+Exit code: `0`.
+
+**Вывод по шагу 4, честно:** bundle-default путь **прочитан** гейтом целиком на
+живых данных в этом прогоне — `approval_facts_outcome` → `resolve_facts` нашли
+файл по неоверрайженному anchor'у, прошли все 11 инвариантов и сверку
+`policy_digest`/lease без ошибки. Это закрывает ровно ту половину Important #3,
+которую можно закрыть в этом репозитории прямо сейчас: путь чтения (Task 8's
+seam) больше не гипотетичен. **Половина, которая осталась НЕ доказанной этим
+прогоном — сам комбинатор `_evaluate` на реальном SHA, реальной
+merge-provenance и реальном `policy_digest` одновременно** — потому что ни один
+артефакт `spec/` не в статусе `approved`, и в этом чекауте нет артефакта, чью
+merge-provenance можно было бы честно указать на один из трёх материализованных
+SHA без редактирования `spec/*.md` под тест. Тесты `tests/gatecheck/test_approval_check.py`
+покрывают эту половину исчерпывающе (61 тест, синтетический git+facts), но
+именно живого прогона обеих половин СРАЗУ, на одном и том же реальном
+артефакте — по-прежнему нет. Фиксирую это explicitly, а не молчу: команда
+выполнялась дважды (валидный файл, испорченный файл), без ретраев ради другого
+результата, и оба раза дала один и тот же exit-код по одной и той же причине.
+
 ## Файлы
 
 - `docs/evidence/2026-08-21-approval-facts-v2-migration/approval_facts.jsonl` —

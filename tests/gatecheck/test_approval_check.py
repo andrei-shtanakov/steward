@@ -749,7 +749,7 @@ def test_sha_outside_scope_is_unknown_not_conflict() -> None:
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
-    assert "вне объявленного scope" in findings[0].message
+    assert "outside the declared observation scope" in findings[0].message
 
 
 def test_merge_absent_from_index_and_scope_is_out_of_scope() -> None:
@@ -769,7 +769,7 @@ def test_merge_absent_from_index_and_scope_is_out_of_scope() -> None:
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
-    assert "вне объявленного scope" in findings[0].message
+    assert "outside the declared observation scope" in findings[0].message
 
 
 def test_not_found_for_requested_sha_is_source_conflict() -> None:
@@ -780,7 +780,7 @@ def test_not_found_for_requested_sha_is_source_conflict() -> None:
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
-    assert "противоречие источников" in findings[0].message
+    assert "source conflict" in findings[0].message
 
 
 def test_no_matching_pr_for_requested_sha_is_source_conflict() -> None:
@@ -791,7 +791,7 @@ def test_no_matching_pr_for_requested_sha_is_source_conflict() -> None:
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
-    assert "противоречие источников" in findings[0].message
+    assert "source conflict" in findings[0].message
 
 
 def test_two_source_conflicts_have_distinct_messages() -> None:
@@ -1037,7 +1037,7 @@ def test_stale_facts_do_not_satisfy_a_human_merge(tmp_path: Path) -> None:
     )
     findings = _check(outcome, git=_git(sha=SHA))
     assert len(findings) == 1
-    assert "просрочен" in findings[0].message
+    assert "lease has expired" in findings[0].message
 
 
 def test_fresh_facts_from_the_same_file_do_satisfy_it(tmp_path: Path) -> None:
