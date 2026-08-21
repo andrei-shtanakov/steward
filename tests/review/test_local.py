@@ -433,20 +433,47 @@ def test_fetch_against_unreachable_remote_is_config_error_not_raw_git_code(
     assert "не удалось обновить" in result.stderr
 
 
-def test_fetch_with_explicit_base_reports_being_ignored(tmp_path: Path) -> None:
-    """При явном --base `--fetch` не резолвит default_branch и ничего не
-    обновляет — молчание здесь было бы той же несопоставимостью диапазонов,
-    ради которой написан §6.1. Флаг обязан сказать о себе явно."""
+def test_fetch_with_explicit_remote_tracking_base_updates_it(tmp_path: Path) -> None:
+    """Гейт: явный `--base refs/remotes/origin/release/1.0 --fetch` (hotfix от
+    отставшей ветки) раньше молча пропускал --fetch, хотя запрошенное было
+    исполнимо — база ОДНОЗНАЧНО remote-tracking ref нужного remote, имя
+    ветки извлекается напрямую. Пара «без флага / с флагом» на одном и том
+    же отставшем состоянии, ровно как на пути умолчания."""
+    remote, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    # Удалённый ушёл вперёд, локальный remote-tracking про это не знает
+    (remote / "other.txt").write_text("чужое\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "чужой коммит")
+
+    before = run_local(local, make_stub(tmp_path, STUB_OK), "--base", "refs/remotes/origin/master")
+    assert "устарел" in (before.stdout + before.stderr).lower()
+
+    after = run_local(
+        local, make_stub(tmp_path, STUB_OK), "--base", "refs/remotes/origin/master", "--fetch"
+    )
+    assert after.returncode == 0, after.stderr
+    assert "устарел" not in (after.stdout + after.stderr).lower()
+    assert "--fetch игнорируется" not in after.stderr
+
+
+def test_fetch_with_non_tracking_explicit_base_reports_being_ignored(tmp_path: Path) -> None:
+    """Контрольный к тесту выше: `--base` на ЛОКАЛЬНУЮ ветку (не
+    remote-tracking ref) не может быть обновлён `--fetch` — тянуть
+    буквально нечего, "--fetch игнорируется" по-прежнему обязан
+    печататься, и текст обязан называть настоящую причину (база не
+    remote-tracking ref), а не просто факт явного --base."""
     _, local = make_repo(tmp_path)
     (local / "new.txt").write_text("новое\n", encoding="utf-8")
     git(local, "add", "-A")
     git(local, "commit", "-qm", "работа")
 
-    result = run_local(
-        local, make_stub(tmp_path, STUB_OK), "--base", "refs/remotes/origin/master", "--fetch"
-    )
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", "master", "--fetch")
     assert result.returncode == 0, result.stderr
     assert "--fetch игнорируется" in result.stderr
+    assert "remote-tracking" in result.stderr
 
 
 def test_explicit_head_reviews_that_ref_not_current_head(tmp_path: Path) -> None:

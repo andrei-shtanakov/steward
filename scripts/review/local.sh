@@ -62,22 +62,34 @@ done
 # Угадывание по списку завело бы машинно-зависимое поведение. Флот за такое уже
 # платил: список зеркал Robin держал устаревшие имена репо и молча был слеп к
 # двум активным.
-default_branch=""
 if [ -z "$base" ]; then
     if ! ref=$(git symbolic-ref "refs/remotes/$remote/HEAD" 2>/dev/null); then
         echo "не задан refs/remotes/$remote/HEAD — ветку по умолчанию не угадываем." >&2
         echo "выполните: git remote set-head $remote -a   (или укажите --base)" >&2
         exit 2
     fi
-    default_branch="${ref#refs/remotes/$remote/}"
-    base="refs/remotes/$remote/$default_branch"
+    base="refs/remotes/$remote/${ref#refs/remotes/$remote/}"
 fi
 
-if [ "$do_fetch" -eq 1 ] && [ -z "$default_branch" ]; then
-    # Явный --base — не наша ветка по умолчанию; молча не сработавший
-    # флаг был бы той же несопоставимостью диапазонов, ради которой
-    # написан §6.1, только с другой стороны.
-    echo "--fetch игнорируется: база задана явно через --base." >&2
+# --- ветка, отслеживаемая через remote-tracking ref -------------------------
+# И путь умолчания, и явный --base могут указывать на `refs/remotes/$remote/*`
+# — тогда имя ветки извлекается из base ОДНОЗНАЧНО, и запрошенные --fetch и
+# проверка свежести исполнимы для нЕЁ точно так же, как на пути умолчания.
+# Раньше явный --base безусловно читался как "не наша ветка по умолчанию" и
+# --fetch на нём молча пропускался — даже когда база была ИМЕННО
+# remote-tracking ref'ом того же remote и запрошенное было исполнимо
+# (hotfix-ветка вида `--base refs/remotes/origin/release/1.0 --fetch`).
+# Настоящая причина пропуска — база НЕ ЯВЛЯЕТСЯ remote-tracking ref'ом
+# нужного remote (локальная ветка, голый SHA, ref другого remote'а), а не
+# сам факт явного --base.
+track_branch=""
+case "$base" in
+    "refs/remotes/$remote/"*) track_branch="${base#refs/remotes/$remote/}" ;;
+esac
+
+if [ "$do_fetch" -eq 1 ] && [ -z "$track_branch" ]; then
+    echo "--fetch игнорируется: база не является remote-tracking ref'ом" \
+        "$remote (локальная ветка, голый SHA или ref другого remote'а)." >&2
 fi
 
 # --- свежесть базы -----------------------------------------------------
@@ -100,9 +112,9 @@ fi
 # которая назвала бы настоящую причину (ветки нет, `set-head`), управление
 # не доходит. Порядок — часть контракта: при переименованной ветке причина
 # обязана быть настоящей что с `--fetch`, что без него.
-if [ -n "$default_branch" ]; then
+if [ -n "$track_branch" ]; then
     ls_remote_ok=1
-    if ! remote_line=$(git ls-remote --heads "$remote" "$default_branch" 2>/dev/null); then
+    if ! remote_line=$(git ls-remote --heads "$remote" "$track_branch" 2>/dev/null); then
         ls_remote_ok=0
     fi
 
@@ -110,9 +122,9 @@ if [ -n "$default_branch" ]; then
         # Ветки на remote больше нет — тянуть нечего, и молчать об
         # истинной причине нельзя. --fetch здесь не помог бы, поэтому
         # попытка фетча ниже намеренно пропущена.
-        echo "ВНИМАНИЕ: ветки '$default_branch' нет на $remote —" \
-            "refs/remotes/$remote/HEAD устарел (например, после" \
-            "переименования ветки по умолчанию)." >&2
+        echo "ВНИМАНИЕ: ветки '$track_branch' нет на $remote —" \
+            "refs/remotes/$remote/$track_branch устарела (например, после" \
+            "переименования или удаления этой ветки)." >&2
         echo "  диапазон посчитан против несуществующей на $remote ветки." >&2
         echo "  выполните: git remote set-head $remote -a" >&2
     elif [ "$do_fetch" -eq 1 ]; then
@@ -122,8 +134,8 @@ if [ -n "$default_branch" ]; then
         # объявленного §7 набора 0/1/2/3 — тот же класс, что уже правили
         # (repo-root, построение диапазона, схема/промпт). Сбой fetch —
         # ошибка конфигурации/окружения, код 2.
-        if ! fetch_err=$(git fetch -q "$remote" "$default_branch" 2>&1); then
-            echo "не удалось обновить $default_branch с $remote:" >&2
+        if ! fetch_err=$(git fetch -q "$remote" "$track_branch" 2>&1); then
+            echo "не удалось обновить $track_branch с $remote:" >&2
             echo "$fetch_err" >&2
             exit 2
         fi
