@@ -510,6 +510,31 @@ def test_empty_file_is_unreadable(tmp_path: Path) -> None:
         load_facts(path, expected_repository=REPO, now=NOW)
 
 
+def test_missing_file_raises_unreadable_not_os_error(tmp_path: Path) -> None:
+    """Round 3: the `except OSError as exc: raise UnreadableFacts(...) from
+    exc` translation (`reader.py:239-240`) is exactly finding 2's class
+    (fail-closed contract: any rejection must be `UnreadableFacts`, never a
+    bare Python exception) but is neither an `if`/`raise` guard the
+    mutation sweep's AST filter can see, nor exercised by any existing
+    test. A missing `.steward/approval_facts.jsonl` is the release gate's
+    single most ordinary input."""
+    path = tmp_path / "does-not-exist.jsonl"
+    with pytest.raises(UnreadableFacts, match="не читается"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_malformed_json_line_raises_unreadable_not_json_decode_error(tmp_path: Path) -> None:
+    """Round 3: the `except json.JSONDecodeError as exc: raise
+    UnreadableFacts(...) from exc` translation (`reader.py:248-249`) — same
+    class as above, plus `JSONDecodeError` is a `ValueError` subclass, never
+    an `UnreadableFacts` subclass, so a caller's `except UnreadableFacts`
+    would not catch a regression here."""
+    path = tmp_path / "approval_facts.jsonl"
+    path.write_text("{not valid json\n", encoding="utf-8")
+    with pytest.raises(UnreadableFacts, match="не JSON"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
 def test_scope_request_malformed_shape_is_unreadable(tmp_path: Path) -> None:
     """`_request`'s own shape guard (`{kind, value}` and nothing else) —
     found unpinned by the round-2 exhaustive mutation sweep (`reader.py:124`).
