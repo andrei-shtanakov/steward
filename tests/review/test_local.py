@@ -75,13 +75,19 @@ def make_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def run_local(
-    repo: Path, stub: str, *args: str, cwd: Path | None = None
+    repo: Path,
+    stub: str,
+    *args: str,
+    cwd: Path | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["REVIEW_CMD"] = stub
     env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
     env["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
     env["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         ["sh", str(SCRIPT), *args],
         cwd=str(cwd or repo),
@@ -116,6 +122,41 @@ def test_broken_reviewer_is_mechanical_failure(tmp_path: Path) -> None:
     git(local, "commit", "-qm", "работа")
     result = run_local(local, make_stub(tmp_path, STUB_BROKEN))
     assert result.returncode == 3
+
+
+def test_missing_schema_is_config_error_not_reviewer_failure(tmp_path: Path) -> None:
+    """Отсутствующая схема раньше доходила до `codex exec --output-schema
+    <нет-файла>` и падала уже там кодом 3 — конфигурационный отказ читался
+    как механический сбой ревьюера. Preflight обязан поймать это ДО вызова."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_BROKEN),  # сломанный: вызов был бы виден
+        env_overrides={"REVIEW_SCHEMA": str(tmp_path / "нет-такой-схемы.json")},
+    )
+    assert result.returncode == 2
+    assert "нет файла схемы" in result.stderr
+
+
+def test_missing_prompt_is_config_error(tmp_path: Path) -> None:
+    """Симметрично схеме: отсутствующий промпт — тоже конфигурационный отказ,
+    не сбой ревьюера. Сегодня это и так держится `build-prompt.sh`
+    (пробрасывается через `set -e`), но контракт стоит проверить напрямую, а
+    не полагаться на транзитивное поведение соседнего скрипта."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_BROKEN),
+        env_overrides={"REVIEW_PROMPT": str(tmp_path / "нет-такого-промпта.md")},
+    )
+    assert result.returncode == 2
+    assert "нет файла инструкций" in result.stderr
 
 
 def test_stale_base_is_reported_and_run_continues(tmp_path: Path) -> None:
