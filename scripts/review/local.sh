@@ -12,8 +12,15 @@ set -eu
 kit_dir="${REVIEW_KIT_DIR:-$(dirname "$0")}"
 # Умолчания относительны корню репо, а не cwd: README велит запускать
 # `sh scripts/review/local.sh`, и запускать будут откуда попало — из
-# подкаталога relative-путь до промпта/схемы молча не резолвится.
-repo_root="$(git rev-parse --show-toplevel)"
+# подкаталога relative-путь до промпта/схемы молча не резолвится. Вне
+# git-репозитория `git rev-parse` сам падает кодом 128 — под `set -e` это
+# утекло бы наружу как есть, вне объявленного §7 набора 0/1/2/3; страж
+# переводит это в код кита с понятным сообщением.
+if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    echo "прогон вне git-репозитория: не удалось определить корень" \
+        "(git rev-parse --show-toplevel)." >&2
+    exit 2
+fi
 schema="${REVIEW_SCHEMA:-$repo_root/.github/codex/review-schema.json}"
 prompt="${REVIEW_PROMPT:-$repo_root/.github/codex/review-prompt.md}"
 review_cmd="${REVIEW_CMD:-codex}"
@@ -57,8 +64,15 @@ if [ -z "$base" ]; then
     base="refs/remotes/origin/$default_branch"
 fi
 
-if [ "$do_fetch" -eq 1 ] && [ -n "$default_branch" ]; then
-    git fetch -q origin "$default_branch"
+if [ "$do_fetch" -eq 1 ]; then
+    if [ -n "$default_branch" ]; then
+        git fetch -q origin "$default_branch"
+    else
+        # Явный --base — не наша ветка по умолчанию; молча не сработавший
+        # флаг был бы той же несопоставимостью диапазонов, ради которой
+        # написан §6.1, только с другой стороны.
+        echo "--fetch игнорируется: база задана явно через --base." >&2
+    fi
 fi
 
 # --- свежесть базы ---------------------------------------------------------

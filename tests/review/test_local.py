@@ -135,6 +135,18 @@ def test_stale_base_is_reported_and_run_continues(tmp_path: Path) -> None:
     assert "устарел" in combined.lower() or "устаревш" in combined.lower()
 
 
+def test_outside_git_repo_is_config_error(tmp_path: Path) -> None:
+    """Вне git-репозитория `git rev-parse --show-toplevel` сам падает 128 —
+    страж обязан перевести это в код кита (2), а не дать утечь коду вне
+    объявленного §7 набора 0/1/2/3."""
+    not_a_repo = tmp_path / "не-репо"
+    not_a_repo.mkdir()
+    result = run_local(not_a_repo, make_stub(tmp_path, STUB_OK))
+    assert result.returncode == 2
+    assert "128" not in result.stderr
+    assert "git-репозитория" in result.stderr
+
+
 def test_missing_origin_head_is_config_error(tmp_path: Path) -> None:
     """Ветку по умолчанию не угадываем — отказываем с подсказкой."""
     _, local = make_repo(tmp_path)
@@ -202,6 +214,22 @@ def test_fetch_with_fresh_base_still_works(tmp_path: Path) -> None:
     result = run_local(local, make_stub(tmp_path, STUB_OK), "--fetch")
     assert result.returncode == 0, result.stderr
     assert "устарел" not in (result.stdout + result.stderr).lower()
+
+
+def test_fetch_with_explicit_base_reports_being_ignored(tmp_path: Path) -> None:
+    """При явном --base `--fetch` не резолвит default_branch и ничего не
+    обновляет — молчание здесь было бы той же несопоставимостью диапазонов,
+    ради которой написан §6.1. Флаг обязан сказать о себе явно."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    result = run_local(
+        local, make_stub(tmp_path, STUB_OK), "--base", "refs/remotes/origin/master", "--fetch"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--fetch игнорируется" in result.stderr
 
 
 def test_explicit_head_reviews_that_ref_not_current_head(tmp_path: Path) -> None:
