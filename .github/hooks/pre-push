@@ -1,0 +1,46 @@
+#!/bin/sh
+# pre-push: ревью того, что РЕАЛЬНО отправляется.
+#
+# Git передаёт сюда через stdin строки `<local ref> <local sha> <remote ref>
+# <remote sha>` — фактически отправляемые ссылки, которые с HEAD совпадать не
+# обязаны. Безусловное ревью HEAD означало бы проверить одно дерево, а
+# отправить другое: результат выглядел бы доказательством, не будучи им.
+#
+# Хук НЕ является governance evidence и ничего не публикует. `--no-verify` —
+# штатный осознанный обход.
+set -eu
+
+kit_dir="${REVIEW_KIT_DIR:-$(git rev-parse --show-toplevel)/scripts/review}"
+head_sha="${REVIEW_HEAD_SHA:-$(git rev-parse HEAD)}"
+
+lines=$(cat)
+count=$(printf '%s' "$lines" | grep -c . || true)
+
+unsupported() {
+    echo "pre-push review: форма пуша не поддержана — $1" >&2
+    echo "Проверить нужное вручную:" >&2
+    echo "  sh $kit_dir/local.sh --head <sha> [--base <ref>]" >&2
+    echo "Либо отправить без ревью: git push --no-verify" >&2
+    exit 1
+}
+
+[ "$count" -eq 1 ] || unsupported "ожидалась ровно одна ссылка, получено $count"
+
+local_ref=$(printf '%s' "$lines" | awk '{print $1}')
+local_sha=$(printf '%s' "$lines" | awk '{print $2}')
+
+case "$local_ref" in
+    refs/heads/*) ;;
+    *) unsupported "отправляется не ветка ($local_ref)" ;;
+esac
+
+case "$local_sha" in
+    *[!0]*) ;;
+    *) unsupported "удаление ветки" ;;
+esac
+
+if [ "$local_sha" != "$head_sha" ]; then
+    unsupported "отправляется $local_sha, а HEAD сейчас $head_sha"
+fi
+
+sh "$kit_dir/local.sh"
