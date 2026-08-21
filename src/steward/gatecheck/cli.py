@@ -341,9 +341,11 @@ def main(
                 policy_path=approval_policy_path,
                 now=datetime.now(UTC),
             )
-        except ConfigError as err:
+        except (ConfigError, PolicyError) as err:
             # §8.3.1: an invalid file the operator pointed at explicitly is a
-            # call error, not an observed property of the environment.
+            # call error, not an observed property of the environment. A policy
+            # file that became unreadable between load and digest is the same
+            # class of failure — a broken input, not an observed actor.
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm
         try:

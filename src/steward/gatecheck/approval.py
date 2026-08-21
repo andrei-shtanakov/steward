@@ -155,8 +155,19 @@ def policy_digest(path: Path) -> str:
 
     Raw bytes, not the parsed document: a comment is part of the audited
     artifact, so editing it honestly changes the digest.
+
+    An unreadable policy file is a :class:`PolicyError` — the same typed,
+    config-level failure ``load_approval_policy`` raises for the same file, so
+    every caller reaches exit 2 instead of a traceback. This function sits on
+    the gate's read path (table row 3), and the gate's whole contract is that
+    a broken instrument never surfaces as a property of the actor; a bare
+    ``OSError`` escaping here would be exactly that.
     """
-    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise PolicyError(f"cannot read approval policy {path}: {exc}") from exc
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def load_approval_policy(path: Path) -> ApprovalPolicy:
@@ -295,6 +306,10 @@ def resolve_facts(
     файла, не по свежести: просроченная lease, несовпавший digest и
     несоответствие длительности — свойства КОРРЕКТНОГО файла, который честно
     сообщает о себе, и дают finding на обоих путях.
+
+    Нечитаемый файл политики поднимает :class:`PolicyError` на обоих путях: это
+    сломанный вход конфигурации, а не наблюдение, и притворяться, что тут есть
+    исход для актора, значило бы выдать поломку прибора за его показание.
     """
     path = Path(path)
     # Строка 1.
@@ -368,6 +383,10 @@ _AGENT_DENIED = (
     "удовлетворяет release-политике: в approval-policy.yaml 'agent_merge_allowed' "
     "равно false — поставьте true там, чтобы разрешить агентские мержи"
 )
+_ACTOR_UNCLASSIFIED = (
+    "мерж {sha} наблюдён, но его классификация актора {actor_class!r} не входит в "
+    "закрытый набор human/agent/unknown — fail-closed"
+)
 _PROVENANCE_ABSENT = (
     "требуемое merge-evidence отсутствует: у текущего блоба нет merge-provenance "
     "по первому родителю дефолтной ветки"
@@ -419,9 +438,18 @@ def _evaluate(sha: str, facts: FactsOutcome, policy: ApprovalPolicy) -> str | No
         return _ACTOR_UNAVAILABLE.format(sha=sha)  # строка 9
     if result.actor_class == "unknown":
         return _ACTOR_UNKNOWN.format(sha=sha, identity=result.identity)  # строка 10
-    if result.actor_class == "agent" and not policy.agent_merge_allowed:
+    if result.actor_class == "agent":
+        if policy.agent_merge_allowed:
+            return None  # строка 12
         return _AGENT_DENIED.format(sha=sha, identity=result.identity)  # строка 11
-    return None  # строки 12-13: разрешённый agent либо human
+    if result.actor_class == "human":
+        return None  # строка 13
+    # Классификации, которой нет в таблице, соответствует ОТКАЗ, а не тишина.
+    # Через читателя сюда не попасть (`merged` обязан нести один из трёх
+    # классов), но эта функция публична и принимает любой `ApprovalFactsV2`;
+    # «политика удовлетворена по умолчанию» — ровно тот fail-open, который
+    # закрытая классификация и запрещает.
+    return _ACTOR_UNCLASSIFIED.format(sha=sha, actor_class=result.actor_class)
 
 
 def check_approval_evidence(

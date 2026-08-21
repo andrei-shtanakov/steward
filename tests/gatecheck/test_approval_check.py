@@ -22,6 +22,7 @@ import pytest
 from steward.approvalfacts.model import (
     ApprovalFactsV2,
     Header,
+    ObservationState,
     RequestId,
     Result,
     scope_digest,
@@ -31,6 +32,7 @@ from steward.gatecheck.approval import (
     FACTS_UNAVAILABLE_CODES,
     ApprovalPolicy,
     FactsUnavailable,
+    PolicyError,
     check_approval_evidence,
     load_approval_policy,
     policy_digest,
@@ -526,6 +528,96 @@ def test_digest_mismatch_on_explicit_path_stays_finding(tmp_path: Path) -> None:
     assert outcome.code == "policy_digest_mismatch"
 
 
+def test_digest_mismatch_outranks_stale(tmp_path: Path) -> None:
+    """Порядок строк 3 и 5 при НАЛОЖЕННЫХ условиях. Отдельная фикстура на
+    каждое условие доказывала бы только существование строки, но не её место:
+    пока условия не пересекаются, любая перестановка остаётся зелёной."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    path = _write_valid(
+        tmp_path,
+        policy_path=policy_path,
+        digest="sha256:" + "e" * 64,
+        generated_at=NOW - timedelta(days=2),
+    )
+    outcome = resolve_facts(
+        path,
+        expected_repository=REPO,
+        policy=policy,
+        policy_path=policy_path,
+        now=NOW,
+        explicit=False,
+    )
+    assert isinstance(outcome, FactsUnavailable)
+    assert outcome.code == "policy_digest_mismatch"
+
+
+def test_digest_mismatch_outranks_lease_mismatch(tmp_path: Path) -> None:
+    """Порядок строк 3 и 4 при наложенных условиях."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    generated = NOW - timedelta(minutes=30)
+    path = _write_valid(
+        tmp_path,
+        policy_path=policy_path,
+        digest="sha256:" + "e" * 64,
+        generated_at=generated,
+        valid_until=generated + timedelta(hours=1),
+    )
+    outcome = resolve_facts(
+        path,
+        expected_repository=REPO,
+        policy=policy,
+        policy_path=policy_path,
+        now=NOW,
+        explicit=False,
+    )
+    assert isinstance(outcome, FactsUnavailable)
+    assert outcome.code == "policy_digest_mismatch"
+
+
+def test_lease_mismatch_outranks_stale(tmp_path: Path) -> None:
+    """Порядок строк 4 и 5 при наложенных условиях: файл выпущен под чужой
+    lease И уже просрочен — сообщать надо о конфигурации, а не о возрасте."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    generated = NOW - timedelta(days=2)
+    path = _write_valid(
+        tmp_path,
+        policy_path=policy_path,
+        generated_at=generated,
+        valid_until=generated + timedelta(hours=1),
+    )
+    outcome = resolve_facts(
+        path,
+        expected_repository=REPO,
+        policy=policy,
+        policy_path=policy_path,
+        now=NOW,
+        explicit=False,
+    )
+    assert isinstance(outcome, FactsUnavailable)
+    assert outcome.code == "lease_mismatch"
+
+
+# --- Fix 4: нечитаемая политика — типизированный отказ, не traceback ---
+
+
+def test_unreadable_policy_file_is_a_typed_config_error(tmp_path: Path) -> None:
+    """Строка 3 читает СЫРЫЕ байты политики. Если файл исчез между загрузкой
+    политики и вычислением digest, это сломанный вход конфигурации (exit 2), а
+    не исход для актора — и уж точно не голый `OSError`."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    path = _write_valid(tmp_path, policy_path=policy_path)
+    policy_path.unlink()
+    with pytest.raises(PolicyError):
+        resolve_facts(
+            path,
+            expected_repository=REPO,
+            policy=policy,
+            policy_path=policy_path,
+            now=NOW,
+            explicit=False,
+        )
+
+
 def test_valid_fresh_file_resolves_to_facts(tmp_path: Path) -> None:
     """Контрольный: без него удаление любой из строк 3-5 было бы неразличимо."""
     policy, policy_path = _loaded_policy(tmp_path)
@@ -715,6 +807,95 @@ def test_two_source_conflicts_have_distinct_messages() -> None:
     assert a != b
 
 
+def _out_of_scope_message() -> str:
+    """Сообщение строки 6, вычисленное тем же кодом — чтобы сравнивать с ним,
+    а не с его копией в тексте теста."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", OTHER_SHA)],
+        results=[
+            Result(
+                RequestId("merge_sha", OTHER_SHA),
+                "merged",
+                OTHER_SHA,
+                "github:andrei-shtanakov",
+                "User",
+                "human",
+            )
+        ],
+    )
+    return _check(facts, git=_git(sha=SHA))[0].message
+
+
+def _conflict_message(state: ObservationState) -> str:
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[Result(RequestId("merge_sha", SHA), state)],
+    )
+    return _check(facts, git=_git(sha=SHA))[0].message
+
+
+def _conflict_messages() -> set[str]:
+    """Оба сообщения строк 7-8, вычисленные тем же кодом."""
+    return {_conflict_message("not_found"), _conflict_message("no_matching_pr")}
+
+
+def test_requested_sha_resolving_to_another_merge_is_its_own_diagnosis() -> None:
+    """Достижимая ветка §8.2, у которой нет строки в таблице: про SHA спросили,
+    ответ определённый (`merged`), но разрешился он в ДРУГОЙ merge-коммит.
+    Это не «вне scope» (спрашивали именно про него) и не «форж его не знает»
+    (знает) — значит, и сообщение обязано быть третьим."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[
+            Result(
+                RequestId("merge_sha", SHA),
+                "merged",
+                OTHER_SHA,
+                "github:andrei-shtanakov",
+                "User",
+                "human",
+            )
+        ],
+    )
+    findings = _check(facts, git=_git(sha=SHA))
+    assert len(findings) == 1
+    message = findings[0].message
+    assert message != _out_of_scope_message()
+    assert message not in _conflict_messages()
+
+
+def test_requested_sha_with_actor_unavailable_on_another_merge_is_distinct() -> None:
+    """Та же ветка со вторым состоянием, несущим разрешённый SHA."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[Result(RequestId("merge_sha", SHA), "actor_unavailable", OTHER_SHA)],
+    )
+    findings = _check(facts, git=_git(sha=SHA))
+    assert len(findings) == 1
+    message = findings[0].message
+    assert message != _out_of_scope_message()
+    assert message not in _conflict_messages()
+
+
+# --- Fix 5: классификация вне закрытого набора — отказ, а не тишина ---
+
+
+def test_actor_class_outside_the_closed_set_is_fail_closed() -> None:
+    """`check_approval_evidence` публична и принимает любой `ApprovalFactsV2`.
+    Классификация, которой нет в таблице, обязана давать находку: «по умолчанию
+    политика удовлетворена» — ровно тот fail-open, который закрытая
+    классификация и запрещает."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[
+            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:someone", "User", None)
+        ],
+    )
+    findings = _check(facts, git=_git(sha=SHA))
+    assert len(findings) == 1
+    assert "fail-closed" in findings[0].message
+
+
 def test_actor_unavailable_is_distinct_from_unknown() -> None:
     """Строки 9 и 10 (сценарии 5 и 6)."""
     unavailable = _facts(
@@ -730,6 +911,27 @@ def test_actor_unavailable_is_distinct_from_unknown() -> None:
     a = _check(unavailable, git=_git(sha=SHA))[0].message
     b = _check(unknown, git=_git(sha=SHA))[0].message
     assert a != b, "две разные причины обязаны быть различимы в сообщении"
+
+
+def test_actor_unavailable_is_not_the_unclassified_fallback() -> None:
+    """Строка 9 против запасного fail-closed из §5 правок: у `actor_unavailable`
+    тоже нет `actor_class`, поэтому удаление строки 9 отправляет его в тот же
+    запасной исход — находка остаётся, и тест на «отличается от unknown» её
+    больше не ловит. Сравниваем именно с запасным сообщением, посчитанным тем
+    же кодом."""
+    unavailable = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[Result(RequestId("merge_sha", SHA), "actor_unavailable", SHA)],
+    )
+    unclassified = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[
+            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:someone", "User", None)
+        ],
+    )
+    a = _check(unavailable, git=_git(sha=SHA))[0].message
+    b = _check(unclassified, git=_git(sha=SHA))[0].message
+    assert a != b
 
 
 def test_classified_unknown_gives_finding() -> None:
@@ -755,6 +957,9 @@ def test_unknown_stays_fail_closed_under_allowing_policy() -> None:
     )
     findings = _check(facts, git=_git(sha=SHA), policy=POLICY_ALLOWING)
     assert len(findings) == 1
+    # Именно исход строки 10, а не любая находка: запасной fail-closed тоже
+    # даёт ровно одну, но личности в нём нет.
+    assert "github:stranger" in findings[0].message
 
 
 def test_human_merge_yields_no_finding() -> None:
@@ -912,27 +1117,47 @@ def test_cli_explicit_override_reads_a_file_outside_the_bundle(tmp_path: Path) -
     assert isinstance(outcome, ApprovalFactsV2)
 
 
-def test_cli_without_origin_is_absent_not_a_crash(tmp_path: Path) -> None:
-    """Правило задачи: репозиторий неопознаваем — гейт обязан не падать."""
+def _plant_valid_bundle_file(root: Path, policy_path: Path) -> None:
+    """Положить в бандл ЗАВЕДОМО ГОДНЫЙ файл фактов с заголовком `REPO`.
+
+    Без него тест «репозиторий неопознаваем» проходил бы у любого кода,
+    возвращающего `absent`, — включая мутанта, который вместо вывода из
+    `origin` УГАДЫВАЕТ ожидаемый репозиторий. Разница видна, только когда
+    evidence физически лежит на месте: настоящий код всё равно отказывается
+    его опознавать, угадывающий — принимает. Инвариант 11 читателя сверяет
+    заголовок с тем ожиданием, которое ему ПЕРЕДАЛИ; если ожидание угадано,
+    защита от чужого файла с совпавшим SHA выключена целиком.
+    """
+    (root / ".steward").mkdir(parents=True, exist_ok=True)
+    _write_valid(root / ".steward", policy_path=policy_path)
+
+
+def test_cli_without_origin_refuses_evidence_that_is_present(tmp_path: Path) -> None:
+    """Правило задачи: репозиторий неопознаваем — гейт не падает И не опознаёт."""
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin=None)
+    _plant_valid_bundle_file(root, policy_path)
     outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
 
 
-def test_cli_unparseable_origin_is_absent_not_a_crash(tmp_path: Path) -> None:
+def test_cli_unparseable_origin_refuses_evidence_that_is_present(tmp_path: Path) -> None:
     policy, policy_path = _loaded_policy(tmp_path)
     root = _checkout(tmp_path, origin="not-a-url")
+    _plant_valid_bundle_file(root, policy_path)
     outcome = approval_facts_outcome(None, root, policy=policy, policy_path=policy_path, now=NOW)
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
 
 
-def test_cli_outside_git_repository_is_absent(tmp_path: Path) -> None:
+def test_cli_outside_git_repository_refuses_evidence_that_is_present(tmp_path: Path) -> None:
+    """Та же половина для третьего случая: корень репозитория не выводится из
+    каталога бандла подставным способом."""
     policy, policy_path = _loaded_policy(tmp_path)
     outside = tmp_path / "loose"
     outside.mkdir()
+    _plant_valid_bundle_file(outside, policy_path)
     outcome = approval_facts_outcome(None, outside, policy=policy, policy_path=policy_path, now=NOW)
     assert isinstance(outcome, FactsUnavailable)
     assert outcome.code == "absent"
