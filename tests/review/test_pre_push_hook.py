@@ -797,3 +797,53 @@ def test_installer_creates_missing_hookspath_directory(tmp_path: Path) -> None:
     result = subprocess.run(["sh", str(INSTALLER)], cwd=str(local), capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert (myhooks / "pre-push").is_file()
+
+
+def test_installer_refuses_global_hookspath(tmp_path: Path) -> None:
+    """Гейт: `core.hooksPath`, заданный ГЛОБАЛЬНО (или системно), — одно
+    значение на ВСЕ репозитории пользователя. Установщик уже уважает
+    `core.hooksPath` (находка 27 подтверждена гейтом же), но ставить наш
+    opt-in хук в глобальный каталог означало бы, что он молча станет
+    глобальным: сработает на пуше в любой другой репозиторий, где кита
+    нет. Отказ кодом 2, ничего не создаётся в глобальном каталоге.
+
+    Отличается от `test_installer_creates_missing_hookspath_directory`
+    (тот — ЛОКАЛЬНЫЙ core.hooksPath вне `.git`, репо-scoped и безопасный,
+    ставить туда можно и нужно): здесь путь задан именно через
+    `--global`, локального значения в этом репозитории нет вовсе."""
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    global_hooks = fake_home / "global-hooks"
+    env = dict(os.environ)
+    env["HOME"] = str(fake_home)
+    subprocess.run(
+        ["git", "config", "--global", "core.hooksPath", str(global_hooks)],
+        env=env,
+        check=True,
+    )
+    subprocess.run(["git", "config", "--global", "user.email", "t@t"], env=env, check=True)
+    subprocess.run(["git", "config", "--global", "user.name", "t"], env=env, check=True)
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(remote)], check=True)
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", "-q", str(remote), str(local)],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+    hooks_src_dir = local / ".github" / "hooks"
+    hooks_src_dir.mkdir(parents=True)
+    dest = hooks_src_dir / "pre-push"
+    dest.write_text(HOOK.read_text(encoding="utf-8"), encoding="utf-8")
+    dest.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(INSTALLER)], cwd=str(local), capture_output=True, text=True, env=env
+    )
+    assert result.returncode == 2
+    assert "глобально" in result.stderr.lower()
+    assert not global_hooks.exists(), "ничего не должно быть создано в глобальном каталоге"
+    assert not (local / ".git" / "hooks" / "pre-push").is_file()
