@@ -17,8 +17,11 @@ Inputs (exactly one):
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -128,30 +131,129 @@ def waivers_check(
     typer.echo(f"ok: {len(waivers)} waiver(s) valid for {head[:12]}")
 
 
+#: Форма `--merge-sha`, та же, что и везде в контракте v2 (см.
+#: `steward.approvalfacts.reader._MERGE_SHA_RE`): 40-символьный hex в
+#: нижнем регистре.
+_MERGE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 @app.command("approval-facts")
 def approval_facts(
-    repo: str = typer.Option(..., "--repo", help="owner/name"),
-    out: Path = typer.Option(..., "--out", help="approval-facts output file"),
-    merge_sha: list[str] = typer.Option(
-        [], "--merge-sha", help="Merge commit SHA to resolve (repeatable)."
+    repo: str = typer.Option(..., "--repo", help="owner/name на форже"),
+    repo_root: Path = typer.Option(
+        Path("."), "--repo-root", help="Чекаут наблюдаемого репозитория (для пути бандла)."
     ),
-    prs: str | None = typer.Option(None, "--prs", help="Comma-separated PR numbers to resolve."),
+    out: Path | None = typer.Option(
+        None, "--out", help="Явный override пути; без него пишется в бандл."
+    ),
+    policy: Path | None = typer.Option(None, "--policy", help="Файл политики классификации."),
+    merge_sha: list[str] = typer.Option([], "--merge-sha", help="Merge SHA (повторяемо)."),
+    prs: str | None = typer.Option(None, "--prs", help="Номера PR через запятую."),
 ) -> None:
-    """Materialize typed merge-actor facts (GitHub `mergedBy`) via `gh`.
+    """Материализовать `approval-facts/v2` и опубликовать его.
 
-    Disabled for the duration of the ``approval-facts`` v2 migration
-    (steward TODO.md): the v1 materializer this command used to call
-    (``steward.approvalfacts.materialize_approval_facts``) has been
-    deleted along with the v1 format, and its v2 replacement lands in a
-    later task of that migration. Fails fast rather than silently writing
-    a stale-format file. Exit codes: ``2`` config error — always, for now.
+    Порядок здесь — не деталь реализации, а требование §8.4 спеки
+    approval-facts/v2: полный config preflight (шаги 1-5) обязан пройти
+    целиком ДО первого разрушающего действия (шаг 6, `remove_previous`).
+    Ошибка на любом из шагов 1-5 — config error, прежняя публикация не
+    тронута; ошибка после шага 6 (механический сбой материализации)
+    оставляет источник отсутствующим, а не тихо стухшим.
+
+    Exit: ``0`` опубликовано, ``2`` ошибка конфигурации (прежняя публикация
+    НЕ тронута), ``3`` механический сбой материализации (файла нет).
     """
-    typer.echo(
-        "config error: `steward risk-classify approval-facts` is disabled — "
-        "approval-facts v2 migration in progress",
-        err=True,
+    from steward.approvalfacts.model import RequestId
+    from steward.approvalfacts.producer import MechanicalFailure, classify_results, materialize
+    from steward.approvalfacts.publish import (
+        ConfigError,
+        build_header,
+        publish,
+        remove_previous,
+        resolve_bundle_target,
     )
-    raise typer.Exit(_EXIT_CONFIG)
+    from steward.gatecheck.approval import PolicyError, load_approval_policy
+    from steward.gatecheck.approval import policy_digest as compute_policy_digest
+
+    def parse_scope() -> list[RequestId]:
+        scope: list[RequestId] = []
+        for sha in merge_sha:
+            if not _MERGE_SHA_RE.fullmatch(sha):
+                raise ConfigError(
+                    f"--merge-sha обязан быть 40-символьным hex в нижнем регистре, получено {sha!r}"
+                )
+            scope.append(RequestId("merge_sha", sha))
+        if prs:
+            for token in (raw.strip() for raw in prs.split(",")):
+                if not token:
+                    continue
+                try:
+                    number = int(token)
+                except ValueError as exc:
+                    raise ConfigError(
+                        f"--prs обязан быть списком целых чисел через запятую, получено {token!r}"
+                    ) from exc
+                if number <= 0:
+                    raise ConfigError(
+                        f"--prs: номер PR обязан быть положительным, получено {number}"
+                    )
+                scope.append(RequestId("pr", number))
+        if not scope:
+            raise ConfigError("нужен хотя бы один идентификатор: --merge-sha или --prs")
+        if len(set(scope)) != len(scope):
+            raise ConfigError("объявленный scope содержит дублирующиеся элементы")
+        return scope
+
+    try:
+        # 1: форма --repo.
+        owner, sep, name = repo.partition("/")
+        if not sep or not owner or not name:
+            raise ConfigError(f"--repo обязан быть в форме 'owner/name', получено {repo!r}")
+
+        # 2: цель — bundle-target (git-root + сверка origin) либо явный
+        #    --out (сверка origin пропущена, путь всё равно валидируется).
+        if out is not None:
+            target = Path(out)
+            parent = target.parent
+            if not parent.is_dir():
+                raise ConfigError(f"--out: родительский каталог {parent} не существует")
+            if not os.access(parent, os.W_OK):
+                raise ConfigError(f"--out: родительский каталог {parent} недоступен для записи")
+        else:
+            target = resolve_bundle_target(repo, repo_root)
+
+        # 3: объявленный scope — непуст, без дублей, форма.
+        scope = parse_scope()
+
+        # 4: политика + policy_digest. 5: approval_facts_lease_seconds
+        #    валидируется внутри load_approval_policy.
+        policy_path = (
+            policy if policy is not None else repo_root / "profiles" / "approval-policy.yaml"
+        )
+        approval_policy = load_approval_policy(policy_path)
+        digest = compute_policy_digest(policy_path)
+    except (ConfigError, PolicyError) as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from exc
+
+    # 6: только теперь разрушающее действие — весь preflight уже прошёл.
+    remove_previous(target)
+    try:
+        results = materialize(repo, scope)
+    except MechanicalFailure as exc:
+        typer.echo(f"approval-facts materialize failed: {exc}", err=True)
+        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
+
+    results = classify_results(results, approval_policy)
+    header = build_header(
+        repository=repo,
+        scope=scope,
+        policy_version=approval_policy.version,
+        policy_digest_value=digest,
+        lease_seconds=approval_policy.approval_facts_lease_seconds,
+        now=datetime.now(UTC),
+    )
+    publish(target, header, results)
+    typer.echo(f"ok: {len(results)} result(s) published to {target}")
 
 
 @app.command("proposal-intake")
