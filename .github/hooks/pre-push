@@ -37,6 +37,17 @@ unsupported() {
     exit 1
 }
 
+# Ноль ссылок — не неоднозначная форма: git включает ref в stdin тогда и
+# только тогда, когда old_sha != new_sha (доказано живым экспериментом,
+# см. progress.md). Значит по проводу не идёт НИЧЕГО, и подменять проверкой
+# нечего — это честное "отправлять нечего", а не unsupported-форма. Настоящий
+# повторный `git push`, которому нечего отправлять, обязан остаться зелёным,
+# как и до этой ветки ("Everything up-to-date").
+if [ "$count" -eq 0 ]; then
+    echo "pre-push review: отправлять нечего." >&2
+    exit 0
+fi
+
 [ "$count" -eq 1 ] || unsupported "ожидалась ровно одна ссылка, получено $count"
 
 # Только первая строка: если её разбор случайно окажется валиден сам по себе
@@ -55,18 +66,20 @@ case "$local_sha" in
     *[!0]*) sha_hint="$local_sha" ;;
 esac
 
+# Настоящий git на удалении ветки шлёт литеральное `(delete)` как local ref
+# (проверено эхо-хуком на обеих формах, `git push origin --delete x` и
+# `git push origin :x`), поэтому удаление ловится ЗДЕСЬ, через "не ветка" —
+# отдельного стража на нулевой local_sha ниже по коду не было и не должно
+# быть: `refs/heads/*` в паре с (delete)-local-ref никогда одновременно не
+# случаются, так что такой страж был бы недостижим и лишь маскировал бы
+# место, где реально ловится это условие.
 case "$local_ref" in
     refs/heads/*) ;;
     *) unsupported "отправляется не ветка ($local_ref)" "$sha_hint" ;;
 esac
 
-case "$local_sha" in
-    *[!0]*) ;;
-    *) unsupported "удаление ветки" ;;
-esac
-
 if [ "$local_sha" != "$head_sha" ]; then
-    unsupported "отправляется $local_sha, а HEAD сейчас $head_sha" "$local_sha"
+    unsupported "отправляется $local_sha, а HEAD сейчас $head_sha" "$sha_hint"
 fi
 
 sh "$kit_dir/local.sh"

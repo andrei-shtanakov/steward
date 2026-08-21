@@ -82,19 +82,26 @@ def test_tag_is_unsupported(tmp_path: Path) -> None:
 
 
 def test_branch_deletion_is_unsupported(tmp_path: Path) -> None:
-    """Удаление — local sha сплошные нули: подставлять в --head нечего, и
-    подсказка не должна врать, предлагая «просмотреть» несуществующее дерево."""
+    """Настоящий git на удалении шлёт литеральный `(delete)` вместо
+    `refs/heads/*` как local ref — блокируется веткой "не ветка", не
+    отдельным стражем на нулевой sha (такого стража больше нет: он был
+    недостижим, см. находку 4 финального ревью). Подсказка не должна врать,
+    предлагая «просмотреть» несуществующее дерево из нулевого sha."""
     line = f"(delete) {ZERO} refs/heads/gone {'c' * 40}\n"
     result = run_hook(line, "a" * 40, tmp_path)
     assert result.returncode != 0
+    assert "отправляется не ветка ((delete))" in result.stderr
     assert f"--head {ZERO}" not in result.stderr
     assert "unbound variable" not in result.stderr
 
 
-def test_empty_stdin_is_unsupported(tmp_path: Path) -> None:
-    """Пустой stdin — не «нечего проверять»; форма не та, о которой договаривались."""
+def test_empty_stdin_is_green_nothing_to_push(tmp_path: Path) -> None:
+    """Ноль ссылок на stdin — git включает ref тогда и только тогда, когда
+    old_sha != new_sha, значит по проводу не идёт ничего и подменять
+    проверкой нечего. Зелёный ранний выход, а не unsupported-форма."""
     result = run_hook("", "a" * 40, tmp_path)
-    assert result.returncode != 0
+    assert result.returncode == 0
+    assert "ревью выполнено" not in result.stdout, "local.sh не должен вызываться"
     assert "unbound variable" not in result.stderr
 
 
@@ -276,3 +283,47 @@ def test_real_no_verify_skips_the_hook_entirely(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "не должен был вызываться" not in result.stderr
+
+
+def test_real_repeat_push_with_nothing_to_send_is_green(tmp_path: Path) -> None:
+    """Настоящий повторный `git push` той же ветки без новых коммитов — git
+    печатает `Everything up-to-date` и НЕ включает ref в stdin хука (old_sha
+    == new_sha). До этой ветки такой пуш выходил с 0; находка 3 финального
+    ревью — что он стал падать как unsupported с "получено 0". Кит не должен
+    даже вызываться: `local.sh`, гарантированно роняющий пуш, обязан пройти
+    незамеченным."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    # Первый пуш — реально новая ссылка, ей есть что провизьюить: пускаем
+    # через зелёный стенд, чтобы ветка действительно легла на remote.
+    green_kit = make_stub_kit(tmp_path, "kit-green", STUB_GREEN)
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(green_kit)
+    landed = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert landed.returncode == 0, landed.stderr
+
+    # Повтор без новых коммитов: git не включит ref в stdin вовсе (old_sha ==
+    # new_sha). Стенд гарантированно уронил бы пуш, если бы хук его вызвал —
+    # значит зелёный код здесь доказывает, что local.sh не был вызван.
+    kit = make_stub_kit(tmp_path, "kit-would-block", STUB_WOULD_BLOCK)
+    env["REVIEW_KIT_DIR"] = str(kit)
+    repeat = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert repeat.returncode == 0, repeat.stderr
+    assert "не должен был вызываться" not in repeat.stderr
+    assert "up-to-date" in (repeat.stdout + repeat.stderr).lower()
