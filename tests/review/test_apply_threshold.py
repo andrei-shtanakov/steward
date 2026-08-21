@@ -66,9 +66,7 @@ def test_severity_outside_enum_is_config_error(tmp_path: Path) -> None:
     """`CRITICAL` (иная капитализация/синоним) не в enum'е схемы — не должна
     молча читаться как «ниже порога» и красить чек зелёным."""
     payload = {
-        "findings": [
-            {"severity": "CRITICAL", "file": "a.py", "summary": "дыра", "failure": "f"}
-        ],
+        "findings": [{"severity": "CRITICAL", "file": "a.py", "summary": "дыра", "failure": "f"}],
         "note": "n",
     }
     result = run(write(tmp_path, payload))
@@ -94,9 +92,7 @@ def test_valid_verdict_rendering_is_unchanged(tmp_path: Path) -> None:
     """Контрольный: ужесточение проверки не должно тронуть рендер годного
     вердикта — сверка байт-в-байт с ожидаемым выводом."""
     payload = {
-        "findings": [
-            {"severity": "major", "file": "a.py", "summary": "s", "failure": "f"}
-        ],
+        "findings": [{"severity": "major", "file": "a.py", "summary": "s", "failure": "f"}],
         "note": "n",
     }
     result = run(write(tmp_path, payload))
