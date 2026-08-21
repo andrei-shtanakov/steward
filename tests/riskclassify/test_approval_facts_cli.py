@@ -108,6 +108,33 @@ def test_bad_repo_is_config_error_and_keeps_previous(tmp_path: Path) -> None:
     assert "'owner/name'" in result.output
 
 
+def test_repo_with_extra_slash_is_config_error_and_keeps_previous(tmp_path: Path) -> None:
+    """Codex gate round 4 на PR #86, blocker: `owner/repo/extra` тоже
+    проходил бы старую проверку `repo.partition("/")` (первый слэш находит
+    `owner`/`repo/extra`, обе непустые). Ровно один `/` — обязательная форма,
+    а не «хотя бы один». Не поймай мы это на шаге 1 — прежняя публикация
+    была бы удалена на шаге 6 ради невалидного `header.repository`."""
+    previous = tmp_path / "facts.jsonl"
+    previous.write_text("prior", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "owner/repo/extra",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "1",
+            "--out",
+            str(previous),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert previous.read_text(encoding="utf-8") == "prior", "прежняя публикация уничтожена"
+    assert "'owner/name'" in result.output
+
+
 def test_step1_repo_shape_checked_before_step2_target_resolution(tmp_path: Path) -> None:
     """Шаги 1 и 2 невалидны ОДНОВРЕМЕННО: сообщение обязано быть от более
     раннего шага (1 — форма `--repo`), а не от шага 2 (`--repo-root` не
@@ -961,3 +988,50 @@ def test_publish_write_failure_is_exit_3_not_a_traceback(
     )
     assert not out.exists(), "прежняя публикация уже снята — сбой не восстанавливает её"
     assert "No space left on device" in result.output
+
+
+def test_remove_previous_failure_is_exit_3_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`remove_previous(target)` на шаге 6 — тот же класс post-preflight
+    I/O, что `materialize()`/`publish()`: `unlink`/`_fsync_dir` на read-only
+    каталоге тоже способны дать `OSError`, и это обязано давать тот же
+    типизированный отказ (exit 3), а не необработанное исключение.
+
+    Codex gate round 4 на PR #86: `remove_previous(target)` вызывалась
+    полностью вне какого-либо `try`/`except` в CLI. Тест не нуждается в
+    подмене `_gh` — `remove_previous` падает раньше, чем `materialize()`
+    вообще вызывается.
+    """
+    policy = tmp_path / "approval-policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
+    out = tmp_path / "facts.jsonl"
+    out.write_text("stale-prior", encoding="utf-8")
+
+    def _raise_eacces(*args: object, **kwargs: object) -> None:
+        raise OSError(13, "Permission denied")
+
+    _publish_module = importlib.import_module("steward.approvalfacts.publish")
+    monkeypatch.setattr(_publish_module, "remove_previous", _raise_eacces)
+
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "andrei-shtanakov/steward",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "42",
+            "--out",
+            str(out),
+            "--policy",
+            str(policy),
+        ],
+    )
+    assert result.exit_code == 3, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        "сбой обязан давать typer.Exit, а не необработанное исключение наружу"
+    )
+    assert "Permission denied" in result.output

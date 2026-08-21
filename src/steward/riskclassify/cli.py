@@ -208,10 +208,20 @@ def approval_facts(
         return scope
 
     try:
-        # 1: форма --repo.
-        owner, sep, name = repo.partition("/")
-        if not sep or not owner or not name:
+        # 1: форма --repo. Ровно один `/`, а не «хотя бы один»: `.partition("/")`
+        # брал только первый слэш, так что `owner/repo/extra` тоже проходил
+        # (owner="owner", name="repo/extra") — config-опечатка, которую
+        # ничто ниже гарантированно не ловит ДО шага 6 (`resolve_repo_root`
+        # в bundle-default пути сравнивает через `split("/", 1)`, ту же
+        # laxность, и в `--out`-ветке при откате `NotAGitRepository` сверки
+        # origin вообще нет) — значит прежняя публикация могла быть удалена,
+        # а на её месте материализован невалидный `header.repository`,
+        # который отверг бы только последующий читатель, не эта команда
+        # (Codex gate round 4 на PR #86, blocker).
+        repo_parts = repo.split("/")
+        if len(repo_parts) != 2 or not repo_parts[0] or not repo_parts[1]:
             raise ConfigError(f"--repo обязан быть в форме 'owner/name', получено {repo!r}")
+        owner, name = repo_parts
 
         # 2: цель — bundle-target (git-root + сверка origin) либо явный
         #    --out (сверка origin пропущена, путь всё равно валидируется).
@@ -283,7 +293,15 @@ def approval_facts(
         raise typer.Exit(_EXIT_CONFIG) from exc
 
     # 6: только теперь разрушающее действие — весь preflight уже прошёл.
-    remove_previous(target)
+    # `remove_previous` само может отказать (`unlink`/`_fsync_dir` на
+    # read-only каталоге, ФС-ошибка) — это post-preflight I/O, тот же класс,
+    # что materialize()/publish(), и обязано давать тот же типизированный
+    # отказ, а не сырое исключение (Codex gate round 4 на PR #86).
+    try:
+        remove_previous(target)
+    except OSError as exc:
+        typer.echo(f"approval-facts remove_previous failed: {exc}", err=True)
+        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
     try:
         results = materialize(repo, scope)
     except MechanicalFailure as exc:

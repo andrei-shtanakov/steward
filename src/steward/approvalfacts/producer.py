@@ -214,9 +214,14 @@ def resolve(owner: str, name: str, request: RequestId) -> Result:
 
 def materialize(repo: str, scope: Sequence[RequestId]) -> list[Result]:
     """Разрешить весь scope. Любой механический сбой прерывает батч."""
-    owner, sep, name = repo.partition("/")
-    if not sep or not owner or not name:
+    # Ровно один `/`, а не «хотя бы один»: `.partition("/")` брал только
+    # первый слэш, так что `owner/repo/extra` тоже проходил бы валидацию
+    # (owner="owner", name="repo/extra") — тот же класс дефекта, что и в
+    # CLI-шаге 1 (Codex gate round 4 на PR #86, blocker там же).
+    repo_parts = repo.split("/")
+    if len(repo_parts) != 2 or not repo_parts[0] or not repo_parts[1]:
         raise ValueError(f"repo must be 'owner/name', got {repo!r}")
+    owner, name = repo_parts
     return [resolve(owner, name, request) for request in scope]
 
 

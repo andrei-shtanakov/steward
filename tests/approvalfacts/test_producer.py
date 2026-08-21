@@ -384,6 +384,15 @@ def test_malformed_repo_is_value_error() -> None:
         materialize("not-a-slug", [RequestId("pr", 1)])
 
 
+def test_repo_with_extra_slash_is_value_error() -> None:
+    """Codex gate round 4 на PR #86, blocker: `.partition("/")` находит
+    только первый слэш, так что `owner/repo/extra` тоже проходил бы
+    (owner="owner", name="repo/extra") — ровно один `/` обязателен, а не
+    «хотя бы один»."""
+    with pytest.raises(ValueError, match="owner/name"):
+        materialize("owner/repo/extra", [RequestId("pr", 1)])
+
+
 # --- classify_results (правка контроллера: resolve()/materialize() не знают
 # политику, actor_class на merged-записях проставляет отдельная функция) ---
 
