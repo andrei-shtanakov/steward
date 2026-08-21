@@ -126,6 +126,45 @@ def test_broken_reviewer_is_mechanical_failure(tmp_path: Path) -> None:
     assert result.returncode == 3
 
 
+def test_review_cmd_with_extra_flags_is_a_command_not_a_binary_path(tmp_path: Path) -> None:
+    """`REVIEW_CMD='<путь> --extra-flag value'` — раньше `"$review_cmd" exec
+    ...` искал файл, буквально названный "<путь> --extra-flag value" целиком
+    (ENOENT → код 3 "ревьюер не отработал"), хотя REVIEW_CMD задумана как
+    команда целиком, включая флаги, а `exec` — часть умолчания, не жёстко
+    приклеенный литерал. Стаб проверяет, что реально ПОЛУЧИЛ переданный флаг
+    в argv — не просто что что-то запустилось."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    stub_with_flag_check = """#!/bin/sh
+saw_extra=0
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --extra-marker) saw_extra=1; shift ;;
+        -o|--output-last-message) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+cat > /dev/null
+if [ "$saw_extra" -ne 1 ]; then
+    echo "REVIEW_CMD не донёс свой собственный флаг до argv" >&2
+    exit 1
+fi
+printf '{"findings":[],"note":"stub"}' > "$out"
+"""
+    stub_path = make_stub(tmp_path, stub_with_flag_check)
+
+    result = run_local(
+        local,
+        stub_path,
+        env_overrides={"REVIEW_CMD": f"{stub_path} --extra-marker"},
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_missing_schema_is_config_error_not_reviewer_failure(tmp_path: Path) -> None:
     """Отсутствующая схема раньше доходила до `codex exec --output-schema
     <нет-файла>` и падала уже там кодом 3 — конфигурационный отказ читался

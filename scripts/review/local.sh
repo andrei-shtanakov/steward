@@ -23,7 +23,13 @@ if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
 fi
 schema="${REVIEW_SCHEMA:-$repo_root/.github/codex/review-schema.json}"
 prompt="${REVIEW_PROMPT:-$repo_root/.github/codex/review-prompt.md}"
-review_cmd="${REVIEW_CMD:-codex}"
+# REVIEW_CMD — КОМАНДА, не путь к бинарю: умолчание несёт `exec` внутри
+# себя, а не как отдельный литерал ниже в вызове. Раньше `exec` был жёстко
+# приклеен к вызову, и REVIEW_CMD='codex exec --model X' искал файл с таким
+# именем целиком (ENOENT → код 3 "ревьюер не отработал"), хотя план и
+# описывает умолчание именно как `codex exec`. Подменить хочется команду
+# целиком, включая флаги, — не только бинарь.
+review_cmd="${REVIEW_CMD:-codex exec}"
 
 base=""
 head_ref="HEAD"
@@ -216,7 +222,12 @@ sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
 # Промпт идёт на stdin, а не аргументом: диф — недоверенный текст, и в argv он
 # не попадает ни здесь, ни в CI. Ревьюер в песочнице read-only: он читает, а не
 # правит рабочее дерево.
-if ! "$review_cmd" exec --sandbox read-only \
+#
+# $review_cmd НАМЕРЕННО без кавычек: REVIEW_CMD — команда целиком (может
+# нести свои флаги, например 'codex exec --model X'), и должна разбиться на
+# отдельные argv-слова через word splitting, а не уйти одним литералом в
+# argv[0], где `exec`/бинарь с пробелом внутри имени не существует (ENOENT).
+if ! $review_cmd --sandbox read-only \
         --output-schema "$schema" \
         --output-last-message "$work/verdict.json" \
         - < "$work/prompt.txt" >/dev/null 2>"$work/reviewer.err"; then
