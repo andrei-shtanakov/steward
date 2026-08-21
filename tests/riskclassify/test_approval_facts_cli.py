@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 from collections.abc import Iterator
@@ -662,6 +663,111 @@ def test_policy_default_anchors_on_resolved_root_not_raw_repo_root(
     assert record["actor_class"] == "human"
 
 
+def test_out_inside_checkout_anchors_policy_default_on_resolved_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--out` INSIDE a real git checkout must behave like the bundle-default
+    path for the default policy anchor — not unconditionally use the raw
+    `--repo-root` argument.
+
+    Codex gate round 3 on PR #86: round 2's fix anchored `--out`'s default
+    policy on the raw `repo_root` unconditionally, reasoning that resolving
+    the root would require git where `--out` promised not to. That reasoning
+    was accepted and was wrong: it created exactly the asymmetry it was
+    supposed to avoid — `--repo-root <subdir>` works in bundle-default mode
+    (round 2's own fix) and FAILS in `--out` mode, even though the policy
+    lives at the same real root in both. Fixed with resolve-with-fallback:
+    try `resolve_repo_root`, and only fall back to the raw argument on
+    `NotAGitRepository` (`--out` outside any checkout still works, as
+    promised). This test is the positive case: `--repo-root` is a subdir of a
+    real checkout, no `--policy` given, `--out` still finds the true root's
+    policy.
+    """
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/steward-real.git")
+    (repo_root / "profiles").mkdir()
+    (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
+    subdir = repo_root / "spec"
+    subdir.mkdir()
+    out = tmp_path / "facts.jsonl"
+
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "mergeCommit": {"oid": SHA},
+                                    "mergedBy": {
+                                        "login": "andrei-shtanakov",
+                                        "__typename": "User",
+                                    },
+                                }
+                            }
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "andrei-shtanakov/steward-real",
+            "--repo-root",
+            str(subdir),
+            "--prs",
+            "7",
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    record = json.loads(out.read_text(encoding="utf-8").splitlines()[1])
+    assert record["state"] == "merged"
+    assert record["actor_class"] == "human"
+
+
+def test_out_inside_checkout_with_mismatched_origin_is_still_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback is narrow: it only fires for `NotAGitRepository`. A
+    checkout that IS a git repository but whose `origin` doesn't match
+    `--repo` must still surface a config error via `--out` — falling back to
+    the raw `repo_root` here would silently read the wrong repository's
+    policy instead, masking a real identity mismatch as "no git found"."""
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/some-other-repo.git")
+    (repo_root / "profiles").mkdir()
+    (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
+    out = tmp_path / "facts.jsonl"
+
+    monkeypatch.setattr(producer, "_gh", _fake_gh([]))
+
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "andrei-shtanakov/steward-real",
+            "--repo-root",
+            str(repo_root),
+            "--prs",
+            "7",
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert not out.exists()
+    assert "origin указывает на" in result.output
+
+
 # --- Step 6: destructive phase, ordering after full preflight succeeds -----
 
 
@@ -765,3 +871,93 @@ def test_mechanical_materialize_failure_is_exit_3_and_previous_already_gone(
     )
     assert result.exit_code == 3
     assert not out.exists(), "прежняя публикация обязана быть уже снята к моменту сбоя"
+
+
+def test_publish_write_failure_is_exit_3_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сбой ПОСЛЕ успешной materialize() — на самой записи (`ENOSPC`, `EIO`,
+    отказ `os.replace`/`fsync`) — обязан давать тот же типизированный отказ,
+    что и сбой `materialize()`, а не сырую трассировку.
+
+    Codex gate round 3 на PR #86: CLI ловил `MechanicalFailure` только вокруг
+    `materialize()`; `publish(target, header, results)` ниже была не обёрнута
+    вовсе. Preflight к этому моменту прошёл целиком, `remove_previous` уже
+    отработал — значит источника уже нет, и разорванный контракт кодов
+    выхода (обещаны только 0/2/3) ломался бы именно в точке, ради которой
+    этот контракт существует.
+
+    `publish` монкейпатчится на функцию, поднимающую `OSError` — прямая
+    имитация `ENOSPC`/`EIO`, не требующая реального заполнения диска.
+    """
+    policy = tmp_path / "approval-policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
+    out = tmp_path / "facts.jsonl"
+    out.write_text("stale-prior", encoding="utf-8")
+
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "mergeCommit": {"oid": SHA},
+                                    "mergedBy": {
+                                        "login": "andrei-shtanakov",
+                                        "__typename": "User",
+                                    },
+                                }
+                            }
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+
+    def _raise_enospc(*args: object, **kwargs: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    # Neither `monkeypatch.setattr("steward.approvalfacts.publish.publish", ...)`
+    # (dotted-string form) NOR `import steward.approvalfacts.publish as x` work
+    # here: both resolve through attribute traversal on the PACKAGE
+    # `steward.approvalfacts`, whose `__init__.py` does
+    # `from .publish import publish` — which shadows the submodule attribute
+    # of the same name with the imported FUNCTION. `importlib.import_module`
+    # goes through `sys.modules` by the full dotted key instead, which the
+    # import system always keeps pointing at the submodule regardless of that
+    # shadowing. `cli.py`'s function-scoped
+    # `from steward.approvalfacts.publish import publish` re-resolves this
+    # attribute on the SUBMODULE object fresh on every call, so patching it
+    # here is visible there.
+    _publish_module = importlib.import_module("steward.approvalfacts.publish")
+
+    monkeypatch.setattr(_publish_module, "publish", _raise_enospc)
+
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "andrei-shtanakov/steward",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "42",
+            "--out",
+            str(out),
+            "--policy",
+            str(policy),
+        ],
+    )
+    assert result.exit_code == 3, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        "сбой обязан давать typer.Exit, а не необработанное исключение наружу"
+    )
+    assert not out.exists(), "прежняя публикация уже снята — сбой не восстанавливает её"
+    assert "No space left on device" in result.output

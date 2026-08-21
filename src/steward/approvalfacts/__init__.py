@@ -15,6 +15,7 @@ from steward.approvalfacts.model import (
 from steward.approvalfacts.publish import (
     FACTS_RELPATH,
     ConfigError,
+    NotAGitRepository,
     build_header,
     parse_origin,
     publish,
@@ -31,6 +32,7 @@ __all__ = [
     "ApprovalFactsV2",
     "ConfigError",
     "Header",
+    "NotAGitRepository",
     "ObservationState",
     "RequestId",
     "RequestKind",

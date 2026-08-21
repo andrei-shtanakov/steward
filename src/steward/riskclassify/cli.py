@@ -160,13 +160,16 @@ def approval_facts(
     оставляет источник отсутствующим, а не тихо стухшим.
 
     Exit: ``0`` опубликовано, ``2`` ошибка конфигурации (прежняя публикация
-    НЕ тронута), ``3`` механический сбой материализации (файла нет).
+    НЕ тронута), ``3`` механический сбой материализации ИЛИ публикации
+    (файла нет в обоих случаях — ``publish()`` тоже происходит после шага 6,
+    так что типизированный отказ обязан покрывать и её).
     """
     from steward.approvalfacts.model import RequestId
     from steward.approvalfacts.producer import MechanicalFailure, classify_results, materialize
     from steward.approvalfacts.publish import (
         FACTS_RELPATH,
         ConfigError,
+        NotAGitRepository,
         build_header,
         publish,
         remove_previous,
@@ -228,13 +231,28 @@ def approval_facts(
                 raise ConfigError(f"--out: родительский каталог {parent} не существует")
             if not os.access(parent, os.W_OK):
                 raise ConfigError(f"--out: родительский каталог {parent} недоступен для записи")
-            # `--out` явно освобождён от сверки origin (и, значит, от
-            # доказательства, что `repo_root` вообще внутри git-репозитория —
-            # это законный режим публикации вне чекаута). Резолвить корень
-            # здесь означало бы требовать git там, где команда обещала его не
-            # требовать; дефолт политики поэтому анкорится на СЫРОЙ
-            # `repo_root`, как и до этой правки.
-            policy_root = repo_root
+            # `--out` явно освобождён от сверки origin — это законный режим
+            # публикации вне git-чекаута, и требовать git там, где команда
+            # обещала его не требовать, было бы неверно. Но ВНУТРИ чекаута
+            # `--out` не обязан вести себя иначе, чем bundle-default путь:
+            # если `resolve_repo_root` находит настоящий git top-level,
+            # дефолт политики анкорится на нём же — иначе `--repo-root
+            # <подкаталог>` работал бы в режиме бандла и падал в режиме
+            # `--out`, хотя политика в обоих случаях лежит в одном и том же
+            # настоящем корне (Codex gate round 3 на PR #86: прошлая версия
+            # этой правки безусловно анкорила `--out` на сыром `repo_root`,
+            # что и создавало эту асимметрию — принятое ранее обоснование
+            # «резолвинг обязателен только вне отката» было ошибкой
+            # ревью-приёмки, не результатом резолвинга без отката). Откат на
+            # сырой `repo_root` срабатывает ТОЛЬКО когда `repo_root` вообще
+            # не внутри git-репозитория (`NotAGitRepository`) — отсутствующий
+            # или несовпавший `origin` внутри настоящего git-чекаута
+            # остаётся config error и наружу, а не тихо маскируется под
+            # «просто нет git».
+            try:
+                policy_root = resolve_repo_root(repo, repo_root)
+            except NotAGitRepository:
+                policy_root = repo_root
         else:
             policy_root = resolve_repo_root(repo, repo_root)
             target = policy_root / FACTS_RELPATH
@@ -281,7 +299,16 @@ def approval_facts(
         lease_seconds=approval_policy.approval_facts_lease_seconds,
         now=datetime.now(UTC),
     )
-    publish(target, header, results)
+    # `publish()` тоже происходит после шага 6 (previous публикация уже
+    # снята) — ENOSPC/EIO/сбой os.replace или fsync во время записи обязан
+    # давать тот же типизированный отказ, что и сбой materialize(), а не
+    # сырую трассировку в месте, где мы обещали ровно два кода ошибки —
+    # Codex gate round 3 на PR #86.
+    try:
+        publish(target, header, results)
+    except OSError as exc:
+        typer.echo(f"approval-facts publish failed: {exc}", err=True)
+        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
     typer.echo(f"ok: {len(results)} result(s) published to {target}")
 
 

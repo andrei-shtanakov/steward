@@ -43,6 +43,17 @@ class ConfigError(ValueError):
     """Ошибка конфигурации вызова — exit 2, прежняя публикация не тронута."""
 
 
+class NotAGitRepository(ConfigError):
+    """`resolve_repo_root` конкретно: `repo_root` не внутри git-репозитория.
+
+    Отдельный подкласс — не декоративность: вызывающий обязан различать «тут
+    просто нет git» (законное состояние для режима публикации вне чекаута,
+    `--out`, — там уместен откат на сырой аргумент) от «это git-репозиторий,
+    но origin отсутствует/не совпадает» (`ConfigError` без сужения ниже —
+    настоящая проблема конфигурации, которую откат замаскировал бы под
+    «просто нет git»)."""
+
+
 def parse_origin(url: str) -> tuple[str, str]:
     """Разобрать URL remote в пару `(owner, repo)`.
 
@@ -77,7 +88,7 @@ def resolve_repo_root(repo: str, repo_root: Path) -> Path:
     """
     top = _git(repo_root, "rev-parse", "--show-toplevel")
     if top is None:
-        raise ConfigError(f"{repo_root} не внутри git-репозитория")
+        raise NotAGitRepository(f"{repo_root} не внутри git-репозитория")
     origin = _git(Path(top), "remote", "get-url", "origin")
     if origin is None:
         raise ConfigError(
