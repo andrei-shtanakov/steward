@@ -420,7 +420,7 @@ product decision record (и наоборот). Как approved proposal стан
 - [x] Материализация в `.steward/` рядом с `gate_verdicts.jsonl` — файл попадает в наблюдаемый бандл, а не остаётся артефактом вызова с `--out` @owner:github:andrei-shtanakov @id:approval-facts-bundle-emission — `resolve_bundle_target` + транзакция публикации (preflight 1-5 / remove_previous+materialize на шаге 6) реализованы в `steward approval-facts`; живой прогон против реальных PR/SHA — `docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`
 - [ ] `approval-facts` producer: несуществующий PR-номер у `--prs` не становится записью `not_found`, а обрушивает батч как `MechanicalFailure` (exit 3, файла нет) @owner:github:andrei-shtanakov @id:approval-facts-not-found-vs-mechanical-failure — найдено живой приёмкой 2026-08-21 (`docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`, шаг 3): `gh api graphql` возвращает `data.repository.pullRequest: null` (валидный «нет такого PR») **вместе** с top-level `errors: [{type: NOT_FOUND}]`, `gh` из-за непустого `errors` завершается кодом 1, `_gh()`/`_graphql()` в `producer.py` поднимают `MechanicalFailure` по одному лишь ненулевому exit-коду `gh`, не дойдя до JSON с `pullRequest: null`. Юнит-тест `test_absent_pr_is_not_found` не ловит это — его фикстура подменяет `_gh` так, будто такой ответ приходит с кодом 0 и без `errors`, что не совпадает с реальным поведением `gh api graphql` для resolver-полей вида `pullRequest(number:)`
 - [ ] `verdicts/emitter.py`: атомарная публикация `gate_verdicts.jsonl` (temp + `os.replace`) без fsync — слабее требований §6.1 спеки approval-facts/v2 @owner:github:andrei-shtanakov @id:verdicts-emitter-fsync-debt — отдельный хвост, не расширяющий этот воркстрим; см. `docs/superpowers/specs/2026-08-21-approval-facts-v2-design.md` §10
-- [ ] dispatcher — стадия 2 хендоффа `approval-facts/v2`: вендорить пиненую копию `contracts/approval-facts/v2/` + написать `core/merge_actor.py` по образцу `core/governance.py` (+ тесты) @owner:dispatcher @blocked_by:todo://steward/approval-facts-bundle-emission @id:approval-facts-dispatcher-vendoring-handoff — предпосылка выполнена (бандл эмитится, контракт опубликован, приёмка на реальных мержах пройдена); см. `docs/superpowers/specs/2026-08-21-approval-facts-v2-design.md` §10
+- [ ] dispatcher — стадия 2 хендоффа `approval-facts/v2`: вендорить пиненую копию `contracts/approval-facts/v2/` + написать `core/merge_actor.py` по образцу `core/governance.py` (+ тесты) @owner:repo:dispatcher @id:approval-facts-dispatcher-vendoring-handoff — предпосылка на нашей стороне выполнена (бандл эмитится, контракт опубликован, приёмка на реальных мержах пройдена); формальный inbox-issue в dispatcher по ADR-ECO-006 этой задачей не заведён — см. `docs/superpowers/specs/2026-08-21-approval-facts-v2-design.md` §10
 
 ---
 
@@ -436,10 +436,14 @@ product decision record (и наоборот). Как approved proposal стан
   meta-enforcer `check-release-drift`. После него — тег `governance-v2`.
 - **dispatcher**: `owner_role` проброшен; ждёт схему verdict-записей и каталог ролей, чтобы
   вендорить пиненые копии. Свою governance-модель не строит (анти-цель).
-  Отдельно ждёт от нас `approval-facts` как внешний контракт (§9, steward#72): их
-  `agent-merge-observability` разблокирует именно ОПУБЛИКОВАННАЯ и пиннуемая версия,
-  а не мерж кода у нас. До неё их модель остаётся «источника нет», и по ADR-ECO-008 D6
-  прогон обязан вести себя как `merge_authority: human`.
+  `approval-facts` как внешний контракт (§9, steward#72) со стороны steward закрыт
+  целиком 2026-08-21: `contracts/approval-facts/v2/` опубликован, бандл эмитится,
+  приёмка на реальных мержах пройдена (`docs/evidence/2026-08-21-approval-facts-v2-migration/`).
+  Их `agent-merge-observability` теперь разблокирована формально — предпосылка выполнена;
+  сам хендофф (вендоринг + `core/merge_actor.py`) — их сторона, `approval-facts-dispatcher-vendoring-handoff`
+  в §9, формальный inbox-issue у них по ADR-ECO-006 ещё не заведён. До их хендоффа их
+  модель остаётся «источника нет», и по ADR-ECO-008 D6 прогон обязан вести себя как
+  `merge_authority: human`.
 - **arbiter**: RD-006 M3 сделан — `config/authority.toml` вендорен, `AUTHORITY_PINNED_SHA` в CI.
 
 ## НЕ делаем здесь
