@@ -14,8 +14,12 @@ diff=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --prompt) prompt="${2:-}"; shift 2 ;;
-        --diff)   diff="${2:-}"; shift 2 ;;
+        # Голый флаг без значения (нет $2) — ошибка конфигурации, а не молчаливый
+        # сдвиг мимо края позиционных параметров: без сторожа `shift 2` на bash
+        # молча съедает лишнее (exit 1), а на dash падает с сообщением самого
+        # shell мимо usage() — платформозависимое поведение опаснее прямого exit 2.
+        --prompt) [ $# -ge 2 ] || { usage; exit 2; }; prompt="$2"; shift 2 ;;
+        --diff)   [ $# -ge 2 ] || { usage; exit 2; }; diff="$2"; shift 2 ;;
         *) usage; exit 2 ;;
     esac
 done

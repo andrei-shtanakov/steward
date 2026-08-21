@@ -5,7 +5,15 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "review" / "apply-threshold.sh"
+
+# sh на macOS — это bash 3.2, а на Ubuntu (CI) /bin/sh — уже сам dash. Голый
+# флаг без значения расходится между ними (см. Fix round 1): bash молча
+# продвигает `shift 2` за край и даёт exit 1, dash падает своим сообщением
+# мимо usage(). Гоняем сторож под обоими, чтобы расхождение не спряталось.
+INTERPRETERS = ["sh", "dash"]
 
 
 def run(verdict_path: Path, fmt: str = "markdown") -> subprocess.CompletedProcess[str]:
@@ -90,3 +98,24 @@ def test_text_format_has_no_markdown_table(tmp_path: Path) -> None:
     result = run(write(tmp_path, payload), fmt="text")
     assert "|---|" not in result.stdout
     assert "major" in result.stdout
+
+
+@pytest.mark.parametrize("interpreter", INTERPRETERS)
+def test_bare_verdict_flag_is_config_error(interpreter: str) -> None:
+    """Голый `--verdict` без значения — код 2 и usage(), а не сообщение shell."""
+    result = subprocess.run([interpreter, str(SCRIPT), "--verdict"], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "usage" in result.stderr
+
+
+@pytest.mark.parametrize("interpreter", INTERPRETERS)
+def test_bare_format_flag_is_config_error(interpreter: str, tmp_path: Path) -> None:
+    """Голый `--format` в конце командной строки — тоже код 2, а не exit 1/крах shell."""
+    verdict = write(tmp_path, {"findings": []})
+    result = subprocess.run(
+        [interpreter, str(SCRIPT), "--verdict", str(verdict), "--format"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "usage" in result.stderr

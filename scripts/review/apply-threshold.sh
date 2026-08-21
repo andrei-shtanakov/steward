@@ -15,8 +15,12 @@ format="markdown"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --verdict) verdict="${2:-}"; shift 2 ;;
-        --format)  format="${2:-}"; shift 2 ;;
+        # Голый флаг без значения (нет $2) — ошибка конфигурации, а не молчаливый
+        # сдвиг мимо края позиционных параметров: без сторожа `shift 2` на bash
+        # молча съедает лишнее (exit 1), а на dash падает с сообщением самого
+        # shell мимо usage() — платформозависимое поведение опаснее прямого exit 2.
+        --verdict) [ $# -ge 2 ] || { usage; exit 2; }; verdict="$2"; shift 2 ;;
+        --format)  [ $# -ge 2 ] || { usage; exit 2; }; format="$2"; shift 2 ;;
         *) usage; exit 2 ;;
     esac
 done

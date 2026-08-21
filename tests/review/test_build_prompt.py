@@ -3,7 +3,15 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "review" / "build-prompt.sh"
+
+# sh на macOS — это bash 3.2, а на Ubuntu (CI) /bin/sh — уже сам dash. Голый
+# флаг без значения расходится между ними (см. Fix round 1): bash молча
+# продвигает `shift 2` за край и даёт exit 1, dash падает своим сообщением
+# мимо usage(). Гоняем сторож под обоими, чтобы расхождение не спряталось.
+INTERPRETERS = ["sh", "dash"]
 
 
 def run(prompt: Path, diff: Path) -> subprocess.CompletedProcess[str]:
@@ -68,3 +76,24 @@ def test_missing_diff_is_config_error(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 2
+
+
+@pytest.mark.parametrize("interpreter", INTERPRETERS)
+def test_bare_prompt_flag_is_config_error(interpreter: str) -> None:
+    """Голый `--prompt` без значения — код 2 и usage(), а не сообщение shell."""
+    result = subprocess.run([interpreter, str(SCRIPT), "--prompt"], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "usage" in result.stderr
+
+
+@pytest.mark.parametrize("interpreter", INTERPRETERS)
+def test_bare_diff_flag_is_config_error(interpreter: str, tmp_path: Path) -> None:
+    """Голый `--diff` в конце командной строки — тоже код 2, а не exit 1/крах shell."""
+    prompt, _ = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        [interpreter, str(SCRIPT), "--prompt", str(prompt), "--diff"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "usage" in result.stderr
