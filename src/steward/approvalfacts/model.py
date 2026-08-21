@@ -27,6 +27,9 @@ STATE_ONLY_FOR: dict[str, RequestKind] = {
     "no_matching_pr": "merge_sha",
 }
 
+#: Версия схемы, которую этот пакет понимает (README, «Константы контракта»).
+SCHEMA_VERSION = "2"
+
 #: Допуск часов на будущее для `generated_at` (контракт, инвариант 10).
 MAX_CLOCK_SKEW_SECONDS = 300
 
