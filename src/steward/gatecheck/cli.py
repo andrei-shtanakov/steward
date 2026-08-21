@@ -181,6 +181,23 @@ def approval_facts_outcome(
     unparseable ``origin``) yields ``FactsUnavailable("absent")`` rather than
     aborting the run: the gate must not crash, and "no usable evidence" is
     already the safe, fail-closed state.
+
+    **This identification check runs unconditionally, before ``explicit`` is
+    even consulted** — so an explicit ``--approval-facts`` pointed at an
+    invalid file, run somewhere the checkout can't be identified, also comes
+    back as ``FactsUnavailable("absent")`` rather than the §8.3.1-promised
+    config error, exit 2 (Codex gate round 2 on PR #86 named this precisely).
+    Left as-is rather than reordered: making the explicit path win here would
+    require validating that file's content — including reader invariant 11
+    (``header.repository`` matches the checkout) — against a repository
+    identity we by definition don't have in this branch. That's a separate
+    design question (what does invariant 11 even mean with no
+    ``expected_repository`` to compare against?), not a fix that belongs at
+    the end of a workstream. The failure direction is still correct either
+    way — both outcomes are a finding, never a silent pass — only the
+    *class* of error (finding vs. config error) is what §8.3.1 would prefer
+    and doesn't get here. See ``approval-facts-explicit-path-subordinate-to-repo-id``
+    in ``TODO.md``.
     """
     top = _git_out(spec_dir, "rev-parse", "--show-toplevel")
     if top is None:

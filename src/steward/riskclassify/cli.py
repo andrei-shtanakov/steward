@@ -239,6 +239,17 @@ def approval_facts(
             policy_root = resolve_repo_root(repo, repo_root)
             target = policy_root / FACTS_RELPATH
 
+        # Цель не может быть уже существующим каталогом: `remove_previous`
+        # (шаг 6) зовёт `unlink(missing_ok=True)`, а `missing_ok` гасит только
+        # `FileNotFoundError` — на каталоге `unlink()` поднимает
+        # `IsADirectoryError`, необработанную здесь, и после ЧАСТИЧНО
+        # пройденного preflight это была бы трассировка вместо кода выхода.
+        # Это вход конфигурации (путь назвал оператор), значит config error,
+        # exit 2, ДО любого разрушающего действия — Codex gate round 2 на
+        # PR #86.
+        if target.is_dir():
+            raise ConfigError(f"цель публикации {target} уже существует как каталог")
+
         # 3: объявленный scope — непуст, без дублей, форма.
         scope = parse_scope()
 

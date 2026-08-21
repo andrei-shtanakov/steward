@@ -81,11 +81,63 @@ def test_unmerged_pr_is_a_record_not_an_abort(monkeypatch: pytest.MonkeyPatch) -
     assert result.merge_sha is None
 
 
-def test_absent_pr_is_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pull_request_null_with_no_errors_is_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the reader's contract for ONE payload shape — not live GitHub
+    behavior. Codex gate round 2 on PR #86: this test used to be named
+    `test_absent_pr_is_not_found`, which reads as "a nonexistent PR gives
+    `not_found`" — but live `gh api graphql` never sends this shape for a
+    nonexistent PR (see `test_nonexistent_pr_on_live_github_is_mechanical_failure`
+    right below, and the live acceptance finding in
+    `docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`, шаг 3).
+    This test only proves: IF a well-formed, `errors`-free response ever
+    carries `pullRequest: null`, the reader treats that as a definite
+    negative. Kept because §4.2/§9.1 promise `not_found` is a legal terminal
+    state for `request.kind: pr`, and this is the shape that would produce
+    it — it is just not the shape GitHub sends today
+    (`approval-facts-not-found-vs-mechanical-failure` in `TODO.md`)."""
     monkeypatch.setattr(
         producer, "_gh", _fake_gh([(0, {"data": {"repository": {"pullRequest": None}}})])
     )
     assert resolve(OWNER, NAME, RequestId("pr", 42)).state == "not_found"
+
+
+def test_nonexistent_pr_on_live_github_is_mechanical_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins TODAY's actual, documented-as-a-defect behavior against the real
+    shape live GitHub sends — added so the open contradiction
+    (`approval-facts-not-found-vs-mechanical-failure` in `TODO.md`) is a test
+    that changes ON PURPOSE when the owner resolves it, not prose that can
+    silently go stale.
+
+    Live acceptance (`docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`,
+    шаг 3, 2026-08-21) found `gh api graphql` for a nonexistent PR number
+    exits **nonzero** (`1`) with a plain-text stderr message — even though
+    its stdout, if you looked at it directly, would contain valid JSON with
+    `data.repository.pullRequest: null` alongside a non-empty top-level
+    `errors: [{type: NOT_FOUND, ...}]`. `_gh()` only returns `proc.stdout` on
+    a *zero* exit code (`producer.py`); on nonzero it returns `proc.stderr`
+    and never reaches JSON parsing at all, so `_graphql()`'s `code != 0`
+    check raises `MechanicalFailure` immediately. `not_found` never gets a
+    chance to become a record for `request.kind: pr` against live GitHub."""
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh([(1, "gh: Could not resolve to a PullRequest with the number of 999999.")]),
+    )
+    with pytest.raises(MechanicalFailure, match="завершился с кодом"):
+        resolve(OWNER, NAME, RequestId("pr", 999999))
+
+
+def test_missing_pull_request_key_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`pullRequest: null` (key present) is a definite negative — `not_found`.
+    The key simply MISSING (`{"repository": {}}`) is a different thing: a
+    malformed/truncated response, not a proof the PR doesn't exist. Codex gate
+    round 2 on PR #86: `.get("pullRequest")` conflated the two because both
+    return `None`."""
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(0, {"data": {"repository": {}}})]))
+    with pytest.raises(MechanicalFailure, match="repository.pullRequest"):
+        resolve(OWNER, NAME, RequestId("pr", 42))
 
 
 def test_null_repository_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,6 +305,28 @@ def test_absent_commit_is_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
         producer, "_gh", _fake_gh([(0, {"data": {"repository": {"object": None}}})])
     )
     assert resolve(OWNER, NAME, RequestId("merge_sha", SHA)).state == "not_found"
+
+
+def test_missing_object_key_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`object: null` (key present) is `not_found`; the key simply MISSING is
+    a malformed response — same distinction as `test_missing_pull_request_key_is_mechanical_failure`."""
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(0, {"data": {"repository": {}}})]))
+    with pytest.raises(MechanicalFailure, match="repository.object"):
+        resolve(OWNER, NAME, RequestId("merge_sha", SHA))
+
+
+def test_object_without_associated_pull_requests_is_mechanical_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex gate round 2's exact repro: `{"object": {}}` — the commit object
+    is present, but `associatedPullRequests` is missing entirely (not merely
+    empty). Before this fix, `commit.get("associatedPullRequests") or {}`
+    silently produced an empty connection, and the traversal fell through to
+    `no_matching_pr` — a truncated/malformed payload masquerading as an
+    exhaustive negative search."""
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(0, {"data": {"repository": {"object": {}}}})]))
+    with pytest.raises(MechanicalFailure, match="object.associatedPullRequests"):
+        resolve(OWNER, NAME, RequestId("merge_sha", SHA))
 
 
 def test_merged_without_mergedby_is_actor_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

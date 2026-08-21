@@ -252,6 +252,71 @@ def test_out_parent_not_writable_is_config_error_and_keeps_previous(tmp_path: Pa
     assert "недоступен для записи" in result.output
 
 
+def test_out_target_is_existing_directory_is_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--out` указывает на уже существующий каталог, а не файл.
+
+    Codex gate round 2 на PR #86: preflight шага 2 проверял только
+    родителя, так что этот случай проходил его и падал на шаге 6 —
+    `remove_previous` зовёт `unlink(missing_ok=True)`, а `missing_ok` гасит
+    только `FileNotFoundError`, не `IsADirectoryError`. Итог был
+    необработанной трассировкой после ЧАСТИЧНО пройденного preflight, а не
+    кодом выхода. Guard обязан поймать это на шаге 2, ДО удаления.
+
+    Валидные `--policy` и подмена `_gh` обязательны: без них, при удалённом
+    guard'е, шаг 4 (загрузка политики) упал бы СВОЕЙ ошибкой раньше, чем
+    выполнение дошло бы до шага 6 — тест остался бы зелёным на мутации по
+    совпадающему exit-коду 2, но по не той причине (см. предупреждение о
+    маскировке в комментарии перед `# --- Step 3` выше). С валидной
+    политикой удаление guard'а обязано провалить именно шаг 6.
+    """
+    policy = tmp_path / "approval-policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "mergeCommit": {"oid": SHA},
+                                    "mergedBy": {"login": "andrei-shtanakov", "__typename": "User"},
+                                }
+                            }
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+    target_dir = tmp_path / "facts.jsonl"
+    target_dir.mkdir()
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "o/n",
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--prs",
+            "1",
+            "--out",
+            str(target_dir),
+            "--policy",
+            str(policy),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert target_dir.is_dir(), "цель обязана остаться нетронутой"
+    assert "уже существует как каталог" in result.output
+
+
 # --- Step 3: declared scope --------------------------------------------------
 #
 # `test_duplicate_scope_is_config_error` and `test_no_identifiers_is_config_error`

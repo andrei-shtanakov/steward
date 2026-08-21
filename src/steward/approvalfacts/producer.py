@@ -98,6 +98,26 @@ def _repository(payload: dict[str, Any], what: str) -> dict[str, Any]:
     return repository
 
 
+def _require_key(mapping: dict[str, Any], key: str, what: str, *, where: str) -> Any:
+    """Различить «ключа нет» (искажённый/неполный ответ) от «ключ есть, значение
+    любое» — что означает конкретное присутствующее значение, решает вызывающий
+    код.
+
+    Раньше здесь (и в `_repository()` до правки уровнем выше) стояло
+    `.get(key)` / `.get(key) or {}` — из-за чего отсутствующий ключ и явный
+    `null` читались одинаково. Для ``pullRequest``/``object`` это превращало
+    искажённый ответ (ключ пропущен) в доказанное «не найдено»; для
+    ``associatedPullRequests``/``nodes``/``pageInfo`` внутри `object` — в
+    ложный `no_matching_pr` (`{"object": {}}` без вложенных полей проходил
+    как «страница пройдена целиком, совпадений нет»). Отсутствие ключа —
+    механический сбой в обоих случаях; значение ключа (включая ``None``)
+    решает вызывающий.
+    """
+    if key not in mapping:
+        raise MechanicalFailure(f"{what}: ответ не содержит {where}")
+    return mapping[key]
+
+
 def _actor(node: dict[str, Any]) -> tuple[str, str] | None:
     merged_by = node.get("mergedBy")
     if not isinstance(merged_by, dict):
@@ -113,7 +133,9 @@ def _resolve_pr(owner: str, name: str, request: RequestId) -> Result:
     payload = _graphql(
         _QUERY_BY_PR, {"owner": owner, "name": name, "number": int(request.value)}, what=what
     )
-    pull_request = _repository(payload, what).get("pullRequest")
+    pull_request = _require_key(
+        _repository(payload, what), "pullRequest", what, where="repository.pullRequest"
+    )
     if pull_request is None:
         return Result(request, "not_found")
     if not isinstance(pull_request, dict):
@@ -140,13 +162,20 @@ def _resolve_sha(owner: str, name: str, request: RequestId) -> Result:
             {"owner": owner, "name": name, "sha": str(request.value), "after": cursor},
             what=what,
         )
-        commit = _repository(payload, what).get("object")
+        commit = _require_key(_repository(payload, what), "object", what, where="repository.object")
         if commit is None:
             return Result(request, "not_found")
         if not isinstance(commit, dict):
             raise MechanicalFailure(f"{what}: object не объект")
-        associated = commit.get("associatedPullRequests") or {}
-        for node in associated.get("nodes") or []:
+        associated = _require_key(
+            commit, "associatedPullRequests", what, where="object.associatedPullRequests"
+        )
+        if not isinstance(associated, dict):
+            raise MechanicalFailure(f"{what}: associatedPullRequests не объект")
+        nodes = _require_key(associated, "nodes", what, where="associatedPullRequests.nodes")
+        if not isinstance(nodes, list):
+            raise MechanicalFailure(f"{what}: associatedPullRequests.nodes не список")
+        for node in nodes:
             if (node.get("mergeCommit") or {}).get("oid") != request.value:
                 continue
             actor = _actor(node)
@@ -156,7 +185,11 @@ def _resolve_sha(owner: str, name: str, request: RequestId) -> Result:
             return Result(
                 request, "merged", merge_sha=str(request.value), identity=identity, type_hint=hint
             )
-        page_info = associated.get("pageInfo") or {}
+        page_info = _require_key(
+            associated, "pageInfo", what, where="associatedPullRequests.pageInfo"
+        )
+        if not isinstance(page_info, dict):
+            raise MechanicalFailure(f"{what}: associatedPullRequests.pageInfo не объект")
         if not page_info.get("hasNextPage"):
             return Result(request, "no_matching_pr")
         cursor = page_info.get("endCursor")
