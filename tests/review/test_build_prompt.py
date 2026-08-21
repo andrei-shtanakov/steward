@@ -155,6 +155,49 @@ def test_missing_diff_is_config_error(tmp_path: Path) -> None:
     assert result.returncode == 2
 
 
+def _chmod_000_actually_blocks_reads(path: Path) -> bool:
+    """root (и некоторые FS) игнорирует права доступа — `chmod 000` там не
+    защита. Проверяем эмпирически на РЕАЛЬНОМ файле теста, а не полагаемся
+    на `os.getuid() == 0`: не единственная причина, по которой права могут
+    не работать (см. просьбу владельца — сказать, а не подогнать тест)."""
+    path.chmod(0o000)
+    try:
+        path.read_text(encoding="utf-8")
+        return False
+    except PermissionError:
+        return True
+    finally:
+        path.chmod(0o644)
+
+
+def test_unreadable_prompt_is_config_error_not_mechanical_failure(tmp_path: Path) -> None:
+    """`-f` проверяет существование, не читаемость: без прав на чтение `cat`
+    падал бы под `set -e` кодом 1 — а 1 доезжает до хука через local.sh как
+    "находки уровня blocker/major", блокируя пуш так, будто ревью нашло
+    дефект в патче, хотя сломаны права на локальный файл."""
+    prompt, diff = make(tmp_path, "И", "Д")
+    if not _chmod_000_actually_blocks_reads(prompt):
+        pytest.skip("chmod 000 не блокирует чтение под текущим пользователем/FS")
+    prompt.chmod(0o000)
+    try:
+        result = run(prompt, diff)
+    finally:
+        prompt.chmod(0o644)
+    assert result.returncode == 2
+
+
+def test_unreadable_diff_is_config_error_not_mechanical_failure(tmp_path: Path) -> None:
+    prompt, diff = make(tmp_path, "И", "Д")
+    if not _chmod_000_actually_blocks_reads(diff):
+        pytest.skip("chmod 000 не блокирует чтение под текущим пользователем/FS")
+    diff.chmod(0o000)
+    try:
+        result = run(prompt, diff)
+    finally:
+        diff.chmod(0o644)
+    assert result.returncode == 2
+
+
 @pytest.mark.parametrize("interpreter", INTERPRETERS)
 def test_bare_prompt_flag_is_config_error(interpreter: str) -> None:
     """Голый `--prompt` без значения — код 2 и usage(), а не сообщение shell."""
