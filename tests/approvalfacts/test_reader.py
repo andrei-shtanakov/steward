@@ -510,6 +510,38 @@ def test_empty_file_is_unreadable(tmp_path: Path) -> None:
         load_facts(path, expected_repository=REPO, now=NOW)
 
 
+def test_leading_blank_line_before_header_is_unreadable(tmp_path: Path) -> None:
+    """Codex gate round 3 on PR #86: `load_facts` used to filter out every
+    blank line (`if ln.strip()`) before even numbering the remaining ones —
+    so a file that literally does NOT have `header` as its first line (there
+    is a blank line before it) still passed invariant 1, because the blank
+    line was silently dropped and the header ended up at index 0 of the
+    FILTERED list. The contract (README, "JSONL, по одной на строку") does
+    not sanction blank spacer lines; `json.loads("")` on an unfiltered blank
+    line now fails on its own, before invariant 1 is even reached."""
+    scope = [RequestId("merge_sha", SHA)]
+    path = tmp_path / "approval_facts.jsonl"
+    path.write_text(
+        "\n" + json.dumps(_header(scope)) + "\n" + json.dumps(_merged(scope[0])) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(UnreadableFacts, match="не JSON"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
+def test_interior_blank_line_between_records_is_unreadable(tmp_path: Path) -> None:
+    """Same defect, interior position: a blank spacer line between two
+    otherwise-valid records used to be silently dropped rather than
+    rejected."""
+    scope = [RequestId("merge_sha", SHA)]
+    path = tmp_path / "approval_facts.jsonl"
+    path.write_text(
+        json.dumps(_header(scope)) + "\n\n" + json.dumps(_merged(scope[0])) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(UnreadableFacts, match="не JSON"):
+        load_facts(path, expected_repository=REPO, now=NOW)
+
+
 def test_missing_file_raises_unreadable_not_os_error(tmp_path: Path) -> None:
     """Round 3: the `except OSError as exc: raise UnreadableFacts(...) from
     exc` translation (`reader.py:239-240`) is exactly finding 2's class

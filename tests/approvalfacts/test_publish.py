@@ -3,6 +3,7 @@
 
 import json
 import os
+import stat
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,6 +191,42 @@ def test_publish_calls_fsync_on_file_and_directory(
     final_dir = os.stat(path.parent)
     assert (final_file.st_dev, final_file.st_ino) in seen, "файл данных не засинкан"
     assert (final_dir.st_dev, final_dir.st_ino) in seen, "родительская директория не засинкана"
+
+
+def test_publish_removes_new_file_when_directory_fsync_fails_after_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex gate round 3 on PR #86: `os.replace()` can succeed and only THEN
+    the follow-up directory fsync (`_fsync_dir`, confirming the rename's
+    directory-entry durability across a crash) can fail — e.g. a filesystem
+    that errors on directory fsync. Before this fix, the `except` block only
+    removed the temp file; the already-replaced `path` stayed on disk even
+    though `publish()` raised, contradicting every caller's "an exception
+    means no file was published" contract (the CLI's exit-3 mechanical-
+    failure path is documented as leaving the source absent).
+
+    `os.fsync` is monkeypatched to fail only for a DIRECTORY fd (checked via
+    `stat.S_ISDIR`) — the data-file fsync inside the `with os.fdopen(...)`
+    block still succeeds normally, so the failure is pinned to exactly the
+    post-`os.replace()` step this fix addresses, not to writing the content
+    itself.
+    """
+    scope = [RequestId("pr", 1)]
+    path = tmp_path / ".steward" / "approval_facts.jsonl"
+    real_fsync = os.fsync
+
+    def failing_dir_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("simulated directory fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_dir_fsync)
+
+    with pytest.raises(OSError):
+        publish(path, _header(scope), [Result(scope[0], "not_merged")])
+
+    assert not path.exists(), "publish() raised — the just-replaced file must not remain"
+    assert not list(path.parent.glob(".approval_facts-*.tmp")), "временный файл тоже не остаётся"
 
 
 def test_ordering_previous_publication_survives_late_preflight_failure(tmp_path: Path) -> None:

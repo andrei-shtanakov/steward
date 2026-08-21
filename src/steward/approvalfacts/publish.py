@@ -183,13 +183,33 @@ def publish(path: Path, header: Header, results: Sequence[Result]) -> None:
     records = [_header_record(header), *(_result_record(r) for r in results)]
     payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".approval_facts-", suffix=".tmp")
+    replaced = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
+        replaced = True
         _fsync_dir(path.parent)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
+        if replaced:
+            # `os.replace()` already succeeded — the new content genuinely
+            # landed at `path` — and only the follow-up directory fsync
+            # (durability of the RENAME's directory entry across a crash)
+            # failed. Every caller of `publish()` treats a raised exception
+            # as "no file was published" (§6.1/§8.4: the typed exit-3
+            # mechanical-failure path is documented as leaving the source
+            # absent, on purpose, so a caller can retry without first
+            # deciding whether a half-durable file is trustworthy). Leaving
+            # `path` in place here would silently contradict that promise —
+            # a caller that checks `path.exists()` after catching the
+            # exception would see a file it was told does not exist. Best
+            # effort roll back rather than leave a file whose existence
+            # disagrees with the reported outcome; if this unlink ALSO fails
+            # (e.g. the same disk-full condition), the resulting exception
+            # propagates and is at least honest about a broken publish, not
+            # a hidden stray file (Codex gate round 3 on PR #86).
+            Path(path).unlink(missing_ok=True)
         raise

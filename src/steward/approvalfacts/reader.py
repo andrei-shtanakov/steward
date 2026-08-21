@@ -235,7 +235,7 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
     if detect_legacy_v1(path):
         raise UnreadableFacts(f"{path}: обнаружен устаревший approval-facts/v1 — не читается")
     try:
-        lines = [ln for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip()]
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise UnreadableFacts(f"{path}: не читается: {exc}") from exc
     if not lines:
