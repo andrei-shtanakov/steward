@@ -26,6 +26,21 @@ echo "ревьюер сломался" >&2
 exit 1
 """
 
+STUB_MAJOR_FINDING = """#!/bin/sh
+# Подставной ревьюер: пишет вердикт с находкой уровня major — единственный
+# способ проверить, что local.sh реально пробрасывает код 1 наружу.
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output-last-message) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+cat > /dev/null
+printf '{"findings":[{"severity":"major","file":"a.py","summary":"s","failure":"f"}],"note":"stub"}' \\
+    > "$out"
+"""
+
 
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(
@@ -202,3 +217,56 @@ def test_explicit_head_reviews_that_ref_not_current_head(tmp_path: Path) -> None
     result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", other_sha)
     assert result.returncode == 0, result.stderr
     assert other_sha[:8] in result.stdout
+
+
+def test_default_schema_and_prompt_resolve_from_repo_root_not_cwd(tmp_path: Path) -> None:
+    """README велит запускать `sh scripts/review/local.sh`, и запускать будут
+    откуда попало. Умолчания REVIEW_SCHEMA/REVIEW_PROMPT обязаны резолвиться
+    через `git rev-parse --show-toplevel`, а не через cwd — иначе прогон из
+    подкаталога репо не находит промпт (находка 6 финального ревью)."""
+    _, local = make_repo(tmp_path)
+    codex_dir = local / ".github" / "codex"
+    codex_dir.mkdir(parents=True)
+    (codex_dir / "review-prompt.md").write_text("промпт-заглушка\n", encoding="utf-8")
+    (codex_dir / "review-schema.json").write_text("{}\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "промпт и схема")
+
+    subdir = local / "sub" / "deeper"
+    subdir.mkdir(parents=True)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = dict(os.environ)
+    env["REVIEW_CMD"] = make_stub(tmp_path, STUB_OK)
+    env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
+    # Намеренно НЕ задаём REVIEW_SCHEMA/REVIEW_PROMPT — проверяем умолчания.
+    result = subprocess.run(
+        ["sh", str(SCRIPT)],
+        cwd=str(subdir),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "нет файла инструкций" not in result.stderr
+
+
+def test_findings_above_threshold_block_exit_code(tmp_path: Path) -> None:
+    """§7: `local.sh` обязан завершиться 1, когда вердикт содержит находку выше
+    порога. Держится на `set -e` и позиции последней команды в скрипте — ни один
+    существующий стенд этого не проверял (все писали `{"findings":[]}`), значит
+    рефакторинг хвоста скрипта мог бы снять блокировку молча (находка 5
+    финального ревью)."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    stub = make_stub(tmp_path, STUB_MAJOR_FINDING)
+    result = run_local(local, stub)
+    assert result.returncode == 1, result.stderr
+    # Рендер обязан быть цел, не просто код выхода.
+    assert "major" in result.stdout
+    assert "a.py" in result.stdout

@@ -10,8 +10,12 @@
 set -eu
 
 kit_dir="${REVIEW_KIT_DIR:-$(dirname "$0")}"
-schema="${REVIEW_SCHEMA:-.github/codex/review-schema.json}"
-prompt="${REVIEW_PROMPT:-.github/codex/review-prompt.md}"
+# Умолчания относительны корню репо, а не cwd: README велит запускать
+# `sh scripts/review/local.sh`, и запускать будут откуда попало — из
+# подкаталога relative-путь до промпта/схемы молча не резолвится.
+repo_root="$(git rev-parse --show-toplevel)"
+schema="${REVIEW_SCHEMA:-$repo_root/.github/codex/review-schema.json}"
+prompt="${REVIEW_PROMPT:-$repo_root/.github/codex/review-prompt.md}"
 review_cmd="${REVIEW_CMD:-codex}"
 
 base=""
