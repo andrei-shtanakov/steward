@@ -1,6 +1,7 @@
 """Тесты scripts/review/build-prompt.sh — склейка инструкций с дифом."""
 
 import hashlib
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,7 +21,22 @@ def marker_for(diff: Path) -> str:
 # флаг без значения расходится между ними (см. Fix round 1): bash молча
 # продвигает `shift 2` за край и даёт exit 1, dash падает своим сообщением
 # мимо usage(). Гоняем сторож под обоими, чтобы расхождение не спряталось.
-INTERPRETERS = ["sh", "dash"]
+#
+# На стоковом macOS `dash` не установлен: безусловный вызов ронял бы весь
+# набор `FileNotFoundError`'ом ДО того, как проверяемые скрипты вообще
+# запустились — красный локальный прогон не про предмет. `sh` всегда в
+# наборе безусловно; `dash` пропускается точечно и громко там, где его нет
+# — так, чтобы skip читался как «покрытие сузилось», а не как «тест прошёл».
+INTERPRETERS = [
+    "sh",
+    pytest.param(
+        "dash",
+        marks=pytest.mark.skipif(
+            shutil.which("dash") is None,
+            reason="dash не найден в PATH — сторож не проверен под dash, покрытие уже",
+        ),
+    ),
+]
 
 
 def run(prompt: Path, diff: Path) -> subprocess.CompletedProcess[str]:
