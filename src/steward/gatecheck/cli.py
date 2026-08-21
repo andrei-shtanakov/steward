@@ -9,17 +9,22 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
 import yaml
 
+from steward.approvalfacts.publish import FACTS_RELPATH, ConfigError, parse_origin
 from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
 from steward.gatecheck.approval import (
     ApprovalPolicy,
+    FactsOutcome,
+    FactsUnavailable,
     PolicyError,
     check_approval_evidence,
     load_approval_policy,
+    resolve_facts,
 )
 from steward.gatecheck.architecture import (
     ArchPolicyError,
@@ -121,17 +126,82 @@ def _load_catalog(profile_path: Path, roles: RolesCatalog) -> GateCatalog:
         raise AssertionError from None  # unreachable; keeps type-checkers calm
 
 
-def _load_approval_policy(profile_path: Path) -> ApprovalPolicy:
-    """Load ``approval-policy.yaml`` anchored to ``profile_path``'s directory.
+def _approval_policy_path(profile_path: Path) -> Path:
+    """``approval-policy.yaml`` anchored to ``profile_path``'s directory.
 
     Same anchoring discipline as ``_load_catalog``/arch-policy.yaml — resolves
     relative to the profile directory actually in use, not the current CWD.
+    One helper rather than two literals: ``policy_digest`` (table row 3) is
+    computed over the bytes of exactly the file the policy was loaded from, and
+    a second spelling of the path could silently drift from the first.
     """
+    return profile_path.parent / "approval-policy.yaml"
+
+
+def _load_approval_policy(policy_path: Path) -> ApprovalPolicy:
+    """Load the anchored ``approval-policy.yaml``, mapping defects to exit 2."""
     try:
-        return load_approval_policy(profile_path.parent / "approval-policy.yaml")
+        return load_approval_policy(policy_path)
     except PolicyError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
+
+
+def _git_out(cwd: Path, *args: str) -> str | None:
+    proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def approval_facts_outcome(
+    explicit: Path | None,
+    spec_dir: Path,
+    *,
+    policy: ApprovalPolicy,
+    policy_path: Path,
+    now: datetime,
+) -> FactsOutcome:
+    """Resolve the merge-evidence source for this run (§8.4).
+
+    Two explicitly chosen input paths, one format: ``--approval-facts`` is an
+    operator override (and therefore accepts **only** v2 — an invalid file
+    there is a call error, per §8.3.1), and without it the path is the bundle
+    default ``<repo-root>/.steward/approval_facts.jsonl``, next to
+    ``gate_verdicts.jsonl``.
+
+    ``expected_repository`` is derived from the checkout's **``origin``** — the
+    remote named ``origin``, not "any remote that fits": working copies in this
+    fleet carry several remotes for one repository, including mirrors on other
+    forges. It is needed for both paths, because reader invariant 11 is what
+    stops a file from a *different* repository that happens to contain the same
+    merge SHA from influencing enforcement.
+
+    A repository we cannot identify (bundle outside a git repo, no ``origin``,
+    unparseable ``origin``) yields ``FactsUnavailable("absent")`` rather than
+    aborting the run: the gate must not crash, and "no usable evidence" is
+    already the safe, fail-closed state.
+    """
+    top = _git_out(spec_dir, "rev-parse", "--show-toplevel")
+    if top is None:
+        return FactsUnavailable("absent", f"{spec_dir} не внутри git-репозитория")
+    origin = _git_out(Path(top), "remote", "get-url", "origin")
+    if origin is None:
+        return FactsUnavailable("absent", f"{top}: у чекаута нет remote 'origin'")
+    try:
+        owner, name = parse_origin(origin)
+    except ConfigError as err:
+        return FactsUnavailable("absent", f"{top}: origin не разбирается — {err}")
+
+    path = explicit if explicit is not None else Path(top) / FACTS_RELPATH
+    return resolve_facts(
+        path,
+        expected_repository=f"{owner}/{name}",
+        policy=policy,
+        policy_path=policy_path,
+        now=now,
+        explicit=explicit is not None,
+    )
 
 
 def _git_facts(no_fs: Path | None, spec_dir: Path) -> GitFacts:
@@ -209,9 +279,9 @@ def main(
     approval_facts: Path | None = typer.Option(
         None,
         "--approval-facts",
-        help="Materialized merge-actor evidence. Accepted but not yet consulted: "
-        "the approval-facts v2 migration is in progress and this option is "
-        "rewired in a later task. Every merge actor is currently unavailable.",
+        help="Override the materialized merge-actor evidence path "
+        "(approval-facts/v2 only). Default: <repo-root>/.steward/"
+        "approval_facts.jsonl. Consulted at --stage release.",
     ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
@@ -261,16 +331,25 @@ def main(
         raise AssertionError from None  # unreachable; keeps type-checkers calm
 
     if resolved_stage == "release":
-        approval_policy = _load_approval_policy(profile_path)
-        # `approval_facts` (--approval-facts) is accepted but not yet wired
-        # to a real evidence source: the approval-facts v2 migration is in
-        # progress and this call is rewired onto it in a later task (see
-        # the CLI option help and check_approval_evidence's docstring note).
-        actor_facts = None
+        approval_policy_path = _approval_policy_path(profile_path)
+        approval_policy = _load_approval_policy(approval_policy_path)
+        try:
+            facts = approval_facts_outcome(
+                approval_facts,
+                spec_dir,
+                policy=approval_policy,
+                policy_path=approval_policy_path,
+                now=datetime.now(UTC),
+            )
+        except ConfigError as err:
+            # §8.3.1: an invalid file the operator pointed at explicitly is a
+            # call error, not an observed property of the environment.
+            _fail_config(str(err))
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
         try:
             findings.extend(
                 check_approval_evidence(
-                    artifacts, git, approval_policy, actor_facts, resolved_stage
+                    artifacts, git, approval_policy, facts, stage=resolved_stage
                 )
             )
         except FactsError as err:
