@@ -580,6 +580,71 @@ def test_fetch_with_non_tracking_explicit_base_reports_being_ignored(tmp_path: P
     assert "remote-tracking" in result.stderr
 
 
+def test_fetch_recognizes_shorthand_remote_tracking_base(tmp_path: Path) -> None:
+    """Заход 11, находка 1: `--base origin/master` (шортхенд, самая ходовая
+    форма записи remote-tracking ref'а — её пишут чаще полной) раньше НЕ
+    распознавался textual-паттерном `refs/remotes/$remote/*` и читался как
+    "не remote-tracking", хотя им был: --fetch молча пропускался, свежесть
+    не проверялась. Тот же сценарий "устарел / --fetch", что и в тесте
+    выше на полной форме, но здесь база задана шортхендом."""
+    remote, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    # Удалённый ушёл вперёд, локальный remote-tracking про это не знает
+    (remote / "other.txt").write_text("чужое\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "чужой коммит")
+
+    before = run_local(local, make_stub(tmp_path, STUB_OK), "--base", "origin/master")
+    assert "--fetch игнорируется" not in before.stderr
+    assert "устарел" in (before.stdout + before.stderr).lower()
+
+    after = run_local(local, make_stub(tmp_path, STUB_OK), "--base", "origin/master", "--fetch")
+    assert after.returncode == 0, after.stderr
+    assert "устарел" not in (after.stdout + after.stderr).lower()
+    assert "--fetch игнорируется" not in after.stderr
+
+
+def test_explicit_unfetched_remote_tracking_base_fails_with_code_2(tmp_path: Path) -> None:
+    """Заход 11, находка 2: README рекомендует `--base
+    refs/remotes/<remote>/<ветка>` для ветки, которая на remote ЕСТЬ, но
+    локально ещё НЕ подтянута (свежий клон). Раньше это падало сырым
+    `git rev-parse` кодом 128 — сбой инструмента предъявлялся как вердикт,
+    а не как контрактный конфигурационный отказ (код 2).
+
+    Порядок клонирования критичен для воспроизведения: `git clone` тянет
+    ВСЕ ветки, присутствующие на remote НА МОМЕНТ клонирования, а не только
+    ветку по умолчанию. Если создать ветку на remote до `git clone`, она
+    попадёт в локальный remote-tracking автоматически, и баг не
+    воспроизведётся. Поэтому здесь `local` клонируется ПЕРВЫМ (когда на
+    remote есть только master), и лишь ЗАТЕМ отдельный `seed`-клон заводит
+    и пушит `release/1.0` — `local` о ней ничего не знает."""
+    remote, local = make_repo(tmp_path)
+
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(remote), str(seed)], check=True, capture_output=True)
+    git(seed, "config", "user.email", "t@t")
+    git(seed, "config", "user.name", "t")
+    git(seed, "checkout", "-qb", "release/1.0")
+    (seed / "hotfix.txt").write_text("хотфикс\n", encoding="utf-8")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-qm", "хотфикс")
+    git(seed, "push", "-q", "origin", "release/1.0")
+
+    # local не подтягивал release/1.0 — remote-tracking ref для неё локально
+    # не существует, ровно сценарий из README.
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        "refs/remotes/origin/release/1.0",
+    )
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "ещё не подтянута" in result.stderr
+    assert "git fetch origin release/1.0" in result.stderr
+
+
 def test_explicit_head_reviews_that_ref_not_current_head(tmp_path: Path) -> None:
     """--head — второй конец диапазона; без него хук не смог бы дать подсказку."""
     _, local = make_repo(tmp_path)

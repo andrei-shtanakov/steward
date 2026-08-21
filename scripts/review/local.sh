@@ -122,9 +122,32 @@ fi
 # нужного remote (локальная ветка, голый SHA, ref другого remote'а), а не
 # сам факт явного --base.
 track_branch=""
-case "$base" in
-    "refs/remotes/$remote/"*) track_branch="${base#refs/remotes/$remote/}" ;;
-esac
+if full_base=$(git rev-parse --symbolic-full-name "$base" 2>/dev/null); then
+    # `--symbolic-full-name` разворачивает ЛЮБУЮ форму записи (`origin/master`,
+    # `remotes/origin/master`, полную `refs/remotes/origin/master`) в
+    # каноническую — надёжнее, чем сопоставлять текст по шаблону: шортхенд
+    # `origin/master` (самая ходовая форма записи remote-tracking ref'а,
+    # её пишут чаще полной) раньше НЕ распознавался textual-паттерном
+    # `refs/remotes/$remote/*` и молча читался как "не remote-tracking",
+    # хотя им был. Требует резолвящегося объекта — если base ещё не
+    # подтянут локально, эта ветка не сработает, ниже есть fallback.
+    case "$full_base" in
+        "refs/remotes/$remote/"*)
+            track_branch="${full_base#refs/remotes/$remote/}"
+            base="$full_base"
+            ;;
+    esac
+else
+    # `--symbolic-full-name` требует, чтобы `$base` резолвился в существующий
+    # объект — для ещё НЕ подтянутого локально remote-tracking ref'а (свежий
+    # клон, `--base refs/remotes/$remote/<ветка>` — форма, которую README сам
+    # и рекомендует) он не поможет. Полная текстовая форма при этом остаётся
+    # распознаваемой БЕЗ резолва — то же сопоставление по шаблону, что и
+    # раньше, как запасной путь.
+    case "$base" in
+        "refs/remotes/$remote/"*) track_branch="${base#refs/remotes/$remote/}" ;;
+    esac
+fi
 
 if [ "$do_fetch" -eq 1 ] && [ -z "$track_branch" ]; then
     echo "--fetch игнорируется: база не является remote-tracking ref'ом" \
@@ -184,8 +207,19 @@ if [ -n "$track_branch" ]; then
         remote_sha=$(printf '%s' "$remote_line" | cut -f1)
         # Пересчитано ПОСЛЕ возможного --fetch выше: если он обновил
         # локальную ссылку, она уже совпадёт с remote_sha, и предупреждение
-        # об устаревшей базе законно не напечатается.
-        local_sha=$(git rev-parse "$base")
+        # об устаревшей базе законно не напечатается. Но если --fetch НЕ
+        # запрашивали, а ветка есть на remote (ls-remote выше это уже
+        # подтвердил) и локально ЕЩЁ НЕ подтянута — `git rev-parse "$base"`
+        # сам падает сырым кодом git (128), а не контрактным 2: свежий клон
+        # плюс `--base refs/remotes/$remote/<ветка>` без --fetch — форма,
+        # которую README сам и рекомендует.
+        if ! local_sha=$(git rev-parse "$base" 2>/dev/null); then
+            echo "ветка '$track_branch' есть на $remote, но локально ещё не" \
+                "подтянута ($base не резолвится)." >&2
+            echo "  выполните: git fetch $remote $track_branch" \
+                "(или добавьте --fetch)." >&2
+            exit 2
+        fi
         if [ "$remote_sha" != "$local_sha" ]; then
             behind=$(git rev-list --count "$base..$remote_sha" 2>/dev/null || echo "?")
             echo "ВНИМАНИЕ: локальная база устарела." >&2
