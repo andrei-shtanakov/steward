@@ -144,7 +144,10 @@ def test_pipe_and_newline_in_cells_do_not_break_the_table(tmp_path: Path) -> Non
     result = run(write(tmp_path, payload))
     rows = [ln for ln in result.stdout.splitlines() if ln.startswith("| major")]
     assert len(rows) == 1, "находка обязана остаться одной строкой таблицы"
-    assert rows[0].count("|") == 5, "внутренние трубы обязаны быть экранированы"
+    # Экранирование НЕ убирает символ: `|` становится `\|`. Считать надо
+    # неэкранированные трубы — только они и есть разделители ячеек.
+    unescaped = rows[0].replace("\\|", "")
+    assert unescaped.count("|") == 5, "внутренние трубы обязаны быть экранированы"
 
 
 def test_text_format_has_no_markdown_table(tmp_path: Path) -> None:
@@ -424,13 +427,21 @@ Expected: PASS, 5 тестов.
 
 ```bash
 cp scripts/review/build-prompt.sh /tmp/orig-bp.sh
-# Передать диф аргументом вместо файла — тест на метасимволы обязан покраснеть
+# Мутант обязан РЕАЛЬНО исполнять содержимое дифа. `echo $(cat "$diff")` для
+# этого НЕ годится: подстановка не перечитывает `$(...)` внутри уже
+# прочитанного текста, мутант остаётся зелёным, и это ничего не доказывает.
 ln=$(grep -n '^cat "\$diff"' scripts/review/build-prompt.sh | cut -d: -f1)
-sed "${ln}s|.*|echo \$(cat \"\$diff\")|" /tmp/orig-bp.sh > scripts/review/build-prompt.sh
+sed "${ln}s|.*|eval \"\$(cat \\\"\$diff\\\")\"|" /tmp/orig-bp.sh \
+    > scripts/review/build-prompt.sh
 sed -n "${ln}p" scripts/review/build-prompt.sh    # сверить, что подставилось
 uv run pytest tests/review/test_build_prompt.py -q   # обязано покраснеть
 cp /tmp/orig-bp.sh scripts/review/build-prompt.sh
 ```
+
+**Если мутант остался зелёным — сначала проверь сам мутант, а не тест.** В этом
+воркстриме мутационные стенды врали дважды: `sed` по якорю без отступов срезал
+скрипт с 63 строк до 7, а `replace` по неверному отступу не применился вовсе.
+Сверяй длину файла и печатай подставленную строку до того, как делать вывод.
 
 - [ ] **Step 6: Коммит**
 
