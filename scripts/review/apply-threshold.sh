@@ -53,12 +53,22 @@ esac
 # получил бы частично заполненный `body.md` и код 5, вне объявленного §7
 # набора. `severity` в этот список не входит: его форма уже держится
 # отдельной строкой выше через `IN(...)`.
+#
+# `.note` — тот же класс, одним полем правее: нестроковый `note` (например
+# объект) не крашится (`jq -r '.note // ""'` печатает его как есть, не
+# ошибкой), а значит guard'ом type=="object" в findings не ловится — он
+# проходит МОЛЧА и печатает JSON-объект прямо в тело отчёта, при пустом
+# `findings` давая код 0 «замечаний нет». Негодный вердикт читается как
+# «замечаний нет» — тот же инвертированный инвариант, что Critical
+# финального ревью для `severity`, просто в соседнем поле.
 jq -e '(.findings | type == "array")
        and all(.findings[]; type == "object"
                and (.severity | IN("blocker", "major", "minor", "nit"))
-               and ([.file, .summary, .failure] | all(. == null or type == "string")))' \
+               and ([.file, .summary, .failure] | all(. == null or type == "string")))
+       and (.note == null or (.note | type == "string"))' \
     "$verdict" >/dev/null 2>&1 \
-    || { echo "вердикт нечитаем: находка без пригодного severity/file/summary/failure" >&2; exit 2; }
+    || { echo "вердикт нечитаем: находка без пригодного severity/file/summary/failure," \
+        "либо note не строка" >&2; exit 2; }
 
 total=$(jq '.findings | length' "$verdict")
 blocking=$(jq '[.findings[]

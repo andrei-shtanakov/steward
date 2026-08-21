@@ -149,6 +149,26 @@ def test_null_file_summary_failure_still_render(tmp_path: Path) -> None:
     assert "| minor | `` |  |  |" in result.stdout
 
 
+def test_non_string_note_is_config_error(tmp_path: Path) -> None:
+    """`.note` — тот же класс, что `file`/`summary`/`failure`, одним полем
+    правее: нестроковый note (объект) не крашится (`jq -r '.note // ""'`
+    печатает его как есть), значит НЕ ловится type=="object" guard'ом
+    findings и проходит молча — при пустом findings давал бы код 0
+    "замечаний нет" с JSON-объектом прямо в теле отчёта."""
+    payload = {"findings": [], "note": {"oops": 1}}
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 2
+    assert "note" in result.stderr
+
+
+def test_missing_note_is_still_valid(tmp_path: Path) -> None:
+    """Контрольный: guard на note не должен требовать присутствия поля —
+    `.note // ""` уже трактует отсутствие как пустую строку."""
+    payload = {"findings": []}
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 0
+
+
 def test_valid_verdict_rendering_is_unchanged(tmp_path: Path) -> None:
     """Контрольный: ужесточение проверки не должно тронуть рендер годного
     вердикта — сверка байт-в-байт с ожидаемым выводом."""
