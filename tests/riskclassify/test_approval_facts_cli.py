@@ -254,18 +254,44 @@ def test_out_parent_not_writable_is_config_error_and_keeps_previous(tmp_path: Pa
 
 # --- Step 3: declared scope --------------------------------------------------
 #
-# Все тесты этой секции передают `--repo-root` в `_hermetic_root` (нет
-# `profiles/approval-policy.yaml`) и НЕ передают `--policy`. Это не только
-# hermeticity: если preflight регрессирует и шаг 4 (загрузка политики)
-# начнёт выполняться раньше шага 3, дефолтный путь политики в
-# `_hermetic_root` не найдётся, и сообщение будет про политику, а не про
-# scope — то есть каждый из этих тестов уже сам по себе чувствителен к
-# перестановке 3↔4 (плюс отдельный именованный тест ниже).
+# `test_duplicate_scope_is_config_error` and `test_no_identifiers_is_config_error`
+# below are given a VALID `--policy` (unlike the other two step-3 tests). Round-2
+# re-review finding: with `_hermetic_root` and no `--policy`, step 4 fails on its
+# own (missing policy file) whenever step 3's guard doesn't stop execution first —
+# same exit code 2, and for the duplicate case even a message that spuriously
+# contains "duplicate" (pytest's own `tmp_path` embeds this test's function name).
+# So deleting the duplicate/empty-scope guard left both tests green for the wrong
+# reason: masking by a coincidentally-identical downstream failure, not because the
+# guard fired. A valid policy removes that coincidence — if the guard is ever
+# deleted, execution now runs all the way through to `publish` and exits **0**,
+# an unambiguous, unspoofable signal no policy-file wording can accidentally match.
+# `producer._gh` is monkeypatched defensively so that scenario, reached only under
+# a deliberate guard-deletion mutation, never touches the network either.
+#
+# The other two step-3 tests below (`test_malformed_merge_sha_...`,
+# `test_non_positive_pr_...`) keep `_hermetic_root` with no `--policy`: verified by
+# mutation (see the round-2 report) that their guard-specific message assertions
+# ("hex" / "положительным") do not accidentally match the step-4 fallback message
+# or a `tmp_path` name, so they are not subject to the same masking.
 
 
-def test_duplicate_scope_is_config_error(tmp_path: Path) -> None:
+def test_duplicate_scope_is_config_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     previous = tmp_path / "f.jsonl"
     previous.write_text("prior", encoding="utf-8")
+    policy = tmp_path / "approval-policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
+    # Дублирующийся scope значит materialize(), если бы guard не остановил
+    # выполнение, разрешал бы pr:1 дважды — по одному ответу на каждый вызов.
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (0, {"data": {"repository": {"pullRequest": {"mergeCommit": None}}}}),
+                (0, {"data": {"repository": {"pullRequest": {"mergeCommit": None}}}}),
+            ]
+        ),
+    )
     result = runner.invoke(
         app,
         [
@@ -274,20 +300,27 @@ def test_duplicate_scope_is_config_error(tmp_path: Path) -> None:
             "o/n",
             "--repo-root",
             str(_hermetic_root(tmp_path)),
+            "--policy",
+            str(policy),
             "--prs",
             "1,1",
             "--out",
             str(previous),
         ],
     )
-    assert result.exit_code == 2
-    assert "дубл" in result.output or "duplicate" in result.output
+    assert result.exit_code == 2, (
+        "с валидной политикой exit 2 может значить только то, что guard шага 3 "
+        "сработал — реальной коллизии с провалом шага 4 больше нет"
+    )
+    assert "дубл" in result.output
     assert previous.read_text(encoding="utf-8") == "prior"
 
 
 def test_no_identifiers_is_config_error(tmp_path: Path) -> None:
     previous = tmp_path / "f.jsonl"
     previous.write_text("prior", encoding="utf-8")
+    policy = tmp_path / "approval-policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
     result = runner.invoke(
         app,
         [
@@ -296,11 +329,17 @@ def test_no_identifiers_is_config_error(tmp_path: Path) -> None:
             "o/n",
             "--repo-root",
             str(_hermetic_root(tmp_path)),
+            "--policy",
+            str(policy),
             "--out",
             str(previous),
         ],
     )
-    assert result.exit_code == 2
+    assert result.exit_code == 2, (
+        "с валидной политикой exit 2 может значить только то, что guard шага 3 "
+        "сработал — реальной коллизии с провалом шага 4 больше нет"
+    )
+    assert "идентификатор" in result.output
     assert previous.read_text(encoding="utf-8") == "prior"
 
 
