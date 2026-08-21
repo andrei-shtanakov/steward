@@ -62,6 +62,59 @@ def test_findings_not_an_array_is_config_error(tmp_path: Path) -> None:
     assert run(write(tmp_path, {"findings": "нет"})).returncode == 2
 
 
+def test_severity_outside_enum_is_config_error(tmp_path: Path) -> None:
+    """`CRITICAL` (иная капитализация/синоним) не в enum'е схемы — не должна
+    молча читаться как «ниже порога» и красить чек зелёным."""
+    payload = {
+        "findings": [
+            {"severity": "CRITICAL", "file": "a.py", "summary": "дыра", "failure": "f"}
+        ],
+        "note": "n",
+    }
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 2
+    assert "severity" in result.stderr
+
+
+def test_finding_without_severity_is_config_error(tmp_path: Path) -> None:
+    """Находка вообще без ключа `severity` — тот же инвертированный инвариант:
+    без явной проверки она тоже читалась бы как «ниже порога»."""
+    result = run(write(tmp_path, {"findings": [{"file": "a"}], "note": "n"}))
+    assert result.returncode == 2
+
+
+def test_finding_that_is_not_an_object_is_config_error(tmp_path: Path) -> None:
+    """Элемент-строка внутри `findings` обязан давать код 2 (§7), не 5 —
+    иначе CI разбирает механический сбой как находку уровня blocker/major."""
+    result = run(write(tmp_path, {"findings": ["строка"], "note": "n"}))
+    assert result.returncode == 2
+
+
+def test_valid_verdict_rendering_is_unchanged(tmp_path: Path) -> None:
+    """Контрольный: ужесточение проверки не должно тронуть рендер годного
+    вердикта — сверка байт-в-байт с ожидаемым выводом."""
+    payload = {
+        "findings": [
+            {"severity": "major", "file": "a.py", "summary": "s", "failure": "f"}
+        ],
+        "note": "n",
+    }
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 1
+    assert result.stdout == (
+        "## Ревью Codex — независимый чек\n"
+        "\n"
+        "n\n"
+        "\n"
+        "| уровень | файл | находка | сценарий отказа |\n"
+        "|---|---|---|---|\n"
+        "| major | `a.py` | s | f |\n"
+        "\n"
+        "_Порог: красным делают `blocker` и `major`. Это чек, не аппрув —\n"
+        "и не замена ревью человека._\n"
+    )
+
+
 def test_missing_file_is_config_error(tmp_path: Path) -> None:
     result = run(tmp_path / "нет-такого.json")
     assert result.returncode == 2
