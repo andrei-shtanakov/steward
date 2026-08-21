@@ -35,3 +35,8 @@ agent_identities:
 # (`todo://dispatcher/agent-merge-observability`) и не сделан. Пока его нет,
 # действует оговорка D6: прогон обязан вести себя как `merge_authority: human`.
 agent_merge_allowed: false
+
+# Срок действия наблюдения approval-facts (§6.4 спеки v2). Не эвристика
+# читателя по возрасту, а нормативная lease продюсера: после неё actor_class
+# перестаёт быть операционным наблюдением, и D6 переводит authority в human.
+approval_facts_lease_seconds: 86400

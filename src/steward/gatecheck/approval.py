@@ -25,12 +25,13 @@ to ``check_approval_evidence``, not to ``classify_actor``.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import yaml
 
+from steward.approvalfacts.model import MAX_LEASE_SECONDS, ActorType
 from steward.gatecheck.checks import Artifact, Finding
 from steward.gatecheck.git_facts import GitFacts
 
@@ -38,13 +39,13 @@ __all__ = [
     "ActorFact",
     "ActorType",
     "ApprovalPolicy",
+    "MAX_LEASE_SECONDS",
     "PolicyError",
     "check_approval_evidence",
     "classify_actor",
     "load_approval_policy",
+    "policy_digest",
 ]
-
-ActorType = Literal["human", "agent", "unknown"]
 
 
 class PolicyError(ValueError):
@@ -71,6 +72,12 @@ class ApprovalPolicy:
     human_identities: frozenset[str]
     agent_identities: frozenset[str]
     agent_merge_allowed: bool = False
+    #: Lease (§6.4) on an `approval-facts/v2` observation: `valid_until =
+    #: generated_at + approval_facts_lease_seconds`. `load_approval_policy`
+    #: requires the key in the policy *file* (no silent default there); this
+    #: dataclass default exists only so tests/callers that build a policy
+    #: in-process without going through the loader keep working.
+    approval_facts_lease_seconds: int = 86400
 
 
 def classify_actor(identity: str | None, hint: str | None, policy: ApprovalPolicy) -> ActorType:
@@ -99,7 +106,44 @@ def _check_identity_list(value: object, field: str, path: Path) -> frozenset[str
     return frozenset(value)
 
 
-_ALLOWED_KEYS = {"version", "human_identities", "agent_identities", "agent_merge_allowed"}
+_ALLOWED_KEYS = {
+    "version",
+    "human_identities",
+    "agent_identities",
+    "agent_merge_allowed",
+    "approval_facts_lease_seconds",
+}
+
+
+def _check_lease(value: object, path: Path) -> int:
+    """Validate `approval_facts_lease_seconds`: a positive int, bounded.
+
+    `bool` is a subclass of `int` in Python, so it is rejected explicitly —
+    otherwise `approval_facts_lease_seconds: true` would silently become a
+    one-second lease instead of a config error.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PolicyError(
+            f"{path}: 'approval_facts_lease_seconds' must be a positive int "
+            f"(bool and non-int are rejected, not coerced), got {value!r}"
+        )
+    if value <= 0:
+        raise PolicyError(f"{path}: 'approval_facts_lease_seconds' must be > 0, got {value}")
+    if value > MAX_LEASE_SECONDS:
+        raise PolicyError(
+            f"{path}: 'approval_facts_lease_seconds' must be <= {MAX_LEASE_SECONDS} "
+            f"(30 days), got {value}"
+        )
+    return value
+
+
+def policy_digest(path: Path) -> str:
+    """sha256 over the policy file's raw bytes.
+
+    Raw bytes, not the parsed document: a comment is part of the audited
+    artifact, so editing it honestly changes the digest.
+    """
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def load_approval_policy(path: Path) -> ApprovalPolicy:
@@ -115,6 +159,14 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
     present it must be a real ``bool``. A truthy scalar (``1``, ``"yes"``)
     is a :class:`PolicyError`, never a coerced grant — permission is
     something a policy states, not something a parser infers.
+
+    ``approval_facts_lease_seconds`` is **required** — a policy file written
+    before the field existed fails to load rather than silently treating
+    every observation as eternally fresh. It must be a positive ``int`` (not
+    ``bool``, which is a Python subclass of ``int``) no greater than
+    :data:`MAX_LEASE_SECONDS` (30 days) — the same contract-level bound
+    :mod:`steward.approvalfacts.reader` enforces on the emitted
+    ``valid_until``.
     """
     try:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -143,11 +195,16 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
     if not isinstance(agent_merge_allowed, bool):
         raise PolicyError(f"{path}: 'agent_merge_allowed' must be a bool")
 
+    if "approval_facts_lease_seconds" not in data:
+        raise PolicyError(f"{path}: missing required 'approval_facts_lease_seconds'")
+    approval_facts_lease_seconds = _check_lease(data["approval_facts_lease_seconds"], path)
+
     return ApprovalPolicy(
         version=version,
         human_identities=human_identities,
         agent_identities=agent_identities,
         agent_merge_allowed=agent_merge_allowed,
+        approval_facts_lease_seconds=approval_facts_lease_seconds,
     )
 
 

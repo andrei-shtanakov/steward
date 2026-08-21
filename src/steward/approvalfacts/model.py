@@ -14,12 +14,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from steward.gatecheck.approval import ActorType
-
 RequestKind = Literal["pr", "merge_sha"]
 ObservationState = Literal[
     "merged", "not_merged", "not_found", "no_matching_pr", "actor_unavailable"
 ]
+
+#: Merge-actor classification vocabulary (§6.4). Owned by the contract, not
+#: by the policy engine: `steward.gatecheck.approval` imports it from here
+#: and re-exports it, so existing consumers of that module see no change.
+ActorType = Literal["human", "agent", "unknown"]
 
 #: Состояния, осмысленные только для одного типа запроса (§4.2).
 STATE_ONLY_FOR: dict[str, RequestKind] = {

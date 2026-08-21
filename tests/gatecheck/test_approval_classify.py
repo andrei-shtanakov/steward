@@ -18,6 +18,7 @@ from steward.gatecheck.approval import (
     PolicyError,
     classify_actor,
     load_approval_policy,
+    policy_digest,
 )
 
 CANONICAL = Path(__file__).parents[2] / "profiles" / "approval-policy.yaml"
@@ -89,7 +90,10 @@ def test_load_policy_empty_lists_are_legitimate(tmp_path: Path) -> None:
     """Empty allowlists mean "we don't know anyone yet" — a legal state,
     not a config error."""
     path = tmp_path / "approval-policy.yaml"
-    path.write_text("version: 1\nhuman_identities: []\nagent_identities: []\n")
+    path.write_text(
+        "version: 1\nhuman_identities: []\nagent_identities: []\n"
+        "approval_facts_lease_seconds: 86400\n"
+    )
     policy = load_approval_policy(path)
     assert policy.human_identities == frozenset()
     assert policy.agent_identities == frozenset()
@@ -152,7 +156,10 @@ def test_absent_agent_merge_allowed_defaults_to_denied(tmp_path: Path) -> None:
     """Fail-closed default: a policy written before the field existed must
     not silently start permitting agent merges."""
     path = tmp_path / "approval-policy.yaml"
-    path.write_text("version: 1\nhuman_identities: []\nagent_identities: []\n")
+    path.write_text(
+        "version: 1\nhuman_identities: []\nagent_identities: []\n"
+        "approval_facts_lease_seconds: 86400\n"
+    )
     assert load_approval_policy(path).agent_merge_allowed is False
 
 
@@ -160,6 +167,7 @@ def test_agent_merge_allowed_true_is_loaded(tmp_path: Path) -> None:
     path = tmp_path / "approval-policy.yaml"
     path.write_text(
         "version: 1\nhuman_identities: []\nagent_identities: []\nagent_merge_allowed: true\n"
+        "approval_facts_lease_seconds: 86400\n"
     )
     assert load_approval_policy(path).agent_merge_allowed is True
 
@@ -174,3 +182,58 @@ def test_non_bool_agent_merge_allowed_fails_closed(tmp_path: Path, value: str) -
     )
     with pytest.raises(PolicyError):
         load_approval_policy(path)
+
+
+# --- approval_facts_lease_seconds (task 5) ---
+
+
+def test_lease_is_required_positive_int(tmp_path: Path) -> None:
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text("version: 1\nhuman_identities: []\nagent_identities: []\n", encoding="utf-8")
+    with pytest.raises(PolicyError, match="approval_facts_lease_seconds"):
+        load_approval_policy(path)
+
+
+@pytest.mark.parametrize("bad", ["true", "0", "-1", "'86400'", "86400.5"])
+def test_lease_rejects_non_positive_int(tmp_path: Path, bad: str) -> None:
+    """`bool` — подкласс int в Python, поэтому запрещается отдельно: иначе
+    `true` молча стал бы lease в одну секунду."""
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text(
+        "version: 1\nhuman_identities: []\nagent_identities: []\n"
+        f"approval_facts_lease_seconds: {bad}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PolicyError):
+        load_approval_policy(path)
+
+
+def test_lease_upper_bound_is_enforced(tmp_path: Path) -> None:
+    """Опечатка в порядке величины не должна давать многолетнюю lease."""
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text(
+        "version: 1\nhuman_identities: []\nagent_identities: []\n"
+        "approval_facts_lease_seconds: 864000000\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PolicyError, match="2592000"):
+        load_approval_policy(path)
+
+
+def test_canonical_policy_declares_lease() -> None:
+    assert load_approval_policy(CANONICAL).approval_facts_lease_seconds > 0
+
+
+def test_policy_digest_is_over_raw_bytes(tmp_path: Path) -> None:
+    """Комментарий — часть аудируемого артефакта, поэтому его правка честно
+    меняет digest."""
+    a = tmp_path / "a.yaml"
+    b = tmp_path / "b.yaml"
+    body = (
+        "version: 1\nhuman_identities: []\nagent_identities: []\n"
+        "approval_facts_lease_seconds: 86400\n"
+    )
+    a.write_text(body, encoding="utf-8")
+    b.write_text("# пояснение\n" + body, encoding="utf-8")
+    assert policy_digest(a) != policy_digest(b)
+    assert policy_digest(a).startswith("sha256:")
