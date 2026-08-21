@@ -232,6 +232,39 @@ def test_real_single_branch_push_is_reviewed_and_succeeds(tmp_path: Path) -> Non
     assert "ревью выполнено" in (result.stdout + result.stderr)
 
 
+def test_real_push_without_kit_in_this_checkout_is_skipped_not_blocked(tmp_path: Path) -> None:
+    """Заход 13, находка 1 (не краевая — бьёт по обычной работе): хук живёт в
+    `.git/hooks` и активен ВСЕГДА, независимо от рабочего дерева. Старая
+    release-ветка, исторический коммит до появления кита, bisect —
+    `scripts/review/` там может не существовать. Раньше отсутствие
+    `$kit_dir/local.sh` обнаруживалось только на самом вызове `sh
+    "$kit_dir/local.sh"` — сырая ошибка shell'а под `set -e`, пуш
+    заблокирован, подсказка про `--no-verify` не печаталась вовсе. Дерево, к
+    которому инструмент не относится, — не повод его блокировать: пуш обязан
+    пройти (код 0) с понятным сообщением, что ревью пропущено.
+
+    `REVIEW_KIT_DIR` намеренно НЕ задан: `kit_dir` резолвится в
+    `<repo>/scripts/review` по умолчанию, а этот `local` — голый клон без
+    единого файла кита, ровно нужный сценарий "чекаут до кита"."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "feature"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "кит недоступен" in output
+    assert "ревью пропущено" in output
+
+
 def test_real_two_new_refs_in_one_push_is_blocked(tmp_path: Path) -> None:
     """Настоящий `git push origin alpha beta` — ОБЕ ссылки новые, значит git
     реально передаёт хуку 2 строки за один вызов (если бы одна из веток уже

@@ -403,6 +403,58 @@ def test_no_remote_at_all_is_fine_when_both_ends_are_explicit(tmp_path: Path) ->
     assert "remote" not in result.stderr.lower()
 
 
+def test_local_branch_with_slash_in_name_needs_no_remote(tmp_path: Path) -> None:
+    """Заход 13, находка 2: дыра в round-12-находке-1. `remote_needed`
+    считал remote-tracking'ом любой `--base` со слешем (`*/*`) — обычнейшее
+    локальное имя ветки (`release/1.0`, типовой git-flow нейминг) тоже
+    содержит `/`, а remote к нему отношения не имеет. Заявленный интерфейс
+    `--base <ref|sha>` ломался на типовом локальном имени: репозиторий без
+    единого remote'а, `--base release/1.0` валился отказом «remote не
+    настроен», хотя обе ссылки локальные."""
+    local = tmp_path / "local"
+    local.mkdir()
+    subprocess.run(["git", "-C", str(local), "init", "-q", "-b", "master"], check=True)
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    (local / "base.txt").write_text("base\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "база")
+    git(local, "switch", "-qc", "release/1.0")
+    (local / "hotfix.txt").write_text("хотфикс\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "хотфикс")
+    git(local, "switch", "-q", "master")
+
+    assert git(local, "remote") == "", "проверяем сценарий именно без единого remote'а"
+
+    result = run_local(
+        local, make_stub(tmp_path, STUB_OK), "--base", "release/1.0", "--head", "master"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "remote" not in result.stderr.lower()
+
+
+def test_shorthand_with_configured_origin_is_still_recognized_as_remote_tracking(
+    tmp_path: Path,
+) -> None:
+    """Контрольный к тесту выше: сужение находки 2 не должно задеть
+    настоящий remote-tracking шортхенд (`origin/master` при настроенном
+    `origin`) — первый сегмент здесь СОВПАДАЕТ с именем реально
+    существующего remote'а, значит remote нужен, и устаревшая база обязана
+    быть замечена (та же логика, что и у существующих тестов на шортхенд, но
+    отдельно проверяющая именно `remote_needed`, а не `track_branch`)."""
+    remote, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    (remote / "other.txt").write_text("чужое\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "чужой коммит")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", "origin/master")
+    assert "устарел" in (result.stdout + result.stderr).lower()
+
+
 def test_renamed_default_branch_on_origin_is_reported_loudly_not_as_no_connection(
     tmp_path: Path,
 ) -> None:
