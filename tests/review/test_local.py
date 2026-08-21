@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "review" / "local.sh"
 
@@ -159,6 +161,77 @@ def test_missing_prompt_is_config_error(tmp_path: Path) -> None:
     assert "нет файла инструкций" in result.stderr
 
 
+def _chmod_000_actually_blocks_reads(path: Path) -> bool:
+    """root (и некоторые FS) игнорирует права доступа — `chmod 000` там не
+    защита. Проверяем эмпирически на реальном файле теста, а не полагаемся
+    на допущение про пользователя/платформу (см. тот же приём в
+    test_build_prompt.py — не дублирую импортом, чтобы файлы тестов
+    оставались независимыми друг от друга)."""
+    path.chmod(0o000)
+    try:
+        path.read_text(encoding="utf-8")
+        return False
+    except PermissionError:
+        return True
+    finally:
+        path.chmod(0o644)
+
+
+def test_unreadable_schema_is_config_error_not_reviewer_failure(tmp_path: Path) -> None:
+    """`-f` проверяет существование, не читаемость: нечитаемая схема раньше
+    доходила до `codex exec --output-schema <нечитаемый-файл>`, тот
+    отказывал, и получался код 3 "ревьюер не отработал" вместо
+    контрактного 2 — тот же класс, что закрыт в build-prompt.sh (находка
+    21), но остававшийся открытым здесь для схемы (находка 24)."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    schema_copy = tmp_path / "copy-schema.json"
+    schema_copy.write_text('{"type": "object"}', encoding="utf-8")
+    if not _chmod_000_actually_blocks_reads(schema_copy):
+        pytest.skip("chmod 000 не блокирует чтение под текущим пользователем/FS")
+
+    schema_copy.chmod(0o000)
+    try:
+        result = run_local(
+            local,
+            make_stub(tmp_path, STUB_BROKEN),
+            env_overrides={"REVIEW_SCHEMA": str(schema_copy)},
+        )
+    finally:
+        schema_copy.chmod(0o644)
+    assert result.returncode == 2
+    assert "файл схемы нечитаем" in result.stderr
+
+
+def test_unreadable_prompt_local_is_config_error_not_reviewer_failure(tmp_path: Path) -> None:
+    """Симметрично схеме, здесь же (не только транзитивно через
+    build-prompt.sh)."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    prompt_copy = tmp_path / "copy-prompt.md"
+    prompt_copy.write_text("инструкции", encoding="utf-8")
+    if not _chmod_000_actually_blocks_reads(prompt_copy):
+        pytest.skip("chmod 000 не блокирует чтение под текущим пользователем/FS")
+
+    prompt_copy.chmod(0o000)
+    try:
+        result = run_local(
+            local,
+            make_stub(tmp_path, STUB_BROKEN),
+            env_overrides={"REVIEW_PROMPT": str(prompt_copy)},
+        )
+    finally:
+        prompt_copy.chmod(0o644)
+    assert result.returncode == 2
+    assert "файл инструкций нечитаем" in result.stderr
+
+
 def test_stale_base_is_reported_and_run_continues(tmp_path: Path) -> None:
     """Устаревшая база сдвигает диапазон молча — обязана быть названа."""
     remote, local = make_repo(tmp_path)
@@ -223,6 +296,33 @@ def test_renamed_default_branch_on_origin_is_reported_loudly_not_as_no_connectio
     combined = result.stdout + result.stderr
     assert "нет связи с origin" not in combined.lower(), (
         "неверная причина: ls-remote отработал успешно, дело не в связи"
+    )
+    assert "'master' нет на origin" in combined or "master' нет на origin" in combined
+    assert "set-head" in combined
+
+
+def test_renamed_default_branch_with_fetch_still_shows_the_real_cause(
+    tmp_path: Path,
+) -> None:
+    """Взаимодействие двух наших же правок: guard `git fetch` (находка 20)
+    исполнялся ДО диагностики "ветки нет" (находка 22) — `git fetch -q
+    origin master`, когда `master` на origin больше нет, сам падает, и
+    guard выдавал код 2 с "не удалось обновить" РАНЬШЕ, чем управление
+    доходило до настоящей причины. При переименованной ветке `--fetch`
+    обязан показывать ту же диагностику, что и без флага, а не "сбой
+    fetch": порядок восстановлен — существование ветки проверяется ДО
+    попытки её тянуть."""
+    remote, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    git(remote, "branch", "-m", "master", "main")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--fetch")
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "не удалось обновить" not in combined, (
+        "guard fetch'а не должен затенять диагностику про переименованную ветку"
     )
     assert "'master' нет на origin" in combined or "master' нет на origin" in combined
     assert "set-head" in combined
