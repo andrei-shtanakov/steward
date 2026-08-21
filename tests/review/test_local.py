@@ -200,6 +200,34 @@ def test_missing_origin_head_is_config_error(tmp_path: Path) -> None:
     assert "set-head" in result.stderr
 
 
+def test_renamed_default_branch_on_origin_is_reported_loudly_not_as_no_connection(
+    tmp_path: Path,
+) -> None:
+    """Ветку по умолчанию переименовали НА ORIGIN (master -> main), не трогая
+    локальный клон: `refs/remotes/origin/HEAD` — локальная ссылка и сама себя
+    не обновляет, `origin/master` остаётся, но такой ветки на origin больше
+    нет. `git ls-remote` в этом случае отрабатывает УСПЕШНО (код 0) и
+    возвращает пусто — это "определённо нет", а не "не смогли проверить",
+    и текущее сообщение про отсутствие связи с origin — неверная причина."""
+    remote, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    # Переименование на remote, БЕЗ участия local — ровно так это происходит
+    # в бою (GitHub UI переименовывает default branch у соседей, локальный
+    # клон об этом не узнаёт, пока сам не сделает fetch/prune).
+    git(remote, "branch", "-m", "master", "main")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK))
+    combined = result.stdout + result.stderr
+    assert "нет связи с origin" not in combined.lower(), (
+        "неверная причина: ls-remote отработал успешно, дело не в связи"
+    )
+    assert "'master' нет на origin" in combined or "master' нет на origin" in combined
+    assert "set-head" in combined
+
+
 def test_unknown_head_ref_is_config_error_not_raw_git_code(tmp_path: Path) -> None:
     """`git rev-parse` на неизвестной ссылке сам падает 128 — страж обязан
     перевести это в код кита (2) с понятным сообщением, а не дать 128

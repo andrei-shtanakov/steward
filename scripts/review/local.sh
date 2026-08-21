@@ -89,17 +89,32 @@ fi
 # Устаревшая база молча сдвигает диапазон: локальный ревьюер смотрит на диф,
 # которого в PR не будет. Показать обязаны; отказывать — нет, это инструмент
 # скорости.
+#
+# Три разных исхода `ls-remote`, и они не взаимозаменимы: "не смогли
+# проверить" (сети нет, `ls-remote` сам упал ненулевым кодом) и "определённо
+# нет" (`ls-remote` отработал успешно кодом 0, но вернул пусто — ветки с этим
+# именем на origin больше нет, например `refs/remotes/origin/HEAD` не
+# обновился после переименования ветки по умолчанию: сам он локальная
+# ссылка и не обновляется собой) — РАЗНЫЕ состояния с разной причиной, и
+# сваливать их в одно сообщение нельзя: второе — сигнал сильнее первого.
 if [ -n "$default_branch" ]; then
-    if remote_line=$(git ls-remote --heads origin "$default_branch" 2>/dev/null) \
-        && [ -n "$remote_line" ]; then
-        remote_sha=$(printf '%s' "$remote_line" | cut -f1)
-        local_sha=$(git rev-parse "$base")
-        if [ "$remote_sha" != "$local_sha" ]; then
-            behind=$(git rev-list --count "$base..$remote_sha" 2>/dev/null || echo "?")
-            echo "ВНИМАНИЕ: локальная база устарела." >&2
-            echo "  локально:  $local_sha" >&2
-            echo "  на origin: $remote_sha  (отстаём на $behind коммит(ов))" >&2
-            echo "  диапазон посчитан по устаревшей базе; --fetch обновит." >&2
+    if remote_line=$(git ls-remote --heads origin "$default_branch" 2>/dev/null); then
+        if [ -n "$remote_line" ]; then
+            remote_sha=$(printf '%s' "$remote_line" | cut -f1)
+            local_sha=$(git rev-parse "$base")
+            if [ "$remote_sha" != "$local_sha" ]; then
+                behind=$(git rev-list --count "$base..$remote_sha" 2>/dev/null || echo "?")
+                echo "ВНИМАНИЕ: локальная база устарела." >&2
+                echo "  локально:  $local_sha" >&2
+                echo "  на origin: $remote_sha  (отстаём на $behind коммит(ов))" >&2
+                echo "  диапазон посчитан по устаревшей базе; --fetch обновит." >&2
+            fi
+        else
+            echo "ВНИМАНИЕ: ветки '$default_branch' нет на origin —" \
+                "refs/remotes/origin/HEAD устарел (например, после" \
+                "переименования ветки по умолчанию)." >&2
+            echo "  диапазон посчитан против несуществующей на origin ветки." >&2
+            echo "  выполните: git remote set-head origin -a" >&2
         fi
     else
         echo "ВНИМАНИЕ: свежесть базы не проверена (нет связи с origin)." >&2
