@@ -327,3 +327,29 @@ def test_real_repeat_push_with_nothing_to_send_is_green(tmp_path: Path) -> None:
     assert repeat.returncode == 0, repeat.stderr
     assert "не должен был вызываться" not in repeat.stderr
     assert "up-to-date" in (repeat.stdout + repeat.stderr).lower()
+
+
+def test_real_push_origin_head_is_reviewed_and_succeeds(tmp_path: Path) -> None:
+    """Настоящий `git push origin HEAD` — повседневная форма, git подставляет
+    ЛИТЕРАЛЬНУЮ строку `HEAD` как local ref, не имя ветки. До этой правки
+    хук отвергал её как "не ветка", хотя local sha честно совпадает с HEAD —
+    ровно безопасный случай, ради которого написан весь контракт."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+    kit = make_stub_kit(tmp_path, "kit-green", STUB_GREEN)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "work.txt").write_text("работа\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(kit)
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "HEAD"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ревью выполнено" in (result.stdout + result.stderr)
