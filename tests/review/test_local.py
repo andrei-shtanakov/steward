@@ -155,6 +155,40 @@ def test_range_uses_merge_base_not_raw_base_when_base_moved_ahead(tmp_path: Path
     assert f"диапазон: {expected_mb}..{head_sha}" in result.stdout
 
 
+def test_fetch_updates_stale_base_and_suppresses_warning(tmp_path: Path) -> None:
+    """--fetch обновляет remote-tracking: до него — предупреждение об
+    устаревшей базе, после — его нет. Один прогон это не отличил бы:
+    доказательство — именно пара «без флага / с флагом» на одном и том же
+    состоянии репо."""
+    remote, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    # Удалённый ушёл вперёд, локальный remote-tracking про это не знает
+    (remote / "other.txt").write_text("чужое\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "чужой коммит")
+
+    before = run_local(local, make_stub(tmp_path, STUB_OK))
+    assert "устарел" in (before.stdout + before.stderr).lower()
+
+    after = run_local(local, make_stub(tmp_path, STUB_OK), "--fetch")
+    assert after.returncode == 0, after.stderr
+    assert "устарел" not in (after.stdout + after.stderr).lower()
+
+
+def test_fetch_with_fresh_base_still_works(tmp_path: Path) -> None:
+    """--fetch на уже свежей базе не ломает обычный прогон."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--fetch")
+    assert result.returncode == 0, result.stderr
+    assert "устарел" not in (result.stdout + result.stderr).lower()
+
+
 def test_explicit_head_reviews_that_ref_not_current_head(tmp_path: Path) -> None:
     """--head — второй конец диапазона; без него хук не смог бы дать подсказку."""
     _, local = make_repo(tmp_path)
