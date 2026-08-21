@@ -140,10 +140,12 @@ def _resolve_pr(owner: str, name: str, request: RequestId) -> Result:
         return Result(request, "not_found")
     if not isinstance(pull_request, dict):
         raise MechanicalFailure(f"{what}: pullRequest не объект")
-    merge_commit = pull_request.get("mergeCommit")
+    merge_commit = _require_key(pull_request, "mergeCommit", what, where="pullRequest.mergeCommit")
     if merge_commit is None:
         return Result(request, "not_merged")
-    sha = (merge_commit or {}).get("oid")
+    if not isinstance(merge_commit, dict):
+        raise MechanicalFailure(f"{what}: mergeCommit не объект")
+    sha = merge_commit.get("oid")
     if not isinstance(sha, str):
         raise MechanicalFailure(f"{what}: mergeCommit без oid")
     actor = _actor(pull_request)
@@ -176,7 +178,16 @@ def _resolve_sha(owner: str, name: str, request: RequestId) -> Result:
         if not isinstance(nodes, list):
             raise MechanicalFailure(f"{what}: associatedPullRequests.nodes не список")
         for node in nodes:
-            if (node.get("mergeCommit") or {}).get("oid") != request.value:
+            if not isinstance(node, dict):
+                raise MechanicalFailure(f"{what}: associatedPullRequests.nodes содержит не-объект")
+            node_merge_commit = _require_key(
+                node, "mergeCommit", what, where="associatedPullRequests.nodes[].mergeCommit"
+            )
+            if node_merge_commit is not None and not isinstance(node_merge_commit, dict):
+                raise MechanicalFailure(
+                    f"{what}: associatedPullRequests.nodes[].mergeCommit не объект"
+                )
+            if (node_merge_commit or {}).get("oid") != request.value:
                 continue
             actor = _actor(node)
             if actor is None:

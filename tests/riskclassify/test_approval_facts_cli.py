@@ -795,6 +795,75 @@ def test_out_inside_checkout_with_mismatched_origin_is_still_config_error(
     assert "origin указывает на" in result.output
 
 
+def test_out_with_explicit_policy_ignores_checkout_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When BOTH `--out` and `--policy` are explicit, `repo_root`'s checkout
+    identity is irrelevant to this run — neither the target nor the policy
+    path derive from it — so a mismatched (or entirely unrelated) `origin`
+    must not block the run.
+
+    Codex gate round 6 on PR #86: `resolve_repo_root` was called
+    unconditionally in the `--out` branch even when `--policy` was already
+    given, so `--out /explicit/path --policy /explicit/policy.yaml` run from
+    a checkout of a DIFFERENT repository than `--repo` still failed on the
+    origin mismatch, even though that mismatch had no bearing on anything
+    this run actually does. Fixed: `resolve_repo_root` is now only attempted
+    when `policy is None` (i.e. only when its result — `policy_root` — would
+    actually be consulted).
+    """
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/some-other-repo.git")
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
+    out = tmp_path / "facts.jsonl"
+
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "mergeCommit": {"oid": SHA},
+                                    "mergedBy": {
+                                        "login": "andrei-shtanakov",
+                                        "__typename": "User",
+                                    },
+                                }
+                            }
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            "andrei-shtanakov/steward-real",
+            "--repo-root",
+            str(repo_root),
+            "--prs",
+            "7",
+            "--out",
+            str(out),
+            "--policy",
+            str(policy),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    record = json.loads(out.read_text(encoding="utf-8").splitlines()[1])
+    assert record["state"] == "merged"
+    assert record["actor_class"] == "human"
+
+
 # --- Step 6: destructive phase, ordering after full preflight succeeds -----
 
 

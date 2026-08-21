@@ -259,10 +259,22 @@ def approval_facts(
             # или несовпавший `origin` внутри настоящего git-чекаута
             # остаётся config error и наружу, а не тихо маскируется под
             # «просто нет git».
-            try:
-                policy_root = resolve_repo_root(repo, repo_root)
-            except NotAGitRepository:
-                policy_root = repo_root
+            #
+            # Но всё это нужно резолвить ТОЛЬКО когда дефолт политики вообще
+            # будет использован — то есть когда `--policy` не передан явно.
+            # Раньше `resolve_repo_root` звалась безусловно, даже если
+            # оператор УЖЕ дал и `--out`, и `--policy` явно — тогда `--repo`
+            # и origin текущего каталога вообще не участвуют ни в цели, ни в
+            # политике, но команда всё равно падала на несовпадении origin,
+            # если `repo_root` оказывался чекаутом ДРУГОГО репозитория
+            # (например, тестовый прогон из чужого checkout'а с полностью
+            # explicit `--out`/`--policy`) — Codex gate round 6 на PR #86.
+            policy_root: Path | None = None
+            if policy is None:
+                try:
+                    policy_root = resolve_repo_root(repo, repo_root)
+                except NotAGitRepository:
+                    policy_root = repo_root
         else:
             policy_root = resolve_repo_root(repo, repo_root)
             target = policy_root / FACTS_RELPATH

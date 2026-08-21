@@ -140,6 +140,21 @@ def test_missing_pull_request_key_is_mechanical_failure(monkeypatch: pytest.Monk
         resolve(OWNER, NAME, RequestId("pr", 42))
 
 
+def test_pull_request_without_merge_commit_key_is_mechanical_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`mergeCommit: null` (key present) is a definite negative — `not_merged`.
+    The key simply MISSING (`{"pullRequest": {}}`) is a malformed response,
+    same class as the sibling tests above. Codex gate round 6 on PR #86's
+    exact repro: `{"data":{"repository":{"pullRequest":{}}}}` used to fall
+    through to `not_merged` via `pull_request.get("mergeCommit")`."""
+    monkeypatch.setattr(
+        producer, "_gh", _fake_gh([(0, {"data": {"repository": {"pullRequest": {}}}})])
+    )
+    with pytest.raises(MechanicalFailure, match="pullRequest.mergeCommit"):
+        resolve(OWNER, NAME, RequestId("pr", 42))
+
+
 def test_null_repository_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """`repository: null` может быть auth/visibility failure и НЕ является
     доказанным отсутствием — иначе отказ доступа выглядел бы как факт."""
@@ -326,6 +341,43 @@ def test_object_without_associated_pull_requests_is_mechanical_failure(
     exhaustive negative search."""
     monkeypatch.setattr(producer, "_gh", _fake_gh([(0, {"data": {"repository": {"object": {}}}})]))
     with pytest.raises(MechanicalFailure, match="object.associatedPullRequests"):
+        resolve(OWNER, NAME, RequestId("merge_sha", SHA))
+
+
+def test_node_without_merge_commit_key_is_mechanical_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same class, one level deeper: an `associatedPullRequests.nodes[]`
+    entry that legitimately has `mergeCommit: null` (a PR with no merge
+    commit) is normal data and must be skipped as a non-match. A node
+    entirely MISSING the `mergeCommit` key is a malformed response — Codex
+    gate round 6 on PR #86: `node.get("mergeCommit") or {}` treated both the
+    same, silently skipping a malformed node as "doesn't match" instead of
+    failing the batch."""
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {
+                                "object": {
+                                    "associatedPullRequests": {
+                                        "nodes": [{"mergedBy": None}],
+                                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    }
+                                }
+                            }
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+    with pytest.raises(MechanicalFailure, match=r"associatedPullRequests\.nodes\[\]\.mergeCommit"):
         resolve(OWNER, NAME, RequestId("merge_sha", SHA))
 
 
