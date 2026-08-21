@@ -23,10 +23,15 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from steward.approvalfacts.model import Header, RequestId, Result, scope_digest
+from steward.approvalfacts.model import (
+    SCHEMA_VERSION,
+    Header,
+    RequestId,
+    Result,
+    scope_digest,
+)
 
 FACTS_RELPATH = Path(".steward") / "approval_facts.jsonl"
-SCHEMA_VERSION = "2"
 
 _ORIGIN_RE = re.compile(
     r"^(?:git@github\.com:|ssh://git@github\.com/|https://github\.com/)"
