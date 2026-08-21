@@ -123,6 +123,23 @@ def test_gh_nonzero_exit_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) 
         resolve(OWNER, NAME, RequestId("pr", 42))
 
 
+def test_gh_response_not_json_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`gh` exits 0 but stdout doesn't parse as JSON at all — still a mechanical
+    failure, not a crash and not a silently-empty result."""
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(0, "not json output")]))
+    with pytest.raises(MechanicalFailure, match="не JSON"):
+        resolve(OWNER, NAME, RequestId("pr", 42))
+
+
+def test_gh_response_not_object_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`gh` returns syntactically valid JSON that isn't a top-level object
+    (e.g. a bare list) — parses fine, but isn't a shape we can read `data`
+    from, so it's a mechanical failure rather than an `AttributeError`."""
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(0, [1, 2, 3])]))
+    with pytest.raises(MechanicalFailure, match="не объект"):
+        resolve(OWNER, NAME, RequestId("pr", 42))
+
+
 def test_sha_pagination_is_exhaustive(monkeypatch: pytest.MonkeyPatch) -> None:
     """Совпадение на ВТОРОЙ странице обязано быть найдено: иначе продюсер
     выдал бы ложный no_matching_pr."""
@@ -159,6 +176,49 @@ def test_sha_pagination_is_exhaustive(monkeypatch: pytest.MonkeyPatch) -> None:
     result = resolve(OWNER, NAME, RequestId("merge_sha", SHA))
     assert result.state == "merged"
     assert result.identity == "github:andrei-shtanakov"
+
+
+def _no_match_page(*, has_next: bool, cursor: str | None) -> dict:
+    return {
+        "data": {
+            "repository": {
+                "object": {
+                    "associatedPullRequests": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+                    }
+                }
+            }
+        }
+    }
+
+
+def test_pagination_limit_exceeded_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_MAX_PAGES` consecutive `hasNextPage: true` pages without a match is a
+    mechanical failure — never a false `no_matching_pr`. Any cap surfaced as a
+    negative fact would reproduce exactly the truncated-traversal defect this
+    module exists to remove."""
+    pages = [
+        (0, _no_match_page(has_next=True, cursor=f"CUR{i}")) for i in range(producer._MAX_PAGES)
+    ]
+    monkeypatch.setattr(producer, "_gh", _fake_gh(pages))
+    with pytest.raises(MechanicalFailure, match="обход не завершён"):
+        resolve(OWNER, NAME, RequestId("merge_sha", SHA))
+
+
+def test_hasnextpage_without_cursor_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`hasNextPage: true` paired with a missing/null `endCursor` cannot be
+    followed — continuing would silently re-request the same page forever.
+    Two pages are queued: if the guard is removed, `after=None` is dropped by
+    `_graphql`'s arg builder, the *same* query re-fires, and the second queued
+    page (`hasNextPage: false`) would be consumed and reported as
+    `no_matching_pr` — a false negative, not a crash. The guard must pre-empt
+    that with `MechanicalFailure` before the second page is ever requested."""
+    page1 = _no_match_page(has_next=True, cursor=None)
+    page2 = _no_match_page(has_next=False, cursor=None)
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(0, page1), (0, page2)]))
+    with pytest.raises(MechanicalFailure, match="без endCursor"):
+        resolve(OWNER, NAME, RequestId("merge_sha", SHA))
 
 
 def test_no_match_after_full_traversal_is_no_matching_pr(monkeypatch: pytest.MonkeyPatch) -> None:
