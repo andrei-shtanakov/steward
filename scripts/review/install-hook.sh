@@ -22,7 +22,17 @@ dst="$hooks_dir/pre-push"
 # несвязанный проект блокируется. `git config --local` смотрит только в
 # `.git/config` этого репозитория — эффективное значение (`--git-path`
 # выше) при отсутствующем локальном может прийти только из global/system.
+#
+# `--worktree` — ТОЖЕ репо-scoped, не общий: при `extensions.worktreeConfig=
+# true` (или в связанном worktree) `core.hooksPath` может быть задан именно
+# там, а не в `--local` — `git config --worktree` без включённого расширения
+# сам безопасно возвращает "не найдено" (код 1), а не ошибку, так что
+# добавление этой проверки не ломает репозитории без worktree-конфига.
+# Раньше такое значение видел только эффективный `git config --get`,
+# `--local` его не находил, и установщик ошибочно уходил в отказ
+# «global/system» на законной локальной (per-worktree) конфигурации.
 if ! git config --local --get core.hooksPath >/dev/null 2>&1 \
+    && ! git config --worktree --get core.hooksPath >/dev/null 2>&1 \
     && git config --get core.hooksPath >/dev/null 2>&1; then
     echo "core.hooksPath задан не в этом репозитории (глобально или" \
         "системно), эффективное значение: $hooks_dir." >&2

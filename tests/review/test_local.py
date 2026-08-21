@@ -377,6 +377,32 @@ def test_multiple_remotes_without_origin_refuses_and_lists_them(tmp_path: Path) 
     assert "--remote" in result.stderr
 
 
+def test_no_remote_at_all_is_fine_when_both_ends_are_explicit(tmp_path: Path) -> None:
+    """Заход 12, находка 1: `--base`/`--head` заданы ПОЛНОСТЬЮ явно и не
+    ссылаются на remote-tracking namespace — remote для такого прогона не
+    нужен вовсе (`merge-base`, диф и ревьюер работают целиком локально).
+    Раньше блок резолюции remote'а отрабатывал безусловно и валил
+    репозиторий без единого remote'а отказом "нет ни одного remote", хотя
+    диапазон был задан полностью."""
+    local = tmp_path / "local"
+    local.mkdir()
+    subprocess.run(["git", "-C", str(local), "init", "-q", "-b", "master"], check=True)
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    (local / "base.txt").write_text("base\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "база")
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+
+    assert git(local, "remote") == "", "проверяем сценарий именно без единого remote'а"
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", "HEAD~1", "--head", "HEAD")
+    assert result.returncode == 0, result.stderr
+    assert "remote" not in result.stderr.lower()
+
+
 def test_renamed_default_branch_on_origin_is_reported_loudly_not_as_no_connection(
     tmp_path: Path,
 ) -> None:
@@ -643,6 +669,42 @@ def test_explicit_unfetched_remote_tracking_base_fails_with_code_2(tmp_path: Pat
     assert result.returncode == 2, (result.stdout, result.stderr)
     assert "ещё не подтянута" in result.stderr
     assert "git fetch origin release/1.0" in result.stderr
+
+
+def test_fetch_recognizes_unfetched_shorthand_base(tmp_path: Path) -> None:
+    """Заход 12, находка 2: дыра в фиксе часа назад (находка 1 захода 11).
+    `--symbolic-full-name` не резолвит несуществующий локально ref, и
+    прежний fallback ловил только ПОЛНУЮ форму (`refs/remotes/...`) — на
+    шортхенде (`origin/release/1.0`), ещё не подтянутом локально,
+    `track_branch` оставался пустым: "--fetch игнорируется" печаталось
+    вместо реального fetch'а, хотя --fetch заведён ровно для этого случая.
+
+    Тот же порядок клонирования, что и в тесте выше (round 11, находка 2):
+    `local` клонируется ПЕРВЫМ, `release/1.0` заводится и пушится ПОСЛЕ, из
+    отдельного `seed`-клона — иначе `git clone` уже подтянул бы её сам, и
+    баг (как и тест на него) не воспроизвёлся бы."""
+    remote, local = make_repo(tmp_path)
+
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(remote), str(seed)], check=True, capture_output=True)
+    git(seed, "config", "user.email", "t@t")
+    git(seed, "config", "user.name", "t")
+    git(seed, "checkout", "-qb", "release/1.0")
+    (seed / "hotfix.txt").write_text("хотфикс\n", encoding="utf-8")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-qm", "хотфикс")
+    git(seed, "push", "-q", "origin", "release/1.0")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        "origin/release/1.0",
+        "--fetch",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--fetch игнорируется" not in result.stderr
+    assert "ещё не подтянута" not in result.stderr
 
 
 def test_explicit_head_reviews_that_ref_not_current_head(tmp_path: Path) -> None:

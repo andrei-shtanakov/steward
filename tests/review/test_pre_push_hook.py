@@ -847,3 +847,42 @@ def test_installer_refuses_global_hookspath(tmp_path: Path) -> None:
     assert "глобально" in result.stderr.lower()
     assert not global_hooks.exists(), "ничего не должно быть создано в глобальном каталоге"
     assert not (local / ".git" / "hooks" / "pre-push").is_file()
+
+
+def test_installer_accepts_worktree_scoped_hookspath(tmp_path: Path) -> None:
+    """Заход 12, находка 3: `--worktree` — ТОЖЕ репо-scoped настройка, не
+    общая на все репозитории — как и `--local`, просто в другом хранилище
+    (`extensions.worktreeConfig=true`, связанные worktree). Раньше
+    установщик проверял только `git config --local --get core.hooksPath`;
+    значение, заданное ИМЕННО через `--worktree` (а не `--local`), видел
+    только эффективный `git config --get`, и установщик ошибочно уходил в
+    отказ «задан не в этом репозитории (глобально или системно)» на
+    законной локальной (per-worktree) конфигурации. Здесь `--local`
+    намеренно НЕ задан вовсе — только `--worktree`."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(remote)], check=True)
+    local = tmp_path / "local"
+    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True, capture_output=True)
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+
+    hooks_src_dir = local / ".github" / "hooks"
+    hooks_src_dir.mkdir(parents=True)
+    dest = hooks_src_dir / "pre-push"
+    dest.write_text(HOOK.read_text(encoding="utf-8"), encoding="utf-8")
+    dest.chmod(0o755)
+
+    git(local, "config", "extensions.worktreeConfig", "true")
+    git(local, "config", "--worktree", "core.hooksPath", "myworkhooks")
+    # Контроль: --local ДЕЙСТВИТЕЛЬНО пуст, значение видно только worktree-
+    # scope'ом и эффективным --get — иначе тест не проверял бы то, что
+    # заявлено.
+    local_get = subprocess.run(
+        ["git", "-C", str(local), "config", "--local", "--get", "core.hooksPath"],
+        capture_output=True,
+    )
+    assert local_get.returncode != 0, "--local обязан быть пуст в этом сценарии"
+
+    result = subprocess.run(["sh", str(INSTALLER)], cwd=str(local), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (local / "myworkhooks" / "pre-push").is_file()
