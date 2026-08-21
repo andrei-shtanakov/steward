@@ -17,8 +17,11 @@ Inputs (exactly one):
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -128,52 +131,215 @@ def waivers_check(
     typer.echo(f"ok: {len(waivers)} waiver(s) valid for {head[:12]}")
 
 
+#: Форма `--merge-sha`, та же, что и везде в контракте v2 (см.
+#: `steward.approvalfacts.reader._MERGE_SHA_RE`): 40-символьный hex в
+#: нижнем регистре.
+_MERGE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 @app.command("approval-facts")
 def approval_facts(
-    repo: str = typer.Option(..., "--repo", help="owner/name"),
-    out: Path = typer.Option(..., "--out", help="approval-facts/v1 output file"),
-    merge_sha: list[str] = typer.Option(
-        [], "--merge-sha", help="Merge commit SHA to resolve (repeatable)."
+    repo: str = typer.Option(..., "--repo", help="owner/name на форже"),
+    repo_root: Path = typer.Option(
+        Path("."), "--repo-root", help="Чекаут наблюдаемого репозитория (для пути бандла)."
     ),
-    prs: str | None = typer.Option(None, "--prs", help="Comma-separated PR numbers to resolve."),
+    out: Path | None = typer.Option(
+        None, "--out", help="Явный override пути; без него пишется в бандл."
+    ),
+    policy: Path | None = typer.Option(None, "--policy", help="Файл политики классификации."),
+    merge_sha: list[str] = typer.Option([], "--merge-sha", help="Merge SHA (повторяемо)."),
+    prs: str | None = typer.Option(None, "--prs", help="Номера PR через запятую."),
 ) -> None:
-    """Materialize typed merge-actor facts (GitHub `mergedBy`) via `gh`.
+    """Материализовать `approval-facts/v2` и опубликовать его.
 
-    Exit codes: ``0`` file written, ``2`` config error (bad --repo, no
-    identifiers given), ``3`` materialization failed (gh unavailable or a
-    requested PR/commit could not be resolved) — honest and distinct from
-    a silently empty/partial output file, which this command never writes.
+    Порядок здесь — не деталь реализации, а требование §8.4 спеки
+    approval-facts/v2: полный config preflight (шаги 1-5) обязан пройти
+    целиком ДО первого разрушающего действия (шаг 6, `remove_previous`).
+    Ошибка на любом из шагов 1-5 — config error, прежняя публикация не
+    тронута; ошибка после шага 6 (механический сбой материализации)
+    оставляет источник отсутствующим, а не тихо стухшим.
+
+    Exit: ``0`` опубликовано, ``2`` ошибка конфигурации (прежняя публикация
+    НЕ тронута), ``3`` механический сбой материализации ИЛИ публикации
+    (файла нет в обоих случаях — ``publish()`` тоже происходит после шага 6,
+    так что типизированный отказ обязан покрывать и её).
     """
-    from steward.approvalfacts import (
-        MaterializeError,
-        materialize_approval_facts,
-        write_approval_facts,
+    from steward.approvalfacts.model import RequestId
+    from steward.approvalfacts.producer import MechanicalFailure, classify_results, materialize
+    from steward.approvalfacts.publish import (
+        FACTS_RELPATH,
+        ConfigError,
+        NotAGitRepository,
+        build_header,
+        publish,
+        remove_previous,
+        resolve_repo_root,
     )
+    from steward.gatecheck.approval import PolicyError, load_approval_policy
+    from steward.gatecheck.approval import policy_digest as compute_policy_digest
 
-    owner, sep, name = repo.partition("/")
-    if not sep or not owner or not name:
-        typer.echo(f"config error: --repo must be 'owner/name', got {repo!r}", err=True)
-        raise typer.Exit(_EXIT_CONFIG)
-
-    pr_numbers: list[int] = []
-    if prs:
-        try:
-            pr_numbers = [int(p.strip()) for p in prs.split(",") if p.strip()]
-        except ValueError as exc:
-            typer.echo(f"config error: --prs must be comma-separated integers: {exc}", err=True)
-            raise typer.Exit(_EXIT_CONFIG) from exc
-    if not merge_sha and not pr_numbers:
-        typer.echo("config error: at least one of --merge-sha / --prs is required", err=True)
-        raise typer.Exit(_EXIT_CONFIG)
+    def parse_scope() -> list[RequestId]:
+        scope: list[RequestId] = []
+        for sha in merge_sha:
+            if not _MERGE_SHA_RE.fullmatch(sha):
+                raise ConfigError(
+                    f"--merge-sha обязан быть 40-символьным hex в нижнем регистре, получено {sha!r}"
+                )
+            scope.append(RequestId("merge_sha", sha))
+        if prs:
+            for token in (raw.strip() for raw in prs.split(",")):
+                if not token:
+                    continue
+                try:
+                    number = int(token)
+                except ValueError as exc:
+                    raise ConfigError(
+                        f"--prs обязан быть списком целых чисел через запятую, получено {token!r}"
+                    ) from exc
+                if number <= 0:
+                    raise ConfigError(
+                        f"--prs: номер PR обязан быть положительным, получено {number}"
+                    )
+                scope.append(RequestId("pr", number))
+        if not scope:
+            raise ConfigError("нужен хотя бы один идентификатор: --merge-sha или --prs")
+        if len(set(scope)) != len(scope):
+            raise ConfigError("объявленный scope содержит дублирующиеся элементы")
+        return scope
 
     try:
-        actors = materialize_approval_facts(repo, merge_shas=list(merge_sha), prs=pr_numbers)
-    except MaterializeError as exc:
+        # 1: форма --repo. Ровно один `/`, а не «хотя бы один»: `.partition("/")`
+        # брал только первый слэш, так что `owner/repo/extra` тоже проходил
+        # (owner="owner", name="repo/extra") — config-опечатка, которую
+        # ничто ниже гарантированно не ловит ДО шага 6 (`resolve_repo_root`
+        # в bundle-default пути сравнивает через `split("/", 1)`, ту же
+        # laxность, и в `--out`-ветке при откате `NotAGitRepository` сверки
+        # origin вообще нет) — значит прежняя публикация могла быть удалена,
+        # а на её месте материализован невалидный `header.repository`,
+        # который отверг бы только последующий читатель, не эта команда
+        # (Codex gate round 4 на PR #86, blocker).
+        repo_parts = repo.split("/")
+        if len(repo_parts) != 2 or not repo_parts[0] or not repo_parts[1]:
+            raise ConfigError(f"--repo обязан быть в форме 'owner/name', получено {repo!r}")
+        owner, name = repo_parts
+
+        # 2: цель — bundle-target (git-root + сверка origin) либо явный
+        #    --out (сверка origin пропущена, путь всё равно валидируется).
+        #
+        # `policy_root` — тот же самый якорь, из которого по умолчанию
+        # берётся `--policy`, а не пересчитанный отдельно: `--repo-root`
+        # может быть ЛЮБЫМ подкаталогом чекаута (например, `spec/`), и
+        # `resolve_repo_root` уходит к настоящему git top-level. Если бы
+        # дефолт политики считался от сырого `repo_root`, а цель публикации —
+        # от резолвленного корня, они разъехались бы на два разных каталога
+        # ровно при `--repo-root <подкаталог>` — найдено Codex-гейтом на
+        # PR #86, см. TODO.md/final-fix-report.md.
+        if out is not None:
+            target = Path(out)
+            parent = target.parent
+            if not parent.is_dir():
+                raise ConfigError(f"--out: родительский каталог {parent} не существует")
+            if not os.access(parent, os.W_OK):
+                raise ConfigError(f"--out: родительский каталог {parent} недоступен для записи")
+            # `--out` явно освобождён от сверки origin — это законный режим
+            # публикации вне git-чекаута, и требовать git там, где команда
+            # обещала его не требовать, было бы неверно. Но ВНУТРИ чекаута
+            # `--out` не обязан вести себя иначе, чем bundle-default путь:
+            # если `resolve_repo_root` находит настоящий git top-level,
+            # дефолт политики анкорится на нём же — иначе `--repo-root
+            # <подкаталог>` работал бы в режиме бандла и падал в режиме
+            # `--out`, хотя политика в обоих случаях лежит в одном и том же
+            # настоящем корне (Codex gate round 3 на PR #86: прошлая версия
+            # этой правки безусловно анкорила `--out` на сыром `repo_root`,
+            # что и создавало эту асимметрию — принятое ранее обоснование
+            # «резолвинг обязателен только вне отката» было ошибкой
+            # ревью-приёмки, не результатом резолвинга без отката). Откат на
+            # сырой `repo_root` срабатывает ТОЛЬКО когда `repo_root` вообще
+            # не внутри git-репозитория (`NotAGitRepository`) — отсутствующий
+            # или несовпавший `origin` внутри настоящего git-чекаута
+            # остаётся config error и наружу, а не тихо маскируется под
+            # «просто нет git».
+            #
+            # Но всё это нужно резолвить ТОЛЬКО когда дефолт политики вообще
+            # будет использован — то есть когда `--policy` не передан явно.
+            # Раньше `resolve_repo_root` звалась безусловно, даже если
+            # оператор УЖЕ дал и `--out`, и `--policy` явно — тогда `--repo`
+            # и origin текущего каталога вообще не участвуют ни в цели, ни в
+            # политике, но команда всё равно падала на несовпадении origin,
+            # если `repo_root` оказывался чекаутом ДРУГОГО репозитория
+            # (например, тестовый прогон из чужого checkout'а с полностью
+            # explicit `--out`/`--policy`) — Codex gate round 6 на PR #86.
+            policy_root: Path | None = None
+            if policy is None:
+                try:
+                    policy_root = resolve_repo_root(repo, repo_root)
+                except NotAGitRepository:
+                    policy_root = repo_root
+        else:
+            policy_root = resolve_repo_root(repo, repo_root)
+            target = policy_root / FACTS_RELPATH
+
+        # Цель не может быть уже существующим каталогом: `remove_previous`
+        # (шаг 6) зовёт `unlink(missing_ok=True)`, а `missing_ok` гасит только
+        # `FileNotFoundError` — на каталоге `unlink()` поднимает
+        # `IsADirectoryError`, необработанную здесь, и после ЧАСТИЧНО
+        # пройденного preflight это была бы трассировка вместо кода выхода.
+        # Это вход конфигурации (путь назвал оператор), значит config error,
+        # exit 2, ДО любого разрушающего действия — Codex gate round 2 на
+        # PR #86.
+        if target.is_dir():
+            raise ConfigError(f"цель публикации {target} уже существует как каталог")
+
+        # 3: объявленный scope — непуст, без дублей, форма.
+        scope = parse_scope()
+
+        # 4: политика + policy_digest. 5: approval_facts_lease_seconds
+        #    валидируется внутри load_approval_policy.
+        policy_path = (
+            policy if policy is not None else policy_root / "profiles" / "approval-policy.yaml"
+        )
+        approval_policy = load_approval_policy(policy_path)
+        digest = compute_policy_digest(policy_path)
+    except (ConfigError, PolicyError) as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from exc
+
+    # 6: только теперь разрушающее действие — весь preflight уже прошёл.
+    # `remove_previous` само может отказать (`unlink`/`_fsync_dir` на
+    # read-only каталоге, ФС-ошибка) — это post-preflight I/O, тот же класс,
+    # что materialize()/publish(), и обязано давать тот же типизированный
+    # отказ, а не сырое исключение (Codex gate round 4 на PR #86).
+    try:
+        remove_previous(target)
+    except OSError as exc:
+        typer.echo(f"approval-facts remove_previous failed: {exc}", err=True)
+        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
+    try:
+        results = materialize(repo, scope)
+    except MechanicalFailure as exc:
         typer.echo(f"approval-facts materialize failed: {exc}", err=True)
         raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
 
-    write_approval_facts(out, actors)
-    typer.echo(f"ok: {len(actors)} actor(s) written to {out}")
+    results = classify_results(results, approval_policy)
+    header = build_header(
+        repository=repo,
+        scope=scope,
+        policy_version=approval_policy.version,
+        policy_digest_value=digest,
+        lease_seconds=approval_policy.approval_facts_lease_seconds,
+        now=datetime.now(UTC),
+    )
+    # `publish()` тоже происходит после шага 6 (previous публикация уже
+    # снята) — ENOSPC/EIO/сбой os.replace или fsync во время записи обязан
+    # давать тот же типизированный отказ, что и сбой materialize(), а не
+    # сырую трассировку в месте, где мы обещали ровно два кода ошибки —
+    # Codex gate round 3 на PR #86.
+    try:
+        publish(target, header, results)
+    except OSError as exc:
+        typer.echo(f"approval-facts publish failed: {exc}", err=True)
+        raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
+    typer.echo(f"ok: {len(results)} result(s) published to {target}")
 
 
 @app.command("proposal-intake")

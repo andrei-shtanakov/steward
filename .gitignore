@@ -24,3 +24,6 @@ build/
 # Local agent tooling
 .claude/
 .steward/
+
+# SDD-рабочая директория (леджер, брифы, пакеты ревью) — локальный скрэтч
+.superpowers/
