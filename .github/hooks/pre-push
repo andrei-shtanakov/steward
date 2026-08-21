@@ -16,10 +16,23 @@ head_sha="${REVIEW_HEAD_SHA:-$(git rev-parse HEAD)}"
 lines=$(cat)
 count=$(printf '%s' "$lines" | grep -c . || true)
 
+# $2 — sha, который реально стоит подставить в подсказку --head, если он на
+# момент вызова известен и осмыслен (не пусто, не все нули). Параметром, а не
+# обращением к $local_sha изнутри: local_sha ещё не разобран на строке 27, и
+# под `set -u` чтение неустановленной переменной уронило бы хук по чужой
+# причине — ровно тот класс находки, который мы ловим весь день. Пустой $2 —
+# честный случай "подставить нечего", а не фиктивный `<sha>`-плейсхолдер,
+# выданный за готовую команду.
 unsupported() {
-    echo "pre-push review: форма пуша не поддержана — $1" >&2
+    reason="$1"
+    hint_sha="${2:-}"
+    echo "pre-push review: форма пуша не поддержана — $reason" >&2
     echo "Проверить нужное вручную:" >&2
-    echo "  sh $kit_dir/local.sh --head <sha> [--base <ref>]" >&2
+    if [ -n "$hint_sha" ]; then
+        echo "  sh $kit_dir/local.sh --head $hint_sha [--base <ref>]" >&2
+    else
+        echo "  sh $kit_dir/local.sh --head <sha нужной ссылки> [--base <ref>]" >&2
+    fi
     echo "Либо отправить без ревью: git push --no-verify" >&2
     exit 1
 }
@@ -36,9 +49,15 @@ unsupported() {
 local_ref=$(printf '%s' "$lines" | head -1 | awk '{print $1}')
 local_sha=$(printf '%s' "$lines" | head -1 | awk '{print $2}')
 
+# Нули (удаление ветки) — не настоящий sha, подсказывать его нечего.
+sha_hint=""
+case "$local_sha" in
+    *[!0]*) sha_hint="$local_sha" ;;
+esac
+
 case "$local_ref" in
     refs/heads/*) ;;
-    *) unsupported "отправляется не ветка ($local_ref)" ;;
+    *) unsupported "отправляется не ветка ($local_ref)" "$sha_hint" ;;
 esac
 
 case "$local_sha" in
@@ -47,7 +66,7 @@ case "$local_sha" in
 esac
 
 if [ "$local_sha" != "$head_sha" ]; then
-    unsupported "отправляется $local_sha, а HEAD сейчас $head_sha"
+    unsupported "отправляется $local_sha, а HEAD сейчас $head_sha" "$local_sha"
 fi
 
 sh "$kit_dir/local.sh"
