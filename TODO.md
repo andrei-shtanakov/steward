@@ -443,8 +443,7 @@ PR и осознанно не закрыто; список полон, друг�
   мержа выбран сознательно: этот PR расширяет base-проверку на `scripts/review/*`,
   поэтому открыть его можно было только после мержа кита.
 
-- [ ] Пуш в явно названный чужой ref ревьюится от ветки по умолчанию
-      @owner:github:andrei-shtanakov @id:review-kit-explicit-target-base
+- [ ] Пуш в явно названный чужой ref ревьюится от ветки по умолчанию @owner:github:andrei-shtanakov @id:review-kit-explicit-target-base
 
   При `git push origin hotfix:release/1.0` хук считает форму поддержанной и зовёт
   `local.sh` без `--base`, поэтому диапазон строится от `origin/HEAD`. README это
@@ -454,8 +453,7 @@ PR и осознанно не закрыто; список полон, друг�
   обычного `git push origin hotfix` он равен самой ветке, и диапазон схлопнулся бы —
   тихий fail-open, потому что пустой диф у нас законно зелёный.
 
-- [ ] `--base` на remote-tracking ref чужого remote тихо ломает `--fetch`
-      @owner:github:andrei-shtanakov @id:review-kit-base-remote-mismatch
+- [ ] `--base` на remote-tracking ref чужого remote тихо ломает `--fetch` @owner:github:andrei-shtanakov @id:review-kit-base-remote-mismatch
 
   При настроенных `origin` и `upstream` вызов `--base upstream/release/1.0 --fetch`
   оставляет переменную remote равной `origin`, `track_branch` не распознаётся, `--fetch`
@@ -463,8 +461,7 @@ PR и осознанно не закрыто; список полон, друг�
   устаревшем диапазоне. Обход, описанный в README (добавить только `--base`), для такого
   репозитория недостаточен.
 
-- [ ] Отличать «скрипт вернул 1 намеренно» от «скрипт умер с кодом 1»
-      @owner:github:andrei-shtanakov @id:review-kit-threshold-exit-provenance
+- [ ] Отличать «скрипт вернул 1 намеренно» от «скрипт умер с кодом 1» @owner:github:andrei-shtanakov @id:review-kit-threshold-exit-provenance
 
   Вызывающий трактует `1` от `apply-threshold.sh` как «есть находки выше порога».
   Но `1` достижим и изнутри скрипта ДО его финальной развилки — например, `jq -e`
@@ -475,26 +472,22 @@ PR и осознанно не закрыто; список полон, друг�
   внутри самого скрипта, то есть менять контракт **вендоримой** части кита —
   поэтому вынесено отдельно, а не сделано наспех в #92.
 
-- [ ] `VERDICT_FILE` предполагает плоскую раскладку скачанного артефакта
-      @owner:github:andrei-shtanakov @id:review-kit-artifact-layout
+- [ ] `VERDICT_FILE` предполагает плоскую раскладку скачанного артефакта @owner:github:andrei-shtanakov @id:review-kit-artifact-layout
 
   Если джоб `review` начнёт публиковать артефакт каталогом, а не одиночным
   файлом, `download-artifact` восстановит его на уровень глубже, и страж скажет
   «вердикта нет» при успешном скачивании. Ошибка в безопасную сторону — чек
   краснеет, — но диагноз указывает не туда. Низкий приоритет ровно поэтому.
 
-- [ ] `checksum.sh`, PIN и watch дрейфа — при первом потребителе кита
-      @owner:github:andrei-shtanakov @trigger:"кит вендорится во второй репозиторий"
-      @id:review-kit-vendoring
+- [ ] `checksum.sh`, PIN и watch дрейфа — при первом потребителе кита @owner:github:andrei-shtanakov @trigger:"кит вендорится во второй репозиторий" @id:review-kit-vendoring
 
   Спека относит их к первому потребителю: пока репозиторий один, вендоринг нечего
   проверять, а механизм без потребителя протухает молча. Там же не решён
   `@id:review-kit-checksum-bootstrap` — сам `checksum.sh` не покрывает собственную
   целостность.
 
-- [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша;
-      осталось решить, нужен ли полноценный nonce @owner:github:andrei-shtanakov
-      @id:review-kit-diff-marker-hardening
+- [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша; @owner:github:andrei-shtanakov @id:review-kit-diff-marker-hardening
+      осталось решить, нужен ли полноценный nonce
 
   Парковка снята частично: маркер несёт первые 12 hex-символов sha256 от содержимого
   дифа, подделка требует знать хеш содержимого, включающего подделку. Промпт отдельно
