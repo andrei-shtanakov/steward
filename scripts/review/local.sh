@@ -354,7 +354,7 @@ set -e
 case "$ctx_code" in
     0)
         ctx_args="--context $work/context.txt"
-        echo "контекст: $(grep -c '^### ' "$work/context.txt") файл(ов) из $(git rev-parse --short "$mb")"
+        echo "контекст: $(grep -c "^--- ФАЙЛ " "$work/context.txt") файл(ов) из $(git rev-parse --short "$mb")"
         ;;
     3)
         echo "контекст: не настроен ($manifest нет в базе) — ревью по одному дифу"

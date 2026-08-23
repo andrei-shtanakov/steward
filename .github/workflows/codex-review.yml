@@ -136,9 +136,9 @@ jobs:
           case "$ctx_code" in
             0)
               ctx_args="--context context.txt"
-              echo "контекст из base: $(grep -c '^### ' context.txt) файл(ов)," \
+              echo "контекст из base: $(grep -c '^--- ФАЙЛ ' context.txt) файл(ов)," \
                    "$(wc -c < context.txt) байт"
-              grep '^### ' context.txt || true
+              grep '^--- ФАЙЛ ' context.txt || true
               ;;
             3)
               cat context.err

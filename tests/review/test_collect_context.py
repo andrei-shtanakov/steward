@@ -89,7 +89,7 @@ def run(repo: Path, base: str, *extra: str, interp: str = "sh") -> subprocess.Co
 
 
 def attached_paths(stdout: str) -> list[str]:
-    return [ln.split()[1] for ln in stdout.splitlines() if ln.startswith("### ")]
+    return [ln.split()[2] for ln in stdout.splitlines() if ln.startswith("--- ФАЙЛ ")]
 
 
 # --- Главное свойство: рамку задаёт base, не автор патча ---------------------
@@ -167,7 +167,7 @@ def test_digest_matches_git_show_of_base(repo: Path) -> None:
     ).stdout
     expected = hashlib.sha256(blob).hexdigest()
 
-    assert f"### src/producer.py sha256:{expected}" in res.stdout
+    assert f"--- ФАЙЛ src/producer.py sha256:{expected} ---" in res.stdout
 
 
 def test_content_is_byte_exact(repo: Path) -> None:
@@ -315,3 +315,22 @@ def test_bare_flag_is_a_config_error(repo: Path, flag: str) -> None:
     )
     assert res.returncode == 2
     assert "usage:" in res.stderr
+
+
+def test_header_does_not_collide_with_markdown_headings(repo: Path) -> None:
+    """Заголовок файла отличим от markdown-заголовка ВНУТРИ приложенного файла.
+
+    Найдено живым прогоном, не рассуждением: приложенный `contracts/…/README.md`
+    сам содержит строки `### Матрица полей по state`, и при markdown'ном формате
+    заголовка ревьюер прочёл бы их как границу нового файла — то есть приписал
+    бы часть контракта несуществующему пути.
+    """
+    write(repo, "docs/contract.md", "# Контракт\n\n### Матрица полей\n\nтело\n")
+    write(repo, MANIFEST, "docs/contract.md\n")
+    base = commit(repo, "контракт с подзаголовками")
+
+    res = run(repo, base)
+
+    assert res.returncode == 0, res.stderr
+    assert attached_paths(res.stdout) == ["docs/contract.md"]
+    assert "### Матрица полей" in res.stdout

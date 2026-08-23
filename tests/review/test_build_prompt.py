@@ -261,7 +261,7 @@ def test_context_sits_between_instructions_and_diff(tmp_path: Path) -> None:
     """
     prompt, diff = make(tmp_path, "ИНСТРУКЦИИ", "ДИФ-ТЕЛО")
     context = tmp_path / "context.txt"
-    context.write_text("### src/a.py sha256:deadbeef\nКОНТЕКСТ-ТЕЛО\n", encoding="utf-8")
+    context.write_text("--- ФАЙЛ src/a.py sha256:deadbeef ---\nКОНТЕКСТ-ТЕЛО\n", encoding="utf-8")
 
     out = run_with_context(prompt, diff, context).stdout
 
