@@ -301,8 +301,18 @@ def pr_numbers(entry: dict[str, Any]) -> tuple[list[int] | None, str]:
 #: Вложенный `uv run` был бы той же ошибкой, от которой plist защищается
 #: абсолютным путём к `uv`: PATH под launchd ненадёжен, и голый `uv` там не
 #: находится — сбор молча переставал бы происходить.
-#: Возраст замка, после которого он считается брошенным (убитый прогон).
-LOCK_STALE_SECONDS = 3600
+#: Жёсткая граница одного вызова продюсера (`run_producer`, `timeout=...`).
+PRODUCER_TIMEOUT_SECONDS = 600
+
+#: Возраст замка, после которого он считается брошенным. ВЫВЕДЕН из границы
+#: продюсера, а не выбран отдельно: живой прогон держит замок не дольше, чем
+#: продюсер работает, плюс быстрая пост-проверка — двух границ хватает с
+#: запасом. Прежний час был независимой константой, и разрыв стоил бы дорого:
+#: убитый после `remove_previous` прогон оставлял чекаут БЕЗ бандла и с живым
+#: замком, `collect` отвечал «другой прогон», `--check` — «публикация в
+#: процессе», и до пятидесяти минут никакого писателя не существовало, а
+#: восстановление не начиналось.
+LOCK_STALE_SECONDS = 2 * PRODUCER_TIMEOUT_SECONDS
 
 STEWARD_BIN = Path(sys.executable).parent / "steward"
 
@@ -325,7 +335,7 @@ def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tu
             ",".join(str(n) for n in prs),
         ],
         cwd=REPO_ROOT,
-        timeout=600,
+        timeout=PRODUCER_TIMEOUT_SECONDS,
     )
     if proc is None:
         return 124, "продюсер не завершился в отведённое время или не запустился"
@@ -595,6 +605,14 @@ def bundle_verdict(
     if now >= facts.header.valid_until:
         hours = int((now - facts.header.valid_until).total_seconds() // 3600)
         return None, f"lease истёк {hours} ч назад ({facts.header.valid_until})"
+    # Охват A0 — только PR. Бандл, чей scope несёт элементы другого рода
+    # (например `merge_sha` от ручного вызова продюсера с --merge-sha), собран
+    # НЕ из настроенного охвата, и проверка одних PR-подмножеств зеленила бы
+    # его молча. Биекция scope ↔ results у читателя гарантирует, что смотреть
+    # достаточно на заявленный scope.
+    foreign = sorted({r.kind for r in facts.header.scope if r.kind != "pr"})
+    if foreign:
+        return None, f"scope бандла содержит элементы вне A0-охвата ({', '.join(foreign)})"
     answered = {r.request.value for r in facts.results if r.request.kind == "pr"}
     missing = [n for n in numbers if n not in answered]
     if missing:

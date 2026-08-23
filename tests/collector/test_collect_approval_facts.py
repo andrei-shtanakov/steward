@@ -1559,3 +1559,59 @@ def test_check_reports_loss_when_the_lock_is_stale(tmp_path: Path) -> None:
 
     assert outcomes[0].status == "failed"
     assert "бандла нет" in outcomes[0].detail
+
+
+def test_lock_staleness_is_derived_from_the_producer_bound(tmp_path: Path) -> None:
+    """Порог протухания замка выведен из границы продюсера, не выбран отдельно.
+
+    Разрыв между независимыми константами стоил дорого: продюсер ограничен
+    десятью минутами, а замок протухал час — убитый после `remove_previous`
+    прогон оставлял чекаут без бандла и без писателя, и до пятидесяти минут
+    восстановление не начиналось. Тест закрепляет саму связь: кто меняет
+    таймаут продюсера, тот двигает и порог замка.
+    """
+    assert RUNNER.LOCK_STALE_SECONDS == 2 * RUNNER.PRODUCER_TIMEOUT_SECONDS
+
+    bundle = tmp_path / ".steward" / "approval_facts.jsonl"
+    bundle.parent.mkdir(parents=True)
+    lock = tmp_path / ".steward" / "approval_facts.jsonl.lock"
+    lock.write_text("dead-run", encoding="ascii")
+    just_stale = time.time() - RUNNER.LOCK_STALE_SECONDS - 5
+    os.utime(lock, (just_stale, just_stale))
+
+    held, _, _ = RUNNER._claim(bundle)
+
+    assert held is not None, "замок старше выведенного порога обязан перехватываться"
+
+
+def test_bundle_with_non_pr_scope_is_not_the_configured_collection(tmp_path: Path) -> None:
+    """Бандл со scope шире PR (ручной `--merge-sha`) не проходит за настроенный.
+
+    Проверка одних PR-подмножеств зеленила бы его: все настроенные PR отвечены,
+    лишних PR нет — а бандл собран не из A0-охвата. `--check` обязан отличать
+    «расписание работает» от «кто-то опубликовал вручную с другим охватом».
+    """
+    path = _checkout(tmp_path, "steward")
+    sha = "a" * 40
+    scope = [{"kind": "pr", "value": 1}, {"kind": "merge_sha", "value": sha}]
+    digest = scope_digest([RequestId(kind=i["kind"], value=i["value"]) for i in scope])
+    _bundle(
+        path,
+        datetime.now(UTC) + timedelta(hours=6),
+        prs=[1],
+        results=[
+            _result(1),
+            {
+                "kind": "result",
+                "request": {"kind": "merge_sha", "value": sha},
+                "state": "no_matching_pr",
+                "merge_sha": None,
+            },
+        ],
+        header_overrides={"scope": scope, "scope_sha256": digest},
+    )
+
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
+
+    assert outcomes[0].status == "failed"
+    assert "вне A0-охвата" in outcomes[0].detail
