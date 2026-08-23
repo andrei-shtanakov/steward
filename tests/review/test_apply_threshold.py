@@ -112,6 +112,10 @@ def test_minor_never_blocks_even_fully_evidenced(tmp_path: Path) -> None:
         ({"scenario": "   "}, "нет scenario"),
         ({"observed_result": " \t "}, "нет observed_result"),
         ({"evidence": [{"file": "b.py", "line": 2, "reason": "  "}]}, "нет evidence"),
+        # Локация — часть заполненности: file:"" не указывает ни на одну
+        # читаемую строку, блокировать таким нечем (гейт на #98, раунд 3).
+        ({"file": ""}, "нет file"),
+        ({"evidence": [{"file": " ", "line": 0, "reason": "причина"}]}, "нет evidence"),
     ],
 )
 def test_major_without_one_requirement_does_not_block(
@@ -130,6 +134,12 @@ def test_reason_names_every_missing_requirement(tmp_path: Path) -> None:
     assert result.returncode == 0
     for reason in ("confidence не high", "нет scenario", "нет observed_result", "нет evidence"):
         assert reason in result.stdout
+
+
+def test_line_zero_is_a_legitimate_file_level_pointer(tmp_path: Path) -> None:
+    """`line: 0` — указатель уровня файла, не пустота: блокировку не снимает."""
+    result = run(write(tmp_path, {"findings": [finding(line=0)], "note": ""}))
+    assert result.returncode == 1
 
 
 def test_one_blocking_among_weak_still_reddens(tmp_path: Path) -> None:

@@ -84,12 +84,18 @@ total=$(jq '.findings | length' "$verdict")
 # «Заполнено» меряется после trim: строка из одних пробелов и evidence с
 # пробельным reason — та же пустота, только замаскированная; без trim'а
 # blocker/major с бланковым обоснованием блокировал бы мерж (гейт на #98).
+# Локация тоже входит в «заполнено»: находка с file:"" (и evidence, у которого
+# пустые file) не указывает ни на одну читаемую строку дерева — блокировать ею
+# мерж значит красный чек, по которому человеку некуда пойти. `line` нарочно
+# НЕ проверяется на >0: 0 — легитимный указатель уровня файла, а не пустота.
 BLOCKING_DEF='def blank: ((. // "") | gsub("\\s"; "") | length) == 0;
 def missing:
     [ (if (.confidence // "") != "high" then "confidence не high" else empty end),
+      (if (.file | blank) then "нет file" else empty end),
       (if (.scenario | blank) then "нет scenario" else empty end),
       (if (.observed_result | blank) then "нет observed_result" else empty end),
-      (if ([(.evidence // [])[] | select(.reason | blank | not)] | length) == 0
+      (if ([(.evidence // [])[]
+            | select((.reason | blank | not) and (.file | blank | not))] | length) == 0
        then "нет evidence" else empty end) ];
 def blocking: (.severity | IN("blocker", "major")) and (missing | length == 0);'
 
