@@ -38,6 +38,15 @@ hash_file() {
     fi
 }
 
+# Обязательный ИНВЕНТАРЬ кита (§5 спеки) по basename: PIN обязан покрывать
+# каждый член — перечень существует, чтобы исключать известных не-китовых
+# соседей (install-hook.sh, настроенный промпт), а не чтобы позволять
+# пропуски: PIN без checksum.sh оставлял бы подменённый файл непроверенным
+# при зелёном исходе (major гейта на #101). Basename, не полный путь:
+# раскладка у потребителя может отличаться, состав кита — нет. Изменение
+# состава — правка кита через ревью, синхронно со спекой.
+required_kit="build-prompt.sh collect-context.sh apply-threshold.sh local.sh checksum.sh review-schema.json"
+
 pin=""
 root="."
 while [ $# -gt 0 ]; do
@@ -55,6 +64,7 @@ done
 
 checked=0
 failed=0
+seen_basenames=""
 # Построчный разбор без word-splitting пути: путь — всё после «хеш + два
 # пробела», пробелы в нём легальны.
 while IFS= read -r line || [ -n "$line" ]; do
@@ -75,10 +85,20 @@ while IFS= read -r line || [ -n "$line" ]; do
         exit 2
     fi
     checked=$((checked + 1))
+    seen_basenames="$seen_basenames ${path##*/}"
     if [ ! -f "$root/$path" ]; then
         echo "ФАЙЛ ОТСУТСТВУЕТ: $path (есть в PIN, нет в копии)" >&2
         failed=$((failed + 1))
         continue
+    fi
+    # Нечитаемый файл — отказ ЧЕКЕРА (код 2), не дрейф: байты сверить
+    # невозможно, и «РАСХОЖДЕНИЕ, ре-вендорьте» было бы ложным диагнозом —
+    # сломанный пайплайн хеширования давал пустой hash_actual (minor гейта
+    # на #101).
+    if [ ! -r "$root/$path" ]; then
+        echo "файл из PIN нечитаем — сверить нечем (это не дрейф):" \
+            "$path" >&2
+        exit 2
     fi
     hash_actual=$(hash_file "$root/$path")
     if [ "$hash_actual" != "$hash_expected" ]; then
@@ -90,6 +110,21 @@ done < "$pin"
 if [ "$checked" -eq 0 ]; then
     echo "PIN не перечисляет ни одного файла — нулевая проверка это отказ," \
         "не успех: $pin" >&2
+    exit 2
+fi
+
+# Непокрытый член инвентаря — негодный PIN (код 2), не дрейф копии: файл
+# может быть цел, но проверка о нём молчит.
+missing_kit=""
+for member in $required_kit; do
+    case " $seen_basenames " in
+        *" $member "*) ;;
+        *) missing_kit="$missing_kit $member" ;;
+    esac
+done
+if [ -n "$missing_kit" ]; then
+    echo "PIN не покрывает состав кита (§5):$missing_kit — subset-PIN это" \
+        "негодная конфигурация, не пройденная проверка." >&2
     exit 2
 fi
 
