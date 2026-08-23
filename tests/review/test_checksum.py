@@ -201,4 +201,43 @@ def test_decoy_paths_with_right_basenames_do_not_satisfy_inventory(
     result = run(root, pin)
 
     assert result.returncode == 2, result.stderr
+
+
+def test_symlinked_kit_member_is_integrity_failure(tmp_path: Path) -> None:
+    """Симлинк на месте члена кита — отказ целостности, даже при тех же байтах.
+
+    `-f` разыменовывает симлинк, и хеш содержимого совпадал — структурно
+    подменённый кит проходил зелёным (major четвёртого захода гейта на
+    #101). Тот же класс, что проверка «обычный файл, не симлинк» при
+    извлечении механики из base в CI."""
+    root = make_kit(tmp_path)
+    pin = full_pin(root)
+    target = root / "scripts" / "review" / "local.sh"
+    aside = root / "aside-copy.sh"
+    aside.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    target.unlink()
+    target.symlink_to(aside)
+
+    result = run(root, pin)
+
+    assert result.returncode == 1, result.stderr
     assert "scripts/review/local.sh" in result.stderr
+    assert "симлинк" in result.stderr.lower()
+
+
+def test_non_kit_entry_in_pin_is_config_error(tmp_path: Path) -> None:
+    """Запись вне состава кита в PIN — негодная конфигурация, не дрейф.
+
+    Настроенная копия review-prompt.md — данные репо вне copy-integrity по
+    спеке; PIN с такой записью превращал легальную настройку в «дрейф кита,
+    ре-вендорьте» (minor четвёртого захода). PIN — ровно канонический
+    инвентарь §5, ни больше ни меньше."""
+    root = make_kit(tmp_path)
+    prompt = root / ".github" / "codex" / "review-prompt.md"
+    prompt.write_text("настроенный промпт\n", encoding="utf-8")
+    pin = full_pin(root, extra=[pin_line(root, ".github/codex/review-prompt.md")])
+
+    result = run(root, pin)
+
+    assert result.returncode == 2, result.stderr
+    assert "review-prompt.md" in result.stderr
