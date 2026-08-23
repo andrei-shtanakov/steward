@@ -1053,3 +1053,55 @@ def test_ssh_alias_is_refused_with_an_actionable_message(
 
     assert outcomes[0].status == "skipped"
     assert "github.com" in outcomes[0].detail
+
+
+def test_repository_comparison_is_case_insensitive(tmp_path: Path) -> None:
+    """Preflight уже признал слаг регистронезависимым — заголовок не должен спорить."""
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    lines = bundle.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    header["repository"] = "Andrei-Shtanakov/Steward"
+    bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "published"
+
+
+def test_narrowed_scope_is_not_green_on_the_old_wider_bundle(tmp_path: Path) -> None:
+    """Сужение охвата тоже событие: старый широкий бандл его не доказывает.
+
+    «Не меньше нужного» пропускало бы такой бандл, хотя текущий охват не
+    собирался ни разу.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1, 2])
+
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "лишние PR" in outcomes[0].detail
+
+
+def test_broken_entry_does_not_occupy_the_checkout_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Битая первая запись не должна подавлять рабочую вторую для того же пути.
+
+    Дедупликация шла раньше валидации охвата, поэтому негодная строка
+    застолбляла чекаут — и репозиторий оставался несобранным при внешне
+    объяснённом отказе.
+    """
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "steward", "prs": ["мусор"]},
+            {"repo": REPO, "checkout": "steward", "prs": [1]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert [o.status for o in outcomes] == ["skipped", "published"]

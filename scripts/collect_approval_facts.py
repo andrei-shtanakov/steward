@@ -308,7 +308,7 @@ def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tu
 
 def _resolved(
     repositories: list[Any], workspace_root: Path
-) -> list[tuple[Any, str, Path | None, str]]:
+) -> list[tuple[str, Path | None, list[int], str]]:
     """Один обход охвата на оба прохода: сбор и проверка.
 
     Проверка дубликатов живёт ЗДЕСЬ, а не в `collect()`, потому что иначе два
@@ -319,10 +319,11 @@ def _resolved(
     Бандл лежит по фиксированному пути внутри чекаута, поэтому две записи на
     один чекаут — не двойной охват, а молчаливая потеря первого.
     """
-    resolved: list[tuple[Any, str, Path | None, str]] = []
+    resolved: list[tuple[str, Path | None, list[int], str]] = []
     seen: dict[str, str] = {}
     for entry in repositories:
         repo = _label(entry)
+        numbers: list[int] = []
         path, refusal = preflight(entry, workspace_root)
         if path is not None:
             # Резолвим ПУТЬ БАНДЛА, а не только чекаут: `.steward` может быть
@@ -331,7 +332,7 @@ def _resolved(
             # именно резолвнутый файл, а не каталог, который на него указывает.
             escape = _inside(path / BUNDLE_RELPATH, path)
             if escape is not None:
-                resolved.append((entry, repo, None, f"{repo}: {escape}"))
+                resolved.append((repo, None, [], f"{repo}: {escape}"))
                 continue
             bundle, _ = _resolve(path / BUNDLE_RELPATH)
             # Ключ — идентичность каталога в ФС, а не строка пути. На
@@ -342,21 +343,27 @@ def _resolved(
             # Windows — защита выглядела бы работающей и не работала.
             # Путь бандла внутри чекаута фиксирован, поэтому идентичности
             # каталога достаточно.
+            # Валидация охвата ДО занятия слота: битая первая запись иначе
+            # застолбила бы чекаут и подавила рабочую вторую для того же пути.
+            numbers, refusal_prs = pr_numbers(entry)
+            if numbers is None:
+                resolved.append((repo, None, [], refusal_prs))
+                continue
             key = _identity(path)
             previous = seen.get(key)
             if previous is not None:
                 resolved.append(
                     (
-                        entry,
                         repo,
                         None,
+                        [],
                         f"{repo}: бандл {bundle} уже занят записью {previous} — второй "
                         f"затёр бы первый по тому же пути",
                     )
                 )
                 continue
             seen[key] = repo
-        resolved.append((entry, repo, path, refusal))
+        resolved.append((repo, path, numbers, refusal))
     return resolved
 
 
@@ -370,12 +377,8 @@ def collect(
     видна только в хвосте лога.
     """
     outcomes: list[Outcome] = []
-    for entry, repo, path, refusal in _resolved(repositories, workspace_root):
+    for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
         if path is None:
-            outcomes.append(Outcome(repo, "skipped", refusal))
-            continue
-        numbers, refusal = pr_numbers(entry)
-        if numbers is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
@@ -404,7 +407,7 @@ def collect(
         if owner is None:
             outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
             continue
-        if owner != repo:
+        if owner.lower() != repo.lower():
             outcomes.append(
                 Outcome(repo, "failed", f"код 0, но бандл заявляет репозиторий {owner!r}")
             )
@@ -556,9 +559,18 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
         return f"в бандле нет записей по PR {missing}"
     # Записи есть, но заголовок обязан их же и заявлять: бандл, чей `scope`
     # разошёлся с содержимым, перестаёт доказывать, что спрашивали именно это.
-    undeclared = [n for n in numbers if declared is not None and str(n) not in declared]
+    if declared is None:
+        return None
+    wanted = {str(n) for n in numbers}
+    undeclared = sorted(wanted - declared)
     if undeclared:
         return f"заголовок не заявляет PR {undeclared}, хотя записи есть"
+    # Точное совпадение, а не «не меньше нужного»: после сужения охвата старый
+    # широкий бандл продолжал бы читаться зелёным, хотя текущий охват не
+    # собирался ни разу.
+    extra = sorted(declared - wanted)
+    if extra:
+        return f"бандл собран по другому охвату: лишние PR {extra}"
     return None
 
 
@@ -572,15 +584,8 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
     """
     outcomes: list[Outcome] = []
     now = datetime.now(UTC)
-    for entry, repo, path, refusal in _resolved(repositories, workspace_root):
+    for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
         if path is None:
-            outcomes.append(Outcome(repo, "skipped", refusal))
-            continue
-        # Охват валидируется ПЕРВЫМ, как и в `collect()`: иначе негодная
-        # строка охвата на репозитории без бандла доложилась бы поломкой
-        # публикации, хотя спрашивать было нечего.
-        numbers, refusal = pr_numbers(entry)
-        if numbers is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
@@ -595,7 +600,7 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
         if owner is None:
             outcomes.append(Outcome(repo, "failed", refusal))
             continue
-        if owner != repo:
+        if owner.lower() != repo.lower():
             outcomes.append(Outcome(repo, "failed", f"бандл заявляет репозиторий {owner!r}"))
             continue
         if now >= valid_until:
