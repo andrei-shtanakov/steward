@@ -100,10 +100,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          WORK: ${{ runner.temp }}/review-work
         run: |
           set -euo pipefail
-          gh api "repos/$REPO/pulls/$PR" -H "Accept: application/vnd.github.v3.diff" > diff.patch
-          bytes=$(wc -c < diff.patch)
+          # Все промежуточные файлы прогона — ВНЕ workspace. С переходом на
+          # чекаут дерева PR корень workspace стал авторским пространством
+          # имён: трекаемый симлинк `prompt.txt -> diff.patch` заставил бы
+          # редирект ниже усечь только что скачанный диф ДО склейки — и модель
+          # получила бы пустой патч, вернув «чисто» про непустой (найдено
+          # гейтом на #98). `runner.temp` живёт снаружи GITHUB_WORKSPACE по
+          # построению — авторский файл дотянуться туда не может.
+          mkdir -p "$WORK"
+          gh api "repos/$REPO/pulls/$PR" -H "Accept: application/vnd.github.v3.diff" \
+            > "$WORK/diff.patch"
+          bytes=$(wc -c < "$WORK/diff.patch")
           echo "diff bytes: $bytes"
           # Диф без изменений — не «ревью прошло», а нечего ревьюить: состояние
           # определённое и легитимно зелёное. Но зелёным оно должно стать ЯВНО, а
@@ -113,7 +123,8 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            printf '{"findings":[],"note":"диф пуст — ревьюировать нечего"}' > verdict.json
+            printf '{"findings":[],"note":"диф пуст — ревьюировать нечего"}' \
+              > "$WORK/verdict.json"
           fi
 
       - name: Собрать промпт
@@ -121,6 +132,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           KIT: ${{ runner.temp }}/trusted-kit
+          WORK: ${{ runner.temp }}/review-work
         run: |
           set -euo pipefail
 
@@ -144,22 +156,23 @@ jobs:
           set +e
           sh "$KIT/collect-context.sh" \
               --base "$BASE_SHA" \
-              --manifest .github/codex/review-context.txt > context.txt 2> context.err
+              --manifest .github/codex/review-context.txt \
+              > "$WORK/context.txt" 2> "$WORK/context.err"
           ctx_code=$?
           set -e
           case "$ctx_code" in
             0)
               use_context=1
-              echo "контекст из base: $(grep -c '^--- ФАЙЛ ' context.txt) файл(ов)," \
-                   "$(wc -c < context.txt) байт"
-              grep '^--- ФАЙЛ ' context.txt || true
+              echo "контекст из base: $(grep -c '^--- ФАЙЛ ' "$WORK/context.txt") файл(ов)," \
+                   "$(wc -c < "$WORK/context.txt") байт"
+              grep '^--- ФАЙЛ ' "$WORK/context.txt" || true
               ;;
             3)
-              cat context.err
+              cat "$WORK/context.err"
               echo "::notice::курируемый контекст не настроен — ревью без него."
               ;;
             *)
-              cat context.err >&2
+              cat "$WORK/context.err" >&2
               echo "::error::манифест контекста есть в base, но пакет не собран" \
                    "(код $ctx_code)."
               exit 1
@@ -171,11 +184,12 @@ jobs:
           if [ "$use_context" -eq 1 ]; then
             sh "$KIT/build-prompt.sh" \
                 --prompt "$KIT/review-prompt.md" \
-                --diff diff.patch --context context.txt > prompt.txt
+                --diff "$WORK/diff.patch" --context "$WORK/context.txt" \
+                > "$WORK/prompt.txt"
           else
             sh "$KIT/build-prompt.sh" \
                 --prompt "$KIT/review-prompt.md" \
-                --diff diff.patch > prompt.txt
+                --diff "$WORK/diff.patch" > "$WORK/prompt.txt"
           fi
 
       - name: Ревью
@@ -211,8 +225,10 @@ jobs:
           # Версия CLI тоже пинится: дефолт пустой = «последняя», то есть поведение
           # гейта менялось бы вместе с чужим релизом. Тот же класс, что алиас модели.
           codex-version: "0.148.0"
-          prompt-file: prompt.txt
-          output-file: verdict.json
+          # Промпт и вердикт — вне workspace: авторский симлинк на этих путях
+          # иначе перенаправил бы запись (см. шаг дифа).
+          prompt-file: ${{ runner.temp }}/review-work/prompt.txt
+          output-file: ${{ runner.temp }}/review-work/verdict.json
           # Схема — из доверенного каталога, не из дерева: дерево авторское.
           output-schema-file: ${{ runner.temp }}/trusted-kit/review-schema.json
           permission-profile: ":read-only"
@@ -221,7 +237,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: codex-verdict
-          path: verdict.json
+          path: ${{ runner.temp }}/review-work/verdict.json
           if-no-files-found: error
 
   # Джоб 2 имеет право писать, но НЕ видит ни ключа, ни дифа — только вердикт.

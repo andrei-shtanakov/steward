@@ -107,6 +107,11 @@ def test_minor_never_blocks_even_fully_evidenced(tmp_path: Path) -> None:
         ({"scenario": ""}, "нет scenario"),
         ({"observed_result": ""}, "нет observed_result"),
         ({"evidence": []}, "нет evidence"),
+        # Пробельная «заполненность» — та же пустота в маскировке: без trim'а
+        # major с бланковым обоснованием блокировал бы мерж (гейт на #98).
+        ({"scenario": "   "}, "нет scenario"),
+        ({"observed_result": " \t "}, "нет observed_result"),
+        ({"evidence": [{"file": "b.py", "line": 2, "reason": "  "}]}, "нет evidence"),
     ],
 )
 def test_major_without_one_requirement_does_not_block(
