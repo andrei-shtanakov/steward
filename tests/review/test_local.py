@@ -809,6 +809,30 @@ def test_default_schema_and_prompt_resolve_from_repo_root_not_cwd(tmp_path: Path
     assert "нет файла инструкций" not in result.stderr
 
 
+def test_generated_filter_resolves_against_repo_root_from_subdir(tmp_path: Path) -> None:
+    """Generated-доказательство обязано браться от корня репо, не от cwd.
+
+    `local.sh` поддерживает запуск из подкаталога, но `build-prompt.sh`
+    исполнялся в унаследованном cwd — манифест-сосед `./pyproject.toml` из
+    `sub/` не находился, перегенерированный `uv.lock` не фильтровался и
+    упирался в байтовый потолок: один и тот же патч проходил из корня и
+    отказывал из подкаталога (находка гейта на #99, третий заход)."""
+    _, local = make_repo(tmp_path)
+    (local / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    lock_body = "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
+    (local / "uv.lock").write_text(lock_body, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+    assert len(lock_body) > 400_000  # без фильтра упёрлись бы в потолок
+
+    subdir = local / "sub"
+    subdir.mkdir()
+    result = run_local(local, make_stub(tmp_path, STUB_OK), cwd=subdir)
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
 def test_findings_above_threshold_block_exit_code(tmp_path: Path) -> None:
     """§7: `local.sh` обязан завершиться 1, когда вердикт содержит находку выше
     порога. Держится на `set -e` и позиции последней команды в скрипте — ни один

@@ -572,6 +572,66 @@ def test_snap_outside_snapshot_dir_stays_in_diff(tmp_path: Path) -> None:
     assert "hand-written-0" in result.stdout
 
 
+def test_tree_flag_resolves_generated_proof_outside_cwd(tmp_path: Path) -> None:
+    """`--tree` задаёт корень дерева доказательств независимо от cwd.
+
+    `local.sh` запускается из подкаталога репо, а доказательство generated
+    (манифест-сосед) относительное — без явного корня один и тот же патч
+    фильтровался из корня и отказывал из `sub/` (находка гейта на #99,
+    третий заход)."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--tree",
+            str(tree),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=elsewhere,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен из дифа: uv.lock" in result.stdout
+    assert "locked-0" not in result.stdout
+
+
+def test_tree_flag_missing_dir_is_config_error(tmp_path: Path) -> None:
+    """Несуществующее дерево — ошибка конфигурации, не молчаливый прогон
+    с выключенным доказательством."""
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--tree",
+            str(tmp_path / "нет"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "дерев" in result.stderr
+
+
 def test_fixture_bundle_with_manifest_sibling_stays_in_diff(tmp_path: Path) -> None:
     """Fixture-бандл `package.json`+`package-lock.json` — курируемый исходник.
 

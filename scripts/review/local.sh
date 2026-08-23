@@ -403,7 +403,11 @@ fi
 # Позиционные параметры шелла — единственный способ собрать argv по частям
 # без некавыченного раскрытия строки (тот же урок, что с ctx_args): `set --`
 # строит список, кавычки сохраняют каждый элемент целым.
-set -- --prompt "$prompt" --diff "$work/diff.patch"
+# `--tree` — явный корень репо: прогон поддерживается из подкаталога, а
+# generated-доказательство (манифест-сосед) в build-prompt.sh проверяется
+# относительно дерева — без явного корня uv.lock не фильтровался из `sub/` и
+# упирался в байтовый потолок (третий заход гейта на #99).
+set -- --prompt "$prompt" --diff "$work/diff.patch" --tree "$repo_root"
 [ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"
 [ -n "$max_diff_bytes" ] && set -- "$@" --max-diff-bytes "$max_diff_bytes"
 [ -n "$max_diff_files" ] && set -- "$@" --max-diff-files "$max_diff_files"
