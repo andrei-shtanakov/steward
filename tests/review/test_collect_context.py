@@ -256,7 +256,19 @@ def test_manifest_without_files_is_a_refusal(repo: Path) -> None:
 
 @pytest.mark.parametrize(
     "bad",
-    ["/etc/passwd", "../outside.py", "src/*.py", "src/prod?cer.py", "src/[ab].py"],
+    [
+        "/etc/passwd",
+        "../outside.py",
+        "src/*.py",
+        "src/prod?cer.py",
+        "src/[ab].py",
+        # Пробельные символы: и запись «отпечаток путь» между проходами, и
+        # заголовок `--- ФАЙЛ <путь> …` разбираются по пробелам — путь с
+        # пробелом склеил бы заголовок одного файла с телом другого.
+        " lead.py",
+        "src/with space.py",
+        "src/with\ttab.py",
+    ],
 )
 def test_path_shapes_refused(repo: Path, bad: str) -> None:
     """Абсолютные пути, обход вверх и glob'ы отвергаются, а не разворачиваются.

@@ -307,3 +307,21 @@ def test_bare_context_flag_is_config_error(interpreter: str, tmp_path: Path) -> 
     )
     assert result.returncode == 2
     assert "usage" in result.stderr
+
+
+def test_empty_context_value_is_config_error(tmp_path: Path) -> None:
+    """`--context ""` — отказ, а не тихий diff-only промпт.
+
+    Вызывающий явно запросил контекст; пустое значение — почти всегда
+    несработавшая подстановка переменной. Молча собрать промпт без контекста
+    значило бы «неполный вход как успех»: ревью без контекста под видом ревью с
+    ним. Отсутствие контекста выражается отсутствием флага.
+    """
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff), "--context", ""],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "пустым значением" in result.stderr

@@ -37,6 +37,7 @@ diff=""
 # одному дифу. Обязательность живёт не здесь, а у вызывающего — он уже знает,
 # настроен манифест или нет (код 3 от collect-context.sh).
 context=""
+context_given=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,7 +47,9 @@ while [ $# -gt 0 ]; do
         # shell мимо usage() — платформозависимое поведение опаснее прямого exit 2.
         --prompt) [ $# -ge 2 ] || { usage; exit 2; }; prompt="$2"; shift 2 ;;
         --diff)   [ $# -ge 2 ] || { usage; exit 2; }; diff="$2"; shift 2 ;;
-        --context) [ $# -ge 2 ] || { usage; exit 2; }; context="$2"; shift 2 ;;
+        --context)
+            [ $# -ge 2 ] || { usage; exit 2; }
+            context="$2"; context_given=1; shift 2 ;;
         *) usage; exit 2 ;;
     esac
 done
@@ -61,7 +64,11 @@ done
 # ревью нашло дефект в патче, хотя сломаны права на локальный файл.
 [ -r "$prompt" ] || { echo "файл инструкций нечитаем: $prompt" >&2; exit 2; }
 [ -r "$diff" ] || { echo "файл дифа нечитаем: $diff" >&2; exit 2; }
-if [ -n "$context" ]; then
+# Пустое значение `--context ""` — отказ, а не «флага не было»: вызывающий явно
+# запросил контекст, и молча собрать diff-only промпт значило бы «неполный вход
+# как успех». Отсутствие контекста выражается отсутствием флага, не пустотой.
+if [ "$context_given" -eq 1 ]; then
+    [ -n "$context" ] || { echo "--context передан с пустым значением" >&2; exit 2; }
     [ -f "$context" ] || { echo "нет файла контекста: $context" >&2; exit 2; }
     [ -r "$context" ] || { echo "файл контекста нечитаем: $context" >&2; exit 2; }
 fi
