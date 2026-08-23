@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import time
 import xml.dom.minidom
 import subprocess
 import sys
@@ -1495,3 +1497,65 @@ def test_duplicate_pr_numbers_in_scope_are_refused(tmp_path: Path) -> None:
 
     assert outcomes[0].status == "skipped"
     assert "повторяется" in outcomes[0].detail
+
+
+def test_release_removes_own_lock(tmp_path: Path) -> None:
+    bundle = tmp_path / ".steward" / "approval_facts.jsonl"
+    lock, token, _ = RUNNER._claim(bundle)
+    assert lock is not None
+
+    RUNNER._release(lock, token)
+
+    assert not lock.exists()
+
+
+def test_release_leaves_a_foreign_lock_in_place(tmp_path: Path) -> None:
+    """Проснувшийся прогон не снимает замок, перехваченный после его протухания.
+
+    Безусловный `unlink` при снятии открывал цепочку: A уснул дольше порога,
+    B перехватил протухший замок, проснувшийся A снял ЗАМОК B — и C вошёл
+    параллельно с B в один бандл. Оба могли отчитаться `published`.
+    """
+    bundle = tmp_path / ".steward" / "approval_facts.jsonl"
+    lock, token_a, _ = RUNNER._claim(bundle)
+    assert lock is not None
+    # B перехватил: содержимое замка теперь чужое.
+    lock.write_text("other-owner", encoding="ascii")
+
+    RUNNER._release(lock, token_a)
+
+    assert lock.exists()
+    assert lock.read_text(encoding="ascii") == "other-owner"
+
+
+def test_check_names_the_in_progress_window(tmp_path: Path) -> None:
+    """Нет бандла + живой замок = «публикация в процессе», а не «бандла нет».
+
+    Продюсер снимает прежнюю публикацию ДО записи новой (`remove_previous`),
+    так что у штатного сбора есть окно без файла. Исход остаётся `failed` —
+    свежесть в этот момент недоказуема, — но сообщение обязано называть
+    происходящее, иначе оператор ищет потерю данных там, где идёт запись.
+    """
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True)
+    (path / ".steward" / "approval_facts.jsonl.lock").write_text("w", encoding="ascii")
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
+
+    assert outcomes[0].status == "failed"
+    assert "публикация в процессе" in outcomes[0].detail
+
+
+def test_check_reports_loss_when_the_lock_is_stale(tmp_path: Path) -> None:
+    """Протухший замок не маскирует настоящую потерю бандла."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True)
+    lock = path / ".steward" / "approval_facts.jsonl.lock"
+    lock.write_text("w", encoding="ascii")
+    two_hours_ago = time.time() - 7200
+    os.utime(lock, (two_hours_ago, two_hours_ago))
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
+
+    assert outcomes[0].status == "failed"
+    assert "бандла нет" in outcomes[0].detail

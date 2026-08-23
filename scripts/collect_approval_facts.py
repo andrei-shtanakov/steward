@@ -301,6 +301,9 @@ def pr_numbers(entry: dict[str, Any]) -> tuple[list[int] | None, str]:
 #: Вложенный `uv run` был бы той же ошибкой, от которой plist защищается
 #: абсолютным путём к `uv`: PATH под launchd ненадёжен, и голый `uv` там не
 #: находится — сбор молча переставал бы происходить.
+#: Возраст замка, после которого он считается брошенным (убитый прогон).
+LOCK_STALE_SECONDS = 3600
+
 STEWARD_BIN = Path(sys.executable).parent / "steward"
 
 
@@ -468,20 +471,21 @@ def collect(
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
-        lock, refusal, status = _claim(bundle)
+        lock, second, third = _claim(bundle)
         if lock is None:
             # Параллельный прогон по тому же чекауту создаёт моя же инструкция:
             # `launchctl load` запускает задачу по `RunAtLoad`, а следом
             # рекомендуется `kickstart`. Без замка чужая публикация засчиталась
             # бы этому прогону — «файл изменился» не доказывает, кто его писал.
-            outcomes.append(Outcome(repo, status, f"{repo}: {refusal}"))
+            outcomes.append(Outcome(repo, third, f"{repo}: {second}"))
             continue
+        token = second
         try:
             outcomes.append(
                 _publish_one(repo, path, bundle, policy, numbers, active_digest, lease_seconds)
             )
         finally:
-            lock.unlink(missing_ok=True)
+            _release(lock, token)
     return outcomes
 
 
@@ -496,7 +500,7 @@ def _claim(bundle: Path) -> tuple[Path | None, str, str]:
     lock = bundle.with_suffix(bundle.suffix + ".lock")
     try:
         lock.parent.mkdir(parents=True, exist_ok=True)
-        if lock.exists() and time.time() - lock.stat().st_mtime > 3600:
+        if lock.exists() and time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS:
             lock.unlink(missing_ok=True)
         handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
@@ -510,8 +514,35 @@ def _claim(bundle: Path) -> tuple[Path | None, str, str]:
         # А это поломка инструмента: спросить не смогли. `skipped` здесь
         # означал бы «не спрашивали», и отказ читался бы как решение.
         return None, f"замок {lock} не взять: {exc}", "failed"
-    os.close(handle)
-    return lock, "", ""
+    # Метка владельца пишется В замок, потому что снятие обязано быть только
+    # своим. Безусловный `unlink` при снятии открывал цепочку: прогон A уснул
+    # больше чем на LOCK_STALE_SECONDS, прогон B перехватил протухший замок и
+    # создал свой, проснувшийся A снял ЗАМОК B — и прогон C вошёл параллельно
+    # с B в один бандл. Кто последним сделал `os.replace`, тот и «опубликовал»,
+    # причём отчитаться `published` могли оба.
+    token = f"{os.getpid()}-{os.urandom(8).hex()}"
+    try:
+        os.write(handle, token.encode("ascii"))
+    finally:
+        os.close(handle)
+    return lock, token, ""
+
+
+def _release(lock: Path, token: str) -> None:
+    """Снять замок, только если он всё ещё наш.
+
+    Чужой замок (наш протух и был перехвачен) остаётся на месте: удалить его
+    значило бы впустить третьего писателя параллельно со вторым. Оставшийся
+    TOCTOU между чтением и `unlink` требует повторного протухания за
+    микросекунды — окно названо, а не объявлено нулевым.
+    """
+    try:
+        if lock.read_text(encoding="ascii") == token:
+            lock.unlink(missing_ok=True)
+    except OSError:
+        # Замка уже нет или он нечитаем — снимать нечего; молча оставить
+        # безопаснее, чем удалить чужое.
+        pass
 
 
 def _digest(path: Path) -> str | None:
@@ -634,7 +665,30 @@ def freshness(
             continue
         bundle = path / BUNDLE_RELPATH
         if not bundle.is_file():
-            outcomes.append(Outcome(repo, "failed", f"бандла нет — {bundle}"))
+            # Продюсер снимает прежнюю публикацию ДО записи новой
+            # (`publish.py::remove_previous`), так что у штатного сбора есть
+            # окно, в котором файла нет. Живой замок отличает это окно от
+            # настоящей потери: сообщение называет, что происходит, — но
+            # исход остаётся `failed`, потому что свежесть в этот момент
+            # недоказуема, а «идёт публикация» не факт о фактах.
+            lock = bundle.with_suffix(bundle.suffix + ".lock")
+            try:
+                lock_alive = (
+                    lock.exists() and time.time() - lock.stat().st_mtime <= LOCK_STALE_SECONDS
+                )
+            except OSError:
+                lock_alive = False
+            if lock_alive:
+                outcomes.append(
+                    Outcome(
+                        repo,
+                        "failed",
+                        f"бандла нет, но замок жив — публикация в процессе; "
+                        f"повторите --check после её завершения ({bundle})",
+                    )
+                )
+            else:
+                outcomes.append(Outcome(repo, "failed", f"бандла нет — {bundle}"))
             continue
         valid_until, refusal = bundle_verdict(
             bundle, repo, numbers, active_digest, lease_seconds, now
