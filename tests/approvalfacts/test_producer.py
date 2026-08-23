@@ -20,17 +20,23 @@ OWNER, NAME = "andrei-shtanakov", "steward"
 def _fake_gh(responses: list[tuple[int, object]]):
     """Подмена `_gh`, отдающая (code, stdout, stderr).
 
-    Соглашение фикстур: словарь — это тело на stdout, строка — текст на stderr.
-    Так тест, задающий «gh упал с сообщением», по-прежнему пишется одной
-    строкой, а тест, задающий реальную форму GraphQL-ответа с ненулевым кодом,
-    может задать оба потока кортежем `(stdout, stderr)`.
+    Соглашение фикстур: словарь — тело на stdout; строка — вывод при коде 0 и
+    диагностика при ненулевом, как у настоящего `gh`; кортеж `(stdout, stderr)`
+    задаёт оба потока явно — реальная форма GraphQL-ответа с ненулевым кодом.
+
+    Копия того же помощника живёт в `tests/riskclassify/test_approval_facts_cli.py`;
+    они обязаны меняться вместе.
     """
     it: Iterator[tuple[int, object]] = iter(responses)
 
     def fake(args: list[str]) -> tuple[int, str, str]:
         code, payload = next(it)
         if isinstance(payload, str):
-            return code, "", payload
+            # Как настоящий `gh`: при успехе строка — это вывод, при отказе —
+            # диагностика. Ставить её всегда в stderr значило бы подменить
+            # смысл теста «stdout не JSON» на «stdout пуст», и подмена была бы
+            # незаметной: оба случая дают `MechanicalFailure`.
+            return (code, payload, "") if code == 0 else (code, "", payload)
         if isinstance(payload, tuple):
             body, err = payload
             return code, body if isinstance(body, str) else json.dumps(body), err
