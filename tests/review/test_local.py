@@ -1,6 +1,7 @@
 """Тесты scripts/review/local.sh — диапазон, свежесть базы, пустой диф."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -825,3 +826,60 @@ def test_findings_above_threshold_block_exit_code(tmp_path: Path) -> None:
     # Рендер обязан быть цел, не просто код выхода.
     assert "major" in result.stdout
     assert "a.py" in result.stdout
+
+
+def test_context_path_with_space_in_work_dir(tmp_path: Path) -> None:
+    """Пробел в пути рабочего каталога не ломает прогон с контекстом.
+
+    Прежняя форма собирала аргумент в строку (`ctx_args="--context $work/…"`) и
+    раскрывала её без кавычек, полагаясь на «либо пусто, либо ровно два слова».
+    Это неверно ровно там, где путь приходит извне: `…/Review Temp/tmp.XYZ`
+    разваливается на три слова, argv битый, и контекст молча выпадает там, где
+    он и должен работать.
+
+    Пробел загоняется подставным `mktemp` в PATH, а НЕ через `TMPDIR`: на macOS
+    `mktemp -d` берёт каталог из `_CS_DARWIN_USER_TEMP_DIR` и `TMPDIR`
+    игнорирует. Первая версия этого теста так и была написана — и пережила
+    мутант, то есть была зелёной, не проверяя ничего. Расхождение поймано
+    мутацией, а не рассуждением.
+    """
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp, "mktemp не найден — стенд не может подменить его осмысленно"
+
+    remote, local = make_repo(tmp_path)
+    # Remote в стенде не bare: пуш в его текущую ветку по умолчанию отвергается.
+    git(remote, "config", "receive.denyCurrentBranch", "ignore")
+    (local / ".github" / "codex").mkdir(parents=True)
+    (local / "ctx.py").write_text("CONTEXT_MARKER = 1\n", encoding="utf-8")
+    (local / ".github" / "codex" / "review-context.txt").write_text("ctx.py\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "манифест и контекст в базе")
+    git(local, "push", "-q", "origin", "master")
+    git(local, "remote", "set-head", "origin", "-a")
+
+    (local / "changed.txt").write_text("правка\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка ветки")
+
+    spaced = tmp_path / "Review Temp"
+    spaced.mkdir()
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    shim = stub_bin / "mktemp"
+    shim.write_text(
+        f"#!/bin/sh\n"
+        f'if [ "$1" = "-d" ]; then exec {real_mktemp} -d "{spaced}/tmp.XXXXXX"; fi\n'
+        f'exec {real_mktemp} "{spaced}/tmp.XXXXXX"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "нет файла контекста" not in result.stderr
+    assert "контекст: 1 файл(ов)" in result.stdout

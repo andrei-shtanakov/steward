@@ -345,7 +345,7 @@ fi
 # получает ровно тот пакет, который увидит ревьюер в CI, — и одна из двух
 # локальных поблажек здесь просто не нужна.
 manifest="${REVIEW_CONTEXT_MANIFEST:-.github/codex/review-context.txt}"
-ctx_args=""
+use_context=0
 set +e
 sh "$kit_dir/collect-context.sh" --base "$mb" --manifest "$manifest" \
     > "$work/context.txt" 2> "$work/context.err"
@@ -353,8 +353,9 @@ ctx_code=$?
 set -e
 case "$ctx_code" in
     0)
-        ctx_args="--context $work/context.txt"
-        echo "контекст: $(grep -c "^--- ФАЙЛ " "$work/context.txt") файл(ов) из $(git rev-parse --short "$mb")"
+        use_context=1
+        echo "контекст: $(grep -c "^--- ФАЙЛ " "$work/context.txt") файл(ов)" \
+            "из $(git rev-parse --short "$mb")"
         ;;
     3)
         echo "контекст: не настроен ($manifest нет в базе) — ревью по одному дифу"
@@ -366,9 +367,18 @@ case "$ctx_code" in
         ;;
 esac
 
-# shellcheck disable=SC2086 -- ctx_args либо пуст, либо ровно два слова
-sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
-    $ctx_args > "$work/prompt.txt"
+# Ветвление, а не сборка аргументов в строку: `ctx_args="--context $work/..."` с
+# последующим некавыченным раскрытием разваливается, как только в `TMPDIR` есть
+# пробел (`/tmp/Review Temp.XYZ`) — argv битый, и прогон падает на «нет файла
+# контекста». Прежний комментарий утверждал «либо пуст, либо ровно два слова»;
+# это было неверно, и неверно ровно там, где путь приходит извне.
+if [ "$use_context" -eq 1 ]; then
+    sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
+        --context "$work/context.txt" > "$work/prompt.txt"
+else
+    sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
+        > "$work/prompt.txt"
+fi
 
 # Промпт идёт на stdin, а не аргументом: диф — недоверенный текст, и в argv он
 # не попадает ни здесь, ни в CI. Ревьюер в песочнице read-only: он читает, а не

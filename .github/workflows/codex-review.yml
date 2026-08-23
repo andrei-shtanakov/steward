@@ -135,7 +135,7 @@ jobs:
           # обоих. Манифест в base без сборщика — это не бутстрап, а поломка:
           # кто-то удалил механику, оставив данные, и ревью тихо поехало бы по
           # одному дифу с видом ревью с контекстом.
-          ctx_args=""
+          use_context=0
           if [ ! -f scripts/review/collect-context.sh ]; then
             if git cat-file -e "$BASE_SHA:.github/codex/review-context.txt" 2>/dev/null; then
               echo "::error::манифест контекста есть в base, а scripts/review/collect-context.sh"\
@@ -158,7 +158,7 @@ jobs:
           set -e
           case "$ctx_code" in
             0)
-              ctx_args="--context context.txt"
+              use_context=1
               echo "контекст из base: $(grep -c '^--- ФАЙЛ ' context.txt) файл(ов)," \
                    "$(wc -c < context.txt) байт"
               grep '^--- ФАЙЛ ' context.txt || true
@@ -175,10 +175,19 @@ jobs:
               ;;
           esac
 
-          # shellcheck disable=SC2086 -- ctx_args либо пуст, либо ровно два слова
-          sh scripts/review/build-prompt.sh \
-              --prompt .github/codex/review-prompt.md \
-              --diff diff.patch $ctx_args > prompt.txt
+          # Ветвление, а не сборка аргументов в строку: некавыченное раскрытие
+          # разваливается на пути с пробелом. Здесь путь относительный и пробела
+          # не содержит, но форма одинакова с local.sh намеренно — расходящиеся
+          #половины одного кита расходятся дальше.
+          if [ "$use_context" -eq 1 ]; then
+            sh scripts/review/build-prompt.sh \
+                --prompt .github/codex/review-prompt.md \
+                --diff diff.patch --context context.txt > prompt.txt
+          else
+            sh scripts/review/build-prompt.sh \
+                --prompt .github/codex/review-prompt.md \
+                --diff diff.patch > prompt.txt
+          fi
 
       - name: Ревью
         if: steps.diff.outputs.skip == 'false'
