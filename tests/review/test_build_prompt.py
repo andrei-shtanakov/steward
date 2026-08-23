@@ -507,6 +507,40 @@ def test_generated_blocks_do_not_count_toward_file_ceiling(tmp_path: Path) -> No
     assert result.stdout.count("generated-файл опущен") == 40
 
 
+def test_omission_markers_do_not_consume_byte_ceiling(tmp_path: Path) -> None:
+    """Маркеры опущения не тратят байтовый потолок — как и файловый.
+
+    Перегенерация тысяч снапшотов давала диф из одних маркеров шире потолка —
+    отказ на PR, где всё построчное содержимое уже исключено (шестой заход
+    гейта на #99). Потолки меряют то, что ревьюируется построчно."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    blocks = [make_diff_block(f"tests/__snapshots__/case{i}.snap") for i in range(40)]
+    blocks.append(make_diff_block("src/a.py"))
+    diff.write_text("".join(blocks), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--max-diff-bytes",
+            "2000",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("generated-файл опущен") == 40
+    assert "diff --git a/src/a.py" in result.stdout
+
+
 def test_source_file_is_never_treated_as_generated(tmp_path: Path) -> None:
     """Ложное опущение исходника хуже пропущенного lock'а — список узкий."""
     prompt = tmp_path / "p.md"
