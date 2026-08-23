@@ -114,9 +114,80 @@ jobs:
           # ДО выполнения логики скрипта — отказ окружения, а не находка
           # ревьюера. `sh <файл>` читает файл как данные, не исполняет его
           # напрямую — не зависит ни от x-бита, ни от noexec.
-          sh scripts/review/build-prompt.sh \
-              --prompt .github/codex/review-prompt.md \
-              --diff diff.patch > prompt.txt
+
+          # Курируемый контекст из base. Читается через `git show <base>:<путь>`,
+          # а НЕ из этого чекаута: чекаут и так базовый, но полагаться на дерево
+          # значит полагаться на то, что ни один шаг до нас его не тронул.
+          # Ревизия названа явно — это дешевле, чем доверие.
+          #
+          # Три исхода различаются намеренно. 0 — пакет собран. 3 — манифеста в
+          # base нет, курируемый контекст здесь не настроен: ревью идёт по одному
+          # дифу, как раньше. Любой другой код — манифест ЕСТЬ, но собрать пакет
+          # не вышло, и это отказ: молча съехать на «только диф» значило бы выдать
+          # вердикт без контекста за вердикт с контекстом.
+          #
+          # Сам сборщик в обязательный перечень выше НЕ входит, и это не
+          # послабление, а тот же бутстрап, что у манифеста: PR, который вводит
+          # collect-context.sh, не найдёт его в base — фича заблокировала бы
+          # собственное внедрение. Ровно на этом чек и упал в первом прогоне.
+          #
+          # Но «не настроено» тут ДВА файла, и молчать можно только когда нет
+          # обоих. Манифест в base без сборщика — это не бутстрап, а поломка:
+          # кто-то удалил механику, оставив данные, и ревью тихо поехало бы по
+          # одному дифу с видом ревью с контекстом.
+          use_context=0
+          if [ ! -f scripts/review/collect-context.sh ]; then
+            if git cat-file -e "$BASE_SHA:.github/codex/review-context.txt" 2>/dev/null; then
+              echo "::error::манифест контекста есть в base, а scripts/review/collect-context.sh"\
+                   "нет. Механику удалили, оставив данные: ревью без контекста выглядело бы"\
+                   "как ревью с ним."
+              exit 1
+            fi
+            echo "::notice::сборщик контекста ещё не в base — ревью по одному дифу."
+            sh scripts/review/build-prompt.sh \
+                --prompt .github/codex/review-prompt.md \
+                --diff diff.patch > prompt.txt
+            exit 0
+          fi
+
+          set +e
+          sh scripts/review/collect-context.sh \
+              --base "$BASE_SHA" \
+              --manifest .github/codex/review-context.txt > context.txt 2> context.err
+          ctx_code=$?
+          set -e
+          case "$ctx_code" in
+            0)
+              use_context=1
+              echo "контекст из base: $(grep -c '^--- ФАЙЛ ' context.txt) файл(ов)," \
+                   "$(wc -c < context.txt) байт"
+              grep '^--- ФАЙЛ ' context.txt || true
+              ;;
+            3)
+              cat context.err
+              echo "::notice::курируемый контекст не настроен — ревью по одному дифу."
+              ;;
+            *)
+              cat context.err >&2
+              echo "::error::манифест контекста есть в base, но пакет не собран" \
+                   "(код $ctx_code). Ревью без контекста выглядело бы как ревью с ним."
+              exit 1
+              ;;
+          esac
+
+          # Ветвление, а не сборка аргументов в строку: некавыченное раскрытие
+          # разваливается на пути с пробелом. Здесь путь относительный и пробела
+          # не содержит, но форма одинакова с local.sh намеренно — расходящиеся
+          #половины одного кита расходятся дальше.
+          if [ "$use_context" -eq 1 ]; then
+            sh scripts/review/build-prompt.sh \
+                --prompt .github/codex/review-prompt.md \
+                --diff diff.patch --context context.txt > prompt.txt
+          else
+            sh scripts/review/build-prompt.sh \
+                --prompt .github/codex/review-prompt.md \
+                --diff diff.patch > prompt.txt
+          fi
 
       - name: Ревью
         if: steps.diff.outputs.skip == 'false'

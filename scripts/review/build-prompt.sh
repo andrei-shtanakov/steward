@@ -6,7 +6,8 @@
 set -eu
 
 usage() {
-    echo "usage: build-prompt.sh --prompt <file> --diff <file>" >&2
+    echo "usage: build-prompt.sh --prompt <file> --diff <file>" \
+        "[--context <file>]" >&2
 }
 
 # Маркер конца зоны недоверенных данных обязан быть непредсказуем для самого
@@ -32,6 +33,11 @@ hash_diff() {
 
 prompt=""
 diff=""
+# Контекст необязателен: репозиторий без манифеста ревьюируется как прежде, по
+# одному дифу. Обязательность живёт не здесь, а у вызывающего — он уже знает,
+# настроен манифест или нет (код 3 от collect-context.sh).
+context=""
+context_given=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,6 +47,9 @@ while [ $# -gt 0 ]; do
         # shell мимо usage() — платформозависимое поведение опаснее прямого exit 2.
         --prompt) [ $# -ge 2 ] || { usage; exit 2; }; prompt="$2"; shift 2 ;;
         --diff)   [ $# -ge 2 ] || { usage; exit 2; }; diff="$2"; shift 2 ;;
+        --context)
+            [ $# -ge 2 ] || { usage; exit 2; }
+            context="$2"; context_given=1; shift 2 ;;
         *) usage; exit 2 ;;
     esac
 done
@@ -55,10 +64,31 @@ done
 # ревью нашло дефект в патче, хотя сломаны права на локальный файл.
 [ -r "$prompt" ] || { echo "файл инструкций нечитаем: $prompt" >&2; exit 2; }
 [ -r "$diff" ] || { echo "файл дифа нечитаем: $diff" >&2; exit 2; }
+# Пустое значение `--context ""` — отказ, а не «флага не было»: вызывающий явно
+# запросил контекст, и молча собрать diff-only промпт значило бы «неполный вход
+# как успех». Отсутствие контекста выражается отсутствием флага, не пустотой.
+if [ "$context_given" -eq 1 ]; then
+    [ -n "$context" ] || { echo "--context передан с пустым значением" >&2; exit 2; }
+    [ -f "$context" ] || { echo "нет файла контекста: $context" >&2; exit 2; }
+    [ -r "$context" ] || { echo "файл контекста нечитаем: $context" >&2; exit 2; }
+fi
 
 marker=$(hash_diff "$diff")
 
 cat "$prompt"
+
+# Контекст идёт ПЕРЕД дифом и в собственных маркерах. Он куда доверенней дифа —
+# это содержимое base, прошедшее ревью, — но своя рамка нужна не ради недоверия,
+# а чтобы граница между «как есть в целевой ветке» и «что предлагает патч»
+# оставалась читаемой: без неё ревьюер не отличит текущий код от предложенного и
+# начнёт находить дефекты в том, что уже смержено.
+if [ -n "$context" ]; then
+    ctx_marker=$(hash_diff "$context")
+    printf '\n\n--- КОНТЕКСТ ИЗ BASE НАЧАЛО %s ---\n' "$ctx_marker"
+    cat "$context"
+    printf '\n--- КОНТЕКСТ ИЗ BASE КОНЕЦ %s ---\n' "$ctx_marker"
+fi
+
 printf '\n\n--- ДИФ НАЧАЛО %s ---\n' "$marker"
 cat "$diff"
 printf '\n--- ДИФ КОНЕЦ %s ---\n' "$marker"

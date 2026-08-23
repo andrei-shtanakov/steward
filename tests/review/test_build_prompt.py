@@ -217,3 +217,111 @@ def test_bare_diff_flag_is_config_error(interpreter: str, tmp_path: Path) -> Non
     )
     assert result.returncode == 2
     assert "usage" in result.stderr
+
+
+# --- Курируемый контекст из base --------------------------------------------
+
+
+def run_with_context(prompt: Path, diff: Path, context: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--context",
+            str(context),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_without_context_output_is_unchanged(tmp_path: Path) -> None:
+    """Без `--context` склейка байт-в-байт прежняя.
+
+    Контекст добавляется как необязательный вход: репозиторий, не заведший
+    манифест, обязан ревьюироваться ровно как до этой правки.
+    """
+    prompt, diff = make(tmp_path, "ИНСТРУКЦИИ", "ДИФ-ТЕЛО")
+    marker = marker_for(diff)
+    out = run(prompt, diff).stdout
+    assert out == (
+        f"ИНСТРУКЦИИ\n\n--- ДИФ НАЧАЛО {marker} ---\nДИФ-ТЕЛО\n--- ДИФ КОНЕЦ {marker} ---\n"
+    )
+
+
+def test_context_sits_between_instructions_and_diff(tmp_path: Path) -> None:
+    """Порядок: инструкции → контекст из base → диф.
+
+    Контекст перед дифом не по вкусу, а по смыслу: он отвечает на вопрос «от
+    чего отталкивается патч», и читать его после самого патча поздно.
+    """
+    prompt, diff = make(tmp_path, "ИНСТРУКЦИИ", "ДИФ-ТЕЛО")
+    context = tmp_path / "context.txt"
+    context.write_text("--- ФАЙЛ src/a.py sha256:deadbeef ---\nКОНТЕКСТ-ТЕЛО\n", encoding="utf-8")
+
+    out = run_with_context(prompt, diff, context).stdout
+
+    assert out.index("ИНСТРУКЦИИ") < out.index("КОНТЕКСТ ИЗ BASE НАЧАЛО")
+    assert out.index("КОНТЕКСТ-ТЕЛО") < out.index("КОНТЕКСТ ИЗ BASE КОНЕЦ")
+    assert out.index("КОНТЕКСТ ИЗ BASE КОНЕЦ") < out.index("ДИФ НАЧАЛО")
+
+
+def test_context_marker_is_its_own_hash(tmp_path: Path) -> None:
+    """У контекста свой суффикс, не суффикс дифа.
+
+    Пара маркеров должна замыкаться на собственное содержимое: общий суффикс
+    позволил бы тексту в одной зоне подделать границу другой.
+    """
+    prompt, diff = make(tmp_path, "И", "Д")
+    context = tmp_path / "context.txt"
+    context.write_text("КОНТЕКСТ", encoding="utf-8")
+    ctx_marker = marker_for(context)
+    diff_marker = marker_for(diff)
+
+    out = run_with_context(prompt, diff, context).stdout
+
+    assert ctx_marker != diff_marker
+    assert f"--- КОНТЕКСТ ИЗ BASE НАЧАЛО {ctx_marker} ---" in out
+    assert f"--- КОНТЕКСТ ИЗ BASE КОНЕЦ {ctx_marker} ---" in out
+
+
+def test_missing_context_file_is_config_error(tmp_path: Path) -> None:
+    """Заявленный, но отсутствующий файл контекста — код 2, не тихий пропуск."""
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = run_with_context(prompt, diff, tmp_path / "нет.txt")
+    assert result.returncode == 2
+    assert "нет файла контекста" in result.stderr
+
+
+@pytest.mark.parametrize("interpreter", INTERPRETERS)
+def test_bare_context_flag_is_config_error(interpreter: str, tmp_path: Path) -> None:
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        [interpreter, str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff), "--context"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "usage" in result.stderr
+
+
+def test_empty_context_value_is_config_error(tmp_path: Path) -> None:
+    """`--context ""` — отказ, а не тихий diff-only промпт.
+
+    Вызывающий явно запросил контекст; пустое значение — почти всегда
+    несработавшая подстановка переменной. Молча собрать промпт без контекста
+    значило бы «неполный вход как успех»: ревью без контекста под видом ревью с
+    ним. Отсутствие контекста выражается отсутствием флага.
+    """
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff), "--context", ""],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "пустым значением" in result.stderr
