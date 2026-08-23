@@ -38,14 +38,17 @@ hash_file() {
     fi
 }
 
-# Обязательный ИНВЕНТАРЬ кита (§5 спеки) по basename: PIN обязан покрывать
-# каждый член — перечень существует, чтобы исключать известных не-китовых
-# соседей (install-hook.sh, настроенный промпт), а не чтобы позволять
-# пропуски: PIN без checksum.sh оставлял бы подменённый файл непроверенным
-# при зелёном исходе (major гейта на #101). Basename, не полный путь:
-# раскладка у потребителя может отличаться, состав кита — нет. Изменение
-# состава — правка кита через ревью, синхронно со спекой.
-required_kit="build-prompt.sh collect-context.sh apply-threshold.sh local.sh checksum.sh review-schema.json"
+# Обязательный ИНВЕНТАРЬ кита (§5 спеки) — ПОЛНЫЕ вендор-пути: PIN обязан
+# покрыть каждый член — перечень существует, чтобы исключать известных
+# не-китовых соседей (install-hook.sh, настроенный промпт), а не чтобы
+# позволять пропуски: PIN без checksum.sh оставлял бы подменённый файл
+# непроверенным при зелёном исходе (major гейта на #101, второй заход).
+# Пути, не basename: обманки с правильными именами в чужих путях
+# удовлетворяли бы инвентарь, пока настоящие вендор-пути дрейфуют (major
+# третьего захода). Раскладка кита не свободна: local.sh вычисляет соседей
+# от своего каталога, схему — от .github/codex; смена раскладки или состава
+# — правка кита через ревью, синхронно со спекой.
+required_kit="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json"
 
 pin=""
 root="."
@@ -64,7 +67,7 @@ done
 
 checked=0
 failed=0
-seen_basenames=""
+seen_paths=""
 # Построчный разбор без word-splitting пути: путь — всё после «хеш + два
 # пробела», пробелы в нём легальны.
 while IFS= read -r line || [ -n "$line" ]; do
@@ -85,7 +88,7 @@ while IFS= read -r line || [ -n "$line" ]; do
         exit 2
     fi
     checked=$((checked + 1))
-    seen_basenames="$seen_basenames ${path##*/}"
+    seen_paths="$seen_paths $path"
     if [ ! -f "$root/$path" ]; then
         echo "ФАЙЛ ОТСУТСТВУЕТ: $path (есть в PIN, нет в копии)" >&2
         failed=$((failed + 1))
@@ -115,9 +118,11 @@ fi
 
 # Непокрытый член инвентаря — негодный PIN (код 2), не дрейф копии: файл
 # может быть цел, но проверка о нём молчит.
+# Пробельный кейс безопасен: канонические вендор-пути пробелов не содержат,
+# а путь ИЗ PIN с пробелом просто не совпадёт с каноническим членом.
 missing_kit=""
 for member in $required_kit; do
-    case " $seen_basenames " in
+    case " $seen_paths " in
         *" $member "*) ;;
         *) missing_kit="$missing_kit $member" ;;
     esac

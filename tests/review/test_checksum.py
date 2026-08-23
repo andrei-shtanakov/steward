@@ -174,3 +174,31 @@ def test_unreadable_listed_file_is_config_error_not_drift(tmp_path: Path) -> Non
     assert result.returncode == 2, result.stderr
     assert "scripts/review/local.sh" in result.stderr
     assert "РАСХОЖДЕНИЕ" not in result.stderr
+
+
+def test_decoy_paths_with_right_basenames_do_not_satisfy_inventory(
+    tmp_path: Path,
+) -> None:
+    """Инвентарь — полные вендор-пути §5, не basename.
+
+    PIN, указывающий на шесть обманок с правильными именами в чужих путях,
+    проходил зелёным, пока настоящие вендор-пути дрейфовали (major третьего
+    захода гейта на #101) — fail-open целостности. Раскладка кита не
+    свободна: local.sh вычисляет соседей от своего каталога, схему — от
+    .github/codex; смена раскладки = правка кита через ревью."""
+    root = make_kit(tmp_path)
+    decoy_dir = root / "vendor" / "decoys"
+    decoy_dir.mkdir(parents=True)
+    lines = []
+    for rel in KIT_FILES:
+        decoy = decoy_dir / Path(rel).name
+        decoy.write_text((root / rel).read_text(encoding="utf-8"), "utf-8")
+        rel_decoy = decoy.relative_to(root).as_posix()
+        lines.append(f"{sha(decoy)}  {rel_decoy}")
+    pin = write_pin(root, lines)
+    (root / "scripts" / "review" / "local.sh").write_text("drift\n", "utf-8")
+
+    result = run(root, pin)
+
+    assert result.returncode == 2, result.stderr
+    assert "scripts/review/local.sh" in result.stderr
