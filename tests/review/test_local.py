@@ -959,6 +959,41 @@ def test_revoking_declaration_unhides_file_in_same_pr(tmp_path: Path) -> None:
     assert "диф больше поддерживаемого" in result.stderr
 
 
+def test_base_side_declaration_after_fork_still_filters(tmp_path: Path) -> None:
+    """Декларация, влитая в base ПОСЛЕ ответвления ветки, действует локально.
+
+    Двенадцатый заход гейта на #99: пересечение по голому head теряло
+    base-side декларацию, которой нет в дереве неребейзнутой ветки, — local
+    давал ложный отказ по потолку там, где CI (merge-ref) фильтрует. PR, не
+    трогающий ни одного .gitattributes, ничего не отзывал: действует список
+    базы; head ветирует только когда PR правит декларации."""
+    _, local = make_repo(tmp_path)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "lock на ветке, ответвлённой до декларации")
+    head_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "switch", "-q", "master")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита в base после ответвления")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        "--head",
+        head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
 def make_old_git_shim(tmp_path: Path) -> Path:
     """PATH-шим, изображающий git < 2.38: не знает `check-attr --source`,
     всё остальное делегирует настоящему git."""

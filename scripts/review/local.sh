@@ -429,32 +429,46 @@ git -c core.quotePath=false diff --name-only "$mb..$head_sha" \
 # объявленный диф упирается в явный отказ по потолку, где рецепт назван.
 # Провал боевого вызова ПОСЛЕ успешной пробы — уже не совместимость, а
 # настоящий отказ инструмента: код 2.
-if git check-attr --source="$mb" linguist-generated -- probe \
+collect_declared() {
+    # $1 — tree-ish, $2 — файл результата: объявленные пути дифа по
+    # декларации этого дерева. `linguist-generated=true` даёт "true", голый
+    # атрибут — "set"; оба — объявление. Парсинг с ХВОСТА строки: путь может
+    # содержать ": ". `sort` — для `comm` ниже.
+    if ! git -c core.quotePath=false check-attr --stdin \
+        --source="$1" linguist-generated \
+        < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
+        echo "не удалось прочитать linguist-generated из дерева $1" \
+            "(git check-attr --source)." >&2
+        exit 2
+    fi
+    sed -n -e 's/: linguist-generated: true$//p' \
+        -e 's/: linguist-generated: set$//p' \
+        "$work/generated-attrs.txt" | sort > "$2"
+}
+
+if git check-attr --source="$base" linguist-generated -- probe \
     >/dev/null 2>&1; then
     # Направления декларации АСИММЕТРИЧНЫ (девятый и одиннадцатый заходы
-    # гейта на #99): добавление действует только ВЛИТЫМ (из базы диапазона —
-    # иначе автор прячет код своим же патчем), а снятие действует СРАЗУ (из
-    # ревьюируемого head — отзыв только открывает код, направление
-    # безопасное; иначе PR-отзыв не может отревьюировать файл, который
-    # расклассифицирует). Итог: generated = объявлено И в базе, И в
-    # ревьюируемом дереве — пересечение двух списков.
-    for src in "$mb" "$head_sha"; do
-        if ! git -c core.quotePath=false check-attr --stdin \
-            --source="$src" linguist-generated \
-            < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
-            echo "не удалось прочитать linguist-generated из дерева $src" \
-                "(git check-attr --source)." >&2
-            exit 2
-        fi
-        # `linguist-generated=true` даёт "true", голый атрибут — "set"; оба —
-        # объявление. Парсинг с ХВОСТА строки: путь может содержать ": ".
-        # `sort` — для `comm` ниже.
-        sed -n -e 's/: linguist-generated: true$//p' \
-            -e 's/: linguist-generated: set$//p' \
-            "$work/generated-attrs.txt" | sort > "$work/generated-$src.txt"
-    done
-    comm -12 "$work/generated-$mb.txt" "$work/generated-$head_sha.txt" \
-        > "$work/generated-paths.txt"
+    # гейта на #99): добавление действует только ВЛИТЫМ — читается с
+    # ВЕРХУШКИ base (как BASE_SHA в CI), не из merge-base: декларация,
+    # влитая в base после ответвления ветки, есть в merge-ref дереве CI, но
+    # её нет ни в mb, ни в голом head — пересечение по ним давало ложный
+    # отказ по потолку локально при зелёном CI (двенадцатый заход). Снятие
+    # действует СРАЗУ: head ветирует пересечением, но только когда PR
+    # вообще правит какой-нибудь `.gitattributes` — PR, не трогавший
+    # деклараций, ничего не отзывал, и действует список базы один (так же
+    # ведёт себя merge-ref дерево CI: `.gitattributes` базы в нём есть,
+    # пока PR его не менял). Остаточный край: PR правит один
+    # `.gitattributes`, а пост-форковая декларация живёт в другом — тогда
+    # пересечение её уронит и файл останется в дифе: отказ в сторону ревью.
+    collect_declared "$base" "$work/generated-base.txt"
+    if grep -Eq '(^|/)\.gitattributes$' "$work/changed-paths.txt"; then
+        collect_declared "$head_sha" "$work/generated-head.txt"
+        comm -12 "$work/generated-base.txt" "$work/generated-head.txt" \
+            > "$work/generated-paths.txt"
+    else
+        cp "$work/generated-base.txt" "$work/generated-paths.txt"
+    fi
 else
     echo "предупреждение: git check-attr --source недоступен (git < 2.38) —" \
         "generated-фильтр выключен, объявленные файлы ревьюируются" \
