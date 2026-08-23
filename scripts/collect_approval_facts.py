@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -97,7 +98,9 @@ def _git(path: Path, *args: str) -> str | None:
 
 def _origin_slug(url: str) -> str | None:
     """`owner/name` из ssh- или https-формы remote'а."""
-    trimmed = url.removesuffix(".git")
+    # Слэш снимается ДО `.git`: у `…/steward.git/` иначе не отрезался бы
+    # суффикс, и preflight давал бы вечное «origin не тот» на исправном чекауте.
+    trimmed = url.rstrip("/").removesuffix(".git").rstrip("/")
     if trimmed.startswith("git@"):
         _, _, tail = trimmed.partition(":")
     elif "://" in trimmed:
@@ -270,7 +273,12 @@ def _resolved(
                 resolved.append((entry, repo, None, f"{repo}: {escape}"))
                 continue
             bundle, _ = _resolve(path / BUNDLE_RELPATH)
-            previous = seen.get(str(bundle))
+            # `normcase`: на case-insensitive томе (APFS по умолчанию) записи
+            # `steward` и `Steward` резолвятся в разные строки, но в ОДИН файл.
+            # У этого флота такой инцидент уже был — переименование
+            # `Maestro` -> `maestro`, — так что это не гипотеза.
+            key = os.path.normcase(str(bundle))
+            previous = seen.get(key)
             if previous is not None:
                 resolved.append(
                     (
@@ -282,7 +290,7 @@ def _resolved(
                     )
                 )
                 continue
-            seen[str(bundle)] = repo
+            seen[key] = repo
         resolved.append((entry, repo, path, refusal))
     return resolved
 
@@ -422,6 +430,7 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
         return f"бандл не читается: {exc}"
     if not lines:
         return "бандл пуст"
+    declared: set[str] | None = None
     answered: set[str] = set()
     for number, line in enumerate(lines, start=1):
         try:
@@ -430,6 +439,18 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
             return f"строка {number} не JSON: {exc}"
         if not isinstance(record, dict):
             return f"строка {number} не объект"
+        if record.get("kind") == "header":
+            scope = record.get("scope")
+            declared = (
+                {
+                    str(item.get("value"))
+                    for item in scope
+                    if isinstance(item, dict) and item.get("kind") == "pr"
+                }
+                if isinstance(scope, list)
+                else set()
+            )
+            continue
         # Только `result`: строка вида `{"kind": "error", "request": {...}}`
         # иначе засчиталась бы как ответ по этому PR — зелёное без факта.
         if record.get("kind") != "result":
@@ -438,7 +459,14 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
         if isinstance(request, dict) and request.get("kind") == "pr":
             answered.add(str(request.get("value")))
     missing = [n for n in numbers if str(n) not in answered]
-    return f"в бандле нет записей по PR {missing}" if missing else None
+    if missing:
+        return f"в бандле нет записей по PR {missing}"
+    # Записи есть, но заголовок обязан их же и заявлять: бандл, чей `scope`
+    # разошёлся с содержимым, перестаёт доказывать, что спрашивали именно это.
+    undeclared = [n for n in numbers if declared is not None and str(n) not in declared]
+    if undeclared:
+        return f"заголовок не заявляет PR {undeclared}, хотя записи есть"
+    return None
 
 
 def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[Outcome]:

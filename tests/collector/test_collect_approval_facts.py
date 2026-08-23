@@ -841,3 +841,60 @@ def test_unresolvable_path_does_not_abort_the_batch(
     )
 
     assert [o.status for o in outcomes] == ["skipped", "published"]
+
+
+def test_case_only_alias_is_a_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """На case-insensitive томе `steward` и `Steward` — один файл.
+
+    У этого флота такой инцидент уже был: переименование `Maestro` -> `maestro`
+    держалось только на регистре, и списки репозиториев расходились молча.
+    """
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
+    monkeypatch.setattr(RUNNER.os.path, "normcase", str.lower)
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "steward", "prs": [1]},
+            {"repo": REPO, "checkout": "STEWARD", "prs": [2]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert outcomes[1].status == "skipped"
+    assert "уже занят" in outcomes[1].detail
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "git@github.com:andrei-shtanakov/steward.git/",
+        "https://github.com/andrei-shtanakov/steward.git/",
+        "https://github.com/andrei-shtanakov/steward/",
+    ],
+)
+def test_origin_with_trailing_slash_is_parsed(url: str) -> None:
+    """`.git/` не давал отрезать суффикс — preflight вечно ругался на исправный
+    чекаут, и репозиторий молча выпадал из наблюдения."""
+    assert RUNNER._origin_slug(url) == REPO
+
+
+def test_header_must_declare_what_the_records_answer(tmp_path: Path) -> None:
+    """Бандл, чей `scope` разошёлся с содержимым, перестаёт доказывать охват."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    header = {
+        "kind": "header",
+        "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "scope": [{"kind": "pr", "value": "1"}],
+    }
+    record = {"kind": "result", "request": {"kind": "pr", "value": "2"}, "state": "merged"}
+    (path / ".steward" / "approval_facts.jsonl").write_text(
+        json.dumps(header) + "\n" + json.dumps(record) + "\n", encoding="utf-8"
+    )
+
+    outcomes = RUNNER.freshness([_entry(prs=[2])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "не заявляет" in outcomes[0].detail
