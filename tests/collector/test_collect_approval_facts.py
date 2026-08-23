@@ -914,20 +914,6 @@ def test_identity_falls_back_instead_of_raising(tmp_path: Path) -> None:
     assert RUNNER._identity(tmp_path / "нет-такого").startswith("path:")
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "git@github.com:andrei-shtanakov/steward.git/",
-        "https://github.com/andrei-shtanakov/steward.git/",
-        "https://github.com/andrei-shtanakov/steward/",
-    ],
-)
-def test_origin_with_trailing_slash_is_parsed(url: str) -> None:
-    """`.git/` не давал отрезать суффикс — preflight вечно ругался на исправный
-    чекаут, и репозиторий молча выпадал из наблюдения."""
-    assert RUNNER._origin_slug(url) == REPO
-
-
 def test_header_must_declare_what_the_records_answer(tmp_path: Path) -> None:
     """Бандл, чей `scope` разошёлся с содержимым, перестаёт доказывать охват."""
     path = _checkout(tmp_path, "steward")
@@ -946,3 +932,52 @@ def test_header_must_declare_what_the_records_answer(tmp_path: Path) -> None:
 
     assert outcomes[0].status == "failed"
     assert "не заявляет" in outcomes[0].detail
+
+
+def test_mirror_on_another_host_is_not_the_same_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Совпадение `owner/name` не делает зеркало тем же объектом.
+
+    В этом воркспейсе такое есть: atp-platform держит GitHub и GitLab-зеркало
+    под одним именем. Факты берутся из GraphQL GitHub, поэтому чекаут зеркала
+    наблюдаемым быть не может — иначе бандл про GitHub-репозиторий лёг бы в
+    дерево зеркала и выглядел бы законным.
+    """
+    path = tmp_path / "steward"
+    (path / ".git").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "remote", "add", "origin", f"git@git.epam.com:{REPO}.git"],
+        check=True,
+    )
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "зеркал" in outcomes[0].detail
+
+
+@pytest.mark.parametrize(
+    ("url", "host", "slug"),
+    [
+        ("git@github.com:andrei-shtanakov/steward.git", "github.com", REPO),
+        ("https://github.com/andrei-shtanakov/steward.git/", "github.com", REPO),
+        ("https://user@github.com/andrei-shtanakov/steward", "github.com", REPO),
+        ("git@git.epam.com:andrei-shtanakov/steward.git", "git.epam.com", REPO),
+        ("не-url", None, None),
+    ],
+)
+def test_origin_parsing_reports_host_and_slug(url: str, host: str | None, slug: str | None) -> None:
+    assert RUNNER._origin_host_and_slug(url) == (host, slug)
+
+
+def test_pipe_is_listed_among_forbidden_path_characters() -> None:
+    """`|` — сам разделитель в `sed -e "s|...|...|g"`, и путь с ним порвёт подстановку."""
+    doc = (
+        Path(__file__).resolve().parents[2] / "scripts" / "approval-facts-schedule.md"
+    ).read_text(encoding="utf-8")
+    constraint = doc[doc.index("Ограничение путей") : doc.index("Установка.")]
+
+    assert "`|`" in constraint

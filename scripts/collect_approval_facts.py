@@ -95,19 +95,29 @@ def _git(path: Path, *args: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def _origin_slug(url: str) -> str | None:
-    """`owner/name` из ssh- или https-формы remote'а."""
+#: Продюсер спрашивает GraphQL GitHub, поэтому наблюдаемым может быть только
+#: чекаут, чей `origin` там и живёт. Зеркало на другом хосте с тем же
+#: `owner/name` — не тот же объект: в этом воркспейсе такое есть (atp-platform
+#: держит GitHub и GitLab-зеркало), и совпадение имени приняло бы зеркало за
+#: оригинал.
+GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
+def _origin_host_and_slug(url: str) -> tuple[str | None, str | None]:
+    """`(host, owner/name)` из ssh- или https-формы remote'а."""
     # Слэш снимается ДО `.git`: у `…/steward.git/` иначе не отрезался бы
     # суффикс, и preflight давал бы вечное «origin не тот» на исправном чекауте.
     trimmed = url.rstrip("/").removesuffix(".git").rstrip("/")
     if trimmed.startswith("git@"):
-        _, _, tail = trimmed.partition(":")
+        host, _, tail = trimmed.removeprefix("git@").partition(":")
     elif "://" in trimmed:
-        tail = trimmed.split("://", 1)[1].partition("/")[2]
+        authority, _, tail = trimmed.split("://", 1)[1].partition("/")
+        host = authority.rpartition("@")[2].partition(":")[0]
     else:
-        return None
+        return None, None
     parts = [p for p in tail.split("/") if p]
-    return "/".join(parts[-2:]) if len(parts) >= 2 else None
+    slug = "/".join(parts[-2:]) if len(parts) >= 2 else None
+    return (host.lower() or None), slug
 
 
 def _resolve(path: Path) -> tuple[Path | None, str]:
@@ -192,7 +202,12 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
     origin = _git(path, "remote", "get-url", "origin")
     if origin is None:
         return None, f"{repo}: у {path} нет origin"
-    slug = _origin_slug(origin)
+    host, slug = _origin_host_and_slug(origin)
+    if host not in GITHUB_HOSTS:
+        return None, (
+            f"{repo}: origin чекаута на хосте {host!r}, а факты берутся из GitHub — "
+            f"совпадение owner/name зеркалом не делает его тем же объектом"
+        )
     if slug != repo:
         # Самая опасная из ошибок конфигурации: путь есть, git есть, а
         # наблюдали бы не тот объект — и бандл выглядел бы законным.
