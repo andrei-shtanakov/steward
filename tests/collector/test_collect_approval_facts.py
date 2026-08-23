@@ -1615,3 +1615,61 @@ def test_bundle_with_non_pr_scope_is_not_the_configured_collection(tmp_path: Pat
 
     assert outcomes[0].status == "failed"
     assert "вне A0-охвата" in outcomes[0].detail
+
+
+def test_unsupported_scope_version_is_a_config_error(tmp_path: Path) -> None:
+    """`version: 2` — отказ, а не молчаливое чтение по правилам версии 1."""
+    (tmp_path / "scope.yaml").write_text(
+        json.dumps({"version": 2, "repositories": [_entry()]}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="не поддерживается"):
+        RUNNER._load_scope(tmp_path / "scope.yaml")
+
+
+def test_unknown_entry_field_is_a_config_error(tmp_path: Path) -> None:
+    """`merge_shas:` в записи — отказ файла, а не молчаливый PR-only сбор.
+
+    Незнакомое поле охвата — не «лишнее», а ЗАПРОШЕННОЕ и не исполненное:
+    прочитав одни `prs`, раннер отдал бы `published` про охват, половину
+    которого никто не собирал.
+    """
+    entry = dict(_entry(), merge_shas=["a" * 40])
+    (tmp_path / "scope.yaml").write_text(
+        json.dumps({"version": 1, "repositories": [entry]}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="merge_shas"):
+        RUNNER._load_scope(tmp_path / "scope.yaml")
+
+
+def test_policy_change_during_collection_is_not_a_false_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Правка политики между стартом обхода и продюсером — не провал публикации.
+
+    Продюсер перечитывает файл политики сам; сверять его результат со
+    снапшотом, взятым ДО него, значило бы провалить честную публикацию под
+    новой политикой. Снапшот берётся после продюсера — в том же порядке, в
+    котором читал бы гейт.
+    """
+    path = _checkout(tmp_path, "steward")
+    policy = _policy(tmp_path)
+    changed = POLICY_TEXT + "# правка в середине обхода\n"
+    changed_digest = "sha256:" + __import__("hashlib").sha256(changed.encode()).hexdigest()
+
+    def producer_after_policy_edit(
+        repo: str, root: Path, pol: Path, prs: list[int]
+    ) -> tuple[int, str]:
+        policy.write_text(changed, encoding="utf-8")
+        _bundle(root, datetime.now(UTC) + timedelta(hours=6), prs=prs)
+        bundle = root / RUNNER.BUNDLE_RELPATH
+        lines = bundle.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        header["policy_digest"] = changed_digest
+        bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+        return 0, ""
+
+    monkeypatch.setattr(RUNNER, "run_producer", producer_after_policy_edit)
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, policy)
+
+    assert outcomes[0].status == "published", outcomes[0].detail

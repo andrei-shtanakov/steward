@@ -111,13 +111,39 @@ class Outcome:
     detail: str
 
 
+#: Закрытые наборы ключей охвата. Версия и форма пинятся fail-closed по той же
+#: дисциплине, что `roles.yaml` и `approval-policy.yaml`: незнакомое поле — не
+#: «лишнее», а ЗАПРОШЕННОЕ и не исполненное. `merge_shas: [...]` в записи при
+#: молчаливом чтении одних `prs` дал бы `published` про охват, половину
+#: которого никто не собирал.
+SCOPE_VERSION = 1
+_SCOPE_KEYS = frozenset({"version", "repositories"})
+_ENTRY_KEYS = frozenset({"repo", "checkout", "prs"})
+
+
 def _load_scope(path: Path) -> list[dict[str, Any]]:
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise ValueError(f"{path}: охват не объект")
+    if document.get("version") != SCOPE_VERSION:
+        raise ValueError(
+            f"{path}: версия охвата {document.get('version')!r} не поддерживается, "
+            f"ожидалась {SCOPE_VERSION}"
+        )
+    extra = sorted(set(document) - _SCOPE_KEYS)
+    if extra:
+        raise ValueError(f"{path}: неизвестные ключи охвата {extra}")
     repositories = document.get("repositories")
     if not isinstance(repositories, list) or not repositories:
         raise ValueError(f"{path}: пустой или отсутствующий `repositories`")
+    for index, entry in enumerate(repositories, start=1):
+        if isinstance(entry, dict):
+            unknown = sorted(set(entry) - _ENTRY_KEYS)
+            if unknown:
+                # Ошибка ФАЙЛА, а не независимый отказ записи: автор поля
+                # ожидает, что оно исполняется, и «пропустили молча, остальное
+                # зелёное» — тот же класс, что незнакомая версия.
+                raise ValueError(f"{path}: запись {index} несёт неизвестные ключи {unknown}")
     return repositories
 
 
@@ -403,15 +429,7 @@ def _resolved(
     return resolved
 
 
-def _publish_one(
-    repo: str,
-    path: Path,
-    bundle: Path,
-    policy: Path,
-    numbers: list[int],
-    active_digest: str,
-    lease_seconds: int,
-) -> Outcome:
+def _publish_one(repo: str, path: Path, bundle: Path, policy: Path, numbers: list[int]) -> Outcome:
     """Опубликовать один бандл и доказать, что публикация состоялась.
 
     Все проверки после нулевого кода — про доказательство, а не про вежливость:
@@ -435,6 +453,16 @@ def _publish_one(
         return Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}")
 
     after = _digest(bundle)
+    # Сверочный снапшот политики берётся ПОСЛЕ продюсера, а не до обхода:
+    # продюсер перечитывает файл политики сам, и правка политики между двумя
+    # чтениями делала бы честную публикацию под НОВОЙ политикой «провалом»
+    # против устаревшего родительского снапшота. Ложный красный, лечится
+    # чтением в том же порядке, в котором читал бы гейт.
+    try:
+        active_digest = policy_digest(policy)
+        lease_seconds = load_approval_policy(policy).approval_facts_lease_seconds
+    except PolicyError as exc:
+        return Outcome(repo, "failed", f"код 0, но политика не перечиталась: {exc}")
     valid_until, refusal = bundle_verdict(
         bundle, repo, numbers, active_digest, lease_seconds, datetime.now(UTC)
     )
@@ -468,12 +496,12 @@ def collect(
     один неверный чекаут делал бы ненаблюдаемым весь флот, а причина была бы
     видна только в хвосте лога.
     """
-    # Политика читается один раз и fail-closed ДО обхода: с нечитаемой или
-    # невалидной политикой нечего доказывать ни по одному репозиторию — это
-    # ошибка конфигурации вызова (PolicyError наверх, exit 2 в main), а не
-    # независимый отказ каждого чекаута.
-    active_digest = policy_digest(policy)
-    lease_seconds = load_approval_policy(policy).approval_facts_lease_seconds
+    # Политика проверяется fail-closed ДО обхода: с нечитаемой или невалидной
+    # политикой нечего доказывать ни по одному репозиторию — это ошибка
+    # конфигурации вызова (PolicyError наверх, exit 2 в main), а не независимый
+    # отказ каждого чекаута. Значения здесь НЕ снапшотятся: сверочный снапшот
+    # берётся в `_publish_one` ПОСЛЕ продюсера, см. комментарий там.
+    load_approval_policy(policy)
 
     outcomes: list[Outcome] = []
     for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
@@ -491,9 +519,7 @@ def collect(
             continue
         token = second
         try:
-            outcomes.append(
-                _publish_one(repo, path, bundle, policy, numbers, active_digest, lease_seconds)
-            )
+            outcomes.append(_publish_one(repo, path, bundle, policy, numbers))
         finally:
             _release(lock, token)
     return outcomes
