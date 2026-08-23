@@ -498,8 +498,26 @@ else
         "файлы ревьюируются построчно." >&2
 fi
 [ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"
-[ -n "$max_diff_bytes" ] && set -- "$@" --max-diff-bytes "$max_diff_bytes"
-[ -n "$max_diff_files" ] && set -- "$@" --max-diff-files "$max_diff_files"
+# Потолки — та же версионная дисциплина, что --generated-list, но
+# направление другое (пятнадцатый заход гейта на #99): потолок запрошен
+# пользователем ЯВНО, и молча выбросить его нельзя (довод пустого значения
+# в парсере) — несовместимость полуобновлённого кита называется отказом с
+# причиной, а не тихой деградацией и не usage старого скрипта.
+if [ -n "$max_diff_bytes" ] || [ -n "$max_diff_files" ]; then
+    if grep -q -- '--max-diff-bytes' "$kit_dir/build-prompt.sh"; then
+        if [ -n "$max_diff_bytes" ]; then
+            set -- "$@" --max-diff-bytes "$max_diff_bytes"
+        fi
+        if [ -n "$max_diff_files" ]; then
+            set -- "$@" --max-diff-files "$max_diff_files"
+        fi
+    else
+        echo "build-prompt.sh кита не знает --max-diff-bytes/--max-diff-files" \
+            "(кит обновлён наполовину) — явный оверрайд потолка выполнить" \
+            "нельзя." >&2
+        exit 2
+    fi
+fi
 sh "$kit_dir/build-prompt.sh" "$@" > "$work/prompt.txt"
 
 # Промпт идёт на stdin, а не аргументом: диф — недоверенный текст, и в argv он

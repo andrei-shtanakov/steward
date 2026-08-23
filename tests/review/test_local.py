@@ -1044,6 +1044,43 @@ def test_half_updated_kit_without_generated_list_degrades(tmp_path: Path) -> Non
     assert "generated-фильтр выключен" in result.stderr
 
 
+def test_ceiling_override_on_half_updated_kit_is_named_refusal(
+    tmp_path: Path,
+) -> None:
+    """Явный оверрайд потолка на полуобновлённом ките — именованный отказ.
+
+    Пятнадцатый заход гейта на #99: --max-diff-* пробрасывались слепо, и
+    старый build-prompt.sh умирал своим usage — обещанный путь
+    восстановления после отказа по потолку не работал. Направление не как у
+    --generated-list: потолок запрошен пользователем ЯВНО, молча выбросить
+    его нельзя (довод пустого значения) — несовместимость называется
+    отказом кодом 2 с причиной, не деградацией."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка")
+
+    kit = tmp_path / "half-kit"
+    kit.mkdir()
+    for name in ("local.sh", "apply-threshold.sh", "collect-context.sh"):
+        src = ROOT / "scripts" / "review" / name
+        if src.exists():
+            shutil.copy(src, kit / name)
+    (kit / "build-prompt.sh").write_text(OLD_BUILD_PROMPT, encoding="utf-8")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--max-diff-files",
+        "40",
+        env_overrides={"REVIEW_KIT_DIR": str(kit)},
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "обновлён наполовину" in result.stderr
+    assert "usage" not in result.stderr
+
+
 @pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
 def test_empty_ceiling_override_is_config_error(tmp_path: Path, flag: str) -> None:
     """Пустое значение потолка — отказ, а не молчаливый откат к умолчанию.
