@@ -66,11 +66,18 @@ while [ $# -gt 0 ]; do
         # Проброс потолков дифа в build-prompt.sh: гардрейл предлагает поднять
         # потолок явно, значит поддерживаемый вызывающий обязан уметь его
         # передать — иначе обещанный путь восстановления не существует
-        # (находка гейта на #99). Валидация значений — в самом build-prompt.sh.
+        # (находка гейта на #99). ЧИСЛОВАЯ валидация — в build-prompt.sh, но
+        # пустое значение — отказ ЗДЕСЬ: проброс гейтится [ -n ], и явно
+        # запрошенный оверрайд молча испарялся бы, а прогон шёл с умолчаниями
+        # (minor тринадцатого захода; тот же довод, что у --context "").
         --max-diff-bytes)
-            [ $# -ge 2 ] || { usage; exit 2; }; max_diff_bytes="$2"; shift 2 ;;
+            [ $# -ge 2 ] || { usage; exit 2; }
+            [ -n "$2" ] || { echo "--max-diff-bytes передан с пустым значением" >&2; exit 2; }
+            max_diff_bytes="$2"; shift 2 ;;
         --max-diff-files)
-            [ $# -ge 2 ] || { usage; exit 2; }; max_diff_files="$2"; shift 2 ;;
+            [ $# -ge 2 ] || { usage; exit 2; }
+            [ -n "$2" ] || { echo "--max-diff-files передан с пустым значением" >&2; exit 2; }
+            max_diff_files="$2"; shift 2 ;;
         --fetch)  do_fetch=1; shift ;;
         *) usage; exit 2 ;;
     esac
@@ -475,8 +482,21 @@ else
         "построчно." >&2
     : > "$work/generated-paths.txt"
 fi
-set -- --prompt "$prompt" --diff "$work/diff.patch" \
-    --generated-list "$work/generated-paths.txt"
+set -- --prompt "$prompt" --diff "$work/diff.patch"
+# ДЕТЕКЦИЯ, как в CI (восьмой заход): кит могли обновить наполовину — новый
+# local.sh при старом build-prompt.sh (REVIEW_KIT_DIR / вендор-копия), и
+# слепая передача нового флага убивала бы любой непустой прогон кодом 2
+# (usage старого скрипта), а pre-push блокировал бы пуш (тринадцатый заход
+# гейта на #99). Для раскатки кита по флоту перекос версий копий — штатный
+# режим, не край. Флаг передаётся только когда механика кита его знает;
+# иначе фильтр выключается именованно — в сторону ревью.
+if grep -q -- '--generated-list' "$kit_dir/build-prompt.sh"; then
+    set -- "$@" --generated-list "$work/generated-paths.txt"
+else
+    echo "предупреждение: build-prompt.sh кита не знает --generated-list" \
+        "(кит обновлён наполовину) — generated-фильтр выключен, объявленные" \
+        "файлы ревьюируются построчно." >&2
+fi
 [ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"
 [ -n "$max_diff_bytes" ] && set -- "$@" --max-diff-bytes "$max_diff_bytes"
 [ -n "$max_diff_files" ] && set -- "$@" --max-diff-files "$max_diff_files"

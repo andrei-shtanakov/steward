@@ -994,6 +994,74 @@ def test_base_side_declaration_after_fork_still_filters(tmp_path: Path) -> None:
     assert "диф больше поддерживаемого" not in result.stderr
 
 
+OLD_BUILD_PROMPT = """#!/bin/sh
+# «Старый» build-prompt.sh: сигнатура до generated-фильтра. ВАЖНО: литерал
+# флага здесь упоминать нельзя даже в комментарии — детекция в local.sh
+# ищет его grep'ом по всему файлу.
+set -eu
+prompt=""; diff=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prompt) prompt="$2"; shift 2 ;;
+        --diff) diff="$2"; shift 2 ;;
+        --context) shift 2 ;;
+        *) echo "usage: build-prompt.sh --prompt <file> --diff <file>" >&2; exit 2 ;;
+    esac
+done
+cat "$prompt"; cat "$diff"
+"""
+
+
+def test_half_updated_kit_without_generated_list_degrades(tmp_path: Path) -> None:
+    """Полуобновлённый кит: новый local.sh + старый build-prompt.sh живут.
+
+    Тринадцатый заход гейта на #99: безусловная передача --generated-list
+    убивала любой непустой прогон кодом 2 (usage старого скрипта), а
+    pre-push блокировал пуш. Для раскатки кита по флоту перекос версий
+    вендор-копий — штатный режим, не край: флаг передаётся только по
+    детекции его литерала в скрипте кита (как в CI, восьмой заход), иначе
+    фильтр выключается именованно."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "обычная маленькая правка")
+
+    kit = tmp_path / "half-kit"
+    kit.mkdir()
+    for name in ("local.sh", "apply-threshold.sh", "collect-context.sh"):
+        src = ROOT / "scripts" / "review" / name
+        if src.exists():
+            shutil.copy(src, kit / name)
+    (kit / "build-prompt.sh").write_text(OLD_BUILD_PROMPT, encoding="utf-8")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"REVIEW_KIT_DIR": str(kit)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "generated-фильтр выключен" in result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
+def test_empty_ceiling_override_is_config_error(tmp_path: Path, flag: str) -> None:
+    """Пустое значение потолка — отказ, а не молчаливый откат к умолчанию.
+
+    Раньше `--max-diff-bytes ""` принимался парсером и молча выбрасывался
+    проверкой [ -n ] при пробросе — явный запрос оверрайда исчезал без
+    следа (minor тринадцатого захода). Тот же довод, что у --context ""."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), flag, "")
+
+    assert result.returncode == 2, result.stderr
+    assert "пустым значением" in result.stderr
+
+
 def make_old_git_shim(tmp_path: Path) -> Path:
     """PATH-шим, изображающий git < 2.38: не знает `check-attr --source`,
     всё остальное делегирует настоящему git."""
