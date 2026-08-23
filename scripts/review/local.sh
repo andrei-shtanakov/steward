@@ -431,18 +431,30 @@ git -c core.quotePath=false diff --name-only "$mb..$head_sha" \
 # настоящий отказ инструмента: код 2.
 if git check-attr --source="$mb" linguist-generated -- probe \
     >/dev/null 2>&1; then
-    if ! git -c core.quotePath=false check-attr --stdin \
-        --source="$mb" linguist-generated \
-        < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
-        echo "не удалось прочитать linguist-generated из дерева $mb" \
-            "(git check-attr --source)." >&2
-        exit 2
-    fi
-    # `linguist-generated=true` даёт значение "true", голый атрибут — "set";
-    # оба — объявление. Парсинг с ХВОСТА строки: путь может содержать ": ".
-    sed -n -e 's/: linguist-generated: true$//p' \
-        -e 's/: linguist-generated: set$//p' \
-        "$work/generated-attrs.txt" > "$work/generated-paths.txt"
+    # Направления декларации АСИММЕТРИЧНЫ (девятый и одиннадцатый заходы
+    # гейта на #99): добавление действует только ВЛИТЫМ (из базы диапазона —
+    # иначе автор прячет код своим же патчем), а снятие действует СРАЗУ (из
+    # ревьюируемого head — отзыв только открывает код, направление
+    # безопасное; иначе PR-отзыв не может отревьюировать файл, который
+    # расклассифицирует). Итог: generated = объявлено И в базе, И в
+    # ревьюируемом дереве — пересечение двух списков.
+    for src in "$mb" "$head_sha"; do
+        if ! git -c core.quotePath=false check-attr --stdin \
+            --source="$src" linguist-generated \
+            < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
+            echo "не удалось прочитать linguist-generated из дерева $src" \
+                "(git check-attr --source)." >&2
+            exit 2
+        fi
+        # `linguist-generated=true` даёт "true", голый атрибут — "set"; оба —
+        # объявление. Парсинг с ХВОСТА строки: путь может содержать ": ".
+        # `sort` — для `comm` ниже.
+        sed -n -e 's/: linguist-generated: true$//p' \
+            -e 's/: linguist-generated: set$//p' \
+            "$work/generated-attrs.txt" | sort > "$work/generated-$src.txt"
+    done
+    comm -12 "$work/generated-$mb.txt" "$work/generated-$head_sha.txt" \
+        > "$work/generated-paths.txt"
 else
     echo "предупреждение: git check-attr --source недоступен (git < 2.38) —" \
         "generated-фильтр выключен, объявленные файлы ревьюируются" \

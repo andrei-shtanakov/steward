@@ -930,6 +930,35 @@ def test_deleting_declared_lockfile_is_still_filtered(tmp_path: Path) -> None:
     assert "диф больше поддерживаемого" not in result.stderr
 
 
+def test_revoking_declaration_unhides_file_in_same_pr(tmp_path: Path) -> None:
+    """Снятие декларации действует СРАЗУ — в том же PR.
+
+    Одиннадцатый заход гейта на #99: чтение только из базы прятало файл
+    ровно в том PR, который снимает с него linguist-generated и правит его
+    руками — PR-отзыв не мог отревьюировать то, что расклассифицирует.
+    Направления асимметричны: ДОБАВЛЕНИЕ декларации действует только влитым
+    (спрятать код своим же патчем нельзя — девятый заход), СНЯТИЕ действует
+    сразу из ревьюируемого дерева — оно только открывает код. Итог:
+    generated = объявлено и в базе, и в ревьюируемом дереве."""
+    _, local = make_repo(tmp_path)
+
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    (local / "uv.lock").write_text("маленький\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "rm", "-q", ".gitattributes")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "отзыв декларации + ручная правка lock")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", base_sha)
+
+    assert result.returncode == 2, result.stderr
+    assert "диф больше поддерживаемого" in result.stderr
+
+
 def make_old_git_shim(tmp_path: Path) -> Path:
     """PATH-шим, изображающий git < 2.38: не знает `check-attr --source`,
     всё остальное делегирует настоящему git."""

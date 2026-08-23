@@ -216,24 +216,34 @@ jobs:
           # честный и временный; после мержа ветка включается сама, без
           # второго PR.
           #
-          # Generated — то, что репо ОБЪЯВИЛ в .gitattributes, причём
-          # декларация читается ИЗ BASE (--source=$BASE_SHA), не из
-          # merge-ref: workspace — дерево автора, и декларация из самого
-          # патча прятала бы произвольный рукописный код — достаточно
-          # объявить файл generated тем же коммитом (девятый заход гейта на
-          # #99). Из base читается только влитое, то есть прошедшее ревью;
-          # свежая декларация не действует в собственном PR — файл остаётся
-          # в дифе (отказ в сторону ревью) и фильтруется со следующего PR.
-          # local.sh симметрично читает из merge-base диапазона. `=true`
-          # даёт значение "true", голый атрибут — "set"; парсинг с хвоста
-          # строки: путь может содержать ": ".
+          # Generated — то, что репо ОБЪЯВИЛ в .gitattributes, и направления
+          # декларации АСИММЕТРИЧНЫ (девятый и одиннадцатый заходы гейта на
+          # #99): ДОБАВЛЕНИЕ действует только влитым — читается из base
+          # (--source=$BASE_SHA), иначе автор прячет произвольный код,
+          # объявив его generated тем же коммитом; СНЯТИЕ действует сразу —
+          # читается из workspace (чекаут merge-ref, ревьюируемое дерево),
+          # отзыв только открывает код, направление безопасное, иначе
+          # PR-отзыв не может отревьюировать файл, который
+          # расклассифицирует. Итог: generated = объявлено И в base, И в
+          # ревьюируемом дереве — пересечение. local.sh делает то же для
+          # merge-base и --head. `=true` даёт "true", голый атрибут — "set";
+          # парсинг с хвоста строки: путь может содержать ": "; `sort` — для
+          # `comm`.
           if grep -q -- '--generated-list' "$KIT/build-prompt.sh"; then
             git -c core.quotePath=false check-attr --stdin \
                 --source="$BASE_SHA" linguist-generated \
                 < "$WORK/changed-paths.txt" > "$WORK/generated-attrs.txt"
             sed -n -e 's/: linguist-generated: true$//p' \
                 -e 's/: linguist-generated: set$//p' \
-                "$WORK/generated-attrs.txt" > "$WORK/generated-paths.txt"
+                "$WORK/generated-attrs.txt" | sort > "$WORK/generated-base.txt"
+            git -c core.quotePath=false check-attr --stdin \
+                linguist-generated \
+                < "$WORK/changed-paths.txt" > "$WORK/generated-attrs.txt"
+            sed -n -e 's/: linguist-generated: true$//p' \
+                -e 's/: linguist-generated: set$//p' \
+                "$WORK/generated-attrs.txt" | sort > "$WORK/generated-head.txt"
+            comm -12 "$WORK/generated-base.txt" "$WORK/generated-head.txt" \
+                > "$WORK/generated-paths.txt"
             set -- "$@" --generated-list "$WORK/generated-paths.txt"
           fi
 
