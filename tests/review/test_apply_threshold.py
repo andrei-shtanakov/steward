@@ -185,8 +185,60 @@ def test_non_string_note_is_config_error(tmp_path: Path) -> None:
     assert result.returncode == 2
 
 
-def test_missing_note_is_still_valid(tmp_path: Path) -> None:
-    assert run(write(tmp_path, {"findings": []})).returncode == 0
+def test_missing_note_is_config_error(tmp_path: Path) -> None:
+    """`note` обязателен схемой — отсутствие значит вердикт вне схемы, код 2.
+
+    Прежний порог терпел отсутствие note; с выравниванием валидации по
+    присутствию полей (гейт на #98) терпимость снята везде единообразно.
+    """
+    assert run(write(tmp_path, {"findings": []})).returncode == 2
+
+
+@pytest.mark.parametrize(
+    "absent",
+    [
+        "title",
+        "file",
+        "line",
+        "scenario",
+        "observed_result",
+        "expected_result",
+        "evidence",
+        "confidence",
+    ],
+)
+def test_absent_required_field_is_config_error(tmp_path: Path, absent: str) -> None:
+    """Отсутствующее поле — негодный вердикт (2), а не мягкое «не блокирует».
+
+    Гейт на #98: находка без scenario/evidence уходила в «не блокирует» с
+    кодом 0 — негодный вердикт красился зелёным. Отсутствие ключа и пустая
+    строка — разные состояния: пустая строка это ответ «нечего», она понижает
+    блокировку; отсутствие — вердикт вне схемы, судить по нему нельзя.
+    """
+    broken = finding()
+    del broken[absent]
+    result = run(write(tmp_path, {"findings": [broken], "note": ""}))
+    assert result.returncode == 2, result.stdout
+    assert "вердикт нечитаем" in result.stderr
+
+
+def test_evidence_item_without_keys_is_config_error(tmp_path: Path) -> None:
+    """`evidence: [{}]` — негодный вердикт, а не «заполненный evidence».
+
+    Вторая сторона той же находки гейта: пустой объект проходил проверку типов
+    (отсутствующие ключи читались null) и СЧИТАЛСЯ evidence — блокировал мерж
+    записью, в которой нет ни файла, ни причины.
+    """
+    result = run(write(tmp_path, {"findings": [finding(evidence=[{}])], "note": ""}))
+    assert result.returncode == 2, result.stdout
+
+
+@pytest.mark.parametrize("missing_key", ["file", "line", "reason"])
+def test_evidence_item_missing_one_key_is_config_error(tmp_path: Path, missing_key: str) -> None:
+    item = {"file": "src/b.py", "line": 5, "reason": "return 0"}
+    del item[missing_key]
+    result = run(write(tmp_path, {"findings": [finding(evidence=[item])], "note": ""}))
+    assert result.returncode == 2, result.stdout
 
 
 # --- Рендер ----------------------------------------------------------------
