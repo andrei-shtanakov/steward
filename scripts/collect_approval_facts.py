@@ -67,7 +67,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
+import time
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -75,6 +77,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+# Та же функция, которой пользуется продюсер (`publish.py`) и которой проверяет
+# читатель контракта (`reader.py`). Раньше здесь стояла только проверка на
+# наличие `scope_sha256` — с обоснованием «второй реализацией канонизации мы
+# завели бы пару, которая расходится молча». Обоснование было верным, а вывод
+# нет: реализацию не надо писать заново, её надо переиспользовать.
+from steward.approvalfacts.model import RequestId, scope_digest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -377,6 +386,49 @@ def _resolved(
     return resolved
 
 
+def _publish_one(repo: str, path: Path, bundle: Path, policy: Path, numbers: list[int]) -> Outcome:
+    """Опубликовать один бандл и доказать, что публикация состоялась.
+
+    Все проверки после нулевого кода — про доказательство, а не про вежливость:
+    нулевой код это заявление продюсера, а не факт.
+    """
+    # Дайджест, а не mtime: на ФС с секундной гранулярностью два прогона подряд
+    # (`RunAtLoad` плюс рекомендованный `kickstart`) дают одинаковый
+    # `st_mtime_ns`, и свежая публикация отвергалась бы ложно.
+    before = _digest(bundle)
+    lease_before, _ = bundle_header(bundle) if bundle.is_file() else (None, "")
+
+    code, detail = run_producer(repo, path, policy, numbers)
+    if code != 0:
+        return Outcome(repo, "failed", f"продюсер вышел с кодом {code}: {detail}")
+    if not bundle.is_file():
+        return Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}")
+
+    after = _digest(bundle)
+    valid_until, refusal = bundle_header(bundle)
+    if valid_until is None:
+        return Outcome(repo, "failed", f"код 0, но {refusal}")
+    owner, refusal = bundle_repository(bundle)
+    if owner is None:
+        return Outcome(repo, "failed", f"код 0, но {refusal}")
+    if owner.lower() != repo.lower():
+        return Outcome(repo, "failed", f"код 0, но бандл заявляет репозиторий {owner!r}")
+    if datetime.now(UTC) >= valid_until:
+        # Публикация, родившаяся просроченной, — не публикация.
+        return Outcome(repo, "failed", f"код 0, но бандл уже просрочен ({valid_until})")
+    if after == before and (lease_before is None or valid_until <= lease_before):
+        # Ни байты, ни lease не сдвинулись — снимка не было. Достаточно ЛЮБОГО
+        # из двух признаков: содержимое обычно меняется (в нём `generated_at`),
+        # а lease — гарантированно при новом окне.
+        return Outcome(
+            repo, "failed", f"код 0, но бандл не изменился и lease не сдвинулся ({valid_until})"
+        )
+    gap = bundle_gap(bundle, numbers)
+    if gap is not None:
+        return Outcome(repo, "failed", f"код 0, но {gap}")
+    return Outcome(repo, "published", str(bundle))
+
+
 def collect(
     repositories: list[dict[str, Any]], workspace_root: Path, policy: Path
 ) -> list[Outcome]:
@@ -392,62 +444,41 @@ def collect(
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
-        # Дайджест, а не mtime: на ФС с секундной гранулярностью два прогона
-        # подряд (`RunAtLoad` плюс рекомендованный `kickstart`) дают одинаковый
-        # `st_mtime_ns`, и свежая публикация отвергалась бы ложно.
-        before = _digest(bundle)
-        lease_before, _ = bundle_header(bundle) if bundle.is_file() else (None, "")
-        code, detail = run_producer(repo, path, policy, numbers)
-        if code != 0:
-            outcomes.append(Outcome(repo, "failed", f"продюсер вышел с кодом {code}: {detail}"))
+        lock = _claim(bundle)
+        if lock is None:
+            # Параллельный прогон по тому же чекауту создаёт моя же инструкция:
+            # `launchctl load` запускает задачу по `RunAtLoad`, а следом
+            # рекомендуется `kickstart`. Без замка чужая публикация засчиталась
+            # бы этому прогону — «файл изменился» не доказывает, кто его писал.
+            outcomes.append(Outcome(repo, "skipped", f"{repo}: по {bundle} уже идёт другой прогон"))
             continue
-        # Нулевой код — заявление продюсера, а не факт публикации. Если он
-        # вернул 0, не записав бандл (ранний return, проглоченная ошибка ФС),
-        # раннер отчитался бы `published`, и весь прогон вышел бы нулём при
-        # том, что публикации не было.
-        if not bundle.is_file():
-            outcomes.append(Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}"))
-            continue
-        after = _digest(bundle)
-        valid_until, refusal = bundle_header(bundle)
-        if valid_until is None:
-            outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
-            continue
-        owner, refusal = bundle_repository(bundle)
-        if owner is None:
-            outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
-            continue
-        if owner.lower() != repo.lower():
-            outcomes.append(
-                Outcome(repo, "failed", f"код 0, но бандл заявляет репозиторий {owner!r}")
-            )
-            continue
-        if datetime.now(UTC) >= valid_until:
-            # Продюсер мог записать уже протухший lease. Публикация, которая
-            # родилась просроченной, — не публикация.
-            outcomes.append(
-                Outcome(repo, "failed", f"код 0, но бандл уже просрочен ({valid_until})")
-            )
-            continue
-        if after == before and (lease_before is None or valid_until <= lease_before):
-            # Ни байты, ни lease не сдвинулись — снимка не было. Старый бандл с
-            # близким `valid_until` иначе удовлетворял бы всем прочим проверкам.
-            # Достаточно ЛЮБОГО из двух признаков: содержимое обычно меняется
-            # (в нём `generated_at`), а lease — гарантированно при новом окне.
-            outcomes.append(
-                Outcome(
-                    repo,
-                    "failed",
-                    f"код 0, но бандл не изменился и lease не сдвинулся ({valid_until})",
-                )
-            )
-            continue
-        gap = bundle_gap(bundle, numbers)
-        if gap is not None:
-            outcomes.append(Outcome(repo, "failed", f"код 0, но {gap}"))
-        else:
-            outcomes.append(Outcome(repo, "published", str(bundle)))
+        try:
+            outcomes.append(_publish_one(repo, path, bundle, policy, numbers))
+        finally:
+            lock.unlink(missing_ok=True)
     return outcomes
+
+
+def _claim(bundle: Path) -> Path | None:
+    """Взять эксклюзивный замок на публикацию в этот бандл, или None.
+
+    `O_EXCL` — атомарное «создал я»: второй прогон получает отказ, а не
+    догадку. Замок снимается по выходу процесса не сам, поэтому устаревший
+    (старше часа) перехватывается: иначе убитый прогон заблокировал бы чекаут
+    навсегда, и расписание молча перестало бы работать.
+    """
+    lock = bundle.with_suffix(bundle.suffix + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if lock.exists() and time.time() - lock.stat().st_mtime > 3600:
+            lock.unlink(missing_ok=True)
+        handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    except OSError:
+        return None
+    os.close(handle)
+    return lock
 
 
 def _digest(path: Path) -> str | None:
@@ -480,8 +511,24 @@ def bundle_repository(bundle: Path) -> tuple[str | None, str]:
     repository = header.get("repository")
     if not isinstance(repository, str) or not repository:
         return None, "в заголовке нет `repository`"
-    if not header.get("scope_sha256"):
+    declared_digest = header.get("scope_sha256")
+    if not declared_digest:
         return None, "в заголовке нет `scope_sha256`"
+    scope = header.get("scope")
+    if not isinstance(scope, list):
+        return None, "в заголовке нет `scope`"
+    try:
+        requests = [
+            RequestId(kind=str(item["kind"]), value=item["value"])  # type: ignore[arg-type]
+            for item in scope
+            if isinstance(item, dict)
+        ]
+    except KeyError as exc:
+        return None, f"запись scope без {exc}"
+    if declared_digest != scope_digest(requests):
+        # Иначе раннер докладывал бы `published` о бандле, который читатель
+        # контракта отвергнет: `reader.py` сверяет ровно это.
+        return None, f"`scope_sha256` не совпадает с `scope` ({declared_digest})"
     return repository, ""
 
 

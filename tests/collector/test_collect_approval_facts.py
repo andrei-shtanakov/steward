@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from steward.approvalfacts.model import RequestId, scope_digest
+
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "collect_approval_facts.py"
 
@@ -34,6 +36,15 @@ def _load() -> Any:
 
 RUNNER = _load()
 REPO = "andrei-shtanakov/steward"
+
+
+def _digest_for(prs: list[int]) -> str:
+    """Дайджест охвата ТОЙ ЖЕ функцией, что у продюсера и читателя контракта.
+
+    Фикстура с выдуманным `scope_sha256` проходила бы мимо проверки, которая
+    ради этого и заведена.
+    """
+    return scope_digest([RequestId(kind="pr", value=n) for n in prs])
 
 
 def _checkout(root: Path, name: str, origin: str | None = REPO) -> Path:
@@ -65,13 +76,11 @@ def _publishing_producer(prs_by_call: list[list[int]] | None = None):
             "kind": "header",
             "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "repository": REPO,
-            "scope_sha256": "sha256:" + "0" * 64,
-            "scope": [{"kind": "pr", "value": str(n)} for n in prs],
+            "scope_sha256": _digest_for(prs),
+            "scope": [{"kind": "pr", "value": n} for n in prs],
         }
         lines = [json.dumps(header)] + [
-            json.dumps(
-                {"kind": "result", "request": {"kind": "pr", "value": str(n)}, "state": "merged"}
-            )
+            json.dumps({"kind": "result", "request": {"kind": "pr", "value": n}, "state": "merged"})
             for n in prs
         ]
         bundle.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -212,21 +221,24 @@ def test_all_published_is_zero() -> None:
 
 
 def _bundle(path: Path, valid_until: datetime, prs: list[int] | None = None) -> None:
+    """Бандл в той же форме, что пишет настоящий продюсер.
+
+    В частности `value` для `pr` — ЧИСЛО, а не строка: дайджест охвата зависит
+    от типа, и фикстура со строками не совпала бы с тем, что проверяет читатель
+    контракта. Первая версия писала строки и молча расходилась с реальностью.
+    """
+    numbers = prs if prs is not None else [1]
     (path / ".steward").mkdir(parents=True, exist_ok=True)
     header = {
         "kind": "header",
         "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        # Заголовок обязан нести охват: `--check` сверяет с ним настроенный,
-        # иначе свежий бандл под выросшим охватом читался бы зелёным.
         "repository": REPO,
-        "scope_sha256": "sha256:" + "0" * 64,
-        "scope": [{"kind": "pr", "value": str(n)} for n in (prs if prs is not None else [1])],
+        "scope_sha256": _digest_for(numbers),
+        "scope": [{"kind": "pr", "value": n} for n in numbers],
     }
     lines = [json.dumps(header)] + [
-        json.dumps(
-            {"kind": "result", "request": {"kind": "pr", "value": str(n)}, "state": "merged"}
-        )
-        for n in (prs if prs is not None else [1])
+        json.dumps({"kind": "result", "request": {"kind": "pr", "value": n}, "state": "merged"})
+        for n in numbers
     ]
     (path / ".steward" / "approval_facts.jsonl").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
@@ -900,10 +912,10 @@ def test_header_must_declare_what_the_records_answer(tmp_path: Path) -> None:
         "kind": "header",
         "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repository": REPO,
-        "scope_sha256": "sha256:" + "0" * 64,
-        "scope": [{"kind": "pr", "value": "1"}],
+        "scope_sha256": _digest_for([1]),
+        "scope": [{"kind": "pr", "value": 1}],
     }
-    record = {"kind": "result", "request": {"kind": "pr", "value": "2"}, "state": "merged"}
+    record = {"kind": "result", "request": {"kind": "pr", "value": 2}, "state": "merged"}
     (path / ".steward" / "approval_facts.jsonl").write_text(
         json.dumps(header) + "\n" + json.dumps(record) + "\n", encoding="utf-8"
     )
@@ -1166,3 +1178,70 @@ def test_duplicate_answer_for_one_pr_is_failed(tmp_path: Path) -> None:
 
     assert outcomes[0].status == "failed"
     assert "дважды" in outcomes[0].detail
+
+
+def test_scope_digest_mismatch_is_failed(tmp_path: Path) -> None:
+    """Раннер не должен звать `published` бандл, который читатель отвергнет.
+
+    `reader.py` сверяет `scope_sha256` с `scope`. Проверка наличия, стоявшая
+    здесь раньше, этого не ловила — а вторую реализацию канонизации писать
+    было нельзя. Верным был не отказ от проверки, а переиспользование ТОЙ ЖЕ
+    функции продюсера.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    lines = bundle.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    header["scope_sha256"] = "sha256:" + "0" * 64
+    bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "scope_sha256" in outcomes[0].detail
+
+
+def test_concurrent_run_is_refused_not_credited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Параллельный прогон создаёт моя же инструкция: `load` запускает задачу по
+    `RunAtLoad`, а следом рекомендуется `kickstart`. Без замка чужая публикация
+    засчиталась бы этому прогону — «файл изменился» не доказывает, кто его писал.
+    """
+    path = _checkout(tmp_path, "steward")
+    bundle = path / RUNNER.BUNDLE_RELPATH
+    held = RUNNER._claim(bundle)
+    assert held is not None
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "другой прогон" in outcomes[0].detail
+
+
+def test_lock_is_released_after_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Незанятый замок иначе заблокировал бы чекаут до истечения часа."""
+    path = _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
+
+    RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    lock = (path / RUNNER.BUNDLE_RELPATH).with_suffix(".jsonl.lock")
+    assert not lock.exists()
+
+
+def test_stale_lock_is_reclaimed(tmp_path: Path) -> None:
+    """Убитый прогон не должен блокировать чекаут навсегда: расписание молча
+    перестало бы работать, а причина не была бы видна нигде."""
+    path = _checkout(tmp_path, "steward")
+    bundle = path / RUNNER.BUNDLE_RELPATH
+    lock = RUNNER._claim(bundle)
+    assert lock is not None
+    import os as _os
+
+    ancient = RUNNER.time.time() - 7200
+    _os.utime(lock, (ancient, ancient))
+
+    assert RUNNER._claim(bundle) is not None
