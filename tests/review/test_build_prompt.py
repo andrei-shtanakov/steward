@@ -572,18 +572,17 @@ def test_snap_outside_snapshot_dir_stays_in_diff(tmp_path: Path) -> None:
     assert "hand-written-0" in result.stdout
 
 
-def test_tree_flag_resolves_generated_proof_outside_cwd(tmp_path: Path) -> None:
-    """`--tree` задаёт корень дерева доказательств независимо от cwd.
+def test_tree_list_overrides_filesystem_proof(tmp_path: Path) -> None:
+    """`--tree-list` — доказательство из списка путей, не из файловой системы.
 
-    `local.sh` запускается из подкаталога репо, а доказательство generated
-    (манифест-сосед) относительное — без явного корня один и тот же патч
-    фильтровался из корня и отказывал из `sub/` (находка гейта на #99,
-    третий заход)."""
-    tree = tmp_path / "tree"
-    tree.mkdir()
-    (tree / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    local.sh ревьюирует замороженный `--head`-коммит, а живое дерево не
+    обязано им быть: доказательство манифестом-соседом приходит списком
+    `git ls-tree` ревьюируемого ref (находка гейта на #99, пятый заход).
+    Файловая система при заданном списке не опрашивается вовсе."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
+    tree_list = tmp_path / "tree.lst"
+    tree_list.write_text("pyproject.toml\nsrc/a.py\n", encoding="utf-8")
     prompt = tmp_path / "p.md"
     prompt.write_text("И", encoding="utf-8")
     diff = tmp_path / "d.patch"
@@ -597,8 +596,8 @@ def test_tree_flag_resolves_generated_proof_outside_cwd(tmp_path: Path) -> None:
             str(prompt),
             "--diff",
             str(diff),
-            "--tree",
-            str(tree),
+            "--tree-list",
+            str(tree_list),
         ],
         capture_output=True,
         text=True,
@@ -610,8 +609,42 @@ def test_tree_flag_resolves_generated_proof_outside_cwd(tmp_path: Path) -> None:
     assert "locked-0" not in result.stdout
 
 
-def test_tree_flag_missing_dir_is_config_error(tmp_path: Path) -> None:
-    """Несуществующее дерево — ошибка конфигурации, не молчаливый прогон
+def test_tree_list_ignores_filesystem_manifest(tmp_path: Path) -> None:
+    """Список пуст — манифест из живого дерева НЕ доказательство: lock
+    остаётся в дифе, даже когда рядом на диске лежит pyproject.toml."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    tree_list = tmp_path / "tree.lst"
+    tree_list.write_text("src/a.py\n", encoding="utf-8")
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--tree-list",
+            str(tree_list),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tree,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "locked-0" in result.stdout
+
+
+def test_tree_list_missing_file_is_config_error(tmp_path: Path) -> None:
+    """Несуществующий список — ошибка конфигурации, не молчаливый прогон
     с выключенным доказательством."""
     prompt, diff = make(tmp_path, "И", "Д")
     result = subprocess.run(
@@ -622,14 +655,14 @@ def test_tree_flag_missing_dir_is_config_error(tmp_path: Path) -> None:
             str(prompt),
             "--diff",
             str(diff),
-            "--tree",
-            str(tmp_path / "нет"),
+            "--tree-list",
+            str(tmp_path / "нет.lst"),
         ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 2
-    assert "дерев" in result.stderr
+    assert "путей дерева" in result.stderr
 
 
 def test_fixture_bundle_with_manifest_sibling_stays_in_diff(tmp_path: Path) -> None:

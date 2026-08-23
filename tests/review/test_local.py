@@ -833,6 +833,61 @@ def test_generated_filter_resolves_against_repo_root_from_subdir(tmp_path: Path)
     assert "диф больше поддерживаемого" not in result.stderr
 
 
+def test_generated_proof_follows_reviewed_head_not_checkout(tmp_path: Path) -> None:
+    """Доказательство generated — из дерева ревьюируемого коммита, не checkout.
+
+    `--head` замораживает ревьюируемый коммит (анти-TOCTOU из pre-push), но
+    доказательство манифестом-соседом бралось из живого дерева: checkout с
+    pyproject.toml «доказывал» generated для uv.lock из ветки, в которой
+    манифеста нет вовсе, — и промпт молча терял содержимое файла (находка
+    гейта на #99, пятый заход). Правильный исход — файл остаётся в дифе и
+    честно упирается в потолок."""
+    _, local = make_repo(tmp_path)
+
+    git(local, "switch", "-qc", "other")
+    lock_body = "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
+    (local / "uv.lock").write_text(lock_body, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "uv.lock без манифеста в этой ветке")
+    other_sha = git(local, "rev-parse", "HEAD")
+    assert len(lock_body) > 400_000
+
+    git(local, "switch", "-q", "master")
+    (local / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "манифест только в checkout")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", other_sha)
+
+    assert result.returncode == 2, result.stderr
+    assert "диф больше поддерживаемого" in result.stderr
+
+
+def test_generated_proof_from_head_tree_when_checkout_lacks_manifest(
+    tmp_path: Path,
+) -> None:
+    """Обратная сторона: манифест есть в ревьюируемом коммите — фильтр работает,
+    даже если в checkout манифеста нет. Доказательство привязано к ref, не к
+    состоянию рабочей копии."""
+    _, local = make_repo(tmp_path)
+
+    git(local, "switch", "-qc", "locked")
+    (local / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    lock_body = "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
+    (local / "uv.lock").write_text(lock_body, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "манифест и lock в ревьюируемой ветке")
+    locked_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "switch", "-q", "master")
+    assert not (local / "pyproject.toml").exists()
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", locked_sha)
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
 def test_findings_above_threshold_block_exit_code(tmp_path: Path) -> None:
     """§7: `local.sh` обязан завершиться 1, когда вердикт содержит находку выше
     порога. Держится на `set -e` и позиции последней команды в скрипте — ни один
