@@ -196,20 +196,23 @@ jobs:
 
           # Ветвление, а не сборка аргументов в строку: некавыченное раскрытие
           # разваливается на пути с пробелом; форма одинакова с local.sh.
-          # `--tree` — явный корень дерева PR (чекаут merge-ref): cwd шага и
-          # так workspace, но generated-доказательство манифестом-соседом не
-          # должно зависеть от того, кто и откуда позвал склейку.
+          # ДЕПЛОЙ-ОГРАНИЧЕНИЕ: скрипты извлечены из base, а этот YAML — из
+          # head, поэтому вызов здесь обязан держаться сигнатуры, уже влитой
+          # в base; новый флаг скрипта становится доступен CI только СЛЕДУЮЩИМ
+          # PR (передача `--tree` из ещё не влитого кита уронила прогон
+          # кодом 2 — usage от базовой версии). `--tree` тут и не нужен:
+          # умолчание в build-prompt.sh — cwd, а cwd шага по контракту
+          # runner'а — корень workspace с чекаутом merge-ref, то есть ровно
+          # дерево дифа. local.sh это не касается: он и скрипты — одно дерево.
           if [ "$use_context" -eq 1 ]; then
             sh "$KIT/build-prompt.sh" \
                 --prompt "$KIT/review-prompt.md" \
                 --diff "$WORK/diff.patch" --context "$WORK/context.txt" \
-                --tree "$GITHUB_WORKSPACE" \
                 > "$WORK/prompt.txt"
           else
             sh "$KIT/build-prompt.sh" \
                 --prompt "$KIT/review-prompt.md" \
-                --diff "$WORK/diff.patch" --tree "$GITHUB_WORKSPACE" \
-                > "$WORK/prompt.txt"
+                --diff "$WORK/diff.patch" > "$WORK/prompt.txt"
           fi
 
       - name: Ревью
