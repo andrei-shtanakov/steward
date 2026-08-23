@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Шаблон host-local расписания сбора approval-facts (Stage A0).
+     НЕ УСТАНАВЛИВАЕТСЯ РЕПОЗИТОРИЕМ: пути свои у каждой машины.
+     Инструкция и обоснование: scripts/approval-facts-schedule.md
+     Плейсхолдеры вида @ИМЯ@ подставляются sed при установке. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.steward.approval-facts</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <!-- uv по АБСОЛЮТНОМУ пути: PATH у launchd не тот, что в оболочке.
+         Пути в кавычках: подстановка сырая, путь с пробелом иначе делится. -->
+    <string>cd '@STEWARD_ROOT@' &amp;&amp; '@UV_BIN@' run python scripts/collect_approval_facts.py --workspace-root '@WORKSPACE_ROOT@'</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>21600</integer><!-- 6 часов при lease 24 часа -->
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Именованные логи: иначе отказ раннера виден только по протухшему
+       бандлу сутки спустя, а причина не видна вовсе. -->
+  <key>StandardOutPath</key>
+  <string>@LOG_DIR@/approval-facts.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG_DIR@/approval-facts.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
