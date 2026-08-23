@@ -568,7 +568,8 @@ product decision record (и наоборот). Как approved proposal стан
       модели × два уровня), не по рассуждению в комментарии workflow
       @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
 - [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся
-      (итерация бесплатна); запрос = лейбл или снятие драфта. Форма отказа —
+      (итерация бесплатна); запрос = снятие драфта (автозапуск) или лейбл
+      `codex-review` (действует на следующие пуши драфта). Форма отказа —
       синтетический вердикт + красный report с причиной, не skipped-джобы
       (пропущенный джоб засчитывается required-чеку как пройденный)
       @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
