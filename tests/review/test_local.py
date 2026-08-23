@@ -813,70 +813,86 @@ def _big_lock_body() -> str:
     return "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
 
 
-def test_declared_generated_is_filtered_from_subdir(tmp_path: Path) -> None:
-    """Декларация читается git'ом — прогон из подкаталога её видит.
+DECLARATION = "uv.lock linguist-generated=true\n"
 
-    Третий заход гейта на #99 ломался на относительном доказательстве от
-    cwd; у декларации (.gitattributes linguist-generated, git check-attr
-    --source) привязки к cwd нет."""
+
+def test_declared_generated_is_filtered_from_subdir(tmp_path: Path) -> None:
+    """Влитая декларация фильтрует generated; прогон из подкаталога её видит.
+
+    Декларация читается git'ом из merge-base диапазона — привязки к cwd нет
+    (третий заход гейта на #99 ломался на относительном доказательстве)."""
     _, local = make_repo(tmp_path)
-    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита в базу диапазона")
+    base_sha = git(local, "rev-parse", "HEAD")
+
     (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
     git(local, "commit", "-qm", "перегенерированный lock")
 
     subdir = local / "sub"
     subdir.mkdir()
-    result = run_local(local, make_stub(tmp_path, STUB_OK), cwd=subdir)
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", base_sha, cwd=subdir)
 
     assert result.returncode == 0, result.stderr
     assert "диф больше поддерживаемого" not in result.stderr
 
 
-def test_declaration_is_read_from_reviewed_head_not_checkout(tmp_path: Path) -> None:
-    """Декларация — из дерева ревьюируемого коммита, не из checkout.
+def test_same_patch_declaration_does_not_hide_code(tmp_path: Path) -> None:
+    """Декларация из того же патча НЕ прячет код: действует только влитая.
 
-    `--head` замораживает ревьюируемый коммит (анти-TOCTOU pre-push);
-    checkout с декларацией не должен «доказывать» generated для ветки, в
-    которой декларации нет (пятый заход гейта на #99, тот же класс). Файл
-    остаётся в дифе и честно упирается в потолок."""
+    Девятый заход гейта на #99: автор, объявляющий файл generated в том же
+    PR, мог бы спрятать произвольный рукописный диф от ревью. Декларация
+    читается из базы диапазона (в CI — из base PR), поэтому свеже-объявлённый
+    файл остаётся в дифе и честно упирается в потолок — отказ в сторону
+    ревью; фильтр включится следующим PR, когда декларация будет влита."""
     _, local = make_repo(tmp_path)
 
-    git(local, "switch", "-qc", "other")
+    git(local, "switch", "-qc", "sneaky")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
     (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
-    git(local, "commit", "-qm", "lock без декларации в этой ветке")
-    other_sha = git(local, "rev-parse", "HEAD")
-
+    git(local, "commit", "-qm", "декларация и скрываемый файл одним патчем")
+    head_sha = git(local, "rev-parse", "HEAD")
     git(local, "switch", "-q", "master")
-    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
-    git(local, "add", "-A")
-    git(local, "commit", "-qm", "декларация только в checkout")
 
-    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", other_sha)
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", head_sha)
 
     assert result.returncode == 2, result.stderr
     assert "диф больше поддерживаемого" in result.stderr
 
 
-def test_declaration_from_head_tree_works_without_checkout_copy(
-    tmp_path: Path,
-) -> None:
-    """Обратная сторона: декларация есть в ревьюируемом коммите — фильтр
-    работает, даже если в checkout её нет."""
+def test_declaration_from_range_base_not_checkout(tmp_path: Path) -> None:
+    """Источник декларации — база диапазона, не состояние checkout.
+
+    Фильтр работает, даже когда в рабочей копии декларации нет вовсе:
+    доказательство привязано к ревьюируемому диапазону (пятый заход гейта
+    на #99 — тот же класс, привязка к живому дереву)."""
     _, local = make_repo(tmp_path)
 
     git(local, "switch", "-qc", "locked")
-    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация")
+    base_sha = git(local, "rev-parse", "HEAD")
+
     (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
-    git(local, "commit", "-qm", "декларация и lock в ревьюируемой ветке")
-    locked_sha = git(local, "rev-parse", "HEAD")
+    git(local, "commit", "-qm", "перегенерированный lock")
+    head_sha = git(local, "rev-parse", "HEAD")
 
     git(local, "switch", "-q", "master")
     assert not (local / ".gitattributes").exists()
 
-    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", locked_sha)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        "--head",
+        head_sha,
+    )
 
     assert result.returncode == 0, result.stderr
     assert "диф больше поддерживаемого" not in result.stderr
@@ -888,14 +904,13 @@ def test_deleting_declared_lockfile_is_still_filtered(tmp_path: Path) -> None:
     Седьмой заход гейта на #99: у эвристики «манифест-сосед» удаление
     пакета вместе с lock'ом рушило доказательство, и гигантский диф
     удаления упирался в потолок. Атрибут — паттерн дерева, а не файл:
-    пока .gitattributes на head покрывает путь, удалённый файл остаётся
-    объявленным."""
+    декларация из базы диапазона покрывает и удалённый путь."""
     _, local = make_repo(tmp_path)
 
-    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
     (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
-    git(local, "commit", "-qm", "lock в базе диапазона")
+    git(local, "commit", "-qm", "декларация и lock в базе диапазона")
     base_sha = git(local, "rev-parse", "HEAD")
 
     git(local, "rm", "-q", "uv.lock")

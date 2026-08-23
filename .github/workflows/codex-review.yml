@@ -216,15 +216,20 @@ jobs:
           # честный и временный; после мержа ветка включается сама, без
           # второго PR.
           #
-          # Generated — то, что репо ОБЪЯВИЛ в .gitattributes
-          # (linguist-generated). check-attr читает атрибут из workspace, а
-          # workspace здесь — чекаут merge-ref, ПО ПОСТРОЕНИЮ ревьюируемое
-          # дерево (local.sh такого свойства не имеет и читает из дерева
-          # --head-коммита через --source). `=true` даёт значение "true",
-          # голый атрибут — "set"; парсинг с хвоста строки: путь может
-          # содержать ": ".
+          # Generated — то, что репо ОБЪЯВИЛ в .gitattributes, причём
+          # декларация читается ИЗ BASE (--source=$BASE_SHA), не из
+          # merge-ref: workspace — дерево автора, и декларация из самого
+          # патча прятала бы произвольный рукописный код — достаточно
+          # объявить файл generated тем же коммитом (девятый заход гейта на
+          # #99). Из base читается только влитое, то есть прошедшее ревью;
+          # свежая декларация не действует в собственном PR — файл остаётся
+          # в дифе (отказ в сторону ревью) и фильтруется со следующего PR.
+          # local.sh симметрично читает из merge-base диапазона. `=true`
+          # даёт значение "true", голый атрибут — "set"; парсинг с хвоста
+          # строки: путь может содержать ": ".
           if grep -q -- '--generated-list' "$KIT/build-prompt.sh"; then
-            git -c core.quotePath=false check-attr --stdin linguist-generated \
+            git -c core.quotePath=false check-attr --stdin \
+                --source="$BASE_SHA" linguist-generated \
                 < "$WORK/changed-paths.txt" > "$WORK/generated-attrs.txt"
             sed -n -e 's/: linguist-generated: true$//p' \
                 -e 's/: linguist-generated: set$//p' \
