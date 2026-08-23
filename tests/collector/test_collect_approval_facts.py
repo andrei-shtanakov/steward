@@ -1,0 +1,227 @@
+"""Раннер сбора `approval-facts` — маршрутизация, preflight, агрегация.
+
+Логики фактов здесь нет и быть не должно: раннер решает только, тот ли это
+чекаут и кого звать. Соответственно и тесты — про отказ дойти до записи, а не
+про содержание бандла.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "collect_approval_facts.py"
+
+
+def _load() -> Any:
+    spec = importlib.util.spec_from_file_location("collect_approval_facts", SCRIPT)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging error
+        raise RuntimeError(f"cannot load the collector from {SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["collect_approval_facts"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+RUNNER = _load()
+REPO = "andrei-shtanakov/steward"
+
+
+def _checkout(root: Path, name: str, origin: str | None = REPO) -> Path:
+    path = root / name
+    (path / ".git").mkdir(parents=True)
+    if origin is not None:
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "add", "origin", f"git@github.com:{origin}.git"],
+            check=True,
+        )
+    return path
+
+
+def _entry(checkout: str = "steward", prs: list[int] | None = None) -> dict[str, Any]:
+    return {"repo": REPO, "checkout": checkout, "prs": prs if prs is not None else [1]}
+
+
+# --- preflight: не дойти до записи -----------------------------------------
+
+
+def test_missing_checkout_is_skipped_and_never_calls_the_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Главный fail-closed: у продюсера `--repo-root` имеет дефолт `.`,
+
+    поэтому вызов для репозитория без чекаута записал бы его факты в бандл
+    steward — подмена наблюдаемого объекта, выглядящая как успешная публикация.
+    """
+    called: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        RUNNER,
+        "run_producer",
+        lambda repo, root, policy, prs: called.append((repo, root)) or (0, ""),
+    )
+
+    outcomes = RUNNER.collect([_entry("nowhere")], tmp_path, tmp_path / "policy.yaml")
+
+    assert [o.status for o in outcomes] == ["skipped"]
+    assert "чекаута нет" in outcomes[0].detail
+    assert called == [], "продюсер не должен вызываться вовсе"
+
+
+def test_wrong_origin_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Самая опасная ошибка конфигурации: путь есть, git есть, объект не тот.
+
+    Без этой проверки бандл выглядел бы законным — с чужими фактами внутри.
+    """
+    _checkout(tmp_path, "steward", origin="andrei-shtanakov/maestro")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "origin чекаута" in outcomes[0].detail
+
+
+def test_checkout_outside_workspace_root_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`..` в охвате не должен выводить запись за пределы наблюдаемого набора."""
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    outcomes = RUNNER.collect([_entry("../elsewhere")], workspace, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "вне workspace-root" in outcomes[0].detail
+
+
+def test_directory_without_git_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "steward").mkdir()
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "не git-корень" in outcomes[0].detail
+
+
+def test_empty_pr_list_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пустой охват — не «спросили и ничего не нашли», а «не спрашивали»."""
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect([_entry(prs=[])], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+
+
+# --- независимость и агрегация ---------------------------------------------
+
+
+def test_one_bad_checkout_does_not_stop_the_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Требование зафиксировано на одном репо, чтобы не всплыло на двадцати:
+
+    иначе один неверный чекаут делал бы ненаблюдаемым весь набор, а причина
+    была бы видна только в хвосте лога.
+    """
+    _checkout(tmp_path, "good")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "nowhere", "prs": [1]},
+            {"repo": REPO, "checkout": "good", "prs": [2]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert [o.status for o in outcomes] == ["skipped", "published"]
+
+
+def test_producer_failure_is_failed_not_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Разные вещи: «не спросили» и «спросили, не смогли»."""
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (3, "механический сбой"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "кодом 3" in outcomes[0].detail
+
+
+def test_skipped_alone_is_not_success(capsys: pytest.CaptureFixture[str]) -> None:
+    """Репозиторий, которого не спросили, не должен читаться зелёным."""
+    code = RUNNER.report([RUNNER.Outcome(REPO, "skipped", "чекаута нет")])
+
+    assert code == 1
+    assert "не опубликовано" in capsys.readouterr().err
+
+
+def test_all_published_is_zero() -> None:
+    assert RUNNER.report([RUNNER.Outcome(REPO, "published", "ok")]) == 0
+
+
+# --- свежесть: проверка установки расписания -------------------------------
+
+
+def _bundle(path: Path, valid_until: datetime) -> None:
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    header = {"kind": "header", "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    (path / ".steward" / "approval_facts.jsonl").write_text(
+        json.dumps(header) + "\n", encoding="utf-8"
+    )
+
+
+def test_expired_lease_is_failed(tmp_path: Path) -> None:
+    """Ровно то состояние, в котором единственный бандл флота был найден."""
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) - timedelta(hours=20))
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "lease истёк" in outcomes[0].detail
+
+
+def test_live_lease_is_published(tmp_path: Path) -> None:
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+
+    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "published"
+
+
+def test_absent_bundle_is_failed_not_silent(tmp_path: Path) -> None:
+    _checkout(tmp_path, "steward")
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "бандла нет" in outcomes[0].detail
+
+
+def test_unreadable_header_is_failed(tmp_path: Path) -> None:
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    (path / ".steward" / "approval_facts.jsonl").write_text("not json\n", encoding="utf-8")
+
+    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "failed"
+
+
+def test_workspace_root_has_no_default() -> None:
+    """cwd под launchd не тот, что в интерактивной сессии — угадывать нельзя."""
+    with pytest.raises(SystemExit):
+        RUNNER.main([])

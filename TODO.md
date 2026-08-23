@@ -421,6 +421,34 @@ product decision record (и наоборот). Как approved proposal стан
 - [ ] `approval-facts` producer: несуществующий PR-номер у `--prs` не становится записью `not_found`, а обрушивает батч как `MechanicalFailure` (exit 3, файла нет) @owner:github:andrei-shtanakov @id:approval-facts-not-found-vs-mechanical-failure — найдено живой приёмкой 2026-08-21 (`docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`, шаг 3): `gh api graphql` возвращает `data.repository.pullRequest: null` (валидный «нет такого PR») **вместе** с top-level `errors: [{type: NOT_FOUND}]`, `gh` из-за непустого `errors` завершается кодом 1, `_gh()`/`_graphql()` в `producer.py` поднимают `MechanicalFailure` по одному лишь ненулевому exit-коду `gh`, не дойдя до JSON с `pullRequest: null`. Юнит-тест `test_absent_pr_is_not_found` не ловит это — его фикстура подменяет `_gh` так, будто такой ответ приходит с кодом 0 и без `errors`, что не совпадает с реальным поведением `gh api graphql` для resolver-полей вида `pullRequest(number:)`
 - [ ] Инвариант 9 читателя `approval-facts/v2` не ловит противоречащий отрицательный алиас (`pr:42 → merged, merge_sha=X` вместе с `merge_sha:X → not_found` валидны одновременно, потому что сравнение работает только по записям с `merge_sha != null`); гейт разрешает это через **приоритет индекса разрешённых SHA над scope-проверкой по идентичности запроса** (§8.2), то есть такой файл резолвится в `merged`, а не в конфликт — семантика ПОКА НЕ МЕНЯЕТСЯ этим пунктом, это решение владельца контракта @owner:github:andrei-shtanakov @id:approval-facts-index-precedence-over-negative-alias — найдено финальным ревью 2026-08-21 (`.superpowers/sdd/2026-08-21-approval-facts-v2/final-review.md`, Important #4); приоритет задокументирован явно в §8.2/§8.3 спеки (`docs/superpowers/specs/2026-08-21-approval-facts-v2-design.md`) и в контрактном README (`contracts/approval-facts/v2/README.md`, инвариант 9); не атакующая поверхность (кто может писать `.steward/`, может просто написать `merged`+`human` напрямую), но дыра в контракте, которую унаследует любой сторонний читатель, реализующий инвариант 9 по README буквально
 - [ ] Явный `--approval-facts` **неприменим вне опознанного чекаута** — не только «негодный файл там читается неверно», а шире: `approval_facts_outcome` возвращает `FactsUnavailable("absent")`, когда чекаут не опознан (нет git/`origin`/`origin` не разбирается), **до** проверки `explicit`, поэтому дело не в классе ошибки для невалидного файла — ГОДНЫЙ файл, переданный через `--approval-facts` на распакованном бандле, в не-git каталоге или в чекауте без `origin`, вообще не читается, хотя §8.4 называет `--approval-facts` override'ом @owner:github:andrei-shtanakov @id:approval-facts-explicit-path-subordinate-to-repo-id — найдено Codex-гейтом на PR #86 (раунд 2, переформулировано и усилено раундом 3); направление отказа верное (находка, не пропуск) во всех случаях; не правится этим пунктом — честно исполнить override здесь означало бы валидировать файл по инварианту 11 без `expected_repository`, с которым сравнивать, а закрыть это можно только новым способом ОБЪЯВИТЬ ожидаемый репозиторий, когда его нельзя вывести из `origin` (например, отдельная опция-компаньон к `--approval-facts`) — новая CLI-опция и решение владельца о её форме, не правка в конце ветки; докстринг `approval_facts_outcome` (`src/steward/gatecheck/cli.py`) объясняет это явно
+- [ ] Регулярный сбор `approval-facts` — Stage A0 (steward-only soak) @owner:github:andrei-shtanakov @id:approval-facts-scheduled-collection
+      Механика собрана: явный статический охват `profiles/approval-facts-scope.yaml`,
+      раннер `scripts/collect_approval_facts.py` (только маршрутизация и preflight,
+      никакой классификации), шаблон host-local расписания
+      `scripts/com.steward.approval-facts.plist.template` — период 6 ч при lease 24 ч.
+      **Пункт открыт не по недоделке, а по DoD:** доказательство — наблюдаемые прогоны
+      по расписанию плюс зелёный `--check`, а не мерж. Закрывать по факту мержа здесь —
+      ровно та подмена доказательства, против которой написан соседний пункт
+      `arch-evidence-freshness`.
+      Почему локально, а не в Actions: продюсер пишет `<checkout>/.steward/`, потребитель
+      читает файл из чекаута, у CI чекаутов флота нет по построению. Возражение против
+      локального планировщика («выключенный ноутбук не сообщит, что не проснулся»)
+      закрывает сам артефакт: `valid_until` делает молчание **обнаружимым при чтении**.
+      Обнаружимым — не сообщаемым: до появления потребителя смотреть надо глазами
+      (`--check`), и это указано в шаблоне.
+      Stage A0 намеренно steward-only. Расширение на dispatcher и maestro (A1) требует
+      их согласия на generated `.steward/` в их дереве — то есть обычных PR с
+      `.gitignore` в их репозитории, а не скрытой мутации из скрипта; сейчас `.steward/`
+      игнорируется только здесь.
+- [ ] Stage B: охват формирует потребитель, коллектор получает собственную личность @owner:github:andrei-shtanakov @trigger:"появился потребитель, который формирует scope, различает no-source / out-of-scope / stale / unreadable / classified_unknown и умеет запросить refresh" @id:approval-facts-consumer-driven-scope
+      Статический список A0 достаточен ровно до появления такого потребителя; тогда же
+      уместна read-only GitHub App для коллектора (наблюдатель не должен владеть ключом
+      от наблюдаемого действия), а не раньше — App без единого читателя данных это
+      раскатка ключа по флоту вперёд потребности.
+      **Критерий приёмки потребителя, зафиксированный заранее:** `now >= valid_until`
+      никогда не проецируется в факт об акторе; состояние — `stale`/`unknown`. Без этой
+      строки B унаследует дефект «неизвестность как зелёное» этажом выше — тот самый,
+      который сегодня виден на единственном бандле флота, истёкшем 20 часов назад.
 - [ ] `verdicts/emitter.py`: атомарная публикация `gate_verdicts.jsonl` (temp + `os.replace`) без fsync — слабее требований §6.1 спеки approval-facts/v2 @owner:github:andrei-shtanakov @id:verdicts-emitter-fsync-debt — отдельный хвост, не расширяющий этот воркстрим; см. `docs/superpowers/specs/2026-08-21-approval-facts-v2-design.md` §10
 - [ ] dispatcher — стадия 2 хендоффа `approval-facts/v2`: вендорить пиненую копию `contracts/approval-facts/v2/` + написать `core/merge_actor.py` по образцу `core/governance.py` (+ тесты) @owner:repo:dispatcher @id:approval-facts-dispatcher-vendoring-handoff — предпосылка на нашей стороне выполнена (бандл эмитится, контракт опубликован, приёмка на реальных мержах пройдена); формальный inbox-issue в dispatcher по ADR-ECO-006 этой задачей не заведён — см. `docs/superpowers/specs/2026-08-21-approval-facts-v2-design.md` §10
 
