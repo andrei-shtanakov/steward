@@ -45,16 +45,28 @@
   ищущий `<ИМЯ>`, не нашёл бы ничего — plist установился бы с литеральными
   плейсхолдерами, агент загрузился бы и не запустился ни разу.
 
-  Установка (подставив свои пути):
+  Установка. Пути задаются переменными и подставляются один раз — иначе
+  `@LOG_DIR@` остаётся литералом вне `sed`, и `mkdir` создаёт каталог с таким
+  именем, а логи пишутся не туда, куда потом смотрит проверка:
 
-      sed -e 's|@WORKSPACE_ROOT@|/Users/you/labs/all_ai_orchestrators|g' \
-          -e 's|@STEWARD_ROOT@|/Users/you/labs/all_ai_orchestrators/steward|g' \
+      WS="/Users/you/labs/all_ai_orchestrators"
+      STEWARD="$WS/steward"
+      LOGS="$HOME/Library/Logs/steward"
+
+      mkdir -p "$LOGS"
+      sed -e "s|@WORKSPACE_ROOT@|$WS|g" \
+          -e "s|@STEWARD_ROOT@|$STEWARD|g" \
           -e "s|@UV_BIN@|$(command -v uv)|g" \
-          -e 's|@LOG_DIR@|/Users/you/Library/Logs/steward|g' \
-          scripts/com.steward.approval-facts.plist.template \
+          -e "s|@LOG_DIR@|$LOGS|g" \
+          "$STEWARD/scripts/com.steward.approval-facts.plist.template" \
           > ~/Library/LaunchAgents/com.steward.approval-facts.plist
-      mkdir -p @LOG_DIR@
       launchctl load ~/Library/LaunchAgents/com.steward.approval-facts.plist
+
+  Затем убедиться, что запуск вообще происходит: plist, который не стартует,
+  ничем себя не выдаёт, кроме протухшего через сутки бандла.
+
+      launchctl kickstart -k "gui/$(id -u)/com.steward.approval-facts"
+      tail -n 20 "$LOGS/approval-facts.err.log"
 
   Снятие:
 

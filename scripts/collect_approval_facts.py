@@ -318,7 +318,9 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
             return f"строка {number} не JSON: {exc}"
         if not isinstance(record, dict):
             return f"строка {number} не объект"
-        if record.get("kind") == "header":
+        # Только `result`: строка вида `{"kind": "error", "request": {...}}`
+        # иначе засчиталась бы как ответ по этому PR — зелёное без факта.
+        if record.get("kind") != "result":
             continue
         request = record.get("request")
         if isinstance(request, dict) and request.get("kind") == "pr":
@@ -352,6 +354,11 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
                 # Индексация по нему даёт TypeError, который обрывал бы весь
                 # `--check`, не показав остальные репозитории.
                 raise TypeError(f"первая строка не объект: {type(header).__name__}")
+            if header.get("kind") != "header":
+                # Объект с `valid_until`, но без `kind: header`, — структурно
+                # не бандл. Признать его годным значит показать зелёное на
+                # файле, который потребитель не примет.
+                raise KeyError("первая строка не `kind: header`")
             valid_until = datetime.fromisoformat(str(header["valid_until"]).replace("Z", "+00:00"))
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {exc}"))

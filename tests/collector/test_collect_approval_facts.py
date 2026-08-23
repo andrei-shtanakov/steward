@@ -546,3 +546,48 @@ def test_plist_placeholders_are_not_angle_bracketed() -> None:
     template = PLIST.read_text(encoding="utf-8")
 
     assert "&lt;" not in template and "&gt;" not in template
+
+
+def test_non_result_record_does_not_count_as_an_answer(tmp_path: Path) -> None:
+    """`{"kind": "error", "request": {...}}` — не ответ по этому PR."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    header = {
+        "kind": "header",
+        "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    broken = {"kind": "error", "request": {"kind": "pr", "value": "95"}}
+    (path / ".steward" / "approval_facts.jsonl").write_text(
+        json.dumps(header) + "\n" + json.dumps(broken) + "\n", encoding="utf-8"
+    )
+
+    assert RUNNER.freshness([_entry(prs=[95])], tmp_path)[0].status == "failed"
+
+
+def test_first_line_without_kind_header_is_failed(tmp_path: Path) -> None:
+    """Объект с `valid_until`, но без `kind: header`, — структурно не бандл."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    (path / ".steward" / "approval_facts.jsonl").write_text(
+        json.dumps({"valid_until": "2026-12-31T00:00:00Z"}) + "\n", encoding="utf-8"
+    )
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "нечитаем" in outcomes[0].detail
+
+
+def test_install_instructions_substitute_the_log_dir() -> None:
+    """`mkdir -p @LOG_DIR@` создал бы каталог с буквальным именем.
+
+    Логи писались бы не туда, куда смотрит проверка, а в худшем случае launchd
+    не смог бы открыть `StandardErrorPath` — и отказ сбора остался бы невидим.
+    """
+    doc = (
+        Path(__file__).resolve().parents[2] / "scripts" / "approval-facts-schedule.md"
+    ).read_text(encoding="utf-8")
+    install = doc[doc.index("Установка") : doc.index("Снятие")]
+
+    assert "mkdir -p @LOG_DIR@" not in install
+    assert 'mkdir -p "$LOGS"' in install
