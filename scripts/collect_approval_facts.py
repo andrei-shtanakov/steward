@@ -248,11 +248,22 @@ def collect(
         if numbers is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
+        bundle = path / BUNDLE_RELPATH
+        before = bundle.stat().st_mtime_ns if bundle.is_file() else None
         code, detail = run_producer(repo, path, policy, numbers)
-        if code == 0:
-            outcomes.append(Outcome(repo, "published", str(path / BUNDLE_RELPATH)))
-        else:
+        if code != 0:
             outcomes.append(Outcome(repo, "failed", f"продюсер вышел с кодом {code}: {detail}"))
+            continue
+        # Нулевой код — заявление продюсера, а не факт публикации. Если он
+        # вернул 0, не записав бандл (ранний return, проглоченная ошибка ФС),
+        # раннер отчитался бы `published`, и весь прогон вышел бы нулём при
+        # том, что публикации не было.
+        if not bundle.is_file():
+            outcomes.append(Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}"))
+        elif before is not None and bundle.stat().st_mtime_ns == before:
+            outcomes.append(Outcome(repo, "failed", f"код 0, но бандл не обновлён: {bundle}"))
+        else:
+            outcomes.append(Outcome(repo, "published", str(bundle)))
     return outcomes
 
 
@@ -267,8 +278,12 @@ def _scope_gap(header: dict[str, Any], numbers: list[int]) -> str | None:
     scope = header.get("scope")
     if not isinstance(scope, list):
         return "в заголовке нет `scope`"
+    # `kind` обязателен: запись `{"kind": "merge_sha", "value": "75"}` иначе
+    # засчиталась бы как покрытие PR №75 — зелёное на подложном доказательстве.
     published = {
-        str(item.get("value")) for item in scope if isinstance(item, dict) and "value" in item
+        str(item.get("value"))
+        for item in scope
+        if isinstance(item, dict) and item.get("kind") == "pr" and "value" in item
     }
     missing = [n for n in numbers if str(n) not in published]
     return f"охват вырос, но не собран: нет {missing}" if missing else None

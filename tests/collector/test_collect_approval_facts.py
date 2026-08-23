@@ -47,6 +47,30 @@ def _checkout(root: Path, name: str, origin: str | None = REPO) -> Path:
     return path
 
 
+def _publishing_producer(prs_by_call: list[list[int]] | None = None):
+    """Фейк продюсера, который ДЕЙСТВИТЕЛЬНО публикует бандл.
+
+    Раннер проверяет постусловие: нулевой код без появившегося (или
+    обновлённого) файла — не публикация. Значит фейк, который «успешен» и
+    ничего не пишет, моделирует ровно тот отказ, а не счастливый путь.
+    """
+
+    def fake(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
+        if prs_by_call is not None:
+            prs_by_call.append(prs)
+        bundle = root / RUNNER.BUNDLE_RELPATH
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        header = {
+            "kind": "header",
+            "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "scope": [{"kind": "pr", "value": str(n)} for n in prs],
+        }
+        bundle.write_text(json.dumps(header) + "\n", encoding="utf-8")
+        return 0, ""
+
+    return fake
+
+
 def _entry(checkout: str = "steward", prs: list[int] | None = None) -> dict[str, Any]:
     return {"repo": REPO, "checkout": checkout, "prs": prs if prs is not None else [1]}
 
@@ -136,7 +160,7 @@ def test_one_bad_checkout_does_not_stop_the_others(
     была бы видна только в хвосте лога.
     """
     _checkout(tmp_path, "good")
-    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
     outcomes = RUNNER.collect(
         [
@@ -281,7 +305,7 @@ def test_bad_pr_number_does_not_abort_the_rest(
     """Заявленная независимость репозиториев проверяется именно на этом."""
     _checkout(tmp_path, "bad")
     _checkout(tmp_path, "good")
-    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
     outcomes = RUNNER.collect(
         [
@@ -345,7 +369,7 @@ def test_duplicate_checkout_is_refused_not_overwritten(
     часть заявленного охвата потерялась бы при зелёном отчёте.
     """
     _checkout(tmp_path, "steward")
-    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
     outcomes = RUNNER.collect(
         [
@@ -401,3 +425,54 @@ def test_hung_subprocess_does_not_abort_the_batch(monkeypatch: pytest.MonkeyPatc
     )
 
     assert RUNNER._run(["true"], timeout=1) is None
+
+
+def test_zero_exit_without_a_bundle_is_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Нулевой код — заявление продюсера, а не факт публикации."""
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "бандла нет" in outcomes[0].detail
+
+
+def test_zero_exit_without_touching_the_bundle_is_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Старый бандл на месте, но не обновлён — тоже не публикация."""
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "не обновлён" in outcomes[0].detail
+
+
+def test_scope_of_a_different_kind_does_not_count_as_coverage(tmp_path: Path) -> None:
+    """`merge_sha:75` — не доказательство, что спрашивали PR №75."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    (path / ".steward" / "approval_facts.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "header",
+                "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "scope": [{"kind": "merge_sha", "value": "75"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    outcomes = RUNNER.freshness([_entry(prs=[75])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "охват вырос" in outcomes[0].detail
