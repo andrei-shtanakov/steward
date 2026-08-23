@@ -645,3 +645,91 @@ def test_classify_results_leaves_negative_state_untouched() -> None:
     [result] = classify_results([not_merged], _policy())
     assert result.actor_class is None
     assert result == not_merged
+
+
+# --- находка codex-гейта на PR #95: терпимость привязана к пути ------------
+
+
+def test_not_found_deeper_than_the_asked_node_stays_mechanical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Частичный отказ резолвера внутри объекта, который резолвнулся.
+
+    Сценарий из находки: `pullRequest` пришёл целым, но `NOT_FOUND` стоит на
+    `mergeCommit`. Проверка одного лишь ТИПА ошибки пропустила бы это, и
+    `mergeCommit: null` был бы опубликован как факт «PR не слит» — то есть
+    недоступность доложена отсутствием, ровно тот класс, ради которого
+    `repository: null` уже отказываются читать как «репо нет».
+    """
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    1,
+                    (
+                        {
+                            "data": {
+                                "repository": {
+                                    "pullRequest": {
+                                        "mergeCommit": None,
+                                        "mergedBy": {"login": "alice", "__typename": "User"},
+                                    }
+                                }
+                            },
+                            "errors": [
+                                {
+                                    "type": "NOT_FOUND",
+                                    "path": ["repository", "pullRequest", "mergeCommit"],
+                                }
+                            ],
+                        },
+                        "gh: partial failure",
+                    ),
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(MechanicalFailure, match="GraphQL errors"):
+        resolve(OWNER, NAME, RequestId("pr", 42))
+
+
+def test_not_found_without_a_path_stays_mechanical(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ошибка без `path` не привязывается ни к какому узлу — значит не факт."""
+    body, err = _LIVE_ABSENT_PR
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh([(1, ({**body, "errors": [{"type": "NOT_FOUND"}]}, err))]),
+    )
+
+    with pytest.raises(MechanicalFailure, match="GraphQL errors"):
+        resolve(OWNER, NAME, RequestId("pr", 999999))
+
+
+def test_absent_sha_is_not_found_scoped_to_its_own_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Вторая форма запроса — по SHA — объявляет свой узел, а не чужой."""
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    1,
+                    (
+                        {
+                            "data": {"repository": {"object": None}},
+                            "errors": [{"type": "NOT_FOUND", "path": ["repository", "object"]}],
+                        },
+                        "gh: Could not resolve to a Commit",
+                    ),
+                )
+            ]
+        ),
+    )
+
+    assert resolve(OWNER, NAME, RequestId("merge_sha", "deadbeef")).state == "not_found"

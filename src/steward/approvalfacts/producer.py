@@ -68,7 +68,21 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
-def _graphql(query: str, variables: dict[str, Any], *, what: str) -> dict[str, Any]:
+def _graphql(
+    query: str,
+    variables: dict[str, Any],
+    *,
+    what: str,
+    absent_path: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Спросить GitHub. `absent_path` — единственный узел, чьё отсутствие законно.
+
+    Терпимость к ненулевому коду обязана быть привязана к КОНКРЕТНОМУ полю, а
+    не к типу ошибки: `NOT_FOUND` где-то в глубине объекта, который сам
+    прекрасно резолвнулся, — это частичный отказ, и прочитать его как факт
+    значит доложить недоступность отсутствием. Без `absent_path` терпимости
+    нет вовсе.
+    """
     args = ["api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         if value is None:
@@ -87,7 +101,7 @@ def _graphql(query: str, variables: dict[str, Any], *, what: str) -> dict[str, A
     if not isinstance(payload, dict):
         raise MechanicalFailure(f"{what}: ответ не объект")
     errors = payload.get("errors")
-    if errors and not _only_absence(errors, payload):
+    if errors and not _only_absence(errors, payload, absent_path):
         raise MechanicalFailure(f"{what}: GraphQL errors: {errors}")
     if code != 0 and not errors:
         # JSON без ошибок, но `gh` недоволен — истолковать нечего.
@@ -95,25 +109,46 @@ def _graphql(query: str, variables: dict[str, Any], *, what: str) -> dict[str, A
     return payload
 
 
-def _only_absence(errors: object, payload: dict[str, Any]) -> bool:
-    """Все ли GraphQL-ошибки — «такого объекта нет», при живом `data`?
+def _only_absence(
+    errors: object, payload: dict[str, Any], absent_path: tuple[str, ...] | None
+) -> bool:
+    """Все ли ошибки — «нет вот ЭТОГО объекта», при живом `data`?
 
     Разделение, которого не было: GraphQL кладёт в один ответ и частичные
-    данные, и ошибки нерезолвнутых полей. `NOT_FOUND` у резолверного поля —
+    данные, и ошибки нерезолвнутых полей. `NOT_FOUND` у запрошенного узла —
     авторитетный отрицательный ответ (§4.2/§9.1 обещают `not_found` законным
-    терминальным состоянием для `request.kind: pr`), а вот auth, rate limit и
-    прочее — сбой инструмента. Сваливать их в одно значило докладывать
-    недоступность как отсутствие, то есть ровно тот класс, ради которого
-    `_repository` уже отказывается читать `repository: null` как «нет репо».
+    терминальным состоянием для `request.kind: pr`), а auth, rate limit и
+    прочее — сбой инструмента.
 
-    Требуется И то, И другое: только тип `NOT_FOUND` у **каждой** ошибки, и
-    присутствующий `data`. Смесь типов или `data: null` читать нечем.
+    Проверять только ТИП ошибки недостаточно, и это не теоретическая придирка
+    (находка codex-гейта на PR #95): `NOT_FOUND` с путём
+    `repository.pullRequest.mergeCommit` пришёл бы вместе с прекрасно
+    резолвнутым `pullRequest`, у которого `mergeCommit: null`, — и частичный
+    отказ резолвера был бы опубликован как факт «PR не слит». Поэтому путь
+    каждой ошибки обязан быть **префиксом** объявленного `absent_path`
+    (включая равенство): выше по дереву — то же отсутствие, которое ниже по
+    коду уже различают (`repository: null` — недоступность,
+    `pullRequest: null` — отсутствие); глубже — частичный отказ внутри
+    объекта, который резолвнулся, и фактом он не является никогда.
+
+    Требуется всё сразу: объявленный `absent_path`, живой `data`, у каждой
+    ошибки тип `NOT_FOUND` и путь-префикс. Иначе читать нечем.
     """
+    if absent_path is None:
+        return False
     if not isinstance(errors, list) or not errors:
         return False
     if payload.get("data") is None:
         return False
-    return all(isinstance(error, dict) and error.get("type") == "NOT_FOUND" for error in errors)
+    for error in errors:
+        if not isinstance(error, dict) or error.get("type") != "NOT_FOUND":
+            return False
+        path = error.get("path")
+        if not isinstance(path, list) or not path:
+            return False
+        if len(path) > len(absent_path) or tuple(path) != absent_path[: len(path)]:
+            return False
+    return True
 
 
 def _repository(payload: dict[str, Any], what: str) -> dict[str, Any]:
@@ -168,7 +203,10 @@ def _actor(node: dict[str, Any]) -> tuple[str, str] | None:
 def _resolve_pr(owner: str, name: str, request: RequestId) -> Result:
     what = f"PR #{request.value}"
     payload = _graphql(
-        _QUERY_BY_PR, {"owner": owner, "name": name, "number": int(request.value)}, what=what
+        _QUERY_BY_PR,
+        {"owner": owner, "name": name, "number": int(request.value)},
+        what=what,
+        absent_path=("repository", "pullRequest"),
     )
     pull_request = _require_key(
         _repository(payload, what), "pullRequest", what, where="repository.pullRequest"
@@ -200,6 +238,7 @@ def _resolve_sha(owner: str, name: str, request: RequestId) -> Result:
             _QUERY_BY_SHA,
             {"owner": owner, "name": name, "sha": str(request.value), "after": cursor},
             what=what,
+            absent_path=("repository", "object"),
         )
         commit = _require_key(_repository(payload, what), "object", what, where="repository.object")
         if commit is None:
