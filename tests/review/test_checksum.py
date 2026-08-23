@@ -262,3 +262,39 @@ def test_symlinked_parent_dir_is_integrity_failure(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stderr
     assert "scripts/review" in result.stderr
     assert "симлинк" in result.stderr.lower()
+
+
+def test_default_root_derives_from_pin_location_not_cwd(tmp_path: Path) -> None:
+    """Без --root корень выводится из положения PIN, не из cwd вызывающего.
+
+    PIN канонически лежит в scripts/review/ (§5) — dirname(PIN)/../.. и есть
+    корень репо; прогон из подкаталога или CI-шага с чужим working-directory
+    не должен объявлять валидную копию дрейфующей (minor шестого захода
+    гейта на #101; тот же класс, что умолчания local.sh от корня репо)."""
+    root = make_kit(tmp_path)
+    pin = full_pin(root)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--pin", str(pin)],
+        capture_output=True,
+        text=True,
+        cwd=elsewhere,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_crlf_pin_is_parsed_not_rejected(tmp_path: Path) -> None:
+    """PIN с CRLF — валидный вход: хвостовой \r срезается, как в
+    collect-context.sh (minor шестого захода): чекаут с autocrlf не должен
+    краснить валидную копию."""
+    root = make_kit(tmp_path)
+    lines = [pin_line(root, rel) for rel in KIT_FILES]
+    pin = root / "scripts" / "review" / "PIN"
+    pin.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+
+    result = run(root, pin)
+
+    assert result.returncode == 0, result.stderr

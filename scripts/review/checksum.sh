@@ -16,11 +16,16 @@
 # пустой перечень — нулевая проверка неотличима от пройденной и потому
 # отказ, не успех).
 #
-# БУТСТРАП (@id:review-kit-checksum-bootstrap), сказано честно: сверка себя
-# собой — не защита. PIN обязан перечислять и сам checksum.sh, но
-# согласованная подмена «скрипт + его строка в PIN» этим не ловится; вторая
-# гарантия — upstream-drift watch по расписанию у потребителя, сверяющий
-# копию с деревом продюсера, и ревью PR, через которое едет любой ре-вендор.
+# БУТСТРАП (@id:review-kit-checksum-bootstrap) — КОНТРАКТ ВЫЗЫВАЮЩЕГО, а не
+# свойство этого скрипта: чекер доказуемо не может защитить сам себя — PR,
+# правящий checksum.sh вместе с его строкой в PIN, глушит проверку, которую
+# сам исполняет (major шестого захода гейта на #101). Поэтому CI
+# потребителя ОБЯЗАН исполнять checksum.sh, ИЗВЛЕЧЁННЫЙ ИЗ BASE (тот же
+# эшелон, что механика codex-review в workflow: инструменты — из base, код
+# для проверки — из PR), а не из дерева PR. Остаточный случай —
+# согласованная правка кит+PIN в ревью-PR — внутренне консистентен для
+# любого офлайн-чекера и ловится второй гарантией: upstream-drift watch по
+# расписанию (копия против дерева продюсера) плюс ревью ре-вендор-PR.
 set -eu
 
 usage() {
@@ -51,7 +56,7 @@ hash_file() {
 required_kit="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json"
 
 pin=""
-root="."
+root=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --pin)  [ $# -ge 2 ] || { usage; exit 2; }; pin="$2"; shift 2 ;;
@@ -63,6 +68,14 @@ done
 [ -n "$pin" ] || { usage; exit 2; }
 [ -f "$pin" ] || { echo "нет файла PIN: $pin" >&2; exit 2; }
 [ -r "$pin" ] || { echo "файл PIN нечитаем: $pin" >&2; exit 2; }
+# Умолчание корня — от ПОЛОЖЕНИЯ PIN, не от cwd вызывающего: PIN канонически
+# лежит в scripts/review/ (§5), значит dirname(PIN)/../.. — корень репо.
+# Прогон из подкаталога или CI-шага с чужим working-directory не должен
+# объявлять валидную копию дрейфующей (minor шестого захода гейта на #101;
+# тот же класс, что умолчания local.sh от корня репо).
+if [ -z "$root" ]; then
+    root=$(dirname "$pin")/../..
+fi
 [ -d "$root" ] || { echo "нет каталога корня: $root" >&2; exit 2; }
 
 checked=0
@@ -70,7 +83,11 @@ failed=0
 seen_paths=""
 # Построчный разбор без word-splitting пути: путь — всё после «хеш + два
 # пробела», пробелы в нём легальны.
+cr=$(printf '\r')
 while IFS= read -r line || [ -n "$line" ]; do
+    # Хвостовой \r срезается, как в collect-context.sh: чекаут с autocrlf
+    # не должен краснить валидную копию (minor шестого захода).
+    line=${line%"$cr"}
     case "$line" in
         ''|'#'*) continue ;;
     esac
