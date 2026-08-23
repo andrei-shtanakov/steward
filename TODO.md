@@ -567,8 +567,11 @@ product decision record (и наоборот). Как approved proposal стан
 - [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта
       модели × два уровня), не по рассуждению в комментарии workflow
       @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
-- [ ] Экономный триггер ревью: не каждый пуш, а по требованию (лейбл/снятие
-      draft) — рычаг цены при итеративной разработке
+- [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся
+      (итерация бесплатна); запрос = снятие драфта (автозапуск) или лейбл
+      `codex-review` (действует на следующие пуши драфта). Форма отказа —
+      синтетический вердикт + красный report с причиной, не skipped-джобы
+      (пропущенный джоб засчитывается required-чеку как пройденный)
       @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
 
 ### 10. codex-review kit: известные хвосты
