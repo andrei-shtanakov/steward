@@ -241,3 +241,24 @@ def test_non_kit_entry_in_pin_is_config_error(tmp_path: Path) -> None:
 
     assert result.returncode == 2, result.stderr
     assert "review-prompt.md" in result.stderr
+
+
+def test_symlinked_parent_dir_is_integrity_failure(tmp_path: Path) -> None:
+    """Симлинк на родительском каталоге кита — тоже отказ целостности.
+
+    Листовая проверка `-L` обходилась заменой всего `scripts/review/` на
+    ссылку в каталог с побайтовыми копиями (major пятого захода гейта на
+    #101): кит структурно не на канонических путях, а чек зелёный.
+    Проверяются ВСЕ компоненты пути, не только лист."""
+    root = make_kit(tmp_path)
+    pin = full_pin(root)
+    review_dir = root / "scripts" / "review"
+    aside = root / "aside-kit"
+    review_dir.rename(aside)
+    review_dir.symlink_to(aside)
+
+    result = run(root, pin)
+
+    assert result.returncode == 1, result.stderr
+    assert "scripts/review" in result.stderr
+    assert "симлинк" in result.stderr.lower()
