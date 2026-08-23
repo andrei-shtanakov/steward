@@ -124,9 +124,14 @@ fi
 #   - lock-файл generated, если РЯДОМ в дереве лежит его манифест
 #     (uv.lock/poetry.lock -> pyproject.toml, go.sum -> go.mod и т.д.) —
 #     инструмент кладёт lock только рядом с манифестом, копия в fixtures
-#     без манифеста этим доказательством не обладает;
-#   - `*.snap` generated только внутри `__snapshots__/` (jest) или
-#     `snapshots/` (insta) — расширение само по себе ничего не значит.
+#     без манифеста этим доказательством не обладает. Манифест-сосед сам по
+#     себе тоже не финален: fixture-бандл нарочно носит оба файла, поэтому
+#     внутри курируемых компонентов пути (fixtures, testdata, examples,
+#     docs) не опускается НИЧЕГО (второй заход гейта на #99);
+#   - `*.snap` generated только внутри `__snapshots__/` — именем владеет
+#     инструмент (jest). Generic `snapshots/` — просто слово: рукописный
+#     `.snap` в docs/snapshots или contracts/snapshots — исходник; insta-
+#     конвенция `snapshots/` при нужде добавляется правкой кита через ревью.
 # Нет доказательства (в т.ч. нет дерева под ногами) — блок ОСТАЁТСЯ в дифе:
 # отказ в сторону ревью, не в сторону опущения. Расширение списка — правка
 # кита через ревью.
@@ -147,6 +152,11 @@ gen_paths=$(mktemp)
 # безопасна. `sort -u`: один путь может встретиться в нескольких заголовках.
 grep -E "$generated_re" "$diff" | sed -E 's/^diff --git a\/.* b\///' | sort -u |
 while IFS= read -r p; do
+    # Ведущий `/` даёт границу компонента и корневому каталогу тоже.
+    # Курируемый компонент пути перебивает любое другое доказательство.
+    case "/$p" in
+        */fixtures/*|*/testdata/*|*/examples/*|*/docs/*) continue ;;
+    esac
     base=${p##*/}
     dir=${p%"$base"}
     case "$base" in
@@ -162,9 +172,8 @@ while IFS= read -r p; do
         # диагностики — тот же класс, что review-kit-threshold-exit-provenance.
         if [ -f "${dir}${manifest}" ]; then printf '%s\n' "$p"; fi
     else
-        # Ведущий `/` даёт границу компонента и корневому каталогу тоже.
         case "/$p" in
-            */__snapshots__/*|*/snapshots/*) printf '%s\n' "$p" ;;
+            */__snapshots__/*) printf '%s\n' "$p" ;;
         esac
     fi
 done > "$gen_paths"

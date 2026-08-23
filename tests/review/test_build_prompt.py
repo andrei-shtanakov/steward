@@ -572,6 +572,56 @@ def test_snap_outside_snapshot_dir_stays_in_diff(tmp_path: Path) -> None:
     assert "hand-written-0" in result.stdout
 
 
+def test_fixture_bundle_with_manifest_sibling_stays_in_diff(tmp_path: Path) -> None:
+    """Fixture-бандл `package.json`+`package-lock.json` — курируемый исходник.
+
+    Манифест-сосед сам по себе не доказательство: образец в fixtures нарочно
+    носит оба файла, и его lock ревьюируется как код (находка гейта на #99,
+    второй заход). Внутри курируемых компонентов пути — fixtures, testdata,
+    examples, docs — не опускается ничего.
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("tests/fixtures/npm-app/package-lock.json", filler="pin-"),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "tests/fixtures/npm-app/package.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n", encoding="utf-8")
+
+    result = run_in(tmp_path, prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "pin-0" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "snap_path",
+    ["docs/snapshots/example.snap", "contracts/snapshots/schema.snap"],
+)
+def test_snap_in_generic_snapshots_dir_stays_in_diff(tmp_path: Path, snap_path: str) -> None:
+    """Компонент `snapshots/` в пути — не доказательство: слово, не инструмент.
+
+    Generated считается только `__snapshots__/` — имя, которым владеет
+    инструмент. Рукописный `.snap` в docs/ или contracts/ остаётся в дифе
+    (находка гейта на #99, второй заход); insta-конвенция `snapshots/` —
+    расширение списка правкой кита через ревью.
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(make_diff_block(snap_path, filler="hand-"), encoding="utf-8")
+
+    result = run_in(tmp_path, prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "hand-0" in result.stdout
+
+
 @pytest.mark.parametrize(
     ("lock_path", "manifest_path"),
     [
