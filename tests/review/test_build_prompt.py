@@ -47,6 +47,21 @@ def run(prompt: Path, diff: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_in(tree: Path, prompt: Path, diff: Path) -> subprocess.CompletedProcess[str]:
+    """Прогон из корня дерева PR: generated-фильтр сверяется с этим деревом.
+
+    Классификация lock-файлов смотрит на соседний манифест в рабочем дереве,
+    поэтому тесты фильтра обязаны задавать cwd явно — иначе они молча зависят
+    от того, из какого репозитория запущен pytest.
+    """
+    return subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff)],
+        capture_output=True,
+        text=True,
+        cwd=tree,
+    )
+
+
 def make(tmp_path: Path, prompt_text: str, diff_text: str) -> tuple[Path, Path]:
     prompt = tmp_path / "prompt.md"
     diff = tmp_path / "diff.patch"
@@ -463,8 +478,11 @@ def test_generated_lock_is_omitted_by_name_not_reviewed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert diff.stat().st_size > 400_000  # без опущения упёрлись бы в потолок
+    # Доказательство generated — манифест-сосед в дереве, из которого идёт
+    # прогон; без него lock-файл остался бы в дифе как обычный исходник.
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
-    result = run(prompt, diff)
+    result = run_in(tmp_path, prompt, diff)
 
     assert result.returncode == 0, result.stderr
     assert "generated-файл опущен из дифа: uv.lock" in result.stdout
@@ -505,3 +523,81 @@ def test_source_file_is_never_treated_as_generated(tmp_path: Path) -> None:
     assert "generated-файл опущен" not in result.stdout
     assert "diff --git a/src/locker.py" in result.stdout
     assert "diff --git a/docs/uv.lock.md" in result.stdout
+
+
+def test_lockfile_without_manifest_sibling_stays_in_diff(tmp_path: Path) -> None:
+    """`tests/fixtures/go.sum` без `go.mod` рядом — исходник, не generated.
+
+    Совпадение basename — только кандидатская гипотеза: рукописная копия
+    lock-файла в fixtures или docs ревьюируется как обычный код. Опущение
+    требует доказательства по дереву — манифеста-соседа (находка гейта на #99:
+    классификация по одному basename прятала исходники из ревью).
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("tests/fixtures/go.sum", filler="fixture-line-")
+        + make_diff_block("src/a.py"),
+        encoding="utf-8",
+    )
+
+    result = run_in(tmp_path, prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "diff --git a/tests/fixtures/go.sum" in result.stdout
+    assert "fixture-line-0" in result.stdout
+
+
+def test_snap_outside_snapshot_dir_stays_in_diff(tmp_path: Path) -> None:
+    """`contracts/example.snap` вне снапшот-каталога — исходник.
+
+    Расширение `.snap` само по себе ничего не доказывает: generated —
+    только файлы внутри `__snapshots__/` (jest) или `snapshots/` (insta),
+    где их кладёт инструмент.
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("contracts/example.snap", filler="hand-written-"),
+        encoding="utf-8",
+    )
+
+    result = run_in(tmp_path, prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "hand-written-0" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("lock_path", "manifest_path"),
+    [
+        ("go.sum", "go.mod"),
+        ("pkg/api/Cargo.lock", "pkg/api/Cargo.toml"),
+        ("web/package-lock.json", "web/package.json"),
+    ],
+)
+def test_lockfile_with_manifest_sibling_is_omitted(
+    tmp_path: Path, lock_path: str, manifest_path: str
+) -> None:
+    """Lock-файл рядом со своим манифестом в дереве — доказанно generated."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block(lock_path, filler="locked-") + make_diff_block("src/a.py"),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / manifest_path
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("manifest\n", encoding="utf-8")
+
+    result = run_in(tmp_path, prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert f"generated-файл опущен из дифа: {lock_path}" in result.stdout
+    assert "locked-0" not in result.stdout
+    assert "diff --git a/src/a.py" in result.stdout
