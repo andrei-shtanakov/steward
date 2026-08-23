@@ -81,8 +81,7 @@ jobs:
           # переписать промпт/склейку/порог своему же ревьюеру. Отказ должен
           # объяснять себя, иначе читается как поломка инфраструктуры.
           for f in .github/codex/review-prompt.md .github/codex/review-schema.json \
-                   scripts/review/build-prompt.sh scripts/review/apply-threshold.sh \
-                   scripts/review/collect-context.sh; do
+                   scripts/review/build-prompt.sh scripts/review/apply-threshold.sh; do
             [ -f "$f" ] && continue
             echo "::error::$f нет в base ($BASE_SHA). Инструкции И ИСПОЛНЯЕМАЯ механика"\
                  "ревьюера читаются из base по построению — иначе автор PR правит"\
@@ -126,7 +125,31 @@ jobs:
           # дифу, как раньше. Любой другой код — манифест ЕСТЬ, но собрать пакет
           # не вышло, и это отказ: молча съехать на «только диф» значило бы выдать
           # вердикт без контекста за вердикт с контекстом.
+          #
+          # Сам сборщик в обязательный перечень выше НЕ входит, и это не
+          # послабление, а тот же бутстрап, что у манифеста: PR, который вводит
+          # collect-context.sh, не найдёт его в base — фича заблокировала бы
+          # собственное внедрение. Ровно на этом чек и упал в первом прогоне.
+          #
+          # Но «не настроено» тут ДВА файла, и молчать можно только когда нет
+          # обоих. Манифест в base без сборщика — это не бутстрап, а поломка:
+          # кто-то удалил механику, оставив данные, и ревью тихо поехало бы по
+          # одному дифу с видом ревью с контекстом.
           ctx_args=""
+          if [ ! -f scripts/review/collect-context.sh ]; then
+            if git cat-file -e "$BASE_SHA:.github/codex/review-context.txt" 2>/dev/null; then
+              echo "::error::манифест контекста есть в base, а scripts/review/collect-context.sh"\
+                   "нет. Механику удалили, оставив данные: ревью без контекста выглядело бы"\
+                   "как ревью с ним."
+              exit 1
+            fi
+            echo "::notice::сборщик контекста ещё не в base — ревью по одному дифу."
+            sh scripts/review/build-prompt.sh \
+                --prompt .github/codex/review-prompt.md \
+                --diff diff.patch > prompt.txt
+            exit 0
+          fi
+
           set +e
           sh scripts/review/collect-context.sh \
               --base "$BASE_SHA" \
