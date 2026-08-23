@@ -81,7 +81,8 @@ jobs:
           # переписать промпт/склейку/порог своему же ревьюеру. Отказ должен
           # объяснять себя, иначе читается как поломка инфраструктуры.
           for f in .github/codex/review-prompt.md .github/codex/review-schema.json \
-                   scripts/review/build-prompt.sh scripts/review/apply-threshold.sh; do
+                   scripts/review/build-prompt.sh scripts/review/apply-threshold.sh \
+                   scripts/review/collect-context.sh; do
             [ -f "$f" ] && continue
             echo "::error::$f нет в base ($BASE_SHA). Инструкции И ИСПОЛНЯЕМАЯ механика"\
                  "ревьюера читаются из base по построению — иначе автор PR правит"\
@@ -114,9 +115,47 @@ jobs:
           # ДО выполнения логики скрипта — отказ окружения, а не находка
           # ревьюера. `sh <файл>` читает файл как данные, не исполняет его
           # напрямую — не зависит ни от x-бита, ни от noexec.
+
+          # Курируемый контекст из base. Читается через `git show <base>:<путь>`,
+          # а НЕ из этого чекаута: чекаут и так базовый, но полагаться на дерево
+          # значит полагаться на то, что ни один шаг до нас его не тронул.
+          # Ревизия названа явно — это дешевле, чем доверие.
+          #
+          # Три исхода различаются намеренно. 0 — пакет собран. 3 — манифеста в
+          # base нет, курируемый контекст здесь не настроен: ревью идёт по одному
+          # дифу, как раньше. Любой другой код — манифест ЕСТЬ, но собрать пакет
+          # не вышло, и это отказ: молча съехать на «только диф» значило бы выдать
+          # вердикт без контекста за вердикт с контекстом.
+          ctx_args=""
+          set +e
+          sh scripts/review/collect-context.sh \
+              --base "$BASE_SHA" \
+              --manifest .github/codex/review-context.txt > context.txt 2> context.err
+          ctx_code=$?
+          set -e
+          case "$ctx_code" in
+            0)
+              ctx_args="--context context.txt"
+              echo "контекст из base: $(grep -c '^### ' context.txt) файл(ов)," \
+                   "$(wc -c < context.txt) байт"
+              grep '^### ' context.txt || true
+              ;;
+            3)
+              cat context.err
+              echo "::notice::курируемый контекст не настроен — ревью по одному дифу."
+              ;;
+            *)
+              cat context.err >&2
+              echo "::error::манифест контекста есть в base, но пакет не собран" \
+                   "(код $ctx_code). Ревью без контекста выглядело бы как ревью с ним."
+              exit 1
+              ;;
+          esac
+
+          # shellcheck disable=SC2086 -- ctx_args либо пуст, либо ровно два слова
           sh scripts/review/build-prompt.sh \
               --prompt .github/codex/review-prompt.md \
-              --diff diff.patch > prompt.txt
+              --diff diff.patch $ctx_args > prompt.txt
 
       - name: Ревью
         if: steps.diff.outputs.skip == 'false'

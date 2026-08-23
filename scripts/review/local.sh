@@ -339,8 +339,36 @@ fi
 [ -r "$schema" ] || { echo "файл схемы нечитаем: $schema" >&2; exit 2; }
 [ -r "$prompt" ] || { echo "файл инструкций нечитаем: $prompt" >&2; exit 2; }
 
+# Курируемый контекст. Локально промпт и схема неизбежно берутся из рабочего
+# дерева автора (см. шапку), но контекст — НЕТ: он читается через `git show
+# <merge-base>:<путь>`, то есть из той же точки, что и в CI. Локальный прогон
+# получает ровно тот пакет, который увидит ревьюер в CI, — и одна из двух
+# локальных поблажек здесь просто не нужна.
+manifest="${REVIEW_CONTEXT_MANIFEST:-.github/codex/review-context.txt}"
+ctx_args=""
+set +e
+sh "$kit_dir/collect-context.sh" --base "$mb" --manifest "$manifest" \
+    > "$work/context.txt" 2> "$work/context.err"
+ctx_code=$?
+set -e
+case "$ctx_code" in
+    0)
+        ctx_args="--context $work/context.txt"
+        echo "контекст: $(grep -c '^### ' "$work/context.txt") файл(ов) из $(git rev-parse --short "$mb")"
+        ;;
+    3)
+        echo "контекст: не настроен ($manifest нет в базе) — ревью по одному дифу"
+        ;;
+    *)
+        cat "$work/context.err" >&2
+        echo "манифест контекста есть, но пакет не собран (код $ctx_code)." >&2
+        exit 2
+        ;;
+esac
+
+# shellcheck disable=SC2086 -- ctx_args либо пуст, либо ровно два слова
 sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
-    > "$work/prompt.txt"
+    $ctx_args > "$work/prompt.txt"
 
 # Промпт идёт на stdin, а не аргументом: диф — недоверенный текст, и в argv он
 # не попадает ни здесь, ни в CI. Ревьюер в песочнице read-only: он читает, а не
