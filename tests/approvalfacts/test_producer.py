@@ -18,11 +18,23 @@ OWNER, NAME = "andrei-shtanakov", "steward"
 
 
 def _fake_gh(responses: list[tuple[int, object]]):
+    """Подмена `_gh`, отдающая (code, stdout, stderr).
+
+    Соглашение фикстур: словарь — это тело на stdout, строка — текст на stderr.
+    Так тест, задающий «gh упал с сообщением», по-прежнему пишется одной
+    строкой, а тест, задающий реальную форму GraphQL-ответа с ненулевым кодом,
+    может задать оба потока кортежем `(stdout, stderr)`.
+    """
     it: Iterator[tuple[int, object]] = iter(responses)
 
-    def fake(args: list[str]) -> tuple[int, str]:
+    def fake(args: list[str]) -> tuple[int, str, str]:
         code, payload = next(it)
-        return code, payload if isinstance(payload, str) else json.dumps(payload)
+        if isinstance(payload, str):
+            return code, "", payload
+        if isinstance(payload, tuple):
+            body, err = payload
+            return code, body if isinstance(body, str) else json.dumps(body), err
+        return code, json.dumps(payload), ""
 
     return fake
 
@@ -101,32 +113,119 @@ def test_pull_request_null_with_no_errors_is_not_found(monkeypatch: pytest.Monke
     assert resolve(OWNER, NAME, RequestId("pr", 42)).state == "not_found"
 
 
-def test_nonexistent_pr_on_live_github_is_mechanical_failure(
+#: Реальная форма ответа `gh api graphql` на несуществующий номер PR, снятая
+#: живой приёмкой (`docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`,
+#: шаг 3): валидное тело с `pullRequest: null` И непустой top-level `errors`,
+#: из-за которого `gh` завершается кодом 1.
+_LIVE_ABSENT_PR = (
+    {
+        "data": {"repository": {"pullRequest": None}},
+        "errors": [
+            {
+                "type": "NOT_FOUND",
+                "path": ["repository", "pullRequest"],
+                "message": "Could not resolve to a PullRequest with the number of 999999.",
+            }
+        ],
+    },
+    "gh: Could not resolve to a PullRequest with the number of 999999.",
+)
+
+
+def test_nonexistent_pr_on_live_github_is_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins TODAY's actual, documented-as-a-defect behavior against the real
-    shape live GitHub sends — added so the open contradiction
-    (`approval-facts-not-found-vs-mechanical-failure` in `TODO.md`) is a test
-    that changes ON PURPOSE when the owner resolves it, not prose that can
-    silently go stale.
+    """Перевёрнутый характеризационный тест: раньше он фиксировал дефект.
 
-    Live acceptance (`docs/evidence/2026-08-21-approval-facts-v2-migration/manifest.md`,
-    шаг 3, 2026-08-21) found `gh api graphql` for a nonexistent PR number
-    exits **nonzero** (`1`) with a plain-text stderr message — even though
-    its stdout, if you looked at it directly, would contain valid JSON with
-    `data.repository.pullRequest: null` alongside a non-empty top-level
-    `errors: [{type: NOT_FOUND, ...}]`. `_gh()` only returns `proc.stdout` on
-    a *zero* exit code (`producer.py`); on nonzero it returns `proc.stderr`
-    and never reaches JSON parsing at all, so `_graphql()`'s `code != 0`
-    check raises `MechanicalFailure` immediately. `not_found` never gets a
-    chance to become a record for `request.kind: pr` against live GitHub."""
+    Живая приёмка 2026-08-21 показала, что `gh api graphql` на несуществующий
+    номер PR завершается кодом 1, но его stdout содержит валидный JSON с
+    `data.repository.pullRequest: null` рядом с `errors: [{type: NOT_FOUND}]`.
+    Прежний `_gh()` отдавал stdout только при нулевом коде, поэтому тело
+    терялось, и `not_found` не мог стать записью против живого GitHub —
+    хотя §4.2/§9.1 обещают его законным терминальным состоянием.
+
+    Тест был написан как характеризационный — «меняется намеренно, когда
+    владелец починит». Вот эта смена."""
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(1, _LIVE_ABSENT_PR)]))
+
+    assert resolve(OWNER, NAME, RequestId("pr", 999999)).state == "not_found"
+
+
+def test_not_found_mixed_with_another_error_stays_mechanical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Терпимость распространяется только на «объекта нет», и ни на что рядом.
+
+    Ответ, где вместе с `NOT_FOUND` приехал, например, rate limit, истолковать
+    как авторитетное отсутствие нельзя: часть данных не получена по другой
+    причине, и доложить это отсутствием значит доложить недоступность как факт
+    об акторе."""
+    body, err = _LIVE_ABSENT_PR
+    mixed = {**body, "errors": [*body["errors"], {"type": "RATE_LIMITED", "message": "slow down"}]}
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(1, (mixed, err))]))
+
+    with pytest.raises(MechanicalFailure, match="GraphQL errors"):
+        resolve(OWNER, NAME, RequestId("pr", 999999))
+
+
+def test_not_found_without_data_is_mechanical(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`NOT_FOUND` при `data: null` — читать нечем, значит это не ответ."""
+    body, err = _LIVE_ABSENT_PR
+    monkeypatch.setattr(producer, "_gh", _fake_gh([(1, ({**body, "data": None}, err))]))
+
+    with pytest.raises(MechanicalFailure, match="GraphQL errors"):
+        resolve(OWNER, NAME, RequestId("pr", 999999))
+
+
+def test_nonzero_exit_with_clean_json_stays_mechanical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Тело без ошибок при недовольном `gh` — истолковать нечего.
+
+    Терпимость к ненулевому коду держится ровно на объяснении: ошибки есть, и
+    все они про отсутствие. Без такого объяснения ненулевой код остаётся
+    сбоем."""
     monkeypatch.setattr(
         producer,
         "_gh",
-        _fake_gh([(1, "gh: Could not resolve to a PullRequest with the number of 999999.")]),
+        _fake_gh([(1, ({"data": {"repository": {"pullRequest": None}}}, "boom"))]),
     )
+
     with pytest.raises(MechanicalFailure, match="завершился с кодом"):
         resolve(OWNER, NAME, RequestId("pr", 999999))
+
+
+def test_absent_repository_is_still_unavailability_not_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Решение, которое нельзя сломать заодно.
+
+    `NOT_FOUND` у самого репозитория приходит с `repository: null`. Теперь
+    такой ответ доходит до `_repository` — и тот по-прежнему отказывается
+    читать его как «репозитория нет»: auth и visibility выглядят точно так же,
+    и доложить недоступность отсутствием — то самое, ради чего это правило
+    и заводили."""
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    1,
+                    (
+                        {
+                            "data": {"repository": None},
+                            "errors": [{"type": "NOT_FOUND", "path": ["repository"]}],
+                        },
+                        "gh: Could not resolve to a Repository",
+                    ),
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(MechanicalFailure, match="недоступность"):
+        resolve(OWNER, NAME, RequestId("pr", 42))
 
 
 def test_missing_pull_request_key_is_mechanical_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -429,6 +528,39 @@ def test_materialize_aborts_whole_batch_on_mechanical_failure(
     )
     with pytest.raises(MechanicalFailure):
         materialize("andrei-shtanakov/steward", [RequestId("pr", 1), RequestId("pr", 2)])
+
+
+def test_batch_survives_one_absent_pr_and_records_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """То, ради чего чинили: один битый номер больше не уносит весь батч.
+
+    До починки несуществующий номер PR давал `MechanicalFailure`, то есть
+    exit 3 и отсутствие файла целиком — при регулярном прогоне это означало бы
+    «наблюдаемости нет» из-за одной опечатки в списке. Теперь отсутствие
+    становится записью, а остальные элементы доезжают.
+    """
+    monkeypatch.setattr(
+        producer,
+        "_gh",
+        _fake_gh(
+            [
+                (
+                    0,
+                    {
+                        "data": {
+                            "repository": {"pullRequest": {"mergeCommit": None, "mergedBy": None}}
+                        }
+                    },
+                ),
+                (1, _LIVE_ABSENT_PR),
+            ]
+        ),
+    )
+
+    results = materialize("andrei-shtanakov/steward", [RequestId("pr", 1), RequestId("pr", 999999)])
+
+    assert [r.state for r in results] == ["not_merged", "not_found"]
 
 
 def test_malformed_repo_is_value_error() -> None:

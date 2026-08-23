@@ -48,15 +48,24 @@ class MechanicalFailure(RuntimeError):
     """Спросить не удалось: транспорт, auth, GraphQL errors, неполный обход."""
 
 
-def _gh(args: list[str]) -> tuple[int, str]:
-    """Единственная точка вызова `gh` — тесты подменяют её целиком."""
+def _gh(args: list[str]) -> tuple[int, str, str]:
+    """Единственная точка вызова `gh` — тесты подменяют её целиком.
+
+    Возвращает **оба** потока, а не один на выбор по коду выхода. Прежняя
+    версия отдавала stdout только при нулевом коде, а иначе stderr — и тем
+    самым выбрасывала тело ответа раньше, чем кто-либо мог в него заглянуть.
+    Для `gh api graphql` это фатально: у резолверных полей вроде
+    `pullRequest(number:)` отсутствие объекта приходит как валидный JSON с
+    `pullRequest: null` **и** непустым top-level `errors`, из-за которого `gh`
+    завершается кодом 1. Тело есть, но старая сигнатура его не пропускала.
+    """
     try:
         proc = subprocess.run(  # noqa: S603 S607 — фиксированный argv
             ["gh", *args], capture_output=True, text=True, timeout=60, check=False
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return 127, str(exc)
-    return proc.returncode, (proc.stdout if proc.returncode == 0 else proc.stderr).strip()
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
 def _graphql(query: str, variables: dict[str, Any], *, what: str) -> dict[str, Any]:
@@ -65,18 +74,46 @@ def _graphql(query: str, variables: dict[str, Any], *, what: str) -> dict[str, A
         if value is None:
             continue
         args += ["-F", f"{key}={value}"] if isinstance(value, int) else ["-f", f"{key}={value}"]
-    code, out = _gh(args)
-    if code != 0:
-        raise MechanicalFailure(f"{what}: gh завершился с кодом {code}: {out}")
+    code, out, err = _gh(args)
     try:
         payload = json.loads(out)
     except json.JSONDecodeError as exc:
+        # Тела нет или оно не JSON — вот теперь код выхода единственное, что у
+        # нас есть, и он решает. Диагностику берём из stderr: там текст `gh`.
+        detail = err or str(exc)
+        if code != 0:
+            raise MechanicalFailure(f"{what}: gh завершился с кодом {code}: {detail}") from exc
         raise MechanicalFailure(f"{what}: ответ не JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise MechanicalFailure(f"{what}: ответ не объект")
-    if payload.get("errors"):
-        raise MechanicalFailure(f"{what}: GraphQL errors: {payload['errors']}")
+    errors = payload.get("errors")
+    if errors and not _only_absence(errors, payload):
+        raise MechanicalFailure(f"{what}: GraphQL errors: {errors}")
+    if code != 0 and not errors:
+        # JSON без ошибок, но `gh` недоволен — истолковать нечего.
+        raise MechanicalFailure(f"{what}: gh завершился с кодом {code}: {err or out}")
     return payload
+
+
+def _only_absence(errors: object, payload: dict[str, Any]) -> bool:
+    """Все ли GraphQL-ошибки — «такого объекта нет», при живом `data`?
+
+    Разделение, которого не было: GraphQL кладёт в один ответ и частичные
+    данные, и ошибки нерезолвнутых полей. `NOT_FOUND` у резолверного поля —
+    авторитетный отрицательный ответ (§4.2/§9.1 обещают `not_found` законным
+    терминальным состоянием для `request.kind: pr`), а вот auth, rate limit и
+    прочее — сбой инструмента. Сваливать их в одно значило докладывать
+    недоступность как отсутствие, то есть ровно тот класс, ради которого
+    `_repository` уже отказывается читать `repository: null` как «нет репо».
+
+    Требуется И то, И другое: только тип `NOT_FOUND` у **каждой** ошибки, и
+    присутствующий `data`. Смесь типов или `data: null` читать нечем.
+    """
+    if not isinstance(errors, list) or not errors:
+        return False
+    if payload.get("data") is None:
+        return False
+    return all(isinstance(error, dict) and error.get("type") == "NOT_FOUND" for error in errors)
 
 
 def _repository(payload: dict[str, Any], what: str) -> dict[str, Any]:
