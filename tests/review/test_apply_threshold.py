@@ -1,7 +1,6 @@
 """Тесты scripts/review/apply-threshold.sh — порог, рендер, коды выхода."""
 
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,192 +46,190 @@ def write(tmp_path: Path, payload: object) -> Path:
     return target
 
 
+def finding(**overrides: object) -> dict:
+    """Полная находка схемы v2; поля переопределяются по месту.
+
+    По умолчанию — блокирующая major: high confidence, заполненные scenario/
+    observed_result и один элемент evidence. Тесты, проверяющие небло­кировку,
+    выключают ровно одно требование — так каждое из них закреплено отдельно.
+    """
+    base: dict = {
+        "severity": "major",
+        "title": "продюсер молчит про пустой ответ",
+        "file": "src/a.py",
+        "line": 10,
+        "scenario": "вход X при пустом ответе API",
+        "observed_result": "функция возвращает 0 и не пишет файл",
+        "expected_result": "отказ с кодом 2",
+        "evidence": [{"file": "src/b.py", "line": 5, "reason": "return 0 без записи"}],
+        "confidence": "high",
+    }
+    base.update(overrides)
+    return base
+
+
 def test_no_findings_is_green(tmp_path: Path) -> None:
-    result = run(write(tmp_path, {"findings": [], "note": "смотрел диф"}))
+    result = run(write(tmp_path, {"findings": [], "note": "чисто"}))
     assert result.returncode == 0
     assert "Находок нет." in result.stdout
-    assert "смотрел диф" in result.stdout
 
 
-def test_major_reddens(tmp_path: Path) -> None:
-    payload = {"findings": [{"severity": "major", "file": "a.py", "summary": "s", "failure": "f"}]}
-    assert run(write(tmp_path, payload)).returncode == 1
+def test_full_major_with_high_confidence_blocks(tmp_path: Path) -> None:
+    result = run(write(tmp_path, {"findings": [finding()], "note": ""}))
+    assert result.returncode == 1
+    assert "БЛОКИРУЕТ" in result.stdout
 
 
-def test_blocker_reddens(tmp_path: Path) -> None:
-    payload = {
-        "findings": [{"severity": "blocker", "file": "a.py", "summary": "s", "failure": "f"}]
-    }
-    assert run(write(tmp_path, payload)).returncode == 1
+def test_full_blocker_blocks(tmp_path: Path) -> None:
+    result = run(write(tmp_path, {"findings": [finding(severity="blocker")], "note": ""}))
+    assert result.returncode == 1
 
 
-def test_minor_alone_stays_green(tmp_path: Path) -> None:
-    """Порог — blocker и major. minor виден в выводе, но не красит."""
-    payload = {"findings": [{"severity": "minor", "file": "a.py", "summary": "s", "failure": "f"}]}
-    result = run(write(tmp_path, payload))
+def test_minor_never_blocks_even_fully_evidenced(tmp_path: Path) -> None:
+    result = run(write(tmp_path, {"findings": [finding(severity="minor")], "note": ""}))
     assert result.returncode == 0
-    assert "minor" in result.stdout
+    assert "не блокирует по severity" in result.stdout
+
+
+# --- Каждое требование блокировки выключается по отдельности --------------
+#
+# Правило владельца (2026-08-23): блокируют только blocker/major с
+# confidence: high и заполненными scenario, observed_result и evidence.
+# Убедительно звучащая гипотеза без проверенного кода не имеет права
+# останавливать мерж — precision гейта важнее полноты.
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_reason"),
+    [
+        ({"confidence": "medium"}, "confidence не high"),
+        ({"confidence": "low"}, "confidence не high"),
+        ({"scenario": ""}, "нет scenario"),
+        ({"observed_result": ""}, "нет observed_result"),
+        ({"evidence": []}, "нет evidence"),
+    ],
+)
+def test_major_without_one_requirement_does_not_block(
+    tmp_path: Path, override: dict, expected_reason: str
+) -> None:
+    result = run(write(tmp_path, {"findings": [finding(**override)], "note": ""}))
+    assert result.returncode == 0, result.stdout
+    # Находка не исчезает — рендерится с явной причиной, чего не хватило:
+    # молча понижать значило бы прятать от человека сигнал уровня major.
+    assert expected_reason in result.stdout
+
+
+def test_reason_names_every_missing_requirement(tmp_path: Path) -> None:
+    weak = finding(confidence="low", scenario="", observed_result="", evidence=[])
+    result = run(write(tmp_path, {"findings": [weak], "note": ""}))
+    assert result.returncode == 0
+    for reason in ("confidence не high", "нет scenario", "нет observed_result", "нет evidence"):
+        assert reason in result.stdout
+
+
+def test_one_blocking_among_weak_still_reddens(tmp_path: Path) -> None:
+    payload = {"findings": [finding(confidence="low"), finding()], "note": ""}
+    result = run(write(tmp_path, payload))
+    assert result.returncode == 1
+
+
+# --- Негодный вердикт — код 2, не «замечаний нет» --------------------------
 
 
 def test_findings_not_an_array_is_config_error(tmp_path: Path) -> None:
-    assert run(write(tmp_path, {"findings": "нет"})).returncode == 2
+    assert run(write(tmp_path, {"findings": "мусор", "note": ""})).returncode == 2
 
 
-def test_severity_outside_enum_is_config_error(tmp_path: Path) -> None:
-    """`CRITICAL` (иная капитализация/синоним) не в enum'е схемы — не должна
-    молча читаться как «ниже порога» и красить чек зелёным."""
-    payload = {
-        "findings": [{"severity": "CRITICAL", "file": "a.py", "summary": "дыра", "failure": "f"}],
-        "note": "n",
-    }
-    result = run(write(tmp_path, payload))
-    assert result.returncode == 2
-    assert "severity" in result.stderr
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"severity": "critical"},
+        {"severity": "Major"},
+        {"confidence": "sure"},
+        {"confidence": 1},
+        {"title": 7},
+        {"file": ["a"]},
+        {"line": "десять"},
+        {"scenario": {"x": 1}},
+        {"observed_result": 3.5},
+        {"evidence": "прочитал всё"},
+        {"evidence": [{"file": 1, "line": 2, "reason": "r"}]},
+        {"evidence": [{"file": "a", "line": "два", "reason": "r"}]},
+        {"evidence": ["строка"]},
+    ],
+)
+def test_malformed_finding_is_config_error(tmp_path: Path, override: dict) -> None:
+    """Всё вне схемы v2 — отказ ЗДЕСЬ, а не тихое «не блокирует».
+
+    Порог читает severity/confidence как allow-list: значение вне enum'а,
+    молча оценённое как «не блокирует», красило бы негодный вердикт зелёным —
+    инвертированный инвариант кита.
+    """
+    result = run(write(tmp_path, {"findings": [finding(**override)], "note": ""}))
+    assert result.returncode == 2, result.stdout
+    assert "вердикт нечитаем" in result.stderr
 
 
 def test_finding_without_severity_is_config_error(tmp_path: Path) -> None:
-    """Находка вообще без ключа `severity` — тот же инвертированный инвариант:
-    без явной проверки она тоже читалась бы как «ниже порога»."""
-    result = run(write(tmp_path, {"findings": [{"file": "a"}], "note": "n"}))
-    assert result.returncode == 2
+    broken = finding()
+    del broken["severity"]
+    assert run(write(tmp_path, {"findings": [broken], "note": ""})).returncode == 2
 
 
 def test_finding_that_is_not_an_object_is_config_error(tmp_path: Path) -> None:
-    """Элемент-строка внутри `findings` обязан давать код 2 (§7), не 5 —
-    иначе CI разбирает механический сбой как находку уровня blocker/major."""
-    result = run(write(tmp_path, {"findings": ["строка"], "note": "n"}))
-    assert result.returncode == 2
-
-
-def test_non_string_file_is_config_error(tmp_path: Path) -> None:
-    """Числовой `file` проходит проверку `severity`, но падает ПОЗЖЕ внутри
-    `gsub` в `cell` — вызывающий получил бы частично напечатанный body.md
-    (заголовок + note + начало таблицы) и код 5, вне набора §7."""
-    payload = {
-        "findings": [{"severity": "major", "file": 123, "summary": "s", "failure": "f"}],
-        "note": "n",
-    }
-    result = run(write(tmp_path, payload))
-    assert result.returncode == 2
-    assert result.stdout == ""
-
-
-def test_non_string_summary_is_config_error(tmp_path: Path) -> None:
-    payload = {
-        "findings": [{"severity": "major", "file": "a.py", "summary": {"x": 1}, "failure": "f"}],
-        "note": "n",
-    }
-    result = run(write(tmp_path, payload))
-    assert result.returncode == 2
-    assert result.stdout == ""
-
-
-def test_non_string_failure_is_config_error(tmp_path: Path) -> None:
-    payload = {
-        "findings": [{"severity": "major", "file": "a.py", "summary": "s", "failure": [1, 2]}],
-        "note": "n",
-    }
-    result = run(write(tmp_path, payload))
-    assert result.returncode == 2
-    assert result.stdout == ""
-
-
-def test_null_file_summary_failure_still_render(tmp_path: Path) -> None:
-    """`null` — легитимное отсутствие поля: `cell` подставляет пустую строку,
-    а не крашится. Guard обязан пропускать null наравне со строкой."""
-    payload = {
-        "findings": [{"severity": "minor", "file": None, "summary": None, "failure": None}],
-        "note": "n",
-    }
-    result = run(write(tmp_path, payload))
-    assert result.returncode == 0
-    assert "| minor | `` |  |  |" in result.stdout
+    assert run(write(tmp_path, {"findings": ["строка"], "note": ""})).returncode == 2
 
 
 def test_non_string_note_is_config_error(tmp_path: Path) -> None:
-    """`.note` — тот же класс, что `file`/`summary`/`failure`, одним полем
-    правее: нестроковый note (объект) не крашится (`jq -r '.note // ""'`
-    печатает его как есть), значит НЕ ловится type=="object" guard'ом
-    findings и проходит молча — при пустом findings давал бы код 0
-    "замечаний нет" с JSON-объектом прямо в теле отчёта."""
-    payload = {"findings": [], "note": {"oops": 1}}
-    result = run(write(tmp_path, payload))
+    result = run(write(tmp_path, {"findings": [], "note": {"объект": 1}}))
     assert result.returncode == 2
-    assert "note" in result.stderr
 
 
 def test_missing_note_is_still_valid(tmp_path: Path) -> None:
-    """Контрольный: guard на note не должен требовать присутствия поля —
-    `.note // ""` уже трактует отсутствие как пустую строку."""
-    payload = {"findings": []}
-    result = run(write(tmp_path, payload))
-    assert result.returncode == 0
+    assert run(write(tmp_path, {"findings": []})).returncode == 0
 
 
-def test_valid_verdict_rendering_is_unchanged(tmp_path: Path) -> None:
-    """Контрольный: ужесточение проверки не должно тронуть рендер годного
-    вердикта — сверка байт-в-байт с ожидаемым выводом."""
-    payload = {
-        "findings": [{"severity": "major", "file": "a.py", "summary": "s", "failure": "f"}],
-        "note": "n",
-    }
-    result = run(write(tmp_path, payload))
+# --- Рендер ----------------------------------------------------------------
+
+
+def test_markdown_renders_all_v2_fields(tmp_path: Path) -> None:
+    result = run(write(tmp_path, {"findings": [finding()], "note": "читал b"}))
+    out = result.stdout
+    assert "### [major] продюсер молчит про пустой ответ — `src/a.py:10`" in out
+    assert "- Сценарий: вход X при пустом ответе API" in out
+    assert "- Наблюдаемое: функция возвращает 0 и не пишет файл" in out
+    assert "- Ожидаемое: отказ с кодом 2" in out
+    assert "- Evidence: `src/b.py:5` — return 0 без записи" in out
+    assert "- confidence: high → БЛОКИРУЕТ" in out
+    assert "читал b" in out
+
+
+def test_newlines_in_fields_are_flattened(tmp_path: Path) -> None:
+    """Текст пишет модель: перевод строки внутри поля разъезжал бы markdown."""
+    tricky = finding(scenario="строка раз\nстрока два", title="заголовок\nхвост")
+    result = run(write(tmp_path, {"findings": [tricky], "note": ""}))
+    assert "строка раз строка два" in result.stdout
+    assert "заголовок хвост" in result.stdout
+
+
+def test_text_format_has_no_markdown_headings(tmp_path: Path) -> None:
+    result = run(write(tmp_path, {"findings": [finding()], "note": ""}), fmt="text")
     assert result.returncode == 1
-    assert result.stdout == (
-        "## Ревью Codex — независимый чек\n"
-        "\n"
-        "n\n"
-        "\n"
-        "| уровень | файл | находка | сценарий отказа |\n"
-        "|---|---|---|---|\n"
-        "| major | `a.py` | s | f |\n"
-        "\n"
-        "_Порог: красным делают `blocker` и `major`. Это чек, не аппрув —\n"
-        "и не замена ревью человека._\n"
-    )
+    assert "### " not in result.stdout
+    assert "[major/high]" in result.stdout
 
 
 def test_missing_file_is_config_error(tmp_path: Path) -> None:
-    result = run(tmp_path / "нет-такого.json")
-    assert result.returncode == 2
+    assert run(tmp_path / "нет.json").returncode == 2
 
 
 def test_unknown_format_is_config_error(tmp_path: Path) -> None:
-    assert run(write(tmp_path, {"findings": []}), fmt="хтмл").returncode == 2
-
-
-def test_pipe_and_newline_in_cells_do_not_break_the_table(tmp_path: Path) -> None:
-    """Текст вердикта пишет модель: `|` или перевод строки рвали бы таблицу молча."""
-    payload = {
-        "findings": [
-            {
-                "severity": "major",
-                "file": "a.py",
-                "summary": "две|трубы|внутри",
-                "failure": "первая строка\nвторая строка",
-            }
-        ]
-    }
-    result = run(write(tmp_path, payload))
-    rows = [ln for ln in result.stdout.splitlines() if ln.startswith("| major")]
-    assert len(rows) == 1, "находка обязана остаться одной строкой таблицы"
-    # Экранирование — это `\|`, не удаление трубы: символ остаётся, но с
-    # предшествующим бэкслешем. Считаем СТРУКТУРНЫЕ трубы отдельно от
-    # экранированных, а не сырое число символов `|` в строке.
-    unescaped = re.sub(r"\\\|", "", rows[0]).count("|")
-    assert unescaped == 5, "внутренние трубы обязаны быть экранированы"
-
-
-def test_text_format_has_no_markdown_table(tmp_path: Path) -> None:
-    payload = {"findings": [{"severity": "major", "file": "a.py", "summary": "s", "failure": "f"}]}
-    result = run(write(tmp_path, payload), fmt="text")
-    assert "|---|" not in result.stdout
-    assert "major" in result.stdout
+    result = run(write(tmp_path, {"findings": [], "note": ""}), fmt="html")
+    assert result.returncode == 2
 
 
 @pytest.mark.parametrize("interpreter", INTERPRETERS)
 def test_bare_verdict_flag_is_config_error(interpreter: str) -> None:
-    """Голый `--verdict` без значения — код 2 и usage(), а не сообщение shell."""
     result = subprocess.run([interpreter, str(SCRIPT), "--verdict"], capture_output=True, text=True)
     assert result.returncode == 2
     assert "usage" in result.stderr
@@ -240,8 +237,7 @@ def test_bare_verdict_flag_is_config_error(interpreter: str) -> None:
 
 @pytest.mark.parametrize("interpreter", INTERPRETERS)
 def test_bare_format_flag_is_config_error(interpreter: str, tmp_path: Path) -> None:
-    """Голый `--format` в конце командной строки — тоже код 2, а не exit 1/крах shell."""
-    verdict = write(tmp_path, {"findings": []})
+    verdict = write(tmp_path, {"findings": [], "note": ""})
     result = subprocess.run(
         [interpreter, str(SCRIPT), "--verdict", str(verdict), "--format"],
         capture_output=True,
