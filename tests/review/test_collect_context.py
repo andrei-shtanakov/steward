@@ -282,6 +282,58 @@ def test_total_cap(repo: Path) -> None:
     assert "пакет контекста больше 40 байт" in res.stderr
 
 
+def test_total_cap_counts_headers_not_just_blobs(repo: Path) -> None:
+    """Потолок меряет СОБРАННЫЕ байты, а не сумму длин файлов.
+
+    Заголовок `--- ФАЙЛ <путь> sha256:<64 hex> ---` весит около сотни байт — на
+    манифесте из множества крошечных файлов именно заголовки составят почти весь
+    пакет. Сумма блобов сказала бы «уложились», пока пакет вытесняет из промпта
+    сам диф: та самая «неизвестность как зелёное», только у прибора.
+    """
+    paths = [f"tiny/f{i}.py" for i in range(8)]
+    for rel in paths:
+        write(repo, rel, "x\n")  # 2 байта каждый, 16 суммарно
+    write(repo, MANIFEST, "\n".join(paths) + "\n")
+    base = commit(repo, "много крошечных файлов")
+
+    res = run(repo, base, "--max-total", "200")
+
+    assert res.returncode == 2, res.stdout
+    assert "собрано" in res.stderr
+
+
+def test_directory_in_manifest_is_a_refusal(repo: Path) -> None:
+    """Каталог в манифесте — отказ, а не «листинг дерева под видом файла».
+
+    `git show <base>:<каталог>` выходит с нулём и печатает перечень имён. Без
+    проверки типа объекта ревьюер получил бы заголовок, отпечаток и зелёный чек,
+    но вместо кода модуля — оглавление.
+    """
+    write(repo, MANIFEST, "src\n")
+    base = commit(repo, "каталог в манифесте")
+
+    res = run(repo, base)
+
+    assert res.returncode == 2, res.stdout
+    assert "не файл, а tree" in res.stderr
+
+
+def test_crlf_manifest_still_resolves_paths(repo: Path) -> None:
+    """Манифест с CRLF не ломает поиск путей.
+
+    `read -r` оставляет `\r` в конце строки, и `git show` искал бы блоб с этим
+    символом в имени — отказ на существующем файле, красный чек на каждом PR,
+    пока кто-то не перепишет манифест в LF.
+    """
+    (repo / MANIFEST).write_bytes(b"# \xd0\xba\xd0\xbe\xd0\xbc\r\nsrc/producer.py\r\n")
+    base = commit(repo, "манифест с CRLF")
+
+    res = run(repo, base)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert attached_paths(res.stdout) == ["src/producer.py"]
+
+
 def test_binary_refused(repo: Path) -> None:
     """NUL-байт в файле — отказ: в промпте бинарь либо потеряется, либо порвёт разметку."""
     (repo / "src" / "blob.bin").write_bytes(b"\x00\x01\x02")
