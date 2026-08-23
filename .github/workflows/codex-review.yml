@@ -130,6 +130,11 @@ jobs:
             > "$WORK/diff.patch"
           bytes=$(wc -c < "$WORK/diff.patch")
           echo "diff bytes: $bytes"
+          # Список изменённых путей PR — вход generated-фильтра на шаге
+          # склейки. Имена из API сырые (без C-квотинга) — согласовано с
+          # `core.quotePath=false` у check-attr ниже по workflow.
+          gh api "repos/$REPO/pulls/$PR/files" --paginate \
+            --jq '.[].filename' > "$WORK/changed-paths.txt"
           # Диф без изменений — не «ревью прошло», а нечего ревьюить: состояние
           # определённое и легитимно зелёное. Но зелёным оно должно стать ЯВНО, а
           # не пройдя к модели с пустым входом: иначе вердикт о пустоте выносит
@@ -194,26 +199,40 @@ jobs:
               ;;
           esac
 
-          # Ветвление, а не сборка аргументов в строку: некавыченное раскрытие
-          # разваливается на пути с пробелом; форма одинакова с local.sh.
-          # ДЕПЛОЙ-ОГРАНИЧЕНИЕ: скрипты извлечены из base, а этот YAML — из
-          # head, поэтому вызов здесь обязан держаться сигнатуры, уже влитой
-          # в base; новый флаг скрипта становится доступен CI только СЛЕДУЮЩИМ
-          # PR (передача `--tree` из ещё не влитого кита уронила прогон
-          # кодом 2 — usage от базовой версии). `--tree` тут и не нужен:
-          # умолчание в build-prompt.sh — cwd, а cwd шага по контракту
-          # runner'а — корень workspace с чекаутом merge-ref, то есть ровно
-          # дерево дифа. local.sh это не касается: он и скрипты — одно дерево.
+          # Argv собирается позиционными параметрами (форма local.sh): только
+          # так флаги добавляются по частям без некавыченного раскрытия
+          # строки, которое разваливается на пути с пробелом.
+          set -- --prompt "$KIT/review-prompt.md" --diff "$WORK/diff.patch"
           if [ "$use_context" -eq 1 ]; then
-            sh "$KIT/build-prompt.sh" \
-                --prompt "$KIT/review-prompt.md" \
-                --diff "$WORK/diff.patch" --context "$WORK/context.txt" \
-                > "$WORK/prompt.txt"
-          else
-            sh "$KIT/build-prompt.sh" \
-                --prompt "$KIT/review-prompt.md" \
-                --diff "$WORK/diff.patch" > "$WORK/prompt.txt"
+            set -- "$@" --context "$WORK/context.txt"
           fi
+
+          # ДЕПЛОЙ-ОГРАНИЧЕНИЕ: скрипты извлечены из base, а этот YAML — из
+          # head, поэтому новый флаг кита передаётся только когда извлечённая
+          # механика его уже знает — ДЕТЕКЦИЕЙ по литералу флага в скрипте,
+          # не предположением (передача нового флага вслепую уже роняла
+          # прогон кодом 2 — usage от базовой версии). До мержа кита фильтра
+          # в CI нет: крупный generated-диф получает явный отказ по потолку —
+          # честный и временный; после мержа ветка включается сама, без
+          # второго PR.
+          #
+          # Generated — то, что репо ОБЪЯВИЛ в .gitattributes
+          # (linguist-generated). check-attr читает атрибут из workspace, а
+          # workspace здесь — чекаут merge-ref, ПО ПОСТРОЕНИЮ ревьюируемое
+          # дерево (local.sh такого свойства не имеет и читает из дерева
+          # --head-коммита через --source). `=true` даёт значение "true",
+          # голый атрибут — "set"; парсинг с хвоста строки: путь может
+          # содержать ": ".
+          if grep -q -- '--generated-list' "$KIT/build-prompt.sh"; then
+            git -c core.quotePath=false check-attr --stdin linguist-generated \
+                < "$WORK/changed-paths.txt" > "$WORK/generated-attrs.txt"
+            sed -n -e 's/: linguist-generated: true$//p' \
+                -e 's/: linguist-generated: set$//p' \
+                "$WORK/generated-attrs.txt" > "$WORK/generated-paths.txt"
+            set -- "$@" --generated-list "$WORK/generated-paths.txt"
+          fi
+
+          sh "$KIT/build-prompt.sh" "$@" > "$WORK/prompt.txt"
 
       - name: Ревью
         if: steps.diff.outputs.skip == 'false'

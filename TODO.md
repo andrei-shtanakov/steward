@@ -519,15 +519,11 @@ product decision record (и наоборот). Как approved proposal стан
       awk `build-prompt.sh` согласованно с `core.quotePath=false` у сборки
       списка в local.sh
       @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers
-- [ ] CI передаёт `--generated-list` в `build-prompt.sh`: список объявленных
-      путей из `.gitattributes linguist-generated` дерева merge-ref (та же
-      механика, что local.sh). Отдельным PR ПОСЛЕ мержа кита — вызов из
-      head-YAML обязан держаться сигнатуры, влитой в base (деплой-ограничение,
-      записано в codex-review.yml). До того generated-фильтра в CI нет:
-      крупный generated-диф получает явный отказ по потолку — честный,
-      временный @owner:github:andrei-shtanakov
-      @blocked_by:todo://steward/review-kit-large-pr-mode
-      @id:review-kit-ci-generated-list
+- [x] CI передаёт `--generated-list` в `build-prompt.sh` — включается
+      ДЕТЕКЦИЕЙ литерала флага в извлечённой из base механике (деплой-
+      ограничение head-YAML × base-скрипты обойдено без второго PR; до мержа
+      кита фильтра в CI нет — явный отказ по потолку, честный и временный)
+      @owner:github:andrei-shtanakov @id:review-kit-ci-generated-list
 - [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики
       precision блокирующих/recall major+blocker/ложные блокировки/доля без
       evidence/стоимость; для гейта precision важнее полноты
