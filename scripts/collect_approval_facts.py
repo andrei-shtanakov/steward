@@ -32,6 +32,7 @@ Fail-closed, и не теоретически: у продюсера `--repo-roo
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -281,7 +282,10 @@ def collect(
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
-        before = bundle.stat().st_mtime_ns if bundle.is_file() else None
+        # Дайджест, а не mtime: на ФС с секундной гранулярностью два прогона
+        # подряд (`RunAtLoad` плюс рекомендованный `kickstart`) дают одинаковый
+        # `st_mtime_ns`, и свежая публикация отвергалась бы ложно.
+        before = _digest(bundle)
         lease_before, _ = bundle_header(bundle) if bundle.is_file() else (None, "")
         code, detail = run_producer(repo, path, policy, numbers)
         if code != 0:
@@ -294,9 +298,7 @@ def collect(
         if not bundle.is_file():
             outcomes.append(Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}"))
             continue
-        if before is not None and bundle.stat().st_mtime_ns == before:
-            outcomes.append(Outcome(repo, "failed", f"код 0, но бандл не обновлён: {bundle}"))
-            continue
+        after = _digest(bundle)
         valid_until, refusal = bundle_header(bundle)
         if valid_until is None:
             outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
@@ -308,16 +310,16 @@ def collect(
                 Outcome(repo, "failed", f"код 0, но бандл уже просрочен ({valid_until})")
             )
             continue
-        if lease_before is not None and valid_until <= lease_before:
-            # Файл тронут, записи на месте, lease ещё в будущем — и всё же
-            # снимка не было: старый бандл с близким `valid_until` уже
-            # удовлетворял всем остальным проверкам. Свежесть доказывает
-            # только сдвинувшийся вперёд lease.
+        if after == before and (lease_before is None or valid_until <= lease_before):
+            # Ни байты, ни lease не сдвинулись — снимка не было. Старый бандл с
+            # близким `valid_until` иначе удовлетворял бы всем прочим проверкам.
+            # Достаточно ЛЮБОГО из двух признаков: содержимое обычно меняется
+            # (в нём `generated_at`), а lease — гарантированно при новом окне.
             outcomes.append(
                 Outcome(
                     repo,
                     "failed",
-                    f"код 0, но lease не сдвинулся ({lease_before} -> {valid_until})",
+                    f"код 0, но бандл не изменился и lease не сдвинулся ({valid_until})",
                 )
             )
             continue
@@ -327,6 +329,14 @@ def collect(
         else:
             outcomes.append(Outcome(repo, "published", str(bundle)))
     return outcomes
+
+
+def _digest(path: Path) -> str | None:
+    """sha256 содержимого, или None если файла нет."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def bundle_header(bundle: Path) -> tuple[datetime | None, str]:
@@ -413,6 +423,13 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
         if path is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
+        # Охват валидируется ПЕРВЫМ, как и в `collect()`: иначе негодная
+        # строка охвата на репозитории без бандла доложилась бы поломкой
+        # публикации, хотя спрашивать было нечего.
+        numbers, refusal = pr_numbers(entry)
+        if numbers is None:
+            outcomes.append(Outcome(repo, "skipped", refusal))
+            continue
         bundle = path / BUNDLE_RELPATH
         if not bundle.is_file():
             outcomes.append(Outcome(repo, "failed", f"бандла нет — {bundle}"))
@@ -425,13 +442,6 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
             hours = int((now - valid_until).total_seconds() // 3600)
             outcomes.append(Outcome(repo, "failed", f"lease истёк {hours} ч назад ({valid_until})"))
         else:
-            numbers, refusal = pr_numbers(entry)
-            if numbers is None:
-                # «Не спрашивали» — это `skipped` в обоих проходах. Отдать
-                # здесь `failed` значило бы называть дефект конфигурации
-                # отказом публикации.
-                outcomes.append(Outcome(repo, "skipped", refusal))
-                continue
             gap = bundle_gap(bundle, numbers)
             if gap is not None:
                 outcomes.append(Outcome(repo, "failed", gap))

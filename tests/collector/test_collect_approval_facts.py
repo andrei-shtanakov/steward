@@ -456,7 +456,12 @@ def test_zero_exit_without_a_bundle_is_failed(
 def test_zero_exit_without_touching_the_bundle_is_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Старый бандл на месте, но не обновлён — тоже не публикация."""
+    """Старый бандл на месте, но не тронут — тоже не публикация.
+
+    Признак содержательный, а не временной: сравниваются байты и lease, потому
+    что на ФС с секундной гранулярностью `mtime` двух прогонов подряд совпал бы
+    и отверг бы настоящую публикацию.
+    """
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6))
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
@@ -464,7 +469,7 @@ def test_zero_exit_without_touching_the_bundle_is_failed(
     outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
 
     assert outcomes[0].status == "failed"
-    assert "не обновлён" in outcomes[0].detail
+    assert "не изменился" in outcomes[0].detail
 
 
 def test_record_of_a_different_kind_does_not_count_as_coverage(tmp_path: Path) -> None:
@@ -747,3 +752,40 @@ def test_install_creates_the_launch_agents_dir() -> None:
 
     assert "mkdir -p" in install
     assert "~/Library/LaunchAgents" in install[install.index("mkdir -p") :]
+
+
+def test_same_second_republication_is_not_falsely_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`RunAtLoad` плюс рекомендованный `kickstart` дают два прогона подряд.
+
+    На ФС с секундной гранулярностью их `mtime` совпал бы, и настоящая
+    публикация отвергалась бы ложно. Признак содержательный, поэтому
+    изменившиеся байты достаточны даже при неподвижном lease.
+    """
+    path = _checkout(tmp_path, "steward")
+    lease = datetime.now(UTC) + timedelta(hours=6)
+    _bundle(path, lease, prs=[1])
+
+    def republish(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
+        _bundle(root, lease, prs=[1, 2])  # тот же lease, другое содержимое
+        return 0, ""
+
+    monkeypatch.setattr(RUNNER, "run_producer", republish)
+
+    outcomes = RUNNER.collect([_entry(prs=[1, 2])], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "published"
+
+
+def test_check_validates_scope_before_bundle_state(tmp_path: Path) -> None:
+    """Негодный охват на репо без бандла — `skipped`, а не поломка публикации.
+
+    Порядок проверок обязан совпадать с `collect()`: иначе дефект строки охвата
+    докладывается как отказ публикации, которой и не могло быть.
+    """
+    _checkout(tmp_path, "steward")  # бандла нет вовсе
+
+    outcomes = RUNNER.freshness([_entry(prs=[])], tmp_path)
+
+    assert outcomes[0].status == "skipped"
