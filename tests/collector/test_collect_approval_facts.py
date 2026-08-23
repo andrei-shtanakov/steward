@@ -682,3 +682,68 @@ def test_both_passes_refuse_identical_paths(
     # Шесть: отсутствующий, чужой origin, не-git, вне корня, не объект
     # и дубликат чекаута — последний тоже отказ по пути, а не по данным.
     assert len(refusals(collected)) == 6
+
+
+def test_symlinked_bundle_dir_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.steward` симлинком уводит публикацию наружу чекаута.
+
+    Два репозитория с симлинками в один каталог писали бы в один файл, оба
+    выглядя успешными: проверка «путь внутри workspace-root» этого не ловит,
+    потому что смотрит на чекаут, а не на резолвнутый файл бандла.
+    """
+    path = _checkout(tmp_path, "steward")
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (path / ".steward").symlink_to(shared, target_is_directory=True)
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "вне чекаута" in outcomes[0].detail
+
+
+def test_unmoved_lease_is_not_a_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Файл тронут, записи на месте, lease в будущем — и снимка всё равно не было.
+
+    Старый бандл с близким `valid_until` удовлетворял всем прочим проверкам;
+    свежесть доказывает только сдвинувшийся вперёд lease.
+    """
+    path = _checkout(tmp_path, "steward")
+    lease = datetime.now(UTC) + timedelta(minutes=5)
+    _bundle(path, lease)
+
+    def toucher(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
+        _bundle(root, lease)  # тот же lease, новый mtime
+        return 0, ""
+
+    monkeypatch.setattr(RUNNER, "run_producer", toucher)
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "lease не сдвинулся" in outcomes[0].detail
+
+
+def test_invalid_prs_is_skipped_in_both_passes(tmp_path: Path) -> None:
+    """«Не спрашивали» — `skipped` в обоих проходах, а не `failed` в одном."""
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+
+    checked = RUNNER.freshness([_entry(prs=["abc"])], tmp_path)
+
+    assert checked[0].status == "skipped"
+
+
+def test_install_creates_the_launch_agents_dir() -> None:
+    """На свежей учётной записи каталога может не быть, и plist не появился бы."""
+    doc = (
+        Path(__file__).resolve().parents[2] / "scripts" / "approval-facts-schedule.md"
+    ).read_text(encoding="utf-8")
+
+    install = doc[doc.index("  Установка.") : doc.index("  Снятие:")]
+
+    assert "mkdir -p" in install
+    assert "~/Library/LaunchAgents" in install[install.index("mkdir -p") :]

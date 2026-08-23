@@ -230,19 +230,34 @@ def _resolved(
         repo = _label(entry)
         path, refusal = preflight(entry, workspace_root)
         if path is not None:
-            previous = seen.get(str(path))
+            # Резолвим ПУТЬ БАНДЛА, а не только чекаут: `.steward` может быть
+            # симлинком, и тогда публикация уезжает наружу, а два репозитория
+            # пишут в один файл, оба выглядя успешными. Ключ дубликатов —
+            # именно резолвнутый файл, а не каталог, который на него указывает.
+            bundle = (path / BUNDLE_RELPATH).resolve()
+            if not bundle.is_relative_to(path.resolve()):
+                resolved.append(
+                    (
+                        entry,
+                        repo,
+                        None,
+                        f"{repo}: бандл резолвится в {bundle} — вне чекаута {path}",
+                    )
+                )
+                continue
+            previous = seen.get(str(bundle))
             if previous is not None:
                 resolved.append(
                     (
                         entry,
                         repo,
                         None,
-                        f"{repo}: чекаут {path} уже занят записью {previous} — второй "
-                        f"бандл затёр бы первый по тому же пути",
+                        f"{repo}: бандл {bundle} уже занят записью {previous} — второй "
+                        f"затёр бы первый по тому же пути",
                     )
                 )
                 continue
-            seen[str(path)] = repo
+            seen[str(bundle)] = repo
         resolved.append((entry, repo, path, refusal))
     return resolved
 
@@ -267,6 +282,7 @@ def collect(
             continue
         bundle = path / BUNDLE_RELPATH
         before = bundle.stat().st_mtime_ns if bundle.is_file() else None
+        lease_before, _ = bundle_header(bundle) if bundle.is_file() else (None, "")
         code, detail = run_producer(repo, path, policy, numbers)
         if code != 0:
             outcomes.append(Outcome(repo, "failed", f"продюсер вышел с кодом {code}: {detail}"))
@@ -290,6 +306,19 @@ def collect(
             # родилась просроченной, — не публикация.
             outcomes.append(
                 Outcome(repo, "failed", f"код 0, но бандл уже просрочен ({valid_until})")
+            )
+            continue
+        if lease_before is not None and valid_until <= lease_before:
+            # Файл тронут, записи на месте, lease ещё в будущем — и всё же
+            # снимка не было: старый бандл с близким `valid_until` уже
+            # удовлетворял всем остальным проверкам. Свежесть доказывает
+            # только сдвинувшийся вперёд lease.
+            outcomes.append(
+                Outcome(
+                    repo,
+                    "failed",
+                    f"код 0, но lease не сдвинулся ({lease_before} -> {valid_until})",
+                )
             )
             continue
         gap = bundle_gap(bundle, numbers)
@@ -397,7 +426,13 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
             outcomes.append(Outcome(repo, "failed", f"lease истёк {hours} ч назад ({valid_until})"))
         else:
             numbers, refusal = pr_numbers(entry)
-            gap = bundle_gap(bundle, numbers) if numbers is not None else refusal
+            if numbers is None:
+                # «Не спрашивали» — это `skipped` в обоих проходах. Отдать
+                # здесь `failed` значило бы называть дефект конфигурации
+                # отказом публикации.
+                outcomes.append(Outcome(repo, "skipped", refusal))
+                continue
+            gap = bundle_gap(bundle, numbers)
             if gap is not None:
                 outcomes.append(Outcome(repo, "failed", gap))
             else:
