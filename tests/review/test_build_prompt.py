@@ -414,3 +414,24 @@ def test_bare_limit_flag_is_config_error(tmp_path: Path, flag: str) -> None:
     )
     assert result.returncode == 2
     assert "usage" in result.stderr
+
+
+@pytest.mark.parametrize("bad", ["1MiB", "-1", "", "10.5", "10 000"])
+@pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
+def test_non_numeric_limit_is_config_error_not_fail_open(
+    tmp_path: Path, flag: str, bad: str
+) -> None:
+    """Нечисловой потолок — код 2, а не молча выключенный гардрейл.
+
+    `[ ... -gt 1MiB ]` не падает громко: условие внутри `if` становится ложным
+    (`set -e` там не действует), и свежая защита отключается fail-open'ом.
+    Находка первого живого прогона нового кита (#99), подтверждённая кодом.
+    """
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff), flag, bad],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2, result.stdout
+    assert "целым числом" in result.stderr
