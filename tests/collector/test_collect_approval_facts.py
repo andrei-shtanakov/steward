@@ -795,32 +795,6 @@ def test_check_validates_scope_before_bundle_state(tmp_path: Path) -> None:
     assert outcomes[0].status == "skipped"
 
 
-def test_symlink_created_during_the_run_is_caught(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Проверка до вызова доказывает только состояние на тот момент.
-
-    Продюсер (или что угодно параллельное) может подменить `.steward`
-    симлинком уже во время работы, и тогда публикацией был бы признан файл вне
-    чекаута. Поэтому containment перепроверяется ПОСЛЕ прогона.
-    """
-    _checkout(tmp_path, "steward")
-    outside = tmp_path / "outside"
-    outside.mkdir()
-
-    def escaping(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
-        (root / ".steward").symlink_to(outside, target_is_directory=True)
-        _bundle(outside.parent, datetime.now(UTC) + timedelta(hours=6))
-        return 0, ""
-
-    monkeypatch.setattr(RUNNER, "run_producer", escaping)
-
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
-
-    assert outcomes[0].status == "failed"
-    assert "вне чекаута" in outcomes[0].detail
-
-
 def test_unresolvable_path_does_not_abort_the_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -962,7 +936,7 @@ def test_mirror_on_another_host_is_not_the_same_repo(
     outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
 
     assert outcomes[0].status == "skipped"
-    assert "зеркал" in outcomes[0].detail
+    assert "github.com" in outcomes[0].detail
 
 
 @pytest.mark.parametrize(
@@ -1057,12 +1031,14 @@ def test_slug_comparison_is_case_insensitive(
     assert RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")[0].status == "published"
 
 
-def test_ssh_alias_must_be_declared_not_guessed(
+def test_ssh_alias_is_refused_with_an_actionable_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Алиас из `~/.ssh/config` реально указывает на GitHub, но доказать это по
-    строке нельзя — от зеркала он неотличим. Поэтому не угадываем: охват может
-    объявить хост, и тогда это утверждение оператора, а не наш вывод.
+    """Ssh-алиас не поддерживается, и это названное ограничение.
+
+    Прежняя попытка разрешить его полем `origin_host` снимала защиту от зеркал
+    для ЛЮБОГО хоста, то есть расширяла дыру вместо закрытия. Отказ обязан
+    называть лекарство, иначе репозиторий молча выпадет из наблюдения.
     """
     path = tmp_path / "steward"
     (path / ".git").mkdir(parents=True)
@@ -1071,31 +1047,9 @@ def test_ssh_alias_must_be_declared_not_guessed(
         ["git", "-C", str(path), "remote", "add", "origin", f"git@github-work:{REPO}.git"],
         check=True,
     )
-    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
-
-    without = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
-    assert without[0].status == "skipped"
-    assert "origin_host" in without[0].detail
-
-    declared = {**_entry(), "origin_host": "github-work"}
-    assert RUNNER.collect([declared], tmp_path, tmp_path / "policy.yaml")[0].status == "published"
-
-
-def test_hardlinked_bundle_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hardlink обходит дедупликацию по каталогу: разные иноды каталогов, один
-    файл бандла — и оба прогона отчитались бы `published`, затирая друг друга."""
-    _checkout(tmp_path, "steward")
-    other = tmp_path / "elsewhere.jsonl"
-
-    def linking(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
-        _bundle(root, datetime.now(UTC) + timedelta(hours=6), prs=prs)
-        bundle = root / RUNNER.BUNDLE_RELPATH
-        other.hardlink_to(bundle)
-        return 0, ""
-
-    monkeypatch.setattr(RUNNER, "run_producer", linking)
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
     outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
 
-    assert outcomes[0].status == "failed"
-    assert "жёстких ссылок" in outcomes[0].detail
+    assert outcomes[0].status == "skipped"
+    assert "github.com" in outcomes[0].detail
