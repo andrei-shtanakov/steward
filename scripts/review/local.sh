@@ -420,20 +420,35 @@ fi
 # самого дифа — @id:review-kit-quoted-diff-headers.
 git -c core.quotePath=false diff --name-only "$mb..$head_sha" \
     > "$work/changed-paths.txt"
-# `--source` требует git >= 2.38; отказ инструмента здесь — конфигурационный
-# код 2 с называнием причины, не сырое сообщение git под `set -e`.
-if ! git -c core.quotePath=false check-attr --stdin \
-    --source="$mb" linguist-generated \
-    < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
-    echo "не удалось прочитать linguist-generated из дерева $mb" \
-        "(git check-attr --source; нужен git >= 2.38)." >&2
-    exit 2
+# `--source` появился в git 2.38, и возможность ПРОБУЕТСЯ отдельно от
+# боевого вызова: на старом git фильтр ДЕГРАДИРУЕТ до отсутствия —
+# именованно, предупреждением в stderr, — а не убивает каждый непустой
+# прогон кодом 2 (десятый заход гейта на #99: pre-push блокировал даже
+# крошечный диф без единого generated-файла). Направление деградации — в
+# сторону ревью: код никогда не прячется; худший исход — крупный
+# объявленный диф упирается в явный отказ по потолку, где рецепт назван.
+# Провал боевого вызова ПОСЛЕ успешной пробы — уже не совместимость, а
+# настоящий отказ инструмента: код 2.
+if git check-attr --source="$mb" linguist-generated -- probe \
+    >/dev/null 2>&1; then
+    if ! git -c core.quotePath=false check-attr --stdin \
+        --source="$mb" linguist-generated \
+        < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
+        echo "не удалось прочитать linguist-generated из дерева $mb" \
+            "(git check-attr --source)." >&2
+        exit 2
+    fi
+    # `linguist-generated=true` даёт значение "true", голый атрибут — "set";
+    # оба — объявление. Парсинг с ХВОСТА строки: путь может содержать ": ".
+    sed -n -e 's/: linguist-generated: true$//p' \
+        -e 's/: linguist-generated: set$//p' \
+        "$work/generated-attrs.txt" > "$work/generated-paths.txt"
+else
+    echo "предупреждение: git check-attr --source недоступен (git < 2.38) —" \
+        "generated-фильтр выключен, объявленные файлы ревьюируются" \
+        "построчно." >&2
+    : > "$work/generated-paths.txt"
 fi
-# `linguist-generated=true` даёт значение "true", голый атрибут — "set";
-# оба — объявление. Парсинг с ХВОСТА строки: путь может содержать ": ".
-sed -n -e 's/: linguist-generated: true$//p' \
-    -e 's/: linguist-generated: set$//p' \
-    "$work/generated-attrs.txt" > "$work/generated-paths.txt"
 set -- --prompt "$prompt" --diff "$work/diff.patch" \
     --generated-list "$work/generated-paths.txt"
 [ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"

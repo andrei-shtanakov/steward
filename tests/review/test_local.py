@@ -930,6 +930,83 @@ def test_deleting_declared_lockfile_is_still_filtered(tmp_path: Path) -> None:
     assert "диф больше поддерживаемого" not in result.stderr
 
 
+def make_old_git_shim(tmp_path: Path) -> Path:
+    """PATH-шим, изображающий git < 2.38: не знает `check-attr --source`,
+    всё остальное делегирует настоящему git."""
+    real_git = shutil.which("git")
+    assert real_git is not None
+    shim_dir = tmp_path / "old-git-bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '    case "$a" in\n'
+        "        --source=*)\n"
+        "            echo \"error: unknown option 'source'\" >&2\n"
+        "            exit 129 ;;\n"
+        "    esac\n"
+        "done\n"
+        f'exec "{real_git}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim_dir
+
+
+def test_old_git_without_check_attr_source_degrades_not_dies(tmp_path: Path) -> None:
+    """git < 2.38 — фильтр деградирует именованно, обычный прогон живёт.
+
+    Десятый заход гейта на #99: жёсткое требование `check-attr --source`
+    убивало КАЖДЫЙ непустой локальный прогон на старом git кодом 2 — даже
+    крошечный диф без единого generated-файла, а pre-push хук блокировал
+    пуш. Деградация — в сторону ревью: фильтр выключается с предупреждением,
+    код никогда не прячется."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "обычная маленькая правка")
+
+    shim_dir = make_old_git_shim(tmp_path)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-фильтр выключен" in result.stderr
+
+
+def test_old_git_with_declared_lock_hits_ceiling_not_check_attr_error(
+    tmp_path: Path,
+) -> None:
+    """Старый git + объявленный крупный lock — явный отказ по потолку.
+
+    Худший исход деградации: generated-диф не фильтруется и честно
+    упирается в потолок с рецептом, а не умирает на check-attr."""
+    _, local = make_repo(tmp_path)
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация")
+    base_sha = git(local, "rev-parse", "HEAD")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+
+    shim_dir = make_old_git_shim(tmp_path)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        env_overrides={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "диф больше поддерживаемого" in result.stderr
+
+
 def test_findings_above_threshold_block_exit_code(tmp_path: Path) -> None:
     """§7: `local.sh` обязан завершиться 1, когда вердикт содержит находку выше
     порога. Держится на `set -e` и позиции последней команды в скрипте — ни один
