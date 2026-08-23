@@ -68,6 +68,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 import sys
@@ -130,8 +131,14 @@ def _run(argv: list[str], *, cwd: Path | None = None, timeout: int) -> Any:
         return None
 
 
+#: `git` по абсолютному пути. Голое имя было бы ровно той ошибкой, от которой
+#: plist защищается абсолютным `uv`: PATH под launchd не тот, что в оболочке.
+#: `/usr/bin/git` на macOS даёт Command Line Tools, поэтому он и запасной.
+GIT_BIN = shutil.which("git") or "/usr/bin/git"
+
+
 def _git(path: Path, *args: str) -> str | None:
-    proc = _run(["git", "-C", str(path), *args], timeout=30)
+    proc = _run([GIT_BIN, "-C", str(path), *args], timeout=30)
     if proc is None:
         return None
     return proc.stdout.strip() if proc.returncode == 0 else None
@@ -444,13 +451,13 @@ def collect(
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
-        lock = _claim(bundle)
+        lock, refusal = _claim(bundle)
         if lock is None:
             # Параллельный прогон по тому же чекауту создаёт моя же инструкция:
             # `launchctl load` запускает задачу по `RunAtLoad`, а следом
             # рекомендуется `kickstart`. Без замка чужая публикация засчиталась
             # бы этому прогону — «файл изменился» не доказывает, кто его писал.
-            outcomes.append(Outcome(repo, "skipped", f"{repo}: по {bundle} уже идёт другой прогон"))
+            outcomes.append(Outcome(repo, "skipped", f"{repo}: {refusal}"))
             continue
         try:
             outcomes.append(_publish_one(repo, path, bundle, policy, numbers))
@@ -459,7 +466,7 @@ def collect(
     return outcomes
 
 
-def _claim(bundle: Path) -> Path | None:
+def _claim(bundle: Path) -> tuple[Path | None, str]:
     """Взять эксклюзивный замок на публикацию в этот бандл, или None.
 
     `O_EXCL` — атомарное «создал я»: второй прогон получает отказ, а не
@@ -468,17 +475,21 @@ def _claim(bundle: Path) -> Path | None:
     навсегда, и расписание молча перестало бы работать.
     """
     lock = bundle.with_suffix(bundle.suffix + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
     try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
         if lock.exists() and time.time() - lock.stat().st_mtime > 3600:
             lock.unlink(missing_ok=True)
         handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        return None
-    except OSError:
-        return None
+        return None, f"по {bundle} уже идёт другой прогон"
+    except OSError as exc:
+        # Каталог недоступен на запись, диск полон, `stat`/`unlink` не удались.
+        # Раньше всё это докладывалось как параллельный прогон: оператор искал
+        # бы несуществующий второй процесс, а расписание стояло бы неизвестно
+        # сколько.
+        return None, f"замок {lock} не взять: {exc}"
     os.close(handle)
-    return lock
+    return lock, ""
 
 
 def _digest(path: Path) -> str | None:
@@ -627,6 +638,12 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
                 # «есть хотя бы один» пропускало и дубль от старого прогона, и
                 # пару с разными состояниями.
                 return f"строка {number}: PR {value} отвечен дважды"
+            state = record.get("state")
+            if not isinstance(state, str) or not state:
+                # Строка без `state` — эхо запроса, а не факт. Считать её
+                # покрытием значило бы звать `published` файл, в котором
+                # потреблять нечего.
+                return f"строка {number}: PR {value} без `state` — это не ответ"
             answered.add(value)
     missing = [n for n in numbers if str(n) not in answered]
     if missing:

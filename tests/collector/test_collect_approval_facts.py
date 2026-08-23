@@ -1211,7 +1211,7 @@ def test_concurrent_run_is_refused_not_credited(
     """
     path = _checkout(tmp_path, "steward")
     bundle = path / RUNNER.BUNDLE_RELPATH
-    held = RUNNER._claim(bundle)
+    held, _ = RUNNER._claim(bundle)
     assert held is not None
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
@@ -1237,11 +1237,53 @@ def test_stale_lock_is_reclaimed(tmp_path: Path) -> None:
     перестало бы работать, а причина не была бы видна нигде."""
     path = _checkout(tmp_path, "steward")
     bundle = path / RUNNER.BUNDLE_RELPATH
-    lock = RUNNER._claim(bundle)
+    lock, _ = RUNNER._claim(bundle)
     assert lock is not None
     import os as _os
 
     ancient = RUNNER.time.time() - 7200
     _os.utime(lock, (ancient, ancient))
 
-    assert RUNNER._claim(bundle) is not None
+    assert RUNNER._claim(bundle)[0] is not None
+
+
+def test_result_without_state_is_not_coverage(tmp_path: Path) -> None:
+    """Строка `result` без `state` — эхо запроса, а не факт.
+
+    Считать её покрытием значило бы звать `published` файл, в котором
+    потреблять нечего.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[95])
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    lines = bundle.read_text(encoding="utf-8").splitlines()
+    echo = {"kind": "result", "request": {"kind": "pr", "value": 95}}
+    bundle.write_text(lines[0] + "\n" + json.dumps(echo) + "\n", encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry(prs=[95])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "без `state`" in outcomes[0].detail
+
+
+def test_unwritable_lock_is_not_reported_as_concurrency(tmp_path: Path) -> None:
+    """Недоступный каталог — не параллельный прогон.
+
+    Раньше любая `OSError` докладывалась как второй процесс: оператор искал бы
+    несуществующий, а расписание стояло бы неизвестно сколько.
+    """
+    blocked = tmp_path / "ro" / RUNNER.BUNDLE_RELPATH
+    (tmp_path / "ro").mkdir()
+    (tmp_path / "ro").chmod(0o500)
+    try:
+        lock, refusal = RUNNER._claim(blocked)
+    finally:
+        (tmp_path / "ro").chmod(0o700)
+
+    assert lock is None
+    assert "не взять" in refusal
+
+
+def test_git_is_invoked_by_absolute_path() -> None:
+    """Голое имя было бы той же ошибкой, от которой plist защищается `uv`."""
+    assert Path(RUNNER.GIT_BIN).is_absolute()
