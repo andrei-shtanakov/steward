@@ -571,6 +571,12 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
     extra = sorted(declared - wanted)
     if extra:
         return f"бандл собран по другому охвату: лишние PR {extra}"
+    # Записи проверяются той же меркой: заголовок можно переписать, а хвост
+    # старых `result`-строк остаться — и бандл содержал бы ответы, которых
+    # текущий охват не запрашивал.
+    stale = sorted(answered - wanted)
+    if stale:
+        return f"в бандле остались ответы вне охвата: PR {stale}"
     return None
 
 
@@ -654,8 +660,14 @@ def main(argv: list[str] | None = None) -> int:
     # Резолвим до любого использования: проверка `is_file()` идёт в текущем
     # каталоге, а продюсер запускается с `cwd=REPO_ROOT` — относительный путь
     # означал бы там другой файл, и preflight был бы зелёным про не тот.
-    scope_path = args.scope.resolve()
-    policy_path = args.policy.resolve()
+    scope_path, refusal = _resolve(args.scope)
+    if scope_path is None:
+        print(f"охват не прочитан: {refusal}", file=sys.stderr)
+        return 2
+    policy_path, refusal = _resolve(args.policy)
+    if policy_path is None:
+        print(f"политика не прочитана: {refusal}", file=sys.stderr)
+        return 2
 
     try:
         repositories = _load_scope(scope_path)

@@ -1105,3 +1105,31 @@ def test_broken_entry_does_not_occupy_the_checkout_slot(
     )
 
     assert [o.status for o in outcomes] == ["skipped", "published"]
+
+
+def test_unresolvable_scope_path_is_config_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`Path.resolve()` бросает на циклическом симлинке — до отчёта не дошло бы."""
+    monkeypatch.setattr(RUNNER, "_resolve", lambda path: (None, "ELOOP"))
+
+    assert RUNNER.main(["--workspace-root", str(tmp_path)]) == 2
+
+
+def test_stale_records_outside_the_scope_are_failed(tmp_path: Path) -> None:
+    """Заголовок можно переписать, а хвост старых ответов — остаться.
+
+    Тогда бандл содержит ответы, которых текущий охват не запрашивал, и
+    проверка заголовка одна этого не видит.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    extra = {"kind": "result", "request": {"kind": "pr", "value": "77"}, "state": "merged"}
+    with bundle.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(extra) + "\n")
+
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "вне охвата" in outcomes[0].detail
