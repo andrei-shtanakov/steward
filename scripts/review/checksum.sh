@@ -71,12 +71,15 @@ hash_file() {
 # Обязательным член становится следующим релизом кита. Удаление —
 # зеркально: сперва член становится `?path`, затем файл и строка уходят.
 #
-# CHECKSUM_KIT_INVENTORY переопределяет инвентарь — хук тестов продюсера и
-# переходных конфигураций вызывающего. Уровень доверия тот же, что у самого
-# вызова: env задаёт workflow, границей остаётся CODEOWNERS + человек на
-# мерже (эшелон, не граница, — как у всего YAML кита).
+# CHECKSUM_KIT_EXTRA только ДОБАВЛЯЕТ члены (обычные или `?переходные`) к
+# зашитому обязательному инвентарю — хук тестов продюсера и переходных
+# конфигураций вызывающего. Подмена инвентаря целиком (бывший
+# CHECKSUM_KIT_INVENTORY) была рычагом fail-open: вызывающий сужал состав
+# до одного файла и озеленял неполный кит (major десятого захода гейта на
+# #101). Сужение невозможно по построению: обязательные члены зашиты
+# всегда, env их не видит и не трогает.
 required_kit_default="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json"
-required_kit="${CHECKSUM_KIT_INVENTORY:-$required_kit_default}"
+required_kit="$required_kit_default${CHECKSUM_KIT_EXTRA:+ $CHECKSUM_KIT_EXTRA}"
 
 pin=""
 root=""

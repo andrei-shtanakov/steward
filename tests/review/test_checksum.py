@@ -363,9 +363,9 @@ def test_hasher_failure_is_checker_error_not_drift(tmp_path: Path) -> None:
     assert "РАСХОЖДЕНИЕ" not in result.stderr
 
 
-def run_env(root: Path, pin: Path, inventory: str) -> subprocess.CompletedProcess[str]:
+def run_env(root: Path, pin: Path, var: str, value: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
-    env["CHECKSUM_KIT_INVENTORY"] = inventory
+    env[var] = value
     return subprocess.run(
         ["sh", str(SCRIPT), "--pin", str(pin)],
         capture_output=True,
@@ -375,12 +375,7 @@ def run_env(root: Path, pin: Path, inventory: str) -> subprocess.CompletedProces
     )
 
 
-OPTIONAL_INVENTORY = (
-    "scripts/review/build-prompt.sh scripts/review/collect-context.sh "
-    "scripts/review/apply-threshold.sh scripts/review/local.sh "
-    "scripts/review/checksum.sh .github/codex/review-schema.json "
-    "?scripts/review/new-helper.sh"
-)
+OPTIONAL_EXTRA = "?scripts/review/new-helper.sh"
 
 
 def test_optional_member_absent_is_green(tmp_path: Path) -> None:
@@ -393,7 +388,7 @@ def test_optional_member_absent_is_green(tmp_path: Path) -> None:
     сам файл; между PR ничего не краснеет."""
     root = make_kit(tmp_path)
     pin = full_pin(root)
-    result = run_env(root, pin, OPTIONAL_INVENTORY)
+    result = run_env(root, pin, "CHECKSUM_KIT_EXTRA", OPTIONAL_EXTRA)
     assert result.returncode == 0, result.stderr
 
 
@@ -406,7 +401,23 @@ def test_optional_member_present_is_verified(tmp_path: Path) -> None:
     pin = full_pin(root, extra=[pin_line(root, "scripts/review/new-helper.sh")])
     (root / "scripts" / "review" / "new-helper.sh").write_text("drift\n", "utf-8")
 
-    result = run_env(root, pin, OPTIONAL_INVENTORY)
+    result = run_env(root, pin, "CHECKSUM_KIT_EXTRA", OPTIONAL_EXTRA)
 
     assert result.returncode == 1, result.stderr
     assert "scripts/review/new-helper.sh" in result.stderr
+
+
+def test_env_cannot_shrink_mandatory_inventory(tmp_path: Path) -> None:
+    """Env-хук не сужает обязательный инвентарь — только добавляет.
+
+    CHECKSUM_KIT_INVENTORY подменял инвентарь целиком: вызывающий сужал
+    состав до одного файла и озеленял неполный кит (major десятого захода
+    гейта на #101). Обязательные члены зашиты всегда; расширение — только
+    CHECKSUM_KIT_EXTRA, сужение невозможно по построению: subset-PIN
+    остаётся кодом 2 при любом env."""
+    root = make_kit(tmp_path)
+    pin = write_pin(root, [pin_line(root, "scripts/review/build-prompt.sh")])
+
+    result = run_env(root, pin, "CHECKSUM_KIT_INVENTORY", "scripts/review/build-prompt.sh")
+
+    assert result.returncode == 2, result.stderr
