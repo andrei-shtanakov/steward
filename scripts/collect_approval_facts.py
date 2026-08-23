@@ -206,12 +206,21 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
     if origin is None:
         return None, f"{repo}: у {path} нет origin"
     host, slug = _origin_host_and_slug(origin)
-    if host not in GITHUB_HOSTS:
+    # Алиас из `~/.ssh/config` (`git@github-work:...`) реально указывает на
+    # GitHub, но доказать это по строке нельзя. Поэтому не угадываем: запись
+    # охвата может ОБЪЯВИТЬ свой хост, и тогда это утверждение оператора, а не
+    # наш вывод. Без объявления остаётся fail-closed.
+    declared_host = entry.get("origin_host")
+    allowed = GITHUB_HOSTS | ({declared_host} if isinstance(declared_host, str) else set())
+    if host not in allowed:
         return None, (
-            f"{repo}: origin чекаута на хосте {host!r}, а факты берутся из GitHub — "
-            f"совпадение owner/name зеркалом не делает его тем же объектом"
+            f"{repo}: origin чекаута на хосте {host!r}, а факты берутся из GitHub. "
+            f"Если это ssh-алиас на GitHub, объявите его в охвате как "
+            f"`origin_host: {host}` — зеркало от алиаса иначе неотличимо"
         )
-    if slug != repo:
+    # GitHub не различает регистр в слагах, поэтому и мы не должны: иначе
+    # `Andrei-Shtanakov/Steward` вечно числился бы чужим.
+    if slug is None or slug.lower() != repo.lower():
         # Самая опасная из ошибок конфигурации: путь есть, git есть, а
         # наблюдали бы не тот объект — и бандл выглядел бы законным.
         return None, f"{repo}: origin чекаута — {slug!r}, а не {repo!r}"
@@ -406,6 +415,13 @@ def collect(
                     f"код 0, но бандл не изменился и lease не сдвинулся ({valid_until})",
                 )
             )
+            continue
+        links = bundle.stat().st_nlink
+        if links > 1:
+            # Hardlink обходит дедупликацию по каталогу: два чекаута с разными
+            # инодами каталога могут указывать на ОДИН файл бандла, и оба
+            # отчитались бы `published`, затирая друг друга.
+            outcomes.append(Outcome(repo, "failed", f"код 0, но у бандла {links} жёстких ссылок"))
             continue
         gap = bundle_gap(bundle, numbers)
         if gap is not None:
