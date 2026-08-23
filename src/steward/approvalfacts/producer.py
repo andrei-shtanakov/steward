@@ -48,35 +48,107 @@ class MechanicalFailure(RuntimeError):
     """Спросить не удалось: транспорт, auth, GraphQL errors, неполный обход."""
 
 
-def _gh(args: list[str]) -> tuple[int, str]:
-    """Единственная точка вызова `gh` — тесты подменяют её целиком."""
+def _gh(args: list[str]) -> tuple[int, str, str]:
+    """Единственная точка вызова `gh` — тесты подменяют её целиком.
+
+    Возвращает **оба** потока, а не один на выбор по коду выхода. Прежняя
+    версия отдавала stdout только при нулевом коде, а иначе stderr — и тем
+    самым выбрасывала тело ответа раньше, чем кто-либо мог в него заглянуть.
+    Для `gh api graphql` это фатально: у резолверных полей вроде
+    `pullRequest(number:)` отсутствие объекта приходит как валидный JSON с
+    `pullRequest: null` **и** непустым top-level `errors`, из-за которого `gh`
+    завершается кодом 1. Тело есть, но старая сигнатура его не пропускала.
+    """
     try:
         proc = subprocess.run(  # noqa: S603 S607 — фиксированный argv
             ["gh", *args], capture_output=True, text=True, timeout=60, check=False
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return 127, str(exc)
-    return proc.returncode, (proc.stdout if proc.returncode == 0 else proc.stderr).strip()
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
-def _graphql(query: str, variables: dict[str, Any], *, what: str) -> dict[str, Any]:
+def _graphql(
+    query: str,
+    variables: dict[str, Any],
+    *,
+    what: str,
+    absent_path: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Спросить GitHub. `absent_path` — единственный узел, чьё отсутствие законно.
+
+    Терпимость к ненулевому коду обязана быть привязана к КОНКРЕТНОМУ полю, а
+    не к типу ошибки: `NOT_FOUND` где-то в глубине объекта, который сам
+    прекрасно резолвнулся, — это частичный отказ, и прочитать его как факт
+    значит доложить недоступность отсутствием. Без `absent_path` терпимости
+    нет вовсе.
+    """
     args = ["api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         if value is None:
             continue
         args += ["-F", f"{key}={value}"] if isinstance(value, int) else ["-f", f"{key}={value}"]
-    code, out = _gh(args)
-    if code != 0:
-        raise MechanicalFailure(f"{what}: gh завершился с кодом {code}: {out}")
+    code, out, err = _gh(args)
     try:
         payload = json.loads(out)
     except json.JSONDecodeError as exc:
+        # Тела нет или оно не JSON — вот теперь код выхода единственное, что у
+        # нас есть, и он решает. Диагностику берём из stderr: там текст `gh`.
+        detail = err or str(exc)
+        if code != 0:
+            raise MechanicalFailure(f"{what}: gh завершился с кодом {code}: {detail}") from exc
         raise MechanicalFailure(f"{what}: ответ не JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise MechanicalFailure(f"{what}: ответ не объект")
-    if payload.get("errors"):
-        raise MechanicalFailure(f"{what}: GraphQL errors: {payload['errors']}")
+    errors = payload.get("errors")
+    if errors and not _only_absence(errors, payload, absent_path):
+        raise MechanicalFailure(f"{what}: GraphQL errors: {errors}")
+    if code != 0 and not errors:
+        # JSON без ошибок, но `gh` недоволен — истолковать нечего.
+        raise MechanicalFailure(f"{what}: gh завершился с кодом {code}: {err or out}")
     return payload
+
+
+def _only_absence(
+    errors: object, payload: dict[str, Any], absent_path: tuple[str, ...] | None
+) -> bool:
+    """Все ли ошибки — «нет вот ЭТОГО объекта», при живом `data`?
+
+    Разделение, которого не было: GraphQL кладёт в один ответ и частичные
+    данные, и ошибки нерезолвнутых полей. `NOT_FOUND` у запрошенного узла —
+    авторитетный отрицательный ответ (§4.2/§9.1 обещают `not_found` законным
+    терминальным состоянием для `request.kind: pr`), а auth, rate limit и
+    прочее — сбой инструмента.
+
+    Проверять только ТИП ошибки недостаточно, и это не теоретическая придирка
+    (находка codex-гейта на PR #95): `NOT_FOUND` с путём
+    `repository.pullRequest.mergeCommit` пришёл бы вместе с прекрасно
+    резолвнутым `pullRequest`, у которого `mergeCommit: null`, — и частичный
+    отказ резолвера был бы опубликован как факт «PR не слит». Поэтому путь
+    каждой ошибки обязан быть **префиксом** объявленного `absent_path`
+    (включая равенство): выше по дереву — то же отсутствие, которое ниже по
+    коду уже различают (`repository: null` — недоступность,
+    `pullRequest: null` — отсутствие); глубже — частичный отказ внутри
+    объекта, который резолвнулся, и фактом он не является никогда.
+
+    Требуется всё сразу: объявленный `absent_path`, живой `data`, у каждой
+    ошибки тип `NOT_FOUND` и путь-префикс. Иначе читать нечем.
+    """
+    if absent_path is None:
+        return False
+    if not isinstance(errors, list) or not errors:
+        return False
+    if payload.get("data") is None:
+        return False
+    for error in errors:
+        if not isinstance(error, dict) or error.get("type") != "NOT_FOUND":
+            return False
+        path = error.get("path")
+        if not isinstance(path, list) or not path:
+            return False
+        if len(path) > len(absent_path) or tuple(path) != absent_path[: len(path)]:
+            return False
+    return True
 
 
 def _repository(payload: dict[str, Any], what: str) -> dict[str, Any]:
@@ -131,7 +203,10 @@ def _actor(node: dict[str, Any]) -> tuple[str, str] | None:
 def _resolve_pr(owner: str, name: str, request: RequestId) -> Result:
     what = f"PR #{request.value}"
     payload = _graphql(
-        _QUERY_BY_PR, {"owner": owner, "name": name, "number": int(request.value)}, what=what
+        _QUERY_BY_PR,
+        {"owner": owner, "name": name, "number": int(request.value)},
+        what=what,
+        absent_path=("repository", "pullRequest"),
     )
     pull_request = _require_key(
         _repository(payload, what), "pullRequest", what, where="repository.pullRequest"
@@ -163,6 +238,7 @@ def _resolve_sha(owner: str, name: str, request: RequestId) -> Result:
             _QUERY_BY_SHA,
             {"owner": owner, "name": name, "sha": str(request.value), "after": cursor},
             what=what,
+            absent_path=("repository", "object"),
         )
         commit = _require_key(_repository(payload, what), "object", what, where="repository.object")
         if commit is None:
