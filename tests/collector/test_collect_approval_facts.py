@@ -178,9 +178,15 @@ def test_all_published_is_zero() -> None:
 # --- свежесть: проверка установки расписания -------------------------------
 
 
-def _bundle(path: Path, valid_until: datetime) -> None:
+def _bundle(path: Path, valid_until: datetime, prs: list[int] | None = None) -> None:
     (path / ".steward").mkdir(parents=True, exist_ok=True)
-    header = {"kind": "header", "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    header = {
+        "kind": "header",
+        "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # Заголовок обязан нести охват: `--check` сверяет с ним настроенный,
+        # иначе свежий бандл под выросшим охватом читался бы зелёным.
+        "scope": [{"kind": "pr", "value": str(n)} for n in (prs if prs is not None else [1])],
+    }
     (path / ".steward" / "approval_facts.jsonl").write_text(
         json.dumps(header) + "\n", encoding="utf-8"
     )
@@ -273,12 +279,13 @@ def test_bad_pr_number_does_not_abort_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Заявленная независимость репозиториев проверяется именно на этом."""
+    _checkout(tmp_path, "bad")
     _checkout(tmp_path, "good")
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
 
     outcomes = RUNNER.collect(
         [
-            {"repo": REPO, "checkout": "good", "prs": ["abc"]},
+            {"repo": REPO, "checkout": "bad", "prs": ["abc"]},
             {"repo": REPO, "checkout": "good", "prs": [2]},
         ],
         tmp_path,
@@ -327,3 +334,70 @@ def test_relative_policy_is_resolved_before_use(
 
     assert seen == [policy.resolve()]
     assert seen[0].is_absolute()
+
+
+def test_duplicate_checkout_is_refused_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Бандл лежит по фиксированному пути, поэтому вторая запись затёрла бы первую.
+
+    Оба прогона отчитались бы `published`, а на диске остался бы последний —
+    часть заявленного охвата потерялась бы при зелёном отчёте.
+    """
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "steward", "prs": [1]},
+            {"repo": REPO, "checkout": "steward", "prs": [2]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert [o.status for o in outcomes] == ["published", "skipped"]
+    assert "затёр бы первый" in outcomes[1].detail
+
+
+def test_grown_scope_is_not_green_until_collected(tmp_path: Path) -> None:
+    """Свежесть без сверки охвата — зелёное без факта.
+
+    Добавили PR в охват, а бандл до истечения lease продолжает показываться
+    как `published`, хотя новый охват ни разу не собирался.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
+
+    outcomes = RUNNER.freshness([_entry(prs=[1, 2])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "охват вырос" in outcomes[0].detail
+
+
+def test_producer_is_called_from_the_active_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Вложенный `uv run` вернул бы ровно ту поломку, от которой защищается plist.
+
+    Там `uv` зовётся по абсолютному пути именно потому, что PATH под launchd
+    ненадёжен; голый `uv` внутри раннера дал бы `command not found` и молча
+    остановил бы сбор.
+    """
+    assert RUNNER.STEWARD_BIN.name == "steward"
+    assert RUNNER.STEWARD_BIN.is_absolute()
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(RUNNER, "_run", lambda argv, **kw: captured.append(argv) or None)
+    RUNNER.run_producer(REPO, Path("/tmp"), Path("/tmp/p.yaml"), [1])
+
+    assert captured and "uv" not in captured[0]
+
+
+def test_hung_subprocess_does_not_abort_the_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`TimeoutExpired` улетал бы из `collect()` и обрывал остальные записи."""
+    monkeypatch.setattr(
+        RUNNER.subprocess,
+        "run",
+        lambda *a, **kw: (_ for _ in ()).throw(RUNNER.subprocess.TimeoutExpired("x", 1)),
+    )
+
+    assert RUNNER._run(["true"], timeout=1) is None

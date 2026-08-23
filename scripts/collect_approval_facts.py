@@ -72,14 +72,25 @@ def _load_scope(path: Path) -> list[dict[str, Any]]:
     return repositories
 
 
+def _run(argv: list[str], *, cwd: Path | None = None, timeout: int) -> Any:
+    """`subprocess.run`, у которого зависание — значение, а не исключение.
+
+    `TimeoutExpired` и `OSError` иначе улетали бы из `collect()` наверх и
+    обрывали весь батч на первом же зависшем чекауте — вопреки заявленной
+    независимости репозиториев, и тем заметнее, чем больше их станет.
+    """
+    try:
+        return subprocess.run(  # noqa: S603 — фиксированный argv
+            argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def _git(path: Path, *args: str) -> str | None:
-    proc = subprocess.run(  # noqa: S603 S607 — фиксированный argv
-        ["git", "-C", str(path), *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    proc = _run(["git", "-C", str(path), *args], timeout=30)
+    if proc is None:
+        return None
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
@@ -168,13 +179,20 @@ def pr_numbers(entry: dict[str, Any]) -> tuple[list[int] | None, str]:
     return numbers, ""
 
 
+#: Консольный скрипт `steward` из ТОГО ЖЕ окружения, что и текущий интерпретатор.
+#: Вложенный `uv run` был бы той же ошибкой, от которой plist защищается
+#: абсолютным путём к `uv`: PATH под launchd ненадёжен, и голый `uv` там не
+#: находится — сбор молча переставал бы происходить.
+STEWARD_BIN = Path(sys.executable).parent / "steward"
+
+
 def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
     """Единственная точка вызова продюсера — тесты подменяют её целиком."""
-    proc = subprocess.run(  # noqa: S603 S607 — фиксированный argv
+    if not STEWARD_BIN.exists():
+        return 127, f"нет {STEWARD_BIN} — раннер запущен вне окружения steward"
+    proc = _run(
         [
-            "uv",
-            "run",
-            "steward",
+            str(STEWARD_BIN),
             "approval-facts",
             "--repo",
             repo,
@@ -186,11 +204,10 @@ def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tu
             ",".join(str(n) for n in prs),
         ],
         cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
         timeout=600,
-        check=False,
     )
+    if proc is None:
+        return 124, "продюсер не завершился в отведённое время или не запустился"
     return proc.returncode, (proc.stderr or proc.stdout).strip()
 
 
@@ -204,12 +221,29 @@ def collect(
     видна только в хвосте лога.
     """
     outcomes: list[Outcome] = []
+    seen: dict[str, str] = {}
     for entry in repositories:
         repo = _label(entry)
         path, refusal = preflight(entry, workspace_root)
         if path is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
+        # Бандл лежит по фиксированному пути внутри чекаута, поэтому две записи
+        # на один чекаут — это не двойной охват, а молчаливая потеря первого:
+        # оба прогона отчитались бы `published`, а на диске остался бы
+        # последний. Отказ вместо перезаписи.
+        previous = seen.get(str(path))
+        if previous is not None:
+            outcomes.append(
+                Outcome(
+                    repo,
+                    "skipped",
+                    f"{repo}: чекаут {path} уже собран для {previous} — второй бандл "
+                    f"затёр бы первый по тому же пути",
+                )
+            )
+            continue
+        seen[str(path)] = repo
         numbers, refusal = pr_numbers(entry)
         if numbers is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
@@ -222,12 +256,31 @@ def collect(
     return outcomes
 
 
+def _scope_gap(header: dict[str, Any], numbers: list[int]) -> str | None:
+    """Чего из настроенного охвата нет в опубликованном бандле.
+
+    Свежесть без этой сверки — зелёное без факта: добавили PR в
+    `approval-facts-scope.yaml`, а бандл до истечения lease продолжает
+    показываться как `published`, хотя новый охват ни разу не собирался.
+    Заголовок сам несёт `scope`, так что сравнивать есть с чем.
+    """
+    scope = header.get("scope")
+    if not isinstance(scope, list):
+        return "в заголовке нет `scope`"
+    published = {
+        str(item.get("value")) for item in scope if isinstance(item, dict) and "value" in item
+    }
+    missing = [n for n in numbers if str(n) not in published]
+    return f"охват вырос, но не собран: нет {missing}" if missing else None
+
+
 def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[Outcome]:
-    """Свежесть уже опубликованных бандлов — проверка установки расписания.
+    """Свежесть и полнота опубликованных бандлов — проверка установки.
 
     Существует потому, что `valid_until` делает молчание обнаружимым **при
     чтении**, а читателя пока нет: до появления потребителя посмотреть, что
-    расписание живо, можно только глазами.
+    расписание живо, можно только глазами. Проверяется не только «не протух»,
+    но и «покрывает то, что сейчас настроено».
     """
     outcomes: list[Outcome] = []
     now = datetime.now(UTC)
@@ -260,7 +313,12 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
             hours = int((now - valid_until).total_seconds() // 3600)
             outcomes.append(Outcome(repo, "failed", f"lease истёк {hours} ч назад ({valid_until})"))
         else:
-            outcomes.append(Outcome(repo, "published", f"свеж до {valid_until}"))
+            numbers, refusal = pr_numbers(entry)
+            gap = _scope_gap(header, numbers) if numbers is not None else refusal
+            if gap is not None:
+                outcomes.append(Outcome(repo, "failed", gap))
+            else:
+                outcomes.append(Outcome(repo, "published", f"свеж до {valid_until}"))
     return outcomes
 
 
