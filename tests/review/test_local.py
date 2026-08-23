@@ -809,6 +809,373 @@ def test_default_schema_and_prompt_resolve_from_repo_root_not_cwd(tmp_path: Path
     assert "нет файла инструкций" not in result.stderr
 
 
+def _big_lock_body() -> str:
+    return "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
+
+
+DECLARATION = "uv.lock linguist-generated=true\n"
+
+
+def test_declared_generated_is_filtered_from_subdir(tmp_path: Path) -> None:
+    """Влитая декларация фильтрует generated; прогон из подкаталога её видит.
+
+    Декларация читается git'ом из merge-base диапазона — привязки к cwd нет
+    (третий заход гейта на #99 ломался на относительном доказательстве)."""
+    _, local = make_repo(tmp_path)
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита в базу диапазона")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+
+    subdir = local / "sub"
+    subdir.mkdir()
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", base_sha, cwd=subdir)
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
+def test_same_patch_declaration_does_not_hide_code(tmp_path: Path) -> None:
+    """Декларация из того же патча НЕ прячет код: действует только влитая.
+
+    Девятый заход гейта на #99: автор, объявляющий файл generated в том же
+    PR, мог бы спрятать произвольный рукописный диф от ревью. Декларация
+    читается из базы диапазона (в CI — из base PR), поэтому свеже-объявлённый
+    файл остаётся в дифе и честно упирается в потолок — отказ в сторону
+    ревью; фильтр включится следующим PR, когда декларация будет влита."""
+    _, local = make_repo(tmp_path)
+
+    git(local, "switch", "-qc", "sneaky")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация и скрываемый файл одним патчем")
+    head_sha = git(local, "rev-parse", "HEAD")
+    git(local, "switch", "-q", "master")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", head_sha)
+
+    assert result.returncode == 2, result.stderr
+    assert "диф больше поддерживаемого" in result.stderr
+
+
+def test_declaration_from_range_base_not_checkout(tmp_path: Path) -> None:
+    """Источник декларации — база диапазона, не состояние checkout.
+
+    Фильтр работает, даже когда в рабочей копии декларации нет вовсе:
+    доказательство привязано к ревьюируемому диапазону (пятый заход гейта
+    на #99 — тот же класс, привязка к живому дереву)."""
+    _, local = make_repo(tmp_path)
+
+    git(local, "switch", "-qc", "locked")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+    head_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "switch", "-q", "master")
+    assert not (local / ".gitattributes").exists()
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        "--head",
+        head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
+def test_deleting_declared_lockfile_is_still_filtered(tmp_path: Path) -> None:
+    """Удаление объявленного lock-файла — тоже generated-изменение.
+
+    Седьмой заход гейта на #99: у эвристики «манифест-сосед» удаление
+    пакета вместе с lock'ом рушило доказательство, и гигантский диф
+    удаления упирался в потолок. Атрибут — паттерн дерева, а не файл:
+    декларация из базы диапазона покрывает и удалённый путь."""
+    _, local = make_repo(tmp_path)
+
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация и lock в базе диапазона")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "rm", "-q", "uv.lock")
+    git(local, "commit", "-qm", "пакет удалён вместе с lock'ом")
+    head_sha = git(local, "rev-parse", "HEAD")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        "--head",
+        head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
+def test_revoking_declaration_unhides_file_in_same_pr(tmp_path: Path) -> None:
+    """Снятие декларации действует СРАЗУ — в том же PR.
+
+    Одиннадцатый заход гейта на #99: чтение только из базы прятало файл
+    ровно в том PR, который снимает с него linguist-generated и правит его
+    руками — PR-отзыв не мог отревьюировать то, что расклассифицирует.
+    Направления асимметричны: ДОБАВЛЕНИЕ декларации действует только влитым
+    (спрятать код своим же патчем нельзя — девятый заход), СНЯТИЕ действует
+    сразу из ревьюируемого дерева — оно только открывает код. Итог:
+    generated = объявлено и в базе, и в ревьюируемом дереве."""
+    _, local = make_repo(tmp_path)
+
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    (local / "uv.lock").write_text("маленький\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "rm", "-q", ".gitattributes")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "отзыв декларации + ручная правка lock")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", base_sha)
+
+    assert result.returncode == 2, result.stderr
+    assert "диф больше поддерживаемого" in result.stderr
+
+
+def test_base_side_declaration_after_fork_still_filters(tmp_path: Path) -> None:
+    """Декларация, влитая в base ПОСЛЕ ответвления ветки, действует локально.
+
+    Двенадцатый заход гейта на #99: пересечение по голому head теряло
+    base-side декларацию, которой нет в дереве неребейзнутой ветки, — local
+    давал ложный отказ по потолку там, где CI (merge-ref) фильтрует. PR, не
+    трогающий ни одного .gitattributes, ничего не отзывал: действует список
+    базы; head ветирует только когда PR правит декларации."""
+    _, local = make_repo(tmp_path)
+
+    git(local, "switch", "-qc", "feature")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "lock на ветке, ответвлённой до декларации")
+    head_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "switch", "-q", "master")
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита в base после ответвления")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        "--head",
+        head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
+OLD_BUILD_PROMPT = """#!/bin/sh
+# «Старый» build-prompt.sh: сигнатура до generated-фильтра. ВАЖНО: литерал
+# флага здесь упоминать нельзя даже в комментарии — детекция в local.sh
+# ищет его grep'ом по всему файлу.
+set -eu
+prompt=""; diff=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prompt) prompt="$2"; shift 2 ;;
+        --diff) diff="$2"; shift 2 ;;
+        --context) shift 2 ;;
+        *) echo "usage: build-prompt.sh --prompt <file> --diff <file>" >&2; exit 2 ;;
+    esac
+done
+cat "$prompt"; cat "$diff"
+"""
+
+
+def test_half_updated_kit_without_generated_list_degrades(tmp_path: Path) -> None:
+    """Полуобновлённый кит: новый local.sh + старый build-prompt.sh живут.
+
+    Тринадцатый заход гейта на #99: безусловная передача --generated-list
+    убивала любой непустой прогон кодом 2 (usage старого скрипта), а
+    pre-push блокировал пуш. Для раскатки кита по флоту перекос версий
+    вендор-копий — штатный режим, не край: флаг передаётся только по
+    детекции его литерала в скрипте кита (как в CI, восьмой заход), иначе
+    фильтр выключается именованно."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "обычная маленькая правка")
+
+    kit = tmp_path / "half-kit"
+    kit.mkdir()
+    for name in ("local.sh", "apply-threshold.sh", "collect-context.sh"):
+        src = ROOT / "scripts" / "review" / name
+        if src.exists():
+            shutil.copy(src, kit / name)
+    (kit / "build-prompt.sh").write_text(OLD_BUILD_PROMPT, encoding="utf-8")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"REVIEW_KIT_DIR": str(kit)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "generated-фильтр выключен" in result.stderr
+
+
+def test_ceiling_override_on_half_updated_kit_is_named_refusal(
+    tmp_path: Path,
+) -> None:
+    """Явный оверрайд потолка на полуобновлённом ките — именованный отказ.
+
+    Пятнадцатый заход гейта на #99: --max-diff-* пробрасывались слепо, и
+    старый build-prompt.sh умирал своим usage — обещанный путь
+    восстановления после отказа по потолку не работал. Направление не как у
+    --generated-list: потолок запрошен пользователем ЯВНО, молча выбросить
+    его нельзя (довод пустого значения) — несовместимость называется
+    отказом кодом 2 с причиной, не деградацией."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка")
+
+    kit = tmp_path / "half-kit"
+    kit.mkdir()
+    for name in ("local.sh", "apply-threshold.sh", "collect-context.sh"):
+        src = ROOT / "scripts" / "review" / name
+        if src.exists():
+            shutil.copy(src, kit / name)
+    (kit / "build-prompt.sh").write_text(OLD_BUILD_PROMPT, encoding="utf-8")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--max-diff-files",
+        "40",
+        env_overrides={"REVIEW_KIT_DIR": str(kit)},
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "обновлён наполовину" in result.stderr
+    assert "usage" not in result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
+def test_empty_ceiling_override_is_config_error(tmp_path: Path, flag: str) -> None:
+    """Пустое значение потолка — отказ, а не молчаливый откат к умолчанию.
+
+    Раньше `--max-diff-bytes ""` принимался парсером и молча выбрасывался
+    проверкой [ -n ] при пробросе — явный запрос оверрайда исчезал без
+    следа (minor тринадцатого захода). Тот же довод, что у --context ""."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка")
+
+    result = run_local(local, make_stub(tmp_path, STUB_OK), flag, "")
+
+    assert result.returncode == 2, result.stderr
+    assert "пустым значением" in result.stderr
+
+
+def make_old_git_shim(tmp_path: Path) -> Path:
+    """PATH-шим, изображающий git < 2.38: не знает `check-attr --source`,
+    всё остальное делегирует настоящему git."""
+    real_git = shutil.which("git")
+    assert real_git is not None
+    shim_dir = tmp_path / "old-git-bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '    case "$a" in\n'
+        "        --source=*)\n"
+        "            echo \"error: unknown option 'source'\" >&2\n"
+        "            exit 129 ;;\n"
+        "    esac\n"
+        "done\n"
+        f'exec "{real_git}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim_dir
+
+
+def test_old_git_without_check_attr_source_degrades_not_dies(tmp_path: Path) -> None:
+    """git < 2.38 — фильтр деградирует именованно, обычный прогон живёт.
+
+    Десятый заход гейта на #99: жёсткое требование `check-attr --source`
+    убивало КАЖДЫЙ непустой локальный прогон на старом git кодом 2 — даже
+    крошечный диф без единого generated-файла, а pre-push хук блокировал
+    пуш. Деградация — в сторону ревью: фильтр выключается с предупреждением,
+    код никогда не прячется."""
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "обычная маленькая правка")
+
+    shim_dir = make_old_git_shim(tmp_path)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-фильтр выключен" in result.stderr
+
+
+def test_old_git_with_declared_lock_hits_ceiling_not_check_attr_error(
+    tmp_path: Path,
+) -> None:
+    """Старый git + объявленный крупный lock — явный отказ по потолку.
+
+    Худший исход деградации: generated-диф не фильтруется и честно
+    упирается в потолок с рецептом, а не умирает на check-attr."""
+    _, local = make_repo(tmp_path)
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация")
+    base_sha = git(local, "rev-parse", "HEAD")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+
+    shim_dir = make_old_git_shim(tmp_path)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        env_overrides={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "диф больше поддерживаемого" in result.stderr
+
+
 def test_findings_above_threshold_block_exit_code(tmp_path: Path) -> None:
     """§7: `local.sh` обязан завершиться 1, когда вердикт содержит находку выше
     порога. Держится на `set -e` и позиции последней команды в скрипте — ни один
@@ -947,3 +1314,26 @@ def test_manifest_without_collector_is_a_refusal(tmp_path: Path) -> None:
 
     assert result.returncode == 2, result.stdout + result.stderr
     assert "механика потеряна" in result.stderr
+
+
+def test_local_forwards_diff_ceiling_overrides(tmp_path: Path) -> None:
+    """`local.sh --max-diff-files/--max-diff-bytes` доезжают до build-prompt.sh.
+
+    Гардрейл предлагает поднять потолок явно — значит поддерживаемый
+    вызывающий обязан уметь его передать, иначе обещанный путь восстановления
+    не существует (находка гейта на #99: интерфейс local.sh флагов не knew).
+    """
+    _, local = make_repo(tmp_path)
+    for i in range(31):
+        (local / f"f{i}.txt").write_text("x\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "широкий патч")
+
+    # Без override — честный отказ гардрейла (код 2, не вердикт).
+    refused = run_local(local, make_stub(tmp_path, STUB_OK))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "больше поддерживаемого" in refused.stderr
+
+    # С override — проходит.
+    passed = run_local(local, make_stub(tmp_path, STUB_OK), "--max-diff-files", "40")
+    assert passed.returncode == 0, passed.stdout + passed.stderr

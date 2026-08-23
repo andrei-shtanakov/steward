@@ -130,6 +130,11 @@ jobs:
             > "$WORK/diff.patch"
           bytes=$(wc -c < "$WORK/diff.patch")
           echo "diff bytes: $bytes"
+          # Список изменённых путей PR — вход generated-фильтра на шаге
+          # склейки. Имена из API сырые (без C-квотинга) — согласовано с
+          # `core.quotePath=false` у check-attr ниже по workflow.
+          gh api "repos/$REPO/pulls/$PR/files" --paginate \
+            --jq '.[].filename' > "$WORK/changed-paths.txt"
           # Диф без изменений — не «ревью прошло», а нечего ревьюить: состояние
           # определённое и легитимно зелёное. Но зелёным оно должно стать ЯВНО, а
           # не пройдя к модели с пустым входом: иначе вердикт о пустоте выносит
@@ -194,18 +199,55 @@ jobs:
               ;;
           esac
 
-          # Ветвление, а не сборка аргументов в строку: некавыченное раскрытие
-          # разваливается на пути с пробелом; форма одинакова с local.sh.
+          # Argv собирается позиционными параметрами (форма local.sh): только
+          # так флаги добавляются по частям без некавыченного раскрытия
+          # строки, которое разваливается на пути с пробелом.
+          set -- --prompt "$KIT/review-prompt.md" --diff "$WORK/diff.patch"
           if [ "$use_context" -eq 1 ]; then
-            sh "$KIT/build-prompt.sh" \
-                --prompt "$KIT/review-prompt.md" \
-                --diff "$WORK/diff.patch" --context "$WORK/context.txt" \
-                > "$WORK/prompt.txt"
-          else
-            sh "$KIT/build-prompt.sh" \
-                --prompt "$KIT/review-prompt.md" \
-                --diff "$WORK/diff.patch" > "$WORK/prompt.txt"
+            set -- "$@" --context "$WORK/context.txt"
           fi
+
+          # ДЕПЛОЙ-ОГРАНИЧЕНИЕ: скрипты извлечены из base, а этот YAML — из
+          # head, поэтому новый флаг кита передаётся только когда извлечённая
+          # механика его уже знает — ДЕТЕКЦИЕЙ по литералу флага в скрипте,
+          # не предположением (передача нового флага вслепую уже роняла
+          # прогон кодом 2 — usage от базовой версии). До мержа кита фильтра
+          # в CI нет: крупный generated-диф получает явный отказ по потолку —
+          # честный и временный; после мержа ветка включается сама, без
+          # второго PR.
+          #
+          # Generated — то, что репо ОБЪЯВИЛ в .gitattributes, и направления
+          # декларации АСИММЕТРИЧНЫ (девятый и одиннадцатый заходы гейта на
+          # #99): ДОБАВЛЕНИЕ действует только влитым — читается из base
+          # (--source=$BASE_SHA), иначе автор прячет произвольный код,
+          # объявив его generated тем же коммитом; СНЯТИЕ действует сразу —
+          # читается из workspace (чекаут merge-ref, ревьюируемое дерево),
+          # отзыв только открывает код, направление безопасное, иначе
+          # PR-отзыв не может отревьюировать файл, который
+          # расклассифицирует. Итог: generated = объявлено И в base, И в
+          # ревьюируемом дереве — пересечение. local.sh делает то же для
+          # merge-base и --head. `=true` даёт "true", голый атрибут — "set";
+          # парсинг с хвоста строки: путь может содержать ": "; `sort` — для
+          # `comm`.
+          if grep -q -- '--generated-list' "$KIT/build-prompt.sh"; then
+            git -c core.quotePath=false check-attr --stdin \
+                --source="$BASE_SHA" linguist-generated \
+                < "$WORK/changed-paths.txt" > "$WORK/generated-attrs.txt"
+            sed -n -e 's/: linguist-generated: true$//p' \
+                -e 's/: linguist-generated: set$//p' \
+                "$WORK/generated-attrs.txt" | sort > "$WORK/generated-base.txt"
+            git -c core.quotePath=false check-attr --stdin \
+                linguist-generated \
+                < "$WORK/changed-paths.txt" > "$WORK/generated-attrs.txt"
+            sed -n -e 's/: linguist-generated: true$//p' \
+                -e 's/: linguist-generated: set$//p' \
+                "$WORK/generated-attrs.txt" | sort > "$WORK/generated-head.txt"
+            comm -12 "$WORK/generated-base.txt" "$WORK/generated-head.txt" \
+                > "$WORK/generated-paths.txt"
+            set -- "$@" --generated-list "$WORK/generated-paths.txt"
+          fi
+
+          sh "$KIT/build-prompt.sh" "$@" > "$WORK/prompt.txt"
 
       - name: Ревью
         if: steps.diff.outputs.skip == 'false'

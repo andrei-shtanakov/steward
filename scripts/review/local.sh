@@ -33,6 +33,8 @@ review_cmd="${REVIEW_CMD:-codex exec}"
 
 base=""
 head_ref="HEAD"
+max_diff_bytes=""
+max_diff_files=""
 do_fetch=0
 format="text"
 # "origin" — умолчание, не жёсткая привязка: `git clone -o github` или
@@ -47,7 +49,8 @@ remote_explicit=0
 
 usage() {
     echo "usage: local.sh [--base <ref>] [--head <ref>] [--remote <name>]" \
-        "[--fetch] [--format markdown|text]" >&2
+        "[--fetch] [--format markdown|text]" \
+        "[--max-diff-bytes N] [--max-diff-files N]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -60,6 +63,21 @@ while [ $# -gt 0 ]; do
         --head)   [ $# -ge 2 ] || { usage; exit 2; }; head_ref="$2"; shift 2 ;;
         --remote) [ $# -ge 2 ] || { usage; exit 2; }; remote="$2"; remote_explicit=1; shift 2 ;;
         --format) [ $# -ge 2 ] || { usage; exit 2; }; format="$2"; shift 2 ;;
+        # Проброс потолков дифа в build-prompt.sh: гардрейл предлагает поднять
+        # потолок явно, значит поддерживаемый вызывающий обязан уметь его
+        # передать — иначе обещанный путь восстановления не существует
+        # (находка гейта на #99). ЧИСЛОВАЯ валидация — в build-prompt.sh, но
+        # пустое значение — отказ ЗДЕСЬ: проброс гейтится [ -n ], и явно
+        # запрошенный оверрайд молча испарялся бы, а прогон шёл с умолчаниями
+        # (minor тринадцатого захода; тот же довод, что у --context "").
+        --max-diff-bytes)
+            [ $# -ge 2 ] || { usage; exit 2; }
+            [ -n "$2" ] || { echo "--max-diff-bytes передан с пустым значением" >&2; exit 2; }
+            max_diff_bytes="$2"; shift 2 ;;
+        --max-diff-files)
+            [ $# -ge 2 ] || { usage; exit 2; }
+            [ -n "$2" ] || { echo "--max-diff-files передан с пустым значением" >&2; exit 2; }
+            max_diff_files="$2"; shift 2 ;;
         --fetch)  do_fetch=1; shift ;;
         *) usage; exit 2 ;;
     esac
@@ -389,13 +407,118 @@ fi
 # пробел (`/tmp/Review Temp.XYZ`) — argv битый, и прогон падает на «нет файла
 # контекста». Прежний комментарий утверждал «либо пуст, либо ровно два слова»;
 # это было неверно, и неверно ровно там, где путь приходит извне.
-if [ "$use_context" -eq 1 ]; then
-    sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
-        --context "$work/context.txt" > "$work/prompt.txt"
+# Позиционные параметры шелла — единственный способ собрать argv по частям
+# без некавыченного раскрытия строки (тот же урок, что с ctx_args): `set --`
+# строит список, кавычки сохраняют каждый элемент целым.
+# Generated — то, что репо ОБЪЯВИЛ: `.gitattributes linguist-generated`,
+# прочитанный из ВЛИТОЙ базы диапазона (`check-attr --source=$mb`), не из
+# head и не из checkout. Источник — граница доверия (девятый заход гейта на
+# #99): декларация из самого патча прятала бы произвольный рукописный код —
+# автору достаточно объявить файл generated тем же коммитом; из merge-base
+# же читается только то, что уже прошло ревью (CI симметрично читает из
+# base PR). Свежая декларация не действует в собственном PR: файл остаётся
+# в дифе (отказ в сторону ревью) и фильтруется со следующего PR. Атрибут —
+# паттерн дерева, не файл: удалённый lock-файл остаётся объявленным, пока
+# декларация базы его покрывает. Кит намерение не угадывает — семь заходов
+# гейта показали, что на любую эвристику (basename, манифест-сосед,
+# курируемые каталоги, снапшот-каталоги) строится контрпример; декларация
+# же сама проходит ревью через PR. `core.quotePath=false` даёт сырые пути,
+# согласованные между diff --name-only и check-attr; кавыченные заголовки
+# самого дифа — @id:review-kit-quoted-diff-headers.
+git -c core.quotePath=false diff --name-only "$mb..$head_sha" \
+    > "$work/changed-paths.txt"
+# `--source` появился в git 2.38, и возможность ПРОБУЕТСЯ отдельно от
+# боевого вызова: на старом git фильтр ДЕГРАДИРУЕТ до отсутствия —
+# именованно, предупреждением в stderr, — а не убивает каждый непустой
+# прогон кодом 2 (десятый заход гейта на #99: pre-push блокировал даже
+# крошечный диф без единого generated-файла). Направление деградации — в
+# сторону ревью: код никогда не прячется; худший исход — крупный
+# объявленный диф упирается в явный отказ по потолку, где рецепт назван.
+# Провал боевого вызова ПОСЛЕ успешной пробы — уже не совместимость, а
+# настоящий отказ инструмента: код 2.
+collect_declared() {
+    # $1 — tree-ish, $2 — файл результата: объявленные пути дифа по
+    # декларации этого дерева. `linguist-generated=true` даёт "true", голый
+    # атрибут — "set"; оба — объявление. Парсинг с ХВОСТА строки: путь может
+    # содержать ": ". `sort` — для `comm` ниже.
+    if ! git -c core.quotePath=false check-attr --stdin \
+        --source="$1" linguist-generated \
+        < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
+        echo "не удалось прочитать linguist-generated из дерева $1" \
+            "(git check-attr --source)." >&2
+        exit 2
+    fi
+    sed -n -e 's/: linguist-generated: true$//p' \
+        -e 's/: linguist-generated: set$//p' \
+        "$work/generated-attrs.txt" | sort > "$2"
+}
+
+if git check-attr --source="$base" linguist-generated -- probe \
+    >/dev/null 2>&1; then
+    # Направления декларации АСИММЕТРИЧНЫ (девятый и одиннадцатый заходы
+    # гейта на #99): добавление действует только ВЛИТЫМ — читается с
+    # ВЕРХУШКИ base (как BASE_SHA в CI), не из merge-base: декларация,
+    # влитая в base после ответвления ветки, есть в merge-ref дереве CI, но
+    # её нет ни в mb, ни в голом head — пересечение по ним давало ложный
+    # отказ по потолку локально при зелёном CI (двенадцатый заход). Снятие
+    # действует СРАЗУ: head ветирует пересечением, но только когда PR
+    # вообще правит какой-нибудь `.gitattributes` — PR, не трогавший
+    # деклараций, ничего не отзывал, и действует список базы один (так же
+    # ведёт себя merge-ref дерево CI: `.gitattributes` базы в нём есть,
+    # пока PR его не менял). Остаточный край: PR правит один
+    # `.gitattributes`, а пост-форковая декларация живёт в другом — тогда
+    # пересечение её уронит и файл останется в дифе: отказ в сторону ревью.
+    collect_declared "$base" "$work/generated-base.txt"
+    if grep -Eq '(^|/)\.gitattributes$' "$work/changed-paths.txt"; then
+        collect_declared "$head_sha" "$work/generated-head.txt"
+        comm -12 "$work/generated-base.txt" "$work/generated-head.txt" \
+            > "$work/generated-paths.txt"
+    else
+        cp "$work/generated-base.txt" "$work/generated-paths.txt"
+    fi
 else
-    sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
-        > "$work/prompt.txt"
+    echo "предупреждение: git check-attr --source недоступен (git < 2.38) —" \
+        "generated-фильтр выключен, объявленные файлы ревьюируются" \
+        "построчно." >&2
+    : > "$work/generated-paths.txt"
 fi
+set -- --prompt "$prompt" --diff "$work/diff.patch"
+# ДЕТЕКЦИЯ, как в CI (восьмой заход): кит могли обновить наполовину — новый
+# local.sh при старом build-prompt.sh (REVIEW_KIT_DIR / вендор-копия), и
+# слепая передача нового флага убивала бы любой непустой прогон кодом 2
+# (usage старого скрипта), а pre-push блокировал бы пуш (тринадцатый заход
+# гейта на #99). Для раскатки кита по флоту перекос версий копий — штатный
+# режим, не край. Флаг передаётся только когда механика кита его знает;
+# иначе фильтр выключается именованно — в сторону ревью.
+if grep -q -- '--generated-list' "$kit_dir/build-prompt.sh"; then
+    set -- "$@" --generated-list "$work/generated-paths.txt"
+else
+    echo "предупреждение: build-prompt.sh кита не знает --generated-list" \
+        "(кит обновлён наполовину) — generated-фильтр выключен, объявленные" \
+        "файлы ревьюируются построчно." >&2
+fi
+[ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"
+# Потолки — та же версионная дисциплина, что --generated-list, но
+# направление другое (пятнадцатый заход гейта на #99): потолок запрошен
+# пользователем ЯВНО, и молча выбросить его нельзя (довод пустого значения
+# в парсере) — несовместимость полуобновлённого кита называется отказом с
+# причиной, а не тихой деградацией и не usage старого скрипта.
+if [ -n "$max_diff_bytes" ] || [ -n "$max_diff_files" ]; then
+    if grep -q -- '--max-diff-bytes' "$kit_dir/build-prompt.sh"; then
+        if [ -n "$max_diff_bytes" ]; then
+            set -- "$@" --max-diff-bytes "$max_diff_bytes"
+        fi
+        if [ -n "$max_diff_files" ]; then
+            set -- "$@" --max-diff-files "$max_diff_files"
+        fi
+    else
+        echo "build-prompt.sh кита не знает --max-diff-bytes/--max-diff-files" \
+            "(кит обновлён наполовину) — явный оверрайд потолка выполнить" \
+            "нельзя." >&2
+        exit 2
+    fi
+fi
+sh "$kit_dir/build-prompt.sh" "$@" > "$work/prompt.txt"
 
 # Промпт идёт на stdin, а не аргументом: диф — недоверенный текст, и в argv он
 # не попадает ни здесь, ни в CI. Ревьюер в песочнице read-only: он читает, а не

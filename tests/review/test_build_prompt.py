@@ -325,3 +325,320 @@ def test_empty_context_value_is_config_error(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "пустым значением" in result.stderr
+
+
+# --- Потолки дифа (review-kit-large-pr-mode, гардрейл) ----------------------
+
+
+def make_multifile_diff(tmp_path: Path, files: int, filler: str = "") -> Path:
+    diff = tmp_path / "big.patch"
+    parts = []
+    for i in range(files):
+        parts.append(
+            f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n"
+            f"@@ -1 +1 @@\n-old\n+new{filler}\n"
+        )
+    diff.write_text("".join(parts), encoding="utf-8")
+    return diff
+
+
+def test_diff_over_file_limit_is_explicit_refusal(tmp_path: Path) -> None:
+    """Слишком широкий диф — явный отказ, не молчаливая обрезка.
+
+    Один прогон на большом патче теряет полноту и точность, а обрезка хуже
+    обоих: «покрыл всё» читалось бы там, где модель видела половину. Пока
+    chunked-режим не реализован, честный отказ — единственная правда.
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=31)
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 2
+    assert "31 файл(ов)" in result.stderr
+    assert "chunked" in result.stderr
+
+
+def test_diff_at_file_limit_passes(tmp_path: Path) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=30)
+
+    assert run(prompt, diff).returncode == 0
+
+
+def test_diff_over_byte_limit_is_explicit_refusal(tmp_path: Path) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=2, filler="x" * 250_000)
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 2
+    assert "байт" in result.stderr
+
+
+def test_limits_are_overridable_explicitly(tmp_path: Path) -> None:
+    """Поднять потолок можно, но только НАЗВАВ его — не молча."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=31)
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--max-diff-files",
+            "40",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
+def test_bare_limit_flag_is_config_error(tmp_path: Path, flag: str) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(prompt), flag],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "usage" in result.stderr
+
+
+@pytest.mark.parametrize("bad", ["1MiB", "-1", "", "10.5", "10 000"])
+@pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
+def test_non_numeric_limit_is_config_error_not_fail_open(
+    tmp_path: Path, flag: str, bad: str
+) -> None:
+    """Нечисловой потолок — код 2, а не молча выключенный гардрейл.
+
+    `[ ... -gt 1MiB ]` не падает громко: условие внутри `if` становится ложным
+    (`set -e` там не действует), и свежая защита отключается fail-open'ом.
+    Находка первого живого прогона нового кита (#99), подтверждённая кодом.
+    """
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff), flag, bad],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2, result.stdout
+    assert "целым числом" in result.stderr
+
+
+def make_diff_block(path: str, body_lines: int = 1, filler: str = "new") -> str:
+    body = "".join(f"+{filler}{i}\n" for i in range(body_lines))
+    return (
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+        f"@@ -0,0 +{body_lines} @@\n{body}"
+    )
+
+
+def run_gen(
+    prompt: Path, diff: Path, generated_list: Path, *extra: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--generated-list",
+            str(generated_list),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_declared_generated_block_is_omitted_namedly(tmp_path: Path) -> None:
+    """Объявленный generated-блок опускается ИМЕНОВАННО: маркер вместо тела.
+
+    Что считать generated, кит не решает — список путей приходит от
+    вызывающего и строится из декларации репо (.gitattributes
+    linguist-generated дерева ревьюируемого коммита). Семь заходов гейта на
+    #99 показали: любая эвристика (basename, манифест-сосед, курируемые
+    каталоги, снапшот-каталоги) даёт конструируемый контрпример; декларация
+    сама проходит ревью через PR. Перегенерированный uv.lock при этом не
+    пробивает байтовый потолок."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("uv.lock", body_lines=20_000, filler="x" * 30)
+        + make_diff_block("src/a.py"),
+        encoding="utf-8",
+    )
+    assert diff.stat().st_size > 400_000  # без опущения упёрлись бы в потолок
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен из дифа: uv.lock" in result.stdout
+    assert "согласованность с источником" in result.stdout
+    # Тело lock-файла не доехало, исходник — доехал.
+    assert "xxxxx" not in result.stdout
+    assert "diff --git a/src/a.py" in result.stdout
+
+
+def test_only_exact_listed_paths_are_omitted(tmp_path: Path) -> None:
+    """Опускается ровно объявленное: похожие имена и соседние файлы остаются.
+
+    Ложное опущение исходника хуже пропущенного lock'а — не объявлено,
+    значит ревьюируется построчно (отказ в сторону ревью)."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("uv.lock", filler="locked-")
+        + make_diff_block("docs/uv.lock.md", filler="doc-")
+        + make_diff_block("src/locker.py", filler="src-"),
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("generated-файл опущен") == 1
+    assert "locked-0" not in result.stdout
+    assert "doc-0" in result.stdout
+    assert "src-0" in result.stdout
+
+
+def test_rename_into_declared_path_stays_in_diff(tmp_path: Path) -> None:
+    """Rename в объявленный путь — НЕ generated: обе стороны обязаны быть в списке.
+
+    Четырнадцатый заход гейта на #99: классификация по одной b-стороне
+    заголовка прятала `diff --git a/notes.py b/uv.lock` — удаление и перенос
+    рукописного кода — под слабое правило «только согласованность». Блок
+    опускается, лишь когда И старый, И новый путь объявлены generated."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        "diff --git a/notes.py b/uv.lock\n"
+        "--- a/notes.py\n"
+        "+++ b/uv.lock\n"
+        "@@ -0,0 +1 @@\n"
+        "+smuggled-code\n",
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "smuggled-code" in result.stdout
+
+
+def test_generated_blocks_do_not_count_toward_file_ceiling(tmp_path: Path) -> None:
+    """40 снапшотов + 2 исходника — не «42 файла», а 2: опущенные не считаются."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    snap_paths = [f"tests/__snapshots__/case{i}.snap" for i in range(40)]
+    diff = tmp_path / "d.patch"
+    blocks = [make_diff_block(path) for path in snap_paths]
+    blocks += [make_diff_block("src/a.py"), make_diff_block("src/b.py")]
+    diff.write_text("".join(blocks), encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("".join(f"{path}\n" for path in snap_paths), encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("generated-файл опущен") == 40
+
+
+def test_omission_markers_do_not_consume_byte_ceiling(tmp_path: Path) -> None:
+    """Маркеры опущения не тратят байтовый потолок — как и файловый.
+
+    Перегенерация тысяч снапшотов давала диф из одних маркеров шире потолка —
+    отказ на PR, где всё построчное содержимое уже исключено (шестой заход
+    гейта на #99). Потолки меряют то, что ревьюируется построчно."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    snap_paths = [f"tests/__snapshots__/case{i}.snap" for i in range(40)]
+    diff = tmp_path / "d.patch"
+    blocks = [make_diff_block(path) for path in snap_paths]
+    blocks.append(make_diff_block("src/a.py"))
+    diff.write_text("".join(blocks), encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("".join(f"{path}\n" for path in snap_paths), encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen, "--max-diff-bytes", "2000")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("generated-файл опущен") == 40
+    assert "diff --git a/src/a.py" in result.stdout
+
+
+def test_without_generated_list_nothing_is_omitted(tmp_path: Path) -> None:
+    """Без --generated-list фильтра нет: диф проходит как есть."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "locked-0" in result.stdout
+
+
+def test_empty_generated_list_is_noop(tmp_path: Path) -> None:
+    """Пустой список — легитимное «в дифе нет объявленных»: фильтр молчит."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "locked-0" in result.stdout
+
+
+def test_generated_list_missing_file_is_config_error(tmp_path: Path) -> None:
+    """Несуществующий список — ошибка конфигурации, не молчаливый прогон
+    с выключенным фильтром."""
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--generated-list",
+            str(tmp_path / "нет.lst"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "generated" in result.stderr

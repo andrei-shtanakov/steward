@@ -504,6 +504,62 @@ product decision record (и наоборот). Как approved proposal стан
       финальный межмодульный проход; generated/lock/snapshots не ревьюировать как
       код; обрезка дифа не молча, а явным infrastructure failure
       @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode
+
+  Гардрейл влит 2026-08-23: `build-prompt.sh` (общая точка CI и local.sh)
+  отказывает кодом 2 на дифе шире 30 файлов / 400 000 байт, называя причину и
+  оставляя явный подъём потолка флагами; generated/lock/snapshots — правило в
+  промпте (согласованность с источником, не построчное ревью). Открытым
+  остаётся сам chunked-режим: группировка по подсистемам + финальный
+  межмодульный проход; при любой схеме чанкинга нужен dedup-ключ находок
+  `(file, line, нормализованное сообщение)` — одна находка приедет из
+  нескольких чанков.
+- [ ] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со
+      спецсимволами/пробелами): такой путь не совпадает с сырым членом
+      `--generated-list` и остаётся в дифе — худший исход сегодня это явный
+      отказ по потолку (fail в сторону ревью, находка minor гейта на #99,
+      подтверждена шестым заходом). Правка — нормализация кавыченной формы в
+      awk `build-prompt.sh` согласованно с `core.quotePath=false` у сборки
+      списка в local.sh
+      @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers
+- [x] CI передаёт `--generated-list` в `build-prompt.sh` — включается
+      ДЕТЕКЦИЕЙ литерала флага в извлечённой из base механике (деплой-
+      ограничение head-YAML × base-скрипты обойдено без второго PR; до мержа
+      кита фильтра в CI нет — явный отказ по потолку, честный и временный)
+      @owner:github:andrei-shtanakov @id:review-kit-ci-generated-list
+- [ ] Вето head-стороны generated-деклараций скоупить до фактически
+      изменённых `.gitattributes`: сейчас правка одного файла деклараций
+      включает пересечение целиком и роняет base-side декларацию из другого
+      (multi-file топология; minor четырнадцатого захода на #99, край назван
+      в комментарии local.sh) — расхождение local↔CI в сторону ложного
+      отказа по потолку @owner:github:andrei-shtanakov
+      @id:review-kit-attr-veto-scope
+- [ ] Накопление вердиктов codex-review в jsonl-корпус (PR, head_sha, модель,
+      effort, находки, что стало блокирующим) — жанр `gate_verdicts.jsonl` с
+      header-записью уже есть (`src/steward/verdicts/emitter.py`); без
+      накопления eval-харнесс упрётся в ручной сбор прошлых PR. ОТКРЫТЫЙ
+      ДИЗАЙН-ВОПРОС владельцу: кто и куда пишет из CI — у джобы нет права
+      коммитить в master; варианты «аггрегация артефактов по расписанию» и
+      «ветка-корпус» дают разные гарантии
+      @owner:github:andrei-shtanakov @id:review-kit-verdict-corpus
+- [ ] Детерминированный пре-фильтр в report-джобе (без ключа, без LLM):
+      детектор галлюцинированных импортов — импорт, которого нет ни в
+      pyproject.toml, ни в uv.lock. Один язык, один пакет-менеджер — вся
+      таблица детекторов ai-review не нужна
+      @owner:github:andrei-shtanakov @id:review-kit-import-detector
+- [ ] Бамп пина openai/codex-action v1.11 → v1.12 (8636508, 2026-08-20):
+      усиление изоляции привилегий и отклонение оверрайдов, конфликтующих с
+      protected execution settings — прямо наша модель угроз (ключ в джобе,
+      читающей недоверенный текст). Перед бампом проверить CHANGELOG и
+      требование unprivileged user namespaces на ubuntu-раннерах
+      @owner:github:andrei-shtanakov @id:review-kit-action-pin-bump
+- [ ] Инлайн-аннотации из вердикта: report-джоба печатает
+      `::error file=…,line=…,title=…::` для блокирующих и `::warning::` для
+      остальных — находки появляются в Files changed, новых прав не нужно
+      @owner:github:andrei-shtanakov @id:review-kit-inline-annotations
+- [ ] Дедуп сводок в треде PR: скрытый маркер в теле комментария + поиск
+      своего последнего + правка вместо создания (10 раундов на #99 = 10
+      сводок, актуальна одна). Маркер обязан пережить смену формата тела
+      @owner:github:andrei-shtanakov @id:review-kit-comment-dedup
 - [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики
       precision блокирующих/recall major+blocker/ложные блокировки/доля без
       evidence/стоимость; для гейта precision важнее полноты
