@@ -536,6 +536,12 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
         return f"бандл не читается: {exc}"
     if not lines:
         return "бандл пуст"
+    try:
+        first = json.loads(lines[0])
+    except ValueError as exc:
+        return f"строка 1 не JSON: {exc}"
+    if not isinstance(first, dict) or first.get("kind") != "header":
+        return "первая строка не `kind: header`"
     declared: set[str] | None = None
     answered: set[str] = set()
     for number, line in enumerate(lines, start=1):
@@ -546,6 +552,11 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
         if not isinstance(record, dict):
             return f"строка {number} не объект"
         if record.get("kind") == "header":
+            if number != 1:
+                # Второй заголовок означает склейку двух бандлов. Раньше
+                # побеждал последний, и файл «доказывал» охват той половины,
+                # которая оказалась ниже.
+                return f"строка {number}: второй заголовок — бандл склеен из двух"
             scope = record.get("scope")
             declared = (
                 {
@@ -563,7 +574,13 @@ def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
             continue
         request = record.get("request")
         if isinstance(request, dict) and request.get("kind") == "pr":
-            answered.add(str(request.get("value")))
+            value = str(request.get("value"))
+            if value in answered:
+                # Два ответа на один запрос — противоречие внутри файла:
+                # «есть хотя бы один» пропускало и дубль от старого прогона, и
+                # пару с разными состояниями.
+                return f"строка {number}: PR {value} отвечен дважды"
+            answered.add(value)
     missing = [n for n in numbers if str(n) not in answered]
     if missing:
         return f"в бандле нет записей по PR {missing}"

@@ -1133,3 +1133,36 @@ def test_stale_records_outside_the_scope_are_failed(tmp_path: Path) -> None:
 
     assert outcomes[0].status == "failed"
     assert "вне охвата" in outcomes[0].detail
+
+
+def test_concatenated_bundle_is_failed(tmp_path: Path) -> None:
+    """Второй заголовок — склейка двух бандлов.
+
+    Раньше побеждал последний, и файл «доказывал» охват той половины, которая
+    оказалась ниже.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    doubled = bundle.read_text(encoding="utf-8")
+    bundle.write_text(doubled + doubled, encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "склеен" in outcomes[0].detail
+
+
+def test_duplicate_answer_for_one_pr_is_failed(tmp_path: Path) -> None:
+    """Два ответа на один запрос — противоречие внутри файла."""
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    dup = {"kind": "result", "request": {"kind": "pr", "value": "1"}, "state": "not_merged"}
+    with bundle.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(dup) + "\n")
+
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "дважды" in outcomes[0].detail
