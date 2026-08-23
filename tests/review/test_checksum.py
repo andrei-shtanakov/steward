@@ -361,3 +361,52 @@ def test_hasher_failure_is_checker_error_not_drift(tmp_path: Path) -> None:
 
     assert result.returncode == 2, result.stderr
     assert "РАСХОЖДЕНИЕ" not in result.stderr
+
+
+def run_env(root: Path, pin: Path, inventory: str) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    env["CHECKSUM_KIT_INVENTORY"] = inventory
+    return subprocess.run(
+        ["sh", str(SCRIPT), "--pin", str(pin)],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        env=env,
+    )
+
+
+OPTIONAL_INVENTORY = (
+    "scripts/review/build-prompt.sh scripts/review/collect-context.sh "
+    "scripts/review/apply-threshold.sh scripts/review/local.sh "
+    "scripts/review/checksum.sh .github/codex/review-schema.json "
+    "?scripts/review/new-helper.sh"
+)
+
+
+def test_optional_member_absent_is_green(tmp_path: Path) -> None:
+    """`?path` в инвентаре — переходный член: нет в PIN — не требуется.
+
+    Без optional-синтаксиса смена состава кита дедлочилась (major восьмого
+    захода гейта на #101): инвентарь зашит в чекер, чекер исполняется из
+    base — ре-вендор с новым членом всегда красный у старого base-чекера.
+    Двухшаговый ре-вендор: сперва новый checksum.sh (член optional), затем
+    сам файл; между PR ничего не краснеет."""
+    root = make_kit(tmp_path)
+    pin = full_pin(root)
+    result = run_env(root, pin, OPTIONAL_INVENTORY)
+    assert result.returncode == 0, result.stderr
+
+
+def test_optional_member_present_is_verified(tmp_path: Path) -> None:
+    """Optional-член, появившийся в PIN, сверяется как обычный: «переходный»
+    не значит «непроверяемый»."""
+    root = make_kit(tmp_path)
+    helper = root / "scripts" / "review" / "new-helper.sh"
+    helper.write_text("helper\n", encoding="utf-8")
+    pin = full_pin(root, extra=[pin_line(root, "scripts/review/new-helper.sh")])
+    (root / "scripts" / "review" / "new-helper.sh").write_text("drift\n", "utf-8")
+
+    result = run_env(root, pin, OPTIONAL_INVENTORY)
+
+    assert result.returncode == 1, result.stderr
+    assert "scripts/review/new-helper.sh" in result.stderr

@@ -59,7 +59,24 @@ hash_file() {
 # третьего захода). Раскладка кита не свободна: local.sh вычисляет соседей
 # от своего каталога, схему — от .github/codex; смена раскладки или состава
 # — правка кита через ревью, синхронно со спекой.
-required_kit="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json"
+#
+# ПЕРЕХОДНЫЕ члены — `?path` (major восьмого захода): инвентарь зашит в
+# чекер, а чекер исполняется из base — без переходного синтаксиса смена
+# состава кита дедлочилась (ре-вендор с новым членом всегда красный у
+# старого base-чекера) либо ломала все PR в окне между шагами. Двухшаговый
+# ре-вендор состава: PR-1 — новый checksum.sh, где новый член указан как
+# `?path` (для старого base-чекера это просто смена байтов члена); PR-2 —
+# сам файл и его строка PIN. Между PR ничего не краснеет: optional-член без
+# PIN-строки не требуется, с PIN-строкой — сверяется как обычный.
+# Обязательным член становится следующим релизом кита. Удаление —
+# зеркально: сперва член становится `?path`, затем файл и строка уходят.
+#
+# CHECKSUM_KIT_INVENTORY переопределяет инвентарь — хук тестов продюсера и
+# переходных конфигураций вызывающего. Уровень доверия тот же, что у самого
+# вызова: env задаёт workflow, границей остаётся CODEOWNERS + человек на
+# мерже (эшелон, не граница, — как у всего YAML кита).
+required_kit_default="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json"
+required_kit="${CHECKSUM_KIT_INVENTORY:-$required_kit_default}"
 
 pin=""
 root=""
@@ -134,7 +151,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     # кита, ре-вендорьте» (minor четвёртого захода гейта на #101). PIN —
     # ровно инвентарь, ни больше ни меньше.
     case " $required_kit " in
-        *" $path "*) ;;
+        *" $path "*|*" ?$path "*) ;;
         *)
             echo "PIN перечисляет файл вне состава кита (§5): $path —" \
                 "copy-integrity его не покрывает, уберите строку." >&2
@@ -218,6 +235,9 @@ fi
 # а путь ИЗ PIN с пробелом просто не совпадёт с каноническим членом.
 missing_kit=""
 for member in $required_kit; do
+    case "$member" in
+        '?'*) continue ;;  # переходный член: отсутствие в PIN легально
+    esac
     case " $seen_paths " in
         *" $member "*) ;;
         *) missing_kit="$missing_kit $member" ;;
