@@ -96,12 +96,25 @@ def _origin_slug(url: str) -> str | None:
     return "/".join(parts[-2:]) if len(parts) >= 2 else None
 
 
+def _label(entry: Any) -> str:
+    """Как назвать запись в отчёте, когда она может быть чем угодно.
+
+    Считается ДО preflight: сам отчёт не должен падать на той же записи,
+    про которую собирается сказать, что она негодна.
+    """
+    if isinstance(entry, dict) and isinstance(entry.get("repo"), str):
+        return entry["repo"]
+    return f"<негодная запись охвата: {entry!r}>"
+
+
 def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None, str]:
     """Тот ли это чекаут. Возвращает (путь, причина отказа).
 
     Проверки идут до вызова продюсера и все до единой обязательны: неверный
     путь не должен «просто не сработать», он должен не дойти до записи.
     """
+    if not isinstance(entry, dict):
+        return None, f"элемент охвата не объект: {entry!r}"
     repo = entry.get("repo")
     checkout = entry.get("checkout")
     if not isinstance(repo, str) or "/" not in repo:
@@ -127,6 +140,32 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
         # наблюдали бы не тот объект — и бандл выглядел бы законным.
         return None, f"{repo}: origin чекаута — {slug!r}, а не {repo!r}"
     return path, ""
+
+
+def pr_numbers(entry: dict[str, Any]) -> tuple[list[int] | None, str]:
+    """Номера PR из записи охвата, или причина отказа.
+
+    `int(n)` без проверки давал два разных отказа, и оба тихие: `74.5`
+    превращался в запрос PR `74` — спросили не тот объект, а отчёт сказал бы
+    `published`; а `"abc"` выбрасывал `ValueError` посреди батча и обрывал
+    остальные репозитории, вопреки объявленной независимости. Найдено
+    codex-гейтом на PR #96.
+
+    `bool` отвергается отдельно: `True` — это `int` в Python, и он молча стал
+    бы запросом PR №1.
+    """
+    repo = entry.get("repo")
+    prs = entry.get("prs")
+    if not isinstance(prs, list) or not prs:
+        return None, f"{repo}: пустой или отсутствующий список `prs`"
+    numbers: list[int] = []
+    for value in prs:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None, f"{repo}: номер PR должен быть целым, получено {value!r}"
+        if value <= 0:
+            return None, f"{repo}: номер PR должен быть положительным, получено {value}"
+        numbers.append(value)
+    return numbers, ""
 
 
 def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
@@ -166,16 +205,16 @@ def collect(
     """
     outcomes: list[Outcome] = []
     for entry in repositories:
-        repo = str(entry.get("repo"))
+        repo = _label(entry)
         path, refusal = preflight(entry, workspace_root)
         if path is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
-        prs = entry.get("prs")
-        if not isinstance(prs, list) or not prs:
-            outcomes.append(Outcome(repo, "skipped", f"{repo}: пустой список `prs`"))
+        numbers, refusal = pr_numbers(entry)
+        if numbers is None:
+            outcomes.append(Outcome(repo, "skipped", refusal))
             continue
-        code, detail = run_producer(repo, path, policy, [int(n) for n in prs])
+        code, detail = run_producer(repo, path, policy, numbers)
         if code == 0:
             outcomes.append(Outcome(repo, "published", str(path / BUNDLE_RELPATH)))
         else:
@@ -193,7 +232,7 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
     outcomes: list[Outcome] = []
     now = datetime.now(UTC)
     for entry in repositories:
-        repo = str(entry.get("repo"))
+        repo = _label(entry)
         path, refusal = preflight(entry, workspace_root)
         if path is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
@@ -207,6 +246,15 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
             valid_until = datetime.fromisoformat(str(header["valid_until"]).replace("Z", "+00:00"))
         except (ValueError, KeyError, IndexError) as exc:
             outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {exc}"))
+            continue
+        if valid_until.tzinfo is None:
+            # Сравнение naive с aware бросает TypeError и обрывало бы `--check`
+            # на первом же таком репозитории, не показав остальные. По смыслу
+            # это тот же нечитаемый заголовок: момент времени без зоны не
+            # определён.
+            outcomes.append(
+                Outcome(repo, "failed", f"`valid_until` без часового пояса: {valid_until}")
+            )
             continue
         if now >= valid_until:
             hours = int((now - valid_until).total_seconds() // 3600)
@@ -252,19 +300,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Не собирать, а показать свежесть уже опубликованных бандлов.",
     )
     args = parser.parse_args(argv)
+    # Резолвим до любого использования: проверка `is_file()` идёт в текущем
+    # каталоге, а продюсер запускается с `cwd=REPO_ROOT` — относительный путь
+    # означал бы там другой файл, и preflight был бы зелёным про не тот.
+    scope_path = args.scope.resolve()
+    policy_path = args.policy.resolve()
 
     try:
-        repositories = _load_scope(args.scope)
+        repositories = _load_scope(scope_path)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"охват не прочитан: {exc}", file=sys.stderr)
         return 2
 
     if args.check:
         return report(freshness(repositories, args.workspace_root))
-    if not args.policy.is_file():
-        print(f"политики нет: {args.policy}", file=sys.stderr)
+    if not policy_path.is_file():
+        print(f"политики нет: {policy_path}", file=sys.stderr)
         return 2
-    return report(collect(repositories, args.workspace_root, args.policy))
+    return report(collect(repositories, args.workspace_root, policy_path))
 
 
 if __name__ == "__main__":

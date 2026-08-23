@@ -225,3 +225,105 @@ def test_workspace_root_has_no_default() -> None:
     """cwd под launchd не тот, что в интерактивной сессии — угадывать нельзя."""
     with pytest.raises(SystemExit):
         RUNNER.main([])
+
+
+# --- находки машинного ревью PR #96 ----------------------------------------
+
+
+def test_non_dict_scope_entry_is_skipped_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Строка вместо объекта в охвате падала на `entry.get` с AttributeError."""
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    outcomes = RUNNER.collect(["просто строка"], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+    assert "не объект" in outcomes[0].detail
+
+
+@pytest.mark.parametrize(
+    ("value", "why"),
+    [
+        pytest.param(74.5, "дробное", id="float"),
+        pytest.param("abc", "строка", id="string"),
+        pytest.param(True, "bool", id="bool"),
+        pytest.param(0, "ноль", id="zero"),
+        pytest.param(-1, "отрицательное", id="negative"),
+    ],
+)
+def test_non_integer_pr_number_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: Any, why: str
+) -> None:
+    """Оба тихих отказа `int(n)` сразу.
+
+    `74.5` превращался в запрос PR `74` — спросили не тот объект, а отчёт
+    сказал бы `published`. `"abc"` бросал ValueError посреди батча и обрывал
+    остальные репозитории. `True` — это `int` в Python, и он стал бы PR №1.
+    """
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail(f"{why}: не звать"))
+
+    outcomes = RUNNER.collect([_entry(prs=[value])], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "skipped"
+
+
+def test_bad_pr_number_does_not_abort_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Заявленная независимость репозиториев проверяется именно на этом."""
+    _checkout(tmp_path, "good")
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "good", "prs": ["abc"]},
+            {"repo": REPO, "checkout": "good", "prs": [2]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert [o.status for o in outcomes] == ["skipped", "published"]
+
+
+def test_naive_valid_until_is_failed_not_a_traceback(tmp_path: Path) -> None:
+    """Сравнение naive с aware бросает TypeError и обрывало бы весь `--check`."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    (path / ".steward" / "approval_facts.jsonl").write_text(
+        json.dumps({"kind": "header", "valid_until": "2026-08-23T12:00:00"}) + "\n",
+        encoding="utf-8",
+    )
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "часового пояса" in outcomes[0].detail
+
+
+def test_relative_policy_is_resolved_before_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверка `is_file()` шла в текущем каталоге, а продюсер стартует в другом.
+
+    Относительный путь означал бы там другой файл — preflight зелёный про не тот.
+    """
+    _checkout(tmp_path, "steward")
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(json.dumps({"version": 1, "repositories": [_entry()]}), encoding="utf-8")
+    policy = tmp_path / "policy.yaml"
+    policy.write_text("version: 1\n", encoding="utf-8")
+    seen: list[Path] = []
+    monkeypatch.setattr(
+        RUNNER, "run_producer", lambda repo, root, pol, prs: (seen.append(pol), (0, ""))[1]
+    )
+    monkeypatch.chdir(tmp_path)
+
+    RUNNER.main(
+        ["--workspace-root", str(tmp_path), "--scope", "scope.yaml", "--policy", "policy.yaml"]
+    )
+
+    assert seen == [policy.resolve()]
+    assert seen[0].is_absolute()

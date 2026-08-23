@@ -27,10 +27,17 @@
   неограниченный, поэтому период обязан покрывать `старт + прогон` с
   многократным перекрытием, а не «формально меньше lease».
 
+  После установки обязательно убедиться, что запуск вообще происходит: plist,
+  который не стартует, ничем себя не выдаёт, кроме протухшего через сутки бандла.
+
+      launchctl kickstart -k gui/$(id -u)/com.steward.approval-facts
+      tail -n 20 <LOG_DIR>/approval-facts.err.log
+
   Установка (подставив свои пути):
 
       sed -e 's|<WORKSPACE_ROOT>|/Users/you/labs/all_ai_orchestrators|g' \
           -e 's|<STEWARD_ROOT>|/Users/you/labs/all_ai_orchestrators/steward|g' \
+          -e "s|<UV_BIN>|$(command -v uv)|g" \
           -e 's|<LOG_DIR>|/Users/you/Library/Logs/steward|g' \
           scripts/com.steward.approval-facts.plist.template \
           > ~/Library/LaunchAgents/com.steward.approval-facts.plist
@@ -51,9 +58,13 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <!-- `uv run` внутри, чтобы не зависеть от того, какой python первым в PATH
-         у launchd: он не тот, что в интерактивной оболочке. -->
-    <string>cd &lt;STEWARD_ROOT&gt; &amp;&amp; uv run python scripts/collect_approval_facts.py --workspace-root &lt;WORKSPACE_ROOT&gt;</string>
+    <!-- `uv` по АБСОЛЮТНОМУ пути. Голое имя было бы той же ошибкой, от которой
+         защищает `uv run` внутри: PATH у launchd не тот, что в интерактивной
+         оболочке, и `uv` из `~/.local/bin` или Homebrew там не находится. Тогда
+         плановый запуск падал бы с `uv: command not found`, сбор не происходил
+         бы вовсе, а заметно это стало бы только по протухшему через сутки
+         бандлу. Подставить вывод `command -v uv`. -->
+    <string>cd &lt;STEWARD_ROOT&gt; &amp;&amp; &lt;UV_BIN&gt; run python scripts/collect_approval_facts.py --workspace-root &lt;WORKSPACE_ROOT&gt;</string>
   </array>
 
   <key>StartInterval</key>
