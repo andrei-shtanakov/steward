@@ -325,3 +325,92 @@ def test_empty_context_value_is_config_error(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "пустым значением" in result.stderr
+
+
+# --- Потолки дифа (review-kit-large-pr-mode, гардрейл) ----------------------
+
+
+def make_multifile_diff(tmp_path: Path, files: int, filler: str = "") -> Path:
+    diff = tmp_path / "big.patch"
+    parts = []
+    for i in range(files):
+        parts.append(
+            f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n"
+            f"@@ -1 +1 @@\n-old\n+new{filler}\n"
+        )
+    diff.write_text("".join(parts), encoding="utf-8")
+    return diff
+
+
+def test_diff_over_file_limit_is_explicit_refusal(tmp_path: Path) -> None:
+    """Слишком широкий диф — явный отказ, не молчаливая обрезка.
+
+    Один прогон на большом патче теряет полноту и точность, а обрезка хуже
+    обоих: «покрыл всё» читалось бы там, где модель видела половину. Пока
+    chunked-режим не реализован, честный отказ — единственная правда.
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=31)
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 2
+    assert "31 файл(ов)" in result.stderr
+    assert "chunked" in result.stderr
+
+
+def test_diff_at_file_limit_passes(tmp_path: Path) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=30)
+
+    assert run(prompt, diff).returncode == 0
+
+
+def test_diff_over_byte_limit_is_explicit_refusal(tmp_path: Path) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=2, filler="x" * 250_000)
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 2
+    assert "байт" in result.stderr
+
+
+def test_limits_are_overridable_explicitly(tmp_path: Path) -> None:
+    """Поднять потолок можно, но только НАЗВАВ его — не молча."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = make_multifile_diff(tmp_path, files=31)
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--max-diff-files",
+            "40",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--max-diff-bytes", "--max-diff-files"])
+def test_bare_limit_flag_is_config_error(tmp_path: Path, flag: str) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(prompt), flag],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "usage" in result.stderr

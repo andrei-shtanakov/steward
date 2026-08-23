@@ -7,7 +7,7 @@ set -eu
 
 usage() {
     echo "usage: build-prompt.sh --prompt <file> --diff <file>" \
-        "[--context <file>]" >&2
+        "[--context <file>] [--max-diff-bytes N] [--max-diff-files N]" >&2
 }
 
 # Маркер конца зоны недоверенных данных обязан быть непредсказуем для самого
@@ -37,6 +37,15 @@ diff=""
 # одному дифу. Обязательность живёт не здесь, а у вызывающего — он уже знает,
 # настроен манифест или нет (код 3 от collect-context.sh).
 context=""
+# Потолки дифа. Один общий прогон на большом патче теряет и полноту, и
+# точность, а молчаливая обрезка хуже обоих: «покрыл всё» читалось бы там, где
+# модель видела половину. Превышение — ЯВНЫЙ отказ (код 2) с называнием
+# причины; chunked-режим — отдельный пункт плана
+# (@id:review-kit-large-pr-mode), пока он не влит, честный отказ единственная
+# правда. Проверка живёт ЗДЕСЬ, в общей точке склейки, а не в вызывающих:
+# CI и local.sh иначе разошлись бы в лимитах молча.
+max_diff_bytes=400000
+max_diff_files=30
 context_given=0
 
 while [ $# -gt 0 ]; do
@@ -50,6 +59,12 @@ while [ $# -gt 0 ]; do
         --context)
             [ $# -ge 2 ] || { usage; exit 2; }
             context="$2"; context_given=1; shift 2 ;;
+        --max-diff-bytes)
+            [ $# -ge 2 ] || { usage; exit 2; }
+            max_diff_bytes="$2"; shift 2 ;;
+        --max-diff-files)
+            [ $# -ge 2 ] || { usage; exit 2; }
+            max_diff_files="$2"; shift 2 ;;
         *) usage; exit 2 ;;
     esac
 done
@@ -71,6 +86,18 @@ if [ "$context_given" -eq 1 ]; then
     [ -n "$context" ] || { echo "--context передан с пустым значением" >&2; exit 2; }
     [ -f "$context" ] || { echo "нет файла контекста: $context" >&2; exit 2; }
     [ -r "$context" ] || { echo "файл контекста нечитаем: $context" >&2; exit 2; }
+fi
+
+diff_bytes=$(wc -c < "$diff" | tr -d ' ')
+# `grep -c` возвращает 1 на нуле совпадений — это не ошибка, а счётчик «0».
+diff_files=$(grep -c '^diff --git ' "$diff" || true)
+if [ "$diff_bytes" -gt "$max_diff_bytes" ] || [ "$diff_files" -gt "$max_diff_files" ]; then
+    echo "диф больше поддерживаемого одним прогоном: $diff_files файл(ов)," \
+        "$diff_bytes байт (потолки $max_diff_files / $max_diff_bytes)." >&2
+    echo "Это отказ инструмента, не вердикт о патче: chunked-режим ещё не" \
+        "реализован (@id:review-kit-large-pr-mode). Разбейте PR или поднимите" \
+        "потолок явно (--max-diff-bytes/--max-diff-files)." >&2
+    exit 2
 fi
 
 marker=$(hash_diff "$diff")
