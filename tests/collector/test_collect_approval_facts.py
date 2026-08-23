@@ -597,7 +597,7 @@ def test_publication_of_an_already_expired_bundle_is_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Публикация, родившаяся просроченной, — не публикация."""
-    path = _checkout(tmp_path, "steward")
+    _checkout(tmp_path, "steward")
 
     def stale_producer(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
         _bundle(root, datetime.now(UTC) - timedelta(hours=1), prs=prs)
@@ -615,7 +615,7 @@ def test_publication_without_a_header_is_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`result`-строки без заголовка проходили как успешная публикация."""
-    path = _checkout(tmp_path, "steward")
+    _checkout(tmp_path, "steward")
 
     def headerless(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
         bundle = root / RUNNER.BUNDLE_RELPATH
@@ -645,3 +645,40 @@ def test_path_constraint_is_stated_not_silently_broken() -> None:
     ).read_text(encoding="utf-8")
 
     assert "Ограничение путей" in doc
+
+
+def test_both_passes_refuse_identical_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`collect()` и `--check` обязаны судить путь одинаково.
+
+    Расхождение уже возвращалось дважды: сперва дубликаты чекаутов проверял
+    только сбор, потом сбор проверял записи, а проверка — заголовок. Каждый раз
+    следствие одно: обещанное доказательство установки зелёное, а плановый сбор
+    на том же охвате падает. Поэтому одинаковость закреплена тестом, а не
+    намерением — оба прохода ходят через общий `_resolved()`.
+    """
+    _checkout(tmp_path, "good")
+    _checkout(tmp_path, "wrong", origin="andrei-shtanakov/maestro")
+    (tmp_path / "plain").mkdir()
+    scope = [
+        {"repo": REPO, "checkout": "nowhere", "prs": [1]},
+        {"repo": REPO, "checkout": "wrong", "prs": [1]},
+        {"repo": REPO, "checkout": "plain", "prs": [1]},
+        {"repo": REPO, "checkout": "../outside", "prs": [1]},
+        "не объект",
+        {"repo": REPO, "checkout": "good", "prs": [1]},
+        {"repo": REPO, "checkout": "good", "prs": [2]},
+    ]
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
+
+    collected = RUNNER.collect(scope, tmp_path, tmp_path / "policy.yaml")
+    checked = RUNNER.freshness(scope, tmp_path)
+
+    def refusals(outcomes: list[Any]) -> list[tuple[str, str]]:
+        return [(o.repo, o.detail) for o in outcomes if o.status == "skipped"]
+
+    assert refusals(collected) == refusals(checked)
+    # Шесть: отсутствующий, чужой origin, не-git, вне корня, не объект
+    # и дубликат чекаута — последний тоже отказ по пути, а не по данным.
+    assert len(refusals(collected)) == 6
