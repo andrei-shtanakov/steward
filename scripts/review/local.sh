@@ -33,6 +33,8 @@ review_cmd="${REVIEW_CMD:-codex exec}"
 
 base=""
 head_ref="HEAD"
+max_diff_bytes=""
+max_diff_files=""
 do_fetch=0
 format="text"
 # "origin" — умолчание, не жёсткая привязка: `git clone -o github` или
@@ -47,7 +49,8 @@ remote_explicit=0
 
 usage() {
     echo "usage: local.sh [--base <ref>] [--head <ref>] [--remote <name>]" \
-        "[--fetch] [--format markdown|text]" >&2
+        "[--fetch] [--format markdown|text]" \
+        "[--max-diff-bytes N] [--max-diff-files N]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -60,6 +63,14 @@ while [ $# -gt 0 ]; do
         --head)   [ $# -ge 2 ] || { usage; exit 2; }; head_ref="$2"; shift 2 ;;
         --remote) [ $# -ge 2 ] || { usage; exit 2; }; remote="$2"; remote_explicit=1; shift 2 ;;
         --format) [ $# -ge 2 ] || { usage; exit 2; }; format="$2"; shift 2 ;;
+        # Проброс потолков дифа в build-prompt.sh: гардрейл предлагает поднять
+        # потолок явно, значит поддерживаемый вызывающий обязан уметь его
+        # передать — иначе обещанный путь восстановления не существует
+        # (находка гейта на #99). Валидация значений — в самом build-prompt.sh.
+        --max-diff-bytes)
+            [ $# -ge 2 ] || { usage; exit 2; }; max_diff_bytes="$2"; shift 2 ;;
+        --max-diff-files)
+            [ $# -ge 2 ] || { usage; exit 2; }; max_diff_files="$2"; shift 2 ;;
         --fetch)  do_fetch=1; shift ;;
         *) usage; exit 2 ;;
     esac
@@ -389,13 +400,14 @@ fi
 # пробел (`/tmp/Review Temp.XYZ`) — argv битый, и прогон падает на «нет файла
 # контекста». Прежний комментарий утверждал «либо пуст, либо ровно два слова»;
 # это было неверно, и неверно ровно там, где путь приходит извне.
-if [ "$use_context" -eq 1 ]; then
-    sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
-        --context "$work/context.txt" > "$work/prompt.txt"
-else
-    sh "$kit_dir/build-prompt.sh" --prompt "$prompt" --diff "$work/diff.patch" \
-        > "$work/prompt.txt"
-fi
+# Позиционные параметры шелла — единственный способ собрать argv по частям
+# без некавыченного раскрытия строки (тот же урок, что с ctx_args): `set --`
+# строит список, кавычки сохраняют каждый элемент целым.
+set -- --prompt "$prompt" --diff "$work/diff.patch"
+[ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"
+[ -n "$max_diff_bytes" ] && set -- "$@" --max-diff-bytes "$max_diff_bytes"
+[ -n "$max_diff_files" ] && set -- "$@" --max-diff-files "$max_diff_files"
+sh "$kit_dir/build-prompt.sh" "$@" > "$work/prompt.txt"
 
 # Промпт идёт на stdin, а не аргументом: диф — недоверенный текст, и в argv он
 # не попадает ни здесь, ни в CI. Ревьюер в песочнице read-only: он читает, а не

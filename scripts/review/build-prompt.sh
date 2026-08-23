@@ -113,8 +113,10 @@ if [ "$diff_bytes" -gt "$max_diff_bytes" ] || [ "$diff_files" -gt "$max_diff_fil
     echo "диф больше поддерживаемого одним прогоном: $diff_files файл(ов)," \
         "$diff_bytes байт (потолки $max_diff_files / $max_diff_bytes)." >&2
     echo "Это отказ инструмента, не вердикт о патче: chunked-режим ещё не" \
-        "реализован (@id:review-kit-large-pr-mode). Разбейте PR или поднимите" \
-        "потолок явно (--max-diff-bytes/--max-diff-files)." >&2
+        "реализован (@id:review-kit-large-pr-mode). Разбейте PR; в локальном" \
+        "прогоне потолок поднимается явно (local.sh --max-diff-bytes/" \
+        "--max-diff-files), в CI потолок меняется только правкой workflow" \
+        "через ревью — runtime-ручки у гейта нет намеренно." >&2
     exit 2
 fi
 

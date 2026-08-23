@@ -947,3 +947,26 @@ def test_manifest_without_collector_is_a_refusal(tmp_path: Path) -> None:
 
     assert result.returncode == 2, result.stdout + result.stderr
     assert "механика потеряна" in result.stderr
+
+
+def test_local_forwards_diff_ceiling_overrides(tmp_path: Path) -> None:
+    """`local.sh --max-diff-files/--max-diff-bytes` доезжают до build-prompt.sh.
+
+    Гардрейл предлагает поднять потолок явно — значит поддерживаемый
+    вызывающий обязан уметь его передать, иначе обещанный путь восстановления
+    не существует (находка гейта на #99: интерфейс local.sh флагов не knew).
+    """
+    _, local = make_repo(tmp_path)
+    for i in range(31):
+        (local / f"f{i}.txt").write_text("x\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "широкий патч")
+
+    # Без override — честный отказ гардрейла (код 2, не вердикт).
+    refused = run_local(local, make_stub(tmp_path, STUB_OK))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "больше поддерживаемого" in refused.stderr
+
+    # С override — проходит.
+    passed = run_local(local, make_stub(tmp_path, STUB_OK), "--max-diff-files", "40")
+    assert passed.returncode == 0, passed.stdout + passed.stderr
