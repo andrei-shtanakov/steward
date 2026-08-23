@@ -1004,18 +1004,48 @@ def test_mirror_on_another_host_is_not_the_same_repo(
     assert "github.com" in outcomes[0].detail
 
 
+def _preflight_with_origin(tmp_path: Path, url: str) -> "Any":
+    """Preflight на чекауте с заданным origin — то, что видит оператор."""
+    path = _checkout(tmp_path, "steward", origin=None)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "remote", "add", "origin", url], check=True)
+    return RUNNER.preflight(_entry(), tmp_path)
+
+
 @pytest.mark.parametrize(
-    ("url", "host", "slug"),
+    "url",
     [
-        ("git@github.com:andrei-shtanakov/steward.git", "github.com", REPO),
-        ("https://github.com/andrei-shtanakov/steward.git/", "github.com", REPO),
-        ("https://user@github.com/andrei-shtanakov/steward", "github.com", REPO),
-        ("git@git.epam.com:andrei-shtanakov/steward.git", "git.epam.com", REPO),
-        ("не-url", None, None),
+        "git@github.com:andrei-shtanakov/steward.git",
+        "ssh://git@github.com/andrei-shtanakov/steward.git",
+        "https://github.com/andrei-shtanakov/steward.git",
+        "https://github.com/andrei-shtanakov/steward",
     ],
 )
-def test_origin_parsing_reports_host_and_slug(url: str, host: str | None, slug: str | None) -> None:
-    assert RUNNER._origin_host_and_slug(url) == (host, slug)
+def test_origin_forms_the_producer_accepts_pass_preflight(tmp_path: Path, url: str) -> None:
+    """Ровно формы `parse_origin` продюсера — и никакие другие."""
+    resolved, refusal = _preflight_with_origin(tmp_path, url)
+    assert resolved is not None, refusal
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Всё это прежний, более терпимый разбор ПРИНИМАЛ — а продюсер
+        # (`publish.py::parse_origin`) отвергает. Зелёный preflight на таком
+        # origin означал бы `--check` про расписание, каждый прогон которого
+        # падает кодом 2, — установка выглядела бы живой, не работая никогда.
+        "git@ssh.github.com:andrei-shtanakov/steward.git",
+        "https://www.github.com/andrei-shtanakov/steward.git",
+        "https://user@github.com/andrei-shtanakov/steward",
+        "https://github.com/mirror/andrei-shtanakov/steward.git",
+        "git@git.epam.com:andrei-shtanakov/steward.git",
+        "не-url",
+    ],
+)
+def test_origin_forms_the_producer_rejects_fail_preflight(tmp_path: Path, url: str) -> None:
+    resolved, refusal = _preflight_with_origin(tmp_path, url)
+    assert resolved is None
+    assert "принимает продюсер" in refusal
 
 
 def test_pipe_is_listed_among_forbidden_path_characters() -> None:
@@ -1061,15 +1091,6 @@ def test_header_without_scope_digest_is_failed(tmp_path: Path) -> None:
     bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
 
     assert RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))[0].status == "failed"
-
-
-def test_ssh_over_443_host_is_accepted() -> None:
-    """`ssh.github.com` — штатный обход корпоративных фаерволов, не зеркало."""
-    assert RUNNER._origin_host_and_slug("git@ssh.github.com:andrei-shtanakov/steward.git") == (
-        "ssh.github.com",
-        REPO,
-    )
-    assert "ssh.github.com" in RUNNER.GITHUB_HOSTS
 
 
 def test_slug_comparison_is_case_insensitive(
@@ -1457,3 +1478,20 @@ def test_lease_length_must_match_the_active_policy(tmp_path: Path) -> None:
 
     assert outcomes[0].status == "failed"
     assert "в активной политике 43200s" in outcomes[0].detail
+
+
+def test_duplicate_pr_numbers_in_scope_are_refused(tmp_path: Path) -> None:
+    """`prs: [74, 74]` — отказ охвата, а не «одна запись покрывает оба».
+
+    Продюсер (`parse_scope`) отвергает дублирующийся охват целиком, каждый
+    плановый прогон падал бы кодом 2. Пропустить дубль здесь значило бы
+    зеленеть `--check`'ом про расписание, которое не работает никогда, — тот
+    же класс, что терпимый разбор origin.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[74])
+
+    outcomes = RUNNER.freshness([_entry(prs=[74, 74])], tmp_path, _policy(tmp_path))
+
+    assert outcomes[0].status == "skipped"
+    assert "повторяется" in outcomes[0].detail

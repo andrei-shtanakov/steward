@@ -86,6 +86,8 @@ import yaml
 # то есть зеленел на файле, который `load_facts` отверг бы fail-closed
 # (найдено первым зрячим прогоном codex-ревью). Вопрос «примет ли потребитель
 # этот бандл» имеет ровно один честный ответ: спросить код потребителя.
+from steward.approvalfacts.publish import ConfigError as OriginError
+from steward.approvalfacts.publish import parse_origin
 from steward.approvalfacts.reader import UnreadableFacts, load_facts
 from steward.gatecheck.approval import PolicyError, load_approval_policy, policy_digest
 
@@ -155,31 +157,6 @@ def _git(path: Path, *args: str) -> str | None:
 #: `ssh.github.com` — штатный хост GitHub для SSH поверх 443, которым люди
 #: пользуются из-за корпоративных фаерволов. Не включить его значило бы
 #: объявить исправный чекаут зеркалом.
-GITHUB_HOSTS = frozenset({"github.com", "www.github.com", "ssh.github.com"})
-
-
-def _origin_host_and_slug(url: str) -> tuple[str | None, str | None]:
-    """`(host, owner/name)` из ssh- или https-формы remote'а."""
-    # Слэш снимается ДО `.git`: у `…/steward.git/` иначе не отрезался бы
-    # суффикс, и preflight давал бы вечное «origin не тот» на исправном чекауте.
-    trimmed = url.rstrip("/").removesuffix(".git").rstrip("/")
-    if trimmed.startswith("git@"):
-        host, _, tail = trimmed.removeprefix("git@").partition(":")
-    elif "://" in trimmed:
-        authority, _, tail = trimmed.split("://", 1)[1].partition("/")
-        host = authority.rpartition("@")[2].partition(":")[0]
-    else:
-        return None, None
-    parts = [p for p in tail.split("/") if p]
-    # РОВНО два сегмента, а не «последние два»: суффиксный разбор принимал бы
-    # `github.com/mirror/owner/repo` за `owner/repo`, и раннер записывал бы
-    # факты настоящего репозитория в чужое дерево. Канонический разбор
-    # (`publish.py::parse_origin`, `[^/]+/[^/]+$`) лишних сегментов не терпит —
-    # эта функция не имеет права быть мягче его.
-    slug = "/".join(parts) if len(parts) == 2 else None
-    return (host.lower() or None), slug
-
-
 def _resolve(path: Path) -> tuple[Path | None, str]:
     """`Path.resolve()`, у которого отказ — значение, а не исключение.
 
@@ -262,20 +239,27 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
     origin = _git(path, "remote", "get-url", "origin")
     if origin is None:
         return None, f"{repo}: у {path} нет origin"
-    host, slug = _origin_host_and_slug(origin)
-    if host not in GITHUB_HOSTS:
-        # Ssh-алиас из `~/.ssh/config` сюда тоже не проходит, и это названное
-        # ограничение, а не недосмотр: прежняя попытка разрешить его полем
-        # `origin_host` снимала защиту от зеркал для ЛЮБОГО хоста, то есть
-        # расширяла дыру вместо закрытия. Лекарство у оператора простое —
-        # прописать в `origin` настоящий хост GitHub.
+    # Разбор origin — ТЕМ ЖЕ кодом, которым его разберёт продюсер
+    # (`publish.py::parse_origin`), и это не удобство, а условие смысла всей
+    # проверки: собственный, более терпимый разбор (принимавший
+    # `ssh.github.com`, `www.`, `user@`, суффиксные пути) пропускал чекауты,
+    # на которых `steward approval-facts` затем вечно падал кодом 2 — то есть
+    # `--check` зеленел про установку, которую плановый сбор не может обновить
+    # никогда. Ssh-алиасы из `~/.ssh/config` не проходят по той же причине:
+    # их не принимает продюсер. Лекарство у оператора одно — прописать в
+    # `origin` каноническую форму GitHub.
+    try:
+        owner, name = parse_origin(origin)
+    except OriginError:
         return None, (
-            f"{repo}: origin чекаута на хосте {host!r}, а факты берутся из GitHub. "
-            f"Ssh-алиасы не поддерживаются: пропишите в `origin` github.com"
+            f"{repo}: origin {origin!r} не в форме, которую принимает продюсер "
+            f"(git@github.com:, ssh://git@github.com/ или https://github.com/); "
+            f"факты берутся из GitHub, пропишите канонический origin"
         )
+    slug = f"{owner}/{name}"
     # GitHub не различает регистр в слагах, поэтому и мы не должны: иначе
     # `Andrei-Shtanakov/Steward` вечно числился бы чужим.
-    if slug is None or slug.lower() != repo.lower():
+    if slug.lower() != repo.lower():
         # Самая опасная из ошибок конфигурации: путь есть, git есть, а
         # наблюдали бы не тот объект — и бандл выглядел бы законным.
         return None, f"{repo}: origin чекаута — {slug!r}, а не {repo!r}"
@@ -304,6 +288,11 @@ def pr_numbers(entry: dict[str, Any]) -> tuple[list[int] | None, str]:
             return None, f"{repo}: номер PR должен быть целым, получено {value!r}"
         if value <= 0:
             return None, f"{repo}: номер PR должен быть положительным, получено {value}"
+        if value in numbers:
+            # Продюсер (`parse_scope`) отвергает дублирующийся охват целиком:
+            # пропустить дубль здесь значило бы зеленеть `--check`'ом про
+            # расписание, каждый прогон которого падает кодом 2.
+            return None, f"{repo}: PR {value} повторяется в охвате — продюсер такой scope отвергнет"
         numbers.append(value)
     return numbers, ""
 
@@ -442,6 +431,15 @@ def _publish_one(
         # Ни байты, ни lease не сдвинулись — снимка не было. Достаточно ЛЮБОГО
         # из двух признаков: содержимое обычно меняется (в нём `generated_at`),
         # а lease — гарантированно при новом окне.
+        #
+        # НАЗВАННОЕ ОКНО ЛОЖНОГО ОТКАЗА (найдено машинным ревью, оставлено
+        # сознательно): `generated_at` в контракте усечён до секунды, поэтому
+        # честный повтор в ту же секунду с теми же ответами даёт побайтово тот
+        # же файл — и неотличим от продюсера, который не писал вовсе. Признак
+        # вроде mtime не решает, а переворачивает ошибку: продюсер, тронувший
+        # старый живой файл БЕЗ нового снапшота, стал бы `published` — ложное
+        # зелёное вместо ложного красного. Здесь выбран fail-closed: редкий
+        # повтор в ту же секунду виден как отказ и лечится перезапуском.
         return Outcome(
             repo, "failed", f"код 0, но бандл не изменился и lease не сдвинулся ({valid_until})"
         )
