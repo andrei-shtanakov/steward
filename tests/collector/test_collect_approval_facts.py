@@ -843,15 +843,43 @@ def test_unresolvable_path_does_not_abort_the_batch(
     assert [o.status for o in outcomes] == ["skipped", "published"]
 
 
-def test_case_only_alias_is_a_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """На case-insensitive томе `steward` и `Steward` — один файл.
+def test_path_alias_of_the_same_checkout_is_a_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Две записи, разными путями указывающие в один чекаут, — дубликат.
 
-    У этого флота такой инцидент уже был: переименование `Maestro` -> `maestro`
-    держалось только на регистре, и списки репозиториев расходились молча.
+    Портируемый случай: `./steward` и `steward` резолвятся в одно на любой ФС.
     """
     _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
-    monkeypatch.setattr(RUNNER.os.path, "normcase", str.lower)
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "steward", "prs": [1]},
+            {"repo": REPO, "checkout": "./steward", "prs": [2]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert outcomes[1].status == "skipped"
+    assert "уже занят" in outcomes[1].detail
+
+
+def test_case_only_alias_is_a_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """На case-insensitive томе `steward` и `STEWARD` — один файл.
+
+    У этого флота такой инцидент уже был: переименование `Maestro` -> `maestro`
+    держалось только на регистре, и списки репозиториев расходились молча.
+
+    Тест обязан спрашивать ФС, а не платформу: первая версия проходила на APFS
+    и падала на Linux-раннере, потому что там `STEWARD` просто не существует и
+    preflight отказывает раньше дедупликации.
+    """
+    _checkout(tmp_path, "steward")
+    if not (tmp_path / "STEWARD").is_dir():
+        pytest.skip("файловая система чувствительна к регистру — алиаса нет")
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
     outcomes = RUNNER.collect(
         [
@@ -864,6 +892,26 @@ def test_case_only_alias_is_a_duplicate(tmp_path: Path, monkeypatch: pytest.Monk
 
     assert outcomes[1].status == "skipped"
     assert "уже занят" in outcomes[1].detail
+
+
+def test_duplicate_key_is_filesystem_identity(tmp_path: Path) -> None:
+    """Ключ — инод, а не строка: строка ошибается на регистре и симлинках.
+
+    `os.path.normcase` для этого не годится и выглядел бы работающим: на POSIX
+    это тождественная функция, она понижает регистр только на Windows.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    assert RUNNER._identity(real) == RUNNER._identity(link)
+    assert RUNNER._identity(real) != RUNNER._identity(tmp_path)
+
+
+def test_identity_falls_back_instead_of_raising(tmp_path: Path) -> None:
+    """ФС без осмысленных инодов не должна ронять обход."""
+    assert RUNNER._identity(tmp_path / "нет-такого").startswith("path:")
 
 
 @pytest.mark.parametrize(

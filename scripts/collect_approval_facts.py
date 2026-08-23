@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -135,6 +134,20 @@ def _inside(bundle: Path, checkout: Path) -> str | None:
     if not resolved_bundle.is_relative_to(resolved_checkout):
         return f"бандл резолвится в {resolved_bundle} — вне чекаута {resolved_checkout}"
     return None
+
+
+def _identity(path: Path) -> str:
+    """Устойчивый ключ каталога: (устройство, инод), с откатом на строку.
+
+    Строковое сравнение путей ошибается на регистре, симлинках и хардлинках;
+    инод не ошибается ни на чём из этого. Откат нужен на случай ФС без
+    осмысленных инодов — там лучше строка, чем исключение.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return f"path:{path}"
+    return f"ino:{stat.st_dev}:{stat.st_ino}"
 
 
 def _label(entry: Any) -> str:
@@ -273,11 +286,15 @@ def _resolved(
                 resolved.append((entry, repo, None, f"{repo}: {escape}"))
                 continue
             bundle, _ = _resolve(path / BUNDLE_RELPATH)
-            # `normcase`: на case-insensitive томе (APFS по умолчанию) записи
-            # `steward` и `Steward` резолвятся в разные строки, но в ОДИН файл.
-            # У этого флота такой инцидент уже был — переименование
-            # `Maestro` -> `maestro`, — так что это не гипотеза.
-            key = os.path.normcase(str(bundle))
+            # Ключ — идентичность каталога в ФС, а не строка пути. На
+            # case-insensitive томе (APFS по умолчанию) `steward` и `Steward`
+            # резолвятся в РАЗНЫЕ строки, но в один каталог, и вторая запись
+            # тихо затирала бы первую. `os.path.normcase` тут не помогает: на
+            # POSIX это тождественная функция, она понижает регистр только на
+            # Windows — защита выглядела бы работающей и не работала.
+            # Путь бандла внутри чекаута фиксирован, поэтому идентичности
+            # каталога достаточно.
+            key = _identity(path)
             previous = seen.get(key)
             if previous is not None:
                 resolved.append(
