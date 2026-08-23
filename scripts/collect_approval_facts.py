@@ -451,13 +451,13 @@ def collect(
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
-        lock, refusal = _claim(bundle)
+        lock, refusal, status = _claim(bundle)
         if lock is None:
             # Параллельный прогон по тому же чекауту создаёт моя же инструкция:
             # `launchctl load` запускает задачу по `RunAtLoad`, а следом
             # рекомендуется `kickstart`. Без замка чужая публикация засчиталась
             # бы этому прогону — «файл изменился» не доказывает, кто его писал.
-            outcomes.append(Outcome(repo, "skipped", f"{repo}: {refusal}"))
+            outcomes.append(Outcome(repo, status, f"{repo}: {refusal}"))
             continue
         try:
             outcomes.append(_publish_one(repo, path, bundle, policy, numbers))
@@ -466,7 +466,7 @@ def collect(
     return outcomes
 
 
-def _claim(bundle: Path) -> tuple[Path | None, str]:
+def _claim(bundle: Path) -> tuple[Path | None, str, str]:
     """Взять эксклюзивный замок на публикацию в этот бандл, или None.
 
     `O_EXCL` — атомарное «создал я»: второй прогон получает отказ, а не
@@ -481,15 +481,18 @@ def _claim(bundle: Path) -> tuple[Path | None, str]:
             lock.unlink(missing_ok=True)
         handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        return None, f"по {bundle} уже идёт другой прогон"
+        # Кто-то уже спрашивает — мы не спрашивали, это `skipped`.
+        return None, f"по {bundle} уже идёт другой прогон", "skipped"
     except OSError as exc:
         # Каталог недоступен на запись, диск полон, `stat`/`unlink` не удались.
         # Раньше всё это докладывалось как параллельный прогон: оператор искал
         # бы несуществующий второй процесс, а расписание стояло бы неизвестно
         # сколько.
-        return None, f"замок {lock} не взять: {exc}"
+        # А это поломка инструмента: спросить не смогли. `skipped` здесь
+        # означал бы «не спрашивали», и отказ читался бы как решение.
+        return None, f"замок {lock} не взять: {exc}", "failed"
     os.close(handle)
-    return lock, ""
+    return lock, "", ""
 
 
 def _digest(path: Path) -> str | None:

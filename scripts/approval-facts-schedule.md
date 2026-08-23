@@ -76,8 +76,15 @@
   Затем убедиться, что запуск вообще происходит: plist, который не стартует,
   ничем себя не выдаёт, кроме протухшего через сутки бандла.
 
-      launchctl kickstart -k "gui/$(id -u)/com.steward.approval-facts"
-      tail -n 20 "$LOGS/approval-facts.err.log"
+  Два уточнения, каждое стоило находки на ревью. `kickstart` **без `-k`**:
+  `RunAtLoad` уже запустил задачу, а `-k` убил бы её на полпути и оставил
+  замок публикации — тот перехватывается только через час, так что совет
+  «проверьте установку» сам ломал бы сбор. И смотреть надо **оба** лога:
+  штатный вывод раннера идёт в `out.log`, поэтому прогон, честно сказавший
+  `skipped`, в `err.log` не виден вовсе.
+
+      launchctl kickstart "gui/$(id -u)/com.steward.approval-facts"
+      tail -n 20 "$LOGS/approval-facts.out.log" "$LOGS/approval-facts.err.log"
 
   Снятие:
 

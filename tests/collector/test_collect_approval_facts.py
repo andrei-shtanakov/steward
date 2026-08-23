@@ -1211,7 +1211,7 @@ def test_concurrent_run_is_refused_not_credited(
     """
     path = _checkout(tmp_path, "steward")
     bundle = path / RUNNER.BUNDLE_RELPATH
-    held, _ = RUNNER._claim(bundle)
+    held, _, _ = RUNNER._claim(bundle)
     assert held is not None
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
@@ -1237,7 +1237,7 @@ def test_stale_lock_is_reclaimed(tmp_path: Path) -> None:
     перестало бы работать, а причина не была бы видна нигде."""
     path = _checkout(tmp_path, "steward")
     bundle = path / RUNNER.BUNDLE_RELPATH
-    lock, _ = RUNNER._claim(bundle)
+    lock, _, _ = RUNNER._claim(bundle)
     assert lock is not None
     import os as _os
 
@@ -1276,14 +1276,54 @@ def test_unwritable_lock_is_not_reported_as_concurrency(tmp_path: Path) -> None:
     (tmp_path / "ro").mkdir()
     (tmp_path / "ro").chmod(0o500)
     try:
-        lock, refusal = RUNNER._claim(blocked)
+        lock, refusal, status = RUNNER._claim(blocked)
     finally:
         (tmp_path / "ro").chmod(0o700)
 
     assert lock is None
     assert "не взять" in refusal
+    assert status == "failed", "поломка инструмента — не «не спрашивали»"
 
 
 def test_git_is_invoked_by_absolute_path() -> None:
     """Голое имя было бы той же ошибкой, от которой plist защищается `uv`."""
     assert Path(RUNNER.GIT_BIN).is_absolute()
+
+
+def test_lock_error_is_failed_not_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Поломка инструмента — не «не спрашивали».
+
+    `skipped` означает решение не спрашивать; отказ взять замок из-за
+    недоступного каталога — это невозможность спросить, и читаться она должна
+    как провал.
+    """
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "_claim", lambda bundle: (None, "диск полон", "failed"))
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+
+
+def test_concurrency_is_skipped_not_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """А вот параллельный прогон — именно `skipped`: спрашивает кто-то другой."""
+    path = _checkout(tmp_path, "steward")
+    held, _, _ = RUNNER._claim(path / RUNNER.BUNDLE_RELPATH)
+    assert held is not None
+    monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
+
+    assert RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")[0].status == "skipped"
+
+
+def test_install_check_does_not_kill_a_running_collection() -> None:
+    """`kickstart -k` убил бы прогон, запущенный `RunAtLoad`, и оставил замок.
+
+    Тот перехватывается только через час, так что совет «проверьте установку»
+    сам ломал бы сбор. И смотреть надо оба лога: штатный вывод идёт в out.log.
+    """
+    doc = (
+        Path(__file__).resolve().parents[2] / "scripts" / "approval-facts-schedule.md"
+    ).read_text(encoding="utf-8")
+
+    assert "kickstart -k" not in doc
+    assert "out.log" in doc and "err.log" in doc
