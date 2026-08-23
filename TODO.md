@@ -473,22 +473,63 @@ product decision record (и наоборот). Как approved proposal стан
 
 ---
 
+### 10a. codex-review kit: дорожная карта качества (план владельца, 2026-08-23)
+
+План целиком: `docs/plans/2026-08-23-review-kit-quality-roadmap.md`. Контекст:
+шесть зрячих раундов на #96 дали 19/20 подтверждённых находок, но цикл «чинить
+до пустого вердикта» не сходится и стоит ~$0.5/раунд; качество дальше повышают
+пункты ниже, в порядке владельца.
+
+- [ ] Итоговое дерево PR для ревьюера: control plane (промпт, схема, скрипты) из
+      base во временный доверенный каталог, чекаут — head PR, codex read-only по
+      получившемуся дереву, диф — указатель на область ревью; ничего из PR не
+      исполнять @owner:github:andrei-shtanakov @id:review-kit-final-tree
+- [ ] Переписать шкалу severity: blocker сужен (эксплуатация, необратимая потеря,
+      обход authority, гарантированная невозможность основного сценария), для
+      blocker/major обязательны файл+строка, вход, наблюдаемый результат, ссылка
+      на проверенный код и почему существующие проверки не ловят
+      @owner:github:andrei-shtanakov @id:review-kit-severity-rewrite
+- [ ] Сократить промпт до 4 разделов (~700–1200 слов): что ревьюируется,
+      инструменты/файлы, условия валидной находки, шкала+формат; механику
+      доверия обеспечивает runner, а не проза
+      @owner:github:andrei-shtanakov @id:review-kit-prompt-diet
+- [ ] Статический контекст — только архитектурные контракты и инварианты; обычные
+      исходники уходят (доступны деревом), в промпт — требование читать callers,
+      callees и тесты изменённого кода
+      @owner:github:andrei-shtanakov @id:review-kit-context-demotion
+- [ ] Усилить схему вердикта: file/line/scenario/observed/expected/evidence[]/
+      confidence; блокируют только blocker/major с confidence: high и заполненным
+      evidence @owner:github:andrei-shtanakov @id:review-kit-verdict-schema-v2
+- [ ] Большие PR: до ~20–30 файлов один прогон; крупнее — chunked по подсистемам +
+      финальный межмодульный проход; generated/lock/snapshots не ревьюировать как
+      код; обрезка дифа не молча, а явным infrastructure failure
+      @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode
+- [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики
+      precision блокирующих/recall major+blocker/ложные блокировки/доля без
+      evidence/стоимость; для гейта precision важнее полноты
+      @owner:github:andrei-shtanakov @id:review-kit-eval-harness
+- [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта
+      модели × два уровня), не по рассуждению в комментарии workflow
+      @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
+- [ ] Экономный триггер ревью: не каждый пуш, а по требованию (лейбл/снятие
+      draft) — рычаг цены при итеративной разработке
+      @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
+
 ### 10. codex-review kit: известные хвосты
 
 Кит влит PR #88 (`639719e`): `scripts/review/{build-prompt,apply-threshold,local}.sh`,
 `install-hook.sh`, `.github/hooks/pre-push`. Ниже — то, что найдено гейтом на самом
 PR и осознанно не закрыто; список полон, других известных хвостов у кита нет.
 
-- [ ] Перевести CI на общие скрипты кита: джоб `review` зовёт `build-prompt.sh`
+- [x] Перевести CI на общие скрипты кита: джоб `review` зовёт `build-prompt.sh`
       (инлайн-логика маркера уходит), джоб `report` получает чекаут base и зовёт
       `apply-threshold.sh`, проверка присутствия в base расширяется до четырёх
       файлов @owner:github:andrei-shtanakov @id:review-kit-ci-migration
 
-  **Срочно, и вот почему:** пока не влито, **кит строже CI**. Вердикт, который
-  `apply-threshold.sh` отвергает кодом 2 — `severity` вне enum, нестроковый `note`,
-  элемент-не-объект, — инлайн-путь в CI пропускает и может покрасить зелёным. Порядок
-  мержа выбран сознательно: этот PR расширяет base-проверку на `scripts/review/*`,
-  поэтому открыть его можно было только после мержа кита.
+  Закрыт арками #92/#93; чекбокс снят 2026-08-23 по сверке с workflow: `review`
+  зовёт `build-prompt.sh`, `report` — только `apply-threshold.sh` с полной
+  лесенкой кодов {0,1,2,прочее}, инлайн-разбора JSON/severity в YAML нет,
+  base-проверка присутствия покрывает четыре файла кита.
 
 - [ ] Пуш в явно названный чужой ref ревьюится от ветки по умолчанию @owner:github:andrei-shtanakov @id:review-kit-explicit-target-base
 
