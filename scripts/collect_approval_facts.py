@@ -79,12 +79,15 @@ from typing import Any
 
 import yaml
 
-# Та же функция, которой пользуется продюсер (`publish.py`) и которой проверяет
-# читатель контракта (`reader.py`). Раньше здесь стояла только проверка на
-# наличие `scope_sha256` — с обоснованием «второй реализацией канонизации мы
-# завели бы пару, которая расходится молча». Обоснование было верным, а вывод
-# нет: реализацию не надо писать заново, её надо переиспользовать.
-from steward.approvalfacts.model import RequestId, scope_digest
+# Раннер НЕ разбирает бандл сам — он спрашивает читателя контракта. История
+# поучительная: сперва тут была своя проверка «есть ли scope_sha256», потом
+# переиспользованный scope_digest, и всё равно рядом жил параллельный разбор
+# записей — который считал покрытием `state: "bogus"` и строковый `value`,
+# то есть зеленел на файле, который `load_facts` отверг бы fail-closed
+# (найдено первым зрячим прогоном codex-ревью). Вопрос «примет ли потребитель
+# этот бандл» имеет ровно один честный ответ: спросить код потребителя.
+from steward.approvalfacts.reader import UnreadableFacts, load_facts
+from steward.gatecheck.approval import PolicyError, load_approval_policy, policy_digest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +171,12 @@ def _origin_host_and_slug(url: str) -> tuple[str | None, str | None]:
     else:
         return None, None
     parts = [p for p in tail.split("/") if p]
-    slug = "/".join(parts[-2:]) if len(parts) >= 2 else None
+    # РОВНО два сегмента, а не «последние два»: суффиксный разбор принимал бы
+    # `github.com/mirror/owner/repo` за `owner/repo`, и раннер записывал бы
+    # факты настоящего репозитория в чужое дерево. Канонический разбор
+    # (`publish.py::parse_origin`, `[^/]+/[^/]+$`) лишних сегментов не терпит —
+    # эта функция не имеет права быть мягче его.
+    slug = "/".join(parts) if len(parts) == 2 else None
     return (host.lower() or None), slug
 
 
@@ -393,16 +401,29 @@ def _resolved(
     return resolved
 
 
-def _publish_one(repo: str, path: Path, bundle: Path, policy: Path, numbers: list[int]) -> Outcome:
+def _publish_one(
+    repo: str,
+    path: Path,
+    bundle: Path,
+    policy: Path,
+    numbers: list[int],
+    active_digest: str,
+    lease_seconds: int,
+) -> Outcome:
     """Опубликовать один бандл и доказать, что публикация состоялась.
 
     Все проверки после нулевого кода — про доказательство, а не про вежливость:
-    нулевой код это заявление продюсера, а не факт.
+    нулевой код это заявление продюсера, а не факт. Само доказательство — у
+    `bundle_verdict()`, то есть у читателя контракта; здесь остаётся только то,
+    чего у читателя быть не может: сдвинулся ли файл относительно ДО-состояния.
     """
     # Дайджест, а не mtime: на ФС с секундной гранулярностью два прогона подряд
     # (`RunAtLoad` плюс рекомендованный `kickstart`) дают одинаковый
     # `st_mtime_ns`, и свежая публикация отвергалась бы ложно.
     before = _digest(bundle)
+    # До-состояние читается ТЕРПИМО (`bundle_header`, только `valid_until`), а
+    # не читателем контракта: прежний файл может быть битым или под старой
+    # политикой, и это не причина отказать НОВОЙ публикации.
     lease_before, _ = bundle_header(bundle) if bundle.is_file() else (None, "")
 
     code, detail = run_producer(repo, path, policy, numbers)
@@ -412,17 +433,11 @@ def _publish_one(repo: str, path: Path, bundle: Path, policy: Path, numbers: lis
         return Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}")
 
     after = _digest(bundle)
-    valid_until, refusal = bundle_header(bundle)
+    valid_until, refusal = bundle_verdict(
+        bundle, repo, numbers, active_digest, lease_seconds, datetime.now(UTC)
+    )
     if valid_until is None:
         return Outcome(repo, "failed", f"код 0, но {refusal}")
-    owner, refusal = bundle_repository(bundle)
-    if owner is None:
-        return Outcome(repo, "failed", f"код 0, но {refusal}")
-    if owner.lower() != repo.lower():
-        return Outcome(repo, "failed", f"код 0, но бандл заявляет репозиторий {owner!r}")
-    if datetime.now(UTC) >= valid_until:
-        # Публикация, родившаяся просроченной, — не публикация.
-        return Outcome(repo, "failed", f"код 0, но бандл уже просрочен ({valid_until})")
     if after == before and (lease_before is None or valid_until <= lease_before):
         # Ни байты, ни lease не сдвинулись — снимка не было. Достаточно ЛЮБОГО
         # из двух признаков: содержимое обычно меняется (в нём `generated_at`),
@@ -430,9 +445,6 @@ def _publish_one(repo: str, path: Path, bundle: Path, policy: Path, numbers: lis
         return Outcome(
             repo, "failed", f"код 0, но бандл не изменился и lease не сдвинулся ({valid_until})"
         )
-    gap = bundle_gap(bundle, numbers)
-    if gap is not None:
-        return Outcome(repo, "failed", f"код 0, но {gap}")
     return Outcome(repo, "published", str(bundle))
 
 
@@ -445,6 +457,13 @@ def collect(
     один неверный чекаут делал бы ненаблюдаемым весь флот, а причина была бы
     видна только в хвосте лога.
     """
+    # Политика читается один раз и fail-closed ДО обхода: с нечитаемой или
+    # невалидной политикой нечего доказывать ни по одному репозиторию — это
+    # ошибка конфигурации вызова (PolicyError наверх, exit 2 в main), а не
+    # независимый отказ каждого чекаута.
+    active_digest = policy_digest(policy)
+    lease_seconds = load_approval_policy(policy).approval_facts_lease_seconds
+
     outcomes: list[Outcome] = []
     for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
         if path is None:
@@ -460,7 +479,9 @@ def collect(
             outcomes.append(Outcome(repo, status, f"{repo}: {refusal}"))
             continue
         try:
-            outcomes.append(_publish_one(repo, path, bundle, policy, numbers))
+            outcomes.append(
+                _publish_one(repo, path, bundle, policy, numbers, active_digest, lease_seconds)
+            )
         finally:
             lock.unlink(missing_ok=True)
     return outcomes
@@ -503,47 +524,59 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def bundle_repository(bundle: Path) -> tuple[str | None, str]:
-    """`repository` из заголовка — чей это бандл.
+def bundle_verdict(
+    bundle: Path,
+    repo: str,
+    numbers: list[int],
+    active_digest: str,
+    lease_seconds: int,
+    now: datetime,
+) -> tuple[datetime | None, str]:
+    """Примет ли этот бандл потребитель — `(valid_until, "")` или `(None, почему нет)`.
 
-    Без этой сверки `--check` зеленел бы на ЧУЖОМ файле: бандл соседнего
-    репозитория, положенный в этот чекаут, несёт валидный lease и `result`-и,
-    и по всем прочим признакам неотличим.
+    Здесь НЕТ собственного разбора бандла, и это главный инвариант функции.
+    Прежние `bundle_repository()`/`bundle_gap()` разбирали файл сами — и первый
+    же зрячий прогон codex-ревью нашёл, чем это кончается: `state: "bogus"` и
+    строковый `value` считались покрытием, разнотипный `scope` ронял весь обход
+    TypeError'ом из сортировки, а бандл под уже сменившейся политикой числился
+    `published`, хотя гейт вернул бы `policy_digest_mismatch`. Все четыре —
+    один дефект: параллельная реализация чтения, которая мягче настоящей.
 
-    `scope_sha256` здесь намеренно только проверяется на наличие, а не
-    пересчитывается: канонизация — инвариант продюсера, у него же и покрыта
-    (`contracts/approval-facts/v2`, инварианты читателя). Второй реализацией
-    того же дайджеста мы завели бы ровно ту пару, которая расходится молча.
+    Поэтому лесенка повторяет `resolve_facts()` потребителя
+    (`gatecheck/approval.py`) ЕГО ЖЕ кодом: `load_facts` (форма, репозиторий,
+    `scope_sha256`, матрица `state`) → дайджест активной политики → точная
+    длительность lease → срок. Плюс единственная проверка, которой у
+    потребителя нет и которая принадлежит именно раннеру: покрывают ли записи
+    настроенный охват.
     """
     try:
-        first = bundle.read_text(encoding="utf-8").splitlines()[0]
-        header = json.loads(first)
-    except (OSError, ValueError, IndexError) as exc:
-        return None, f"заголовок нечитаем: {exc}"
-    if not isinstance(header, dict):
-        return None, "первая строка не объект"
-    repository = header.get("repository")
-    if not isinstance(repository, str) or not repository:
-        return None, "в заголовке нет `repository`"
-    declared_digest = header.get("scope_sha256")
-    if not declared_digest:
-        return None, "в заголовке нет `scope_sha256`"
-    scope = header.get("scope")
-    if not isinstance(scope, list):
-        return None, "в заголовке нет `scope`"
-    try:
-        requests = [
-            RequestId(kind=str(item["kind"]), value=item["value"])  # type: ignore[arg-type]
-            for item in scope
-            if isinstance(item, dict)
-        ]
-    except KeyError as exc:
-        return None, f"запись scope без {exc}"
-    if declared_digest != scope_digest(requests):
-        # Иначе раннер докладывал бы `published` о бандле, который читатель
-        # контракта отвергнет: `reader.py` сверяет ровно это.
-        return None, f"`scope_sha256` не совпадает с `scope` ({declared_digest})"
-    return repository, ""
+        facts = load_facts(bundle, expected_repository=repo, now=now)
+    except UnreadableFacts as exc:
+        return None, f"бандл не примет читатель контракта: {exc}"
+    if facts.header.policy_digest != active_digest:
+        # Дальше живой lease не смотрим — у потребителя несовпавший дайджест
+        # перебивает и его (resolve_facts, «строка 3»).
+        return None, (
+            f"бандл собран под другой политикой: {facts.header.policy_digest} "
+            f"!= активной {active_digest}"
+        )
+    declared = (facts.header.valid_until - facts.header.generated_at).total_seconds()
+    if declared != lease_seconds:
+        return None, f"lease в бандле {declared:.0f}s, в активной политике {lease_seconds}s"
+    if now >= facts.header.valid_until:
+        hours = int((now - facts.header.valid_until).total_seconds() // 3600)
+        return None, f"lease истёк {hours} ч назад ({facts.header.valid_until})"
+    answered = {r.request.value for r in facts.results if r.request.kind == "pr"}
+    missing = [n for n in numbers if n not in answered]
+    if missing:
+        return None, f"в бандле нет записей по PR {missing}"
+    extra = sorted(n for n in answered if n not in set(numbers))
+    if extra:
+        # Сужение охвата не делает старый широкий бандл годным: он доказывает
+        # не то, что сейчас настроено. Читатель этого не поймает — файл валиден,
+        # про конфигурацию раннера он не знает; проверка принадлежит здесь.
+        return None, f"в бандле лишние PR {extra} — охват сузился, а бандл остался шире"
+    return facts.header.valid_until, ""
 
 
 def bundle_header(bundle: Path) -> tuple[datetime | None, str]:
@@ -576,112 +609,25 @@ def bundle_header(bundle: Path) -> tuple[datetime | None, str]:
     return valid_until, ""
 
 
-def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
-    """Чего из настроенного охвата нет в бандле — по ЗАПИСЯМ, а не по заявке.
-
-    Сверять с `scope` в заголовке было слабее по двум причинам сразу, и обе
-    нашлись машинным ревью:
-
-    * заголовок объявляет, что спрашивали, но не доказывает, что ответ записан;
-      обрезанный после заголовка файл читался бы зелёным без единого факта;
-    * запись другого вида (`{"kind": "merge_sha", "value": "75"}`) засчитывалась
-      бы как покрытие PR №75.
-
-    Поэтому считаются `result`-записи с `request.kind == "pr"`. Заодно это
-    постусловие публикации: продюсер, вернувший 0 и оставивший пустой или
-    нечитаемый файл, больше не проходит как `published`.
-    """
-    try:
-        lines = bundle.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        return f"бандл не читается: {exc}"
-    if not lines:
-        return "бандл пуст"
-    try:
-        first = json.loads(lines[0])
-    except ValueError as exc:
-        return f"строка 1 не JSON: {exc}"
-    if not isinstance(first, dict) or first.get("kind") != "header":
-        return "первая строка не `kind: header`"
-    declared: set[str] | None = None
-    answered: set[str] = set()
-    for number, line in enumerate(lines, start=1):
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            return f"строка {number} не JSON: {exc}"
-        if not isinstance(record, dict):
-            return f"строка {number} не объект"
-        if record.get("kind") == "header":
-            if number != 1:
-                # Второй заголовок означает склейку двух бандлов. Раньше
-                # побеждал последний, и файл «доказывал» охват той половины,
-                # которая оказалась ниже.
-                return f"строка {number}: второй заголовок — бандл склеен из двух"
-            scope = record.get("scope")
-            declared = (
-                {
-                    str(item.get("value"))
-                    for item in scope
-                    if isinstance(item, dict) and item.get("kind") == "pr"
-                }
-                if isinstance(scope, list)
-                else set()
-            )
-            continue
-        # Только `result`: строка вида `{"kind": "error", "request": {...}}`
-        # иначе засчиталась бы как ответ по этому PR — зелёное без факта.
-        if record.get("kind") != "result":
-            continue
-        request = record.get("request")
-        if isinstance(request, dict) and request.get("kind") == "pr":
-            value = str(request.get("value"))
-            if value in answered:
-                # Два ответа на один запрос — противоречие внутри файла:
-                # «есть хотя бы один» пропускало и дубль от старого прогона, и
-                # пару с разными состояниями.
-                return f"строка {number}: PR {value} отвечен дважды"
-            state = record.get("state")
-            if not isinstance(state, str) or not state:
-                # Строка без `state` — эхо запроса, а не факт. Считать её
-                # покрытием значило бы звать `published` файл, в котором
-                # потреблять нечего.
-                return f"строка {number}: PR {value} без `state` — это не ответ"
-            answered.add(value)
-    missing = [n for n in numbers if str(n) not in answered]
-    if missing:
-        return f"в бандле нет записей по PR {missing}"
-    # Записи есть, но заголовок обязан их же и заявлять: бандл, чей `scope`
-    # разошёлся с содержимым, перестаёт доказывать, что спрашивали именно это.
-    if declared is None:
-        return None
-    wanted = {str(n) for n in numbers}
-    undeclared = sorted(wanted - declared)
-    if undeclared:
-        return f"заголовок не заявляет PR {undeclared}, хотя записи есть"
-    # Точное совпадение, а не «не меньше нужного»: после сужения охвата старый
-    # широкий бандл продолжал бы читаться зелёным, хотя текущий охват не
-    # собирался ни разу.
-    extra = sorted(declared - wanted)
-    if extra:
-        return f"бандл собран по другому охвату: лишние PR {extra}"
-    # Записи проверяются той же меркой: заголовок можно переписать, а хвост
-    # старых `result`-строк остаться — и бандл содержал бы ответы, которых
-    # текущий охват не запрашивал.
-    stale = sorted(answered - wanted)
-    if stale:
-        return f"в бандле остались ответы вне охвата: PR {stale}"
-    return None
-
-
-def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[Outcome]:
+def freshness(
+    repositories: list[dict[str, Any]], workspace_root: Path, policy: Path
+) -> list[Outcome]:
     """Свежесть и полнота опубликованных бандлов — проверка установки.
 
     Существует потому, что `valid_until` делает молчание обнаружимым **при
     чтении**, а читателя пока нет: до появления потребителя посмотреть, что
-    расписание живо, можно только глазами. Проверяется не только «не протух»,
-    но и «покрывает то, что сейчас настроено».
+    расписание живо, можно только глазами.
+
+    Проверка — руками читателя контракта (`bundle_verdict`), включая дайджест
+    АКТИВНОЙ политики и точную длительность lease. Раньше `--check` смотрел
+    только на срок и покрытие: смени политику после публикации — и зелёный
+    `--check` благословлял бы бандл, который гейт уже отверг бы как
+    `policy_digest_mismatch`. Зелёное «установлено» обязано значить «потребитель
+    это примет», иначе оно не значит ничего.
     """
+    active_digest = policy_digest(policy)
+    lease_seconds = load_approval_policy(policy).approval_facts_lease_seconds
+
     outcomes: list[Outcome] = []
     now = datetime.now(UTC)
     for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
@@ -692,26 +638,13 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
         if not bundle.is_file():
             outcomes.append(Outcome(repo, "failed", f"бандла нет — {bundle}"))
             continue
-        valid_until, refusal = bundle_header(bundle)
+        valid_until, refusal = bundle_verdict(
+            bundle, repo, numbers, active_digest, lease_seconds, now
+        )
         if valid_until is None:
-            outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {refusal}"))
-            continue
-        owner, refusal = bundle_repository(bundle)
-        if owner is None:
             outcomes.append(Outcome(repo, "failed", refusal))
-            continue
-        if owner.lower() != repo.lower():
-            outcomes.append(Outcome(repo, "failed", f"бандл заявляет репозиторий {owner!r}"))
-            continue
-        if now >= valid_until:
-            hours = int((now - valid_until).total_seconds() // 3600)
-            outcomes.append(Outcome(repo, "failed", f"lease истёк {hours} ч назад ({valid_until})"))
         else:
-            gap = bundle_gap(bundle, numbers)
-            if gap is not None:
-                outcomes.append(Outcome(repo, "failed", gap))
-            else:
-                outcomes.append(Outcome(repo, "published", f"свеж до {valid_until}"))
+            outcomes.append(Outcome(repo, "published", f"свеж до {valid_until}"))
     return outcomes
 
 
@@ -769,12 +702,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"охват не прочитан: {exc}", file=sys.stderr)
         return 2
 
-    if args.check:
-        return report(freshness(repositories, args.workspace_root))
+    # Политика нужна ОБОИМ режимам: `--check` сверяет дайджест и lease бандлов
+    # с активной политикой (иначе зелёное «установлено» не значит «потребитель
+    # примет»), сбор передаёт её продюсеру. Нечитаемая или невалидная политика —
+    # ошибка конфигурации вызова, код 2, ни одного репозитория не трогаем.
     if not policy_path.is_file():
         print(f"политики нет: {policy_path}", file=sys.stderr)
         return 2
-    return report(collect(repositories, args.workspace_root, policy_path))
+    try:
+        if args.check:
+            return report(freshness(repositories, args.workspace_root, policy_path))
+        return report(collect(repositories, args.workspace_root, policy_path))
+    except PolicyError as exc:
+        print(f"политика не прочитана: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

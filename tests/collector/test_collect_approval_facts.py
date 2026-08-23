@@ -37,6 +37,33 @@ def _load() -> Any:
 RUNNER = _load()
 REPO = "andrei-shtanakov/steward"
 
+#: Длительность lease в тестовой политике. Читатель гейта сверяет РАВЕНСТВО
+#: `valid_until - generated_at` с политикой, поэтому фикстура бандла обязана
+#: строить `generated_at` из этой же константы — иначе каждый бандл падал бы
+#: как `lease_mismatch` ещё до проверяемого свойства.
+LEASE_SECONDS = 86400
+
+POLICY_TEXT = (
+    "version: 1\n"
+    "human_identities:\n"
+    "  - github:andrei-shtanakov\n"
+    "agent_identities:\n"
+    "  - github:merge-broker\n"
+    "agent_merge_allowed: false\n"
+    f"approval_facts_lease_seconds: {LEASE_SECONDS}\n"
+)
+
+#: Дайджест считается от того же текста, что пишет `_policy()`: заголовок
+#: бандла и активная политика обязаны сходиться байт в байт, как в бою.
+POLICY_DIGEST = "sha256:" + __import__("hashlib").sha256(POLICY_TEXT.encode()).hexdigest()
+
+
+def _policy(tmp_path: Path) -> Path:
+    path = tmp_path / "approval-policy.yaml"
+    if not path.exists():
+        path.write_text(POLICY_TEXT, encoding="utf-8")
+    return path
+
 
 def _digest_for(prs: list[int]) -> str:
     """Дайджест охвата ТОЙ ЖЕ функцией, что у продюсера и читателя контракта.
@@ -65,25 +92,14 @@ def _publishing_producer(prs_by_call: list[list[int]] | None = None):
     Раннер проверяет постусловие: нулевой код без появившегося (или
     обновлённого) файла — не публикация. Значит фейк, который «успешен» и
     ничего не пишет, моделирует ровно тот отказ, а не счастливый путь.
+    Пишет ПОЛНУЮ форму (`_bundle`): постусловие теперь проверяет читатель
+    контракта, и урезанный фейковый бандл он бы отверг.
     """
 
     def fake(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
         if prs_by_call is not None:
             prs_by_call.append(prs)
-        bundle = root / RUNNER.BUNDLE_RELPATH
-        bundle.parent.mkdir(parents=True, exist_ok=True)
-        header = {
-            "kind": "header",
-            "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "repository": REPO,
-            "scope_sha256": _digest_for(prs),
-            "scope": [{"kind": "pr", "value": n} for n in prs],
-        }
-        lines = [json.dumps(header)] + [
-            json.dumps({"kind": "result", "request": {"kind": "pr", "value": n}, "state": "merged"})
-            for n in prs
-        ]
-        bundle.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _bundle(root, datetime.now(UTC) + timedelta(hours=6), prs=prs)
         return 0, ""
 
     return fake
@@ -111,7 +127,7 @@ def test_missing_checkout_is_skipped_and_never_calls_the_producer(
         lambda repo, root, policy, prs: called.append((repo, root)) or (0, ""),
     )
 
-    outcomes = RUNNER.collect([_entry("nowhere")], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry("nowhere")], tmp_path, _policy(tmp_path))
 
     assert [o.status for o in outcomes] == ["skipped"]
     assert "чекаута нет" in outcomes[0].detail
@@ -126,7 +142,7 @@ def test_wrong_origin_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     _checkout(tmp_path, "steward", origin="andrei-shtanakov/maestro")
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "origin чекаута" in outcomes[0].detail
@@ -140,7 +156,7 @@ def test_checkout_outside_workspace_root_is_skipped(
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
-    outcomes = RUNNER.collect([_entry("../elsewhere")], workspace, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry("../elsewhere")], workspace, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "вне workspace-root" in outcomes[0].detail
@@ -150,7 +166,7 @@ def test_directory_without_git_is_skipped(tmp_path: Path, monkeypatch: pytest.Mo
     (tmp_path / "steward").mkdir()
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "не git-корень" in outcomes[0].detail
@@ -161,7 +177,7 @@ def test_empty_pr_list_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry(prs=[])], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry(prs=[])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
 
@@ -186,7 +202,7 @@ def test_one_bad_checkout_does_not_stop_the_others(
             {"repo": REPO, "checkout": "good", "prs": [2]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert [o.status for o in outcomes] == ["skipped", "published"]
@@ -199,7 +215,7 @@ def test_producer_failure_is_failed_not_skipped(
     _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (3, "механический сбой"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "кодом 3" in outcomes[0].detail
@@ -220,26 +236,68 @@ def test_all_published_is_zero() -> None:
 # --- свежесть: проверка установки расписания -------------------------------
 
 
-def _bundle(path: Path, valid_until: datetime, prs: list[int] | None = None) -> None:
+def _result(n: int, state: str = "merged") -> dict[str, Any]:
+    """Запись результата, которую примет читатель контракта.
+
+    `merged` по матрице полей требует 40-hex `merge_sha` и все три поля актора;
+    отрицательные состояния — наоборот, `merge_sha: null` и НИ ОДНОГО поля
+    актора. Упрощённая запись (одно `state`) не проходит `load_facts`, и это не
+    строгость ради строгости: раннер теперь спрашивает читателя, значит и
+    фикстуры обязаны писать то, что пишет настоящий продюсер.
+    """
+    record: dict[str, Any] = {
+        "kind": "result",
+        "request": {"kind": "pr", "value": n},
+        "state": state,
+    }
+    if state == "merged":
+        record.update(
+            merge_sha=f"{n:040x}",
+            identity="github:andrei-shtanakov",
+            type_hint="User",
+            actor_class="human",
+        )
+    else:
+        record["merge_sha"] = None
+    return record
+
+
+def _bundle(
+    path: Path,
+    valid_until: datetime,
+    prs: list[int] | None = None,
+    results: list[dict[str, Any]] | None = None,
+    header_overrides: dict[str, Any] | None = None,
+) -> None:
     """Бандл в той же форме, что пишет настоящий продюсер.
 
     В частности `value` для `pr` — ЧИСЛО, а не строка: дайджест охвата зависит
     от типа, и фикстура со строками не совпала бы с тем, что проверяет читатель
     контракта. Первая версия писала строки и молча расходилась с реальностью.
+    Второй заход на те же грабли: упрощённый header без `policy_digest` и
+    записи без матрицы полей перестали проходить, как только раннер стал
+    спрашивать самого читателя (`bundle_verdict`), — фикстура выросла до полной
+    формы вместе с ним.
     """
     numbers = prs if prs is not None else [1]
+    generated_at = valid_until - timedelta(seconds=LEASE_SECONDS)
     (path / ".steward").mkdir(parents=True, exist_ok=True)
-    header = {
+    header: dict[str, Any] = {
         "kind": "header",
-        "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "schema_version": "2",
         "repository": REPO,
-        "scope_sha256": _digest_for(numbers),
+        "generated_at": generated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "policy_version": 1,
+        "policy_digest": POLICY_DIGEST,
+        "complete": True,
         "scope": [{"kind": "pr", "value": n} for n in numbers],
+        "scope_sha256": _digest_for(numbers),
     }
-    lines = [json.dumps(header)] + [
-        json.dumps({"kind": "result", "request": {"kind": "pr", "value": n}, "state": "merged"})
-        for n in numbers
-    ]
+    if header_overrides:
+        header.update(header_overrides)
+    rows = results if results is not None else [_result(n) for n in numbers]
+    lines = [json.dumps(header)] + [json.dumps(r) for r in rows]
     (path / ".steward" / "approval_facts.jsonl").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
@@ -250,7 +308,7 @@ def test_expired_lease_is_failed(tmp_path: Path) -> None:
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) - timedelta(hours=20))
 
-    outcomes = RUNNER.freshness([_entry()], tmp_path)
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "lease истёк" in outcomes[0].detail
@@ -260,13 +318,13 @@ def test_live_lease_is_published(tmp_path: Path) -> None:
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6))
 
-    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "published"
+    assert RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))[0].status == "published"
 
 
 def test_absent_bundle_is_failed_not_silent(tmp_path: Path) -> None:
     _checkout(tmp_path, "steward")
 
-    outcomes = RUNNER.freshness([_entry()], tmp_path)
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "бандла нет" in outcomes[0].detail
@@ -277,7 +335,7 @@ def test_unreadable_header_is_failed(tmp_path: Path) -> None:
     (path / ".steward").mkdir(parents=True, exist_ok=True)
     (path / ".steward" / "approval_facts.jsonl").write_text("not json\n", encoding="utf-8")
 
-    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "failed"
+    assert RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))[0].status == "failed"
 
 
 def test_workspace_root_has_no_default() -> None:
@@ -295,7 +353,7 @@ def test_non_dict_scope_entry_is_skipped_not_a_traceback(
     """Строка вместо объекта в охвате падала на `entry.get` с AttributeError."""
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect(["просто строка"], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect(["просто строка"], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "не объект" in outcomes[0].detail
@@ -323,7 +381,7 @@ def test_non_integer_pr_number_is_skipped(
     _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail(f"{why}: не звать"))
 
-    outcomes = RUNNER.collect([_entry(prs=[value])], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry(prs=[value])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
 
@@ -342,7 +400,7 @@ def test_bad_pr_number_does_not_abort_the_rest(
             {"repo": REPO, "checkout": "good", "prs": [2]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert [o.status for o in outcomes] == ["skipped", "published"]
@@ -357,10 +415,10 @@ def test_naive_valid_until_is_failed_not_a_traceback(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    outcomes = RUNNER.freshness([_entry()], tmp_path)
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "часового пояса" in outcomes[0].detail
+    assert "не примет читатель контракта" in outcomes[0].detail
 
 
 def test_relative_policy_is_resolved_before_use(
@@ -373,8 +431,10 @@ def test_relative_policy_is_resolved_before_use(
     _checkout(tmp_path, "steward")
     scope = tmp_path / "scope.yaml"
     scope.write_text(json.dumps({"version": 1, "repositories": [_entry()]}), encoding="utf-8")
+    # Политика теперь читается fail-closed до обхода, поэтому файл обязан быть
+    # валидным, а не любым: `version: 1` без остальных ключей — PolicyError.
     policy = tmp_path / "policy.yaml"
-    policy.write_text("version: 1\n", encoding="utf-8")
+    policy.write_text(POLICY_TEXT, encoding="utf-8")
     seen: list[Path] = []
     monkeypatch.setattr(
         RUNNER, "run_producer", lambda repo, root, pol, prs: (seen.append(pol), (0, ""))[1]
@@ -406,7 +466,7 @@ def test_duplicate_checkout_is_refused_not_overwritten(
             {"repo": REPO, "checkout": "steward", "prs": [2]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert [o.status for o in outcomes] == ["published", "skipped"]
@@ -422,7 +482,7 @@ def test_grown_scope_is_not_green_until_collected(tmp_path: Path) -> None:
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
 
-    outcomes = RUNNER.freshness([_entry(prs=[1, 2])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[1, 2])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "нет записей по PR" in outcomes[0].detail
@@ -463,7 +523,7 @@ def test_zero_exit_without_a_bundle_is_failed(
     _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "бандла нет" in outcomes[0].detail
@@ -482,7 +542,7 @@ def test_zero_exit_without_touching_the_bundle_is_failed(
     _bundle(path, datetime.now(UTC) + timedelta(hours=6))
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: (0, ""))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "не изменился" in outcomes[0].detail
@@ -501,7 +561,7 @@ def test_record_of_a_different_kind_does_not_count_as_coverage(tmp_path: Path) -
         json.dumps(header) + "\n" + json.dumps(record) + "\n", encoding="utf-8"
     )
 
-    assert RUNNER.freshness([_entry(prs=[75])], tmp_path)[0].status == "failed"
+    assert RUNNER.freshness([_entry(prs=[75])], tmp_path, _policy(tmp_path))[0].status == "failed"
 
 
 def test_non_object_header_is_failed_not_a_traceback(tmp_path: Path) -> None:
@@ -510,10 +570,10 @@ def test_non_object_header_is_failed_not_a_traceback(tmp_path: Path) -> None:
     (path / ".steward").mkdir(parents=True, exist_ok=True)
     (path / ".steward" / "approval_facts.jsonl").write_text("[]\n", encoding="utf-8")
 
-    outcomes = RUNNER.freshness([_entry()], tmp_path)
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "нечитаем" in outcomes[0].detail
+    assert "не примет читатель контракта" in outcomes[0].detail
 
 
 def test_check_refuses_the_same_duplicate_scope_that_collect_refuses(
@@ -531,7 +591,7 @@ def test_check_refuses_the_same_duplicate_scope_that_collect_refuses(
         {"repo": REPO, "checkout": "steward", "prs": [1]},
     ]
 
-    checked = RUNNER.freshness(duplicated, tmp_path)
+    checked = RUNNER.freshness(duplicated, tmp_path, _policy(tmp_path))
 
     assert [o.status for o in checked] == ["published", "skipped"]
     assert RUNNER.report(checked) == 1
@@ -582,7 +642,7 @@ def test_non_result_record_does_not_count_as_an_answer(tmp_path: Path) -> None:
         json.dumps(header) + "\n" + json.dumps(broken) + "\n", encoding="utf-8"
     )
 
-    assert RUNNER.freshness([_entry(prs=[95])], tmp_path)[0].status == "failed"
+    assert RUNNER.freshness([_entry(prs=[95])], tmp_path, _policy(tmp_path))[0].status == "failed"
 
 
 def test_first_line_without_kind_header_is_failed(tmp_path: Path) -> None:
@@ -593,10 +653,10 @@ def test_first_line_without_kind_header_is_failed(tmp_path: Path) -> None:
         json.dumps({"valid_until": "2026-12-31T00:00:00Z"}) + "\n", encoding="utf-8"
     )
 
-    outcomes = RUNNER.freshness([_entry()], tmp_path)
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "нечитаем" in outcomes[0].detail
+    assert "не примет читатель контракта" in outcomes[0].detail
 
 
 def test_install_instructions_substitute_the_log_dir() -> None:
@@ -626,10 +686,10 @@ def test_publication_of_an_already_expired_bundle_is_failed(
 
     monkeypatch.setattr(RUNNER, "run_producer", stale_producer)
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "просрочен" in outcomes[0].detail
+    assert "lease истёк" in outcomes[0].detail
 
 
 def test_publication_without_a_header_is_failed(
@@ -649,10 +709,10 @@ def test_publication_without_a_header_is_failed(
 
     monkeypatch.setattr(RUNNER, "run_producer", headerless)
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "kind: header" in outcomes[0].detail
+    assert "header обязан присутствовать ровно один раз" in outcomes[0].detail
 
 
 def test_path_constraint_is_stated_not_silently_broken() -> None:
@@ -693,8 +753,8 @@ def test_both_passes_refuse_identical_paths(
     ]
     monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
-    collected = RUNNER.collect(scope, tmp_path, tmp_path / "policy.yaml")
-    checked = RUNNER.freshness(scope, tmp_path)
+    collected = RUNNER.collect(scope, tmp_path, _policy(tmp_path))
+    checked = RUNNER.freshness(scope, tmp_path, _policy(tmp_path))
 
     def refusals(outcomes: list[Any]) -> list[tuple[str, str]]:
         return [(o.repo, o.detail) for o in outcomes if o.status == "skipped"]
@@ -718,7 +778,7 @@ def test_symlinked_bundle_dir_is_refused(tmp_path: Path, monkeypatch: pytest.Mon
     (path / ".steward").symlink_to(shared, target_is_directory=True)
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "вне чекаута" in outcomes[0].detail
@@ -742,7 +802,7 @@ def test_unmoved_lease_is_not_a_publication(
 
     monkeypatch.setattr(RUNNER, "run_producer", toucher)
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "lease не сдвинулся" in outcomes[0].detail
@@ -753,7 +813,7 @@ def test_invalid_prs_is_skipped_in_both_passes(tmp_path: Path) -> None:
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6))
 
-    checked = RUNNER.freshness([_entry(prs=["abc"])], tmp_path)
+    checked = RUNNER.freshness([_entry(prs=["abc"])], tmp_path, _policy(tmp_path))
 
     assert checked[0].status == "skipped"
 
@@ -789,7 +849,7 @@ def test_same_second_republication_is_not_falsely_rejected(
 
     monkeypatch.setattr(RUNNER, "run_producer", republish)
 
-    outcomes = RUNNER.collect([_entry(prs=[1, 2])], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry(prs=[1, 2])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "published"
 
@@ -802,7 +862,7 @@ def test_check_validates_scope_before_bundle_state(tmp_path: Path) -> None:
     """
     _checkout(tmp_path, "steward")  # бандла нет вовсе
 
-    outcomes = RUNNER.freshness([_entry(prs=[])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
 
@@ -827,7 +887,7 @@ def test_unresolvable_path_does_not_abort_the_batch(
             {"repo": REPO, "checkout": "good", "prs": [2]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert [o.status for o in outcomes] == ["skipped", "published"]
@@ -849,7 +909,7 @@ def test_path_alias_of_the_same_checkout_is_a_duplicate(
             {"repo": REPO, "checkout": "./steward", "prs": [2]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert outcomes[1].status == "skipped"
@@ -877,7 +937,7 @@ def test_case_only_alias_is_a_duplicate(tmp_path: Path, monkeypatch: pytest.Monk
             {"repo": REPO, "checkout": "STEWARD", "prs": [2]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert outcomes[1].status == "skipped"
@@ -905,25 +965,18 @@ def test_identity_falls_back_instead_of_raising(tmp_path: Path) -> None:
 
 
 def test_header_must_declare_what_the_records_answer(tmp_path: Path) -> None:
-    """Бандл, чей `scope` разошёлся с содержимым, перестаёт доказывать охват."""
-    path = _checkout(tmp_path, "steward")
-    (path / ".steward").mkdir(parents=True, exist_ok=True)
-    header = {
-        "kind": "header",
-        "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "repository": REPO,
-        "scope_sha256": _digest_for([1]),
-        "scope": [{"kind": "pr", "value": 1}],
-    }
-    record = {"kind": "result", "request": {"kind": "pr", "value": 2}, "state": "merged"}
-    (path / ".steward" / "approval_facts.jsonl").write_text(
-        json.dumps(header) + "\n" + json.dumps(record) + "\n", encoding="utf-8"
-    )
+    """Результат по PR, которого нет в заявленном scope, — отказ читателя.
 
-    outcomes = RUNNER.freshness([_entry(prs=[2])], tmp_path)
+    Раньше это ловил сам раннер («заголовок не заявляет»); теперь — биекция
+    scope ↔ results у читателя контракта, и раннер просто доносит её вердикт.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1], results=[_result(2)])
+
+    outcomes = RUNNER.freshness([_entry(prs=[2])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "не заявляет" in outcomes[0].detail
+    assert "незаявленный элемент" in outcomes[0].detail
 
 
 def test_mirror_on_another_host_is_not_the_same_repo(
@@ -945,7 +998,7 @@ def test_mirror_on_another_host_is_not_the_same_repo(
     )
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "github.com" in outcomes[0].detail
@@ -986,10 +1039,10 @@ def test_bundle_of_another_repository_is_failed(tmp_path: Path) -> None:
     header["repository"] = "andrei-shtanakov/maestro"
     bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
 
-    outcomes = RUNNER.freshness([_entry()], tmp_path)
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "заявляет репозиторий" in outcomes[0].detail
+    assert "не совпадает с ожидаемым" in outcomes[0].detail
 
 
 def test_header_without_scope_digest_is_failed(tmp_path: Path) -> None:
@@ -1007,7 +1060,7 @@ def test_header_without_scope_digest_is_failed(tmp_path: Path) -> None:
     del header["scope_sha256"]
     bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
 
-    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "failed"
+    assert RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))[0].status == "failed"
 
 
 def test_ssh_over_443_host_is_accepted() -> None:
@@ -1040,7 +1093,7 @@ def test_slug_comparison_is_case_insensitive(
     )
     monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
-    assert RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")[0].status == "published"
+    assert RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))[0].status == "published"
 
 
 def test_ssh_alias_is_refused_with_an_actionable_message(
@@ -1061,7 +1114,7 @@ def test_ssh_alias_is_refused_with_an_actionable_message(
     )
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "github.com" in outcomes[0].detail
@@ -1077,7 +1130,7 @@ def test_repository_comparison_is_case_insensitive(tmp_path: Path) -> None:
     header["repository"] = "Andrei-Shtanakov/Steward"
     bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
 
-    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "published"
+    assert RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))[0].status == "published"
 
 
 def test_narrowed_scope_is_not_green_on_the_old_wider_bundle(tmp_path: Path) -> None:
@@ -1089,7 +1142,7 @@ def test_narrowed_scope_is_not_green_on_the_old_wider_bundle(tmp_path: Path) -> 
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1, 2])
 
-    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "лишние PR" in outcomes[0].detail
@@ -1113,7 +1166,7 @@ def test_broken_entry_does_not_occupy_the_checkout_slot(
             {"repo": REPO, "checkout": "steward", "prs": [1]},
         ],
         tmp_path,
-        tmp_path / "policy.yaml",
+        _policy(tmp_path),
     )
 
     assert [o.status for o in outcomes] == ["skipped", "published"]
@@ -1137,14 +1190,15 @@ def test_stale_records_outside_the_scope_are_failed(tmp_path: Path) -> None:
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
     bundle = path / ".steward" / "approval_facts.jsonl"
-    extra = {"kind": "result", "request": {"kind": "pr", "value": "77"}, "state": "merged"}
     with bundle.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(extra) + "\n")
+        handle.write(json.dumps(_result(77)) + "\n")
 
-    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "вне охвата" in outcomes[0].detail
+    # Запись вне заявленного scope режет биекция читателя — до раннерской
+    # проверки «лишних PR» такой файл не доходит.
+    assert "незаявленный элемент" in outcomes[0].detail
 
 
 def test_concatenated_bundle_is_failed(tmp_path: Path) -> None:
@@ -1159,10 +1213,10 @@ def test_concatenated_bundle_is_failed(tmp_path: Path) -> None:
     doubled = bundle.read_text(encoding="utf-8")
     bundle.write_text(doubled + doubled, encoding="utf-8")
 
-    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "склеен" in outcomes[0].detail
+    assert "header обязан присутствовать ровно один раз, найдено 2" in outcomes[0].detail
 
 
 def test_duplicate_answer_for_one_pr_is_failed(tmp_path: Path) -> None:
@@ -1170,14 +1224,13 @@ def test_duplicate_answer_for_one_pr_is_failed(tmp_path: Path) -> None:
     path = _checkout(tmp_path, "steward")
     _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
     bundle = path / ".steward" / "approval_facts.jsonl"
-    dup = {"kind": "result", "request": {"kind": "pr", "value": "1"}, "state": "not_merged"}
     with bundle.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(dup) + "\n")
+        handle.write(json.dumps(_result(1, state="not_merged")) + "\n")
 
-    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "дважды" in outcomes[0].detail
+    assert "повторный результат" in outcomes[0].detail
 
 
 def test_scope_digest_mismatch_is_failed(tmp_path: Path) -> None:
@@ -1196,7 +1249,7 @@ def test_scope_digest_mismatch_is_failed(tmp_path: Path) -> None:
     header["scope_sha256"] = "sha256:" + "0" * 64
     bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
 
-    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert "scope_sha256" in outcomes[0].detail
@@ -1215,7 +1268,7 @@ def test_concurrent_run_is_refused_not_credited(
     assert held is not None
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "skipped"
     assert "другой прогон" in outcomes[0].detail
@@ -1226,7 +1279,7 @@ def test_lock_is_released_after_the_run(tmp_path: Path, monkeypatch: pytest.Monk
     path = _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
 
-    RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     lock = (path / RUNNER.BUNDLE_RELPATH).with_suffix(".jsonl.lock")
     assert not lock.exists()
@@ -1260,10 +1313,10 @@ def test_result_without_state_is_not_coverage(tmp_path: Path) -> None:
     echo = {"kind": "result", "request": {"kind": "pr", "value": 95}}
     bundle.write_text(lines[0] + "\n" + json.dumps(echo) + "\n", encoding="utf-8")
 
-    outcomes = RUNNER.freshness([_entry(prs=[95])], tmp_path)
+    outcomes = RUNNER.freshness([_entry(prs=[95])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "без `state`" in outcomes[0].detail
+    assert "не хватает обязательных полей" in outcomes[0].detail
 
 
 def test_unwritable_lock_is_not_reported_as_concurrency(tmp_path: Path) -> None:
@@ -1300,7 +1353,7 @@ def test_lock_error_is_failed_not_skipped(tmp_path: Path, monkeypatch: pytest.Mo
     _checkout(tmp_path, "steward")
     monkeypatch.setattr(RUNNER, "_claim", lambda bundle: (None, "диск полон", "failed"))
 
-    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+    outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
 
@@ -1312,7 +1365,7 @@ def test_concurrency_is_skipped_not_failed(tmp_path: Path, monkeypatch: pytest.M
     assert held is not None
     monkeypatch.setattr(RUNNER, "run_producer", lambda *a: pytest.fail("не должен вызываться"))
 
-    assert RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")[0].status == "skipped"
+    assert RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))[0].status == "skipped"
 
 
 def test_install_check_does_not_kill_a_running_collection() -> None:
@@ -1327,3 +1380,80 @@ def test_install_check_does_not_kill_a_running_collection() -> None:
 
     assert "kickstart -k" not in doc
     assert "out.log" in doc and "err.log" in doc
+
+
+def test_mirror_path_with_extra_segments_is_not_the_same_repo(tmp_path: Path) -> None:
+    """`https://github.com/mirror/owner/repo` — НЕ `owner/repo`.
+
+    Суффиксный разбор («последние два сегмента») принимал такой remote за
+    настоящий репозиторий, и раннер записывал бы факты `owner/repo` в чужое
+    дерево. Канонический разбор (`publish.py::parse_origin`) лишних сегментов
+    не терпит — хелпер раннера не имеет права быть мягче.
+    """
+    path = _checkout(tmp_path, "steward", origin=None)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "remote",
+            "add",
+            "origin",
+            f"https://github.com/mirror/{REPO}.git",
+        ],
+        check=True,
+    )
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
+
+    assert outcomes[0].status == "skipped"
+    assert "origin" in outcomes[0].detail
+
+
+def test_stale_policy_digest_makes_check_red(tmp_path: Path) -> None:
+    """Бандл под сменившейся политикой не проходит `--check`.
+
+    Прямой регресс находки первого зрячего ревью: `freshness()` смотрел только
+    на срок и покрытие, и зелёный `--check` благословлял бандл, который гейт
+    отверг бы как `policy_digest_mismatch`. Сценарий буквальный: собрали в
+    08:00, в 10:00 поменяли `approval-policy.yaml`, в 10:05 `--check`.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+    policy = _policy(tmp_path)
+    policy.write_text(POLICY_TEXT + "# правка после публикации\n", encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path, policy)
+
+    assert outcomes[0].status == "failed"
+    assert "под другой политикой" in outcomes[0].detail
+
+
+def test_lease_length_must_match_the_active_policy(tmp_path: Path) -> None:
+    """Длительность lease в бандле сверяется с активной политикой точно.
+
+    Потребитель (`resolve_facts`, «строка 4») требует РАВЕНСТВА; бандл с
+    прежней длительностью после смены `approval_facts_lease_seconds` гейт не
+    примет, и `--check` не имеет права звать его установленным.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+    policy = _policy(tmp_path)
+    # Дайджест в бандле должен сойтись, а lease — нет: перепишем политику с
+    # другой длительностью и подделаем дайджест бандла под неё.
+    changed = POLICY_TEXT.replace(
+        f"approval_facts_lease_seconds: {LEASE_SECONDS}",
+        "approval_facts_lease_seconds: 43200",
+    )
+    policy.write_text(changed, encoding="utf-8")
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    lines = bundle.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    header["policy_digest"] = "sha256:" + __import__("hashlib").sha256(changed.encode()).hexdigest()
+    bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path, policy)
+
+    assert outcomes[0].status == "failed"
+    assert "в активной политике 43200s" in outcomes[0].detail
