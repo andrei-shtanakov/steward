@@ -108,6 +108,32 @@ def _origin_slug(url: str) -> str | None:
     return "/".join(parts[-2:]) if len(parts) >= 2 else None
 
 
+def _resolve(path: Path) -> tuple[Path | None, str]:
+    """`Path.resolve()`, у которого отказ — значение, а не исключение.
+
+    Циклический симлинк, недоступный родитель, слишком длинная цепочка — всё
+    это `OSError`, и он улетал бы из обхода наверх, обрывая остальные
+    репозитории вопреки объявленной независимости.
+    """
+    try:
+        return path.resolve(strict=False), ""
+    except OSError as exc:
+        return None, f"путь не резолвится ({path}): {exc}"
+
+
+def _inside(bundle: Path, checkout: Path) -> str | None:
+    """Причина, по которой бандл нельзя писать в этот чекаут, или None."""
+    resolved_bundle, refusal = _resolve(bundle)
+    if resolved_bundle is None:
+        return refusal
+    resolved_checkout, refusal = _resolve(checkout)
+    if resolved_checkout is None:
+        return refusal
+    if not resolved_bundle.is_relative_to(resolved_checkout):
+        return f"бандл резолвится в {resolved_bundle} — вне чекаута {resolved_checkout}"
+    return None
+
+
 def _label(entry: Any) -> str:
     """Как назвать запись в отчёте, когда она может быть чем угодно.
 
@@ -134,8 +160,12 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
     if not isinstance(checkout, str) or not checkout:
         return None, f"{repo}: в охвате нет `checkout`"
 
-    path = (workspace_root / checkout).resolve()
-    root = workspace_root.resolve()
+    path, refusal = _resolve(workspace_root / checkout)
+    if path is None:
+        return None, f"{repo}: {refusal}"
+    root, refusal = _resolve(workspace_root)
+    if root is None:
+        return None, f"{repo}: {refusal}"
     if not path.is_relative_to(root):
         return None, f"{repo}: чекаут {path} вне workspace-root {root}"
     if not path.is_dir():
@@ -235,17 +265,11 @@ def _resolved(
             # симлинком, и тогда публикация уезжает наружу, а два репозитория
             # пишут в один файл, оба выглядя успешными. Ключ дубликатов —
             # именно резолвнутый файл, а не каталог, который на него указывает.
-            bundle = (path / BUNDLE_RELPATH).resolve()
-            if not bundle.is_relative_to(path.resolve()):
-                resolved.append(
-                    (
-                        entry,
-                        repo,
-                        None,
-                        f"{repo}: бандл резолвится в {bundle} — вне чекаута {path}",
-                    )
-                )
+            escape = _inside(path / BUNDLE_RELPATH, path)
+            if escape is not None:
+                resolved.append((entry, repo, None, f"{repo}: {escape}"))
                 continue
+            bundle, _ = _resolve(path / BUNDLE_RELPATH)
             previous = seen.get(str(bundle))
             if previous is not None:
                 resolved.append(
@@ -295,6 +319,14 @@ def collect(
         # вернул 0, не записав бандл (ранний return, проглоченная ошибка ФС),
         # раннер отчитался бы `published`, и весь прогон вышел бы нулём при
         # том, что публикации не было.
+        # Перепроверка ПОСЛЕ прогона: проверка до вызова доказывает только
+        # состояние на тот момент. Продюсер (или что угодно параллельное) мог
+        # подменить `.steward` симлинком уже во время работы, и тогда мы
+        # прочитали бы и признали публикацией файл вне чекаута.
+        escape = _inside(bundle, path)
+        if escape is not None:
+            outcomes.append(Outcome(repo, "failed", f"код 0, но {escape}"))
+            continue
         if not bundle.is_file():
             outcomes.append(Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}"))
             continue

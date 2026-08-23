@@ -789,3 +789,55 @@ def test_check_validates_scope_before_bundle_state(tmp_path: Path) -> None:
     outcomes = RUNNER.freshness([_entry(prs=[])], tmp_path)
 
     assert outcomes[0].status == "skipped"
+
+
+def test_symlink_created_during_the_run_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверка до вызова доказывает только состояние на тот момент.
+
+    Продюсер (или что угодно параллельное) может подменить `.steward`
+    симлинком уже во время работы, и тогда публикацией был бы признан файл вне
+    чекаута. Поэтому containment перепроверяется ПОСЛЕ прогона.
+    """
+    _checkout(tmp_path, "steward")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def escaping(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
+        (root / ".steward").symlink_to(outside, target_is_directory=True)
+        _bundle(outside.parent, datetime.now(UTC) + timedelta(hours=6))
+        return 0, ""
+
+    monkeypatch.setattr(RUNNER, "run_producer", escaping)
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "вне чекаута" in outcomes[0].detail
+
+
+def test_unresolvable_path_does_not_abort_the_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`OSError` из резолвера улетал бы наверх и обрывал остальные записи."""
+    _checkout(tmp_path, "good")
+    monkeypatch.setattr(RUNNER, "run_producer", _publishing_producer())
+
+    def exploding(path: Path) -> tuple[Path | None, str]:
+        if "boom" in str(path):
+            return None, "путь не резолвится (boom): ELOOP"
+        return path, ""
+
+    monkeypatch.setattr(RUNNER, "_resolve", exploding)
+
+    outcomes = RUNNER.collect(
+        [
+            {"repo": REPO, "checkout": "boom", "prs": [1]},
+            {"repo": REPO, "checkout": "good", "prs": [2]},
+        ],
+        tmp_path,
+        tmp_path / "policy.yaml",
+    )
+
+    assert [o.status for o in outcomes] == ["skipped", "published"]
