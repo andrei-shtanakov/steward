@@ -74,11 +74,25 @@ def _hermetic_root(tmp_path: Path) -> Path:
 
 
 def _fake_gh(responses: list[tuple[int, object]]):
+    """Подмена `_gh`, отдающая (code, stdout, stderr).
+
+    Соглашение фикстур: словарь — тело на stdout, строка — текст на stderr,
+    кортеж — оба потока сразу (реальная форма ответа GraphQL с ненулевым кодом).
+
+    Копия того же помощника живёт в `tests/approvalfacts/test_producer.py`;
+    они обязаны меняться вместе — сигнатура `_gh` менялась один раз, и второй
+    экземпляр нашёлся только по красному CI.
+    """
     it: Iterator[tuple[int, object]] = iter(responses)
 
-    def fake(args: list[str]) -> tuple[int, str]:
+    def fake(args: list[str]) -> tuple[int, str, str]:
         code, payload = next(it)
-        return code, payload if isinstance(payload, str) else json.dumps(payload)
+        if isinstance(payload, str):
+            return code, "", payload
+        if isinstance(payload, tuple):
+            body, err = payload
+            return code, body if isinstance(body, str) else json.dumps(body), err
+        return code, json.dumps(payload), ""
 
     return fake
 
