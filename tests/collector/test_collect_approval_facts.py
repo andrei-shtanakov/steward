@@ -476,3 +476,48 @@ def test_scope_of_a_different_kind_does_not_count_as_coverage(tmp_path: Path) ->
 
     assert outcomes[0].status == "failed"
     assert "охват вырос" in outcomes[0].detail
+
+
+def test_non_object_header_is_failed_not_a_traceback(tmp_path: Path) -> None:
+    """`[]` — валидный JSON, но не заголовок; индексация давала TypeError."""
+    path = _checkout(tmp_path, "steward")
+    (path / ".steward").mkdir(parents=True, exist_ok=True)
+    (path / ".steward" / "approval_facts.jsonl").write_text("[]\n", encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "нечитаем" in outcomes[0].detail
+
+
+def test_check_refuses_the_same_duplicate_scope_that_collect_refuses(
+    tmp_path: Path,
+) -> None:
+    """Два прохода не должны расходиться в оценке одного охвата.
+
+    Иначе обещанное доказательство установки зелёное, а плановый сбор на том же
+    охвате падает.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6), prs=[1])
+    duplicated = [
+        {"repo": REPO, "checkout": "steward", "prs": [1]},
+        {"repo": REPO, "checkout": "steward", "prs": [1]},
+    ]
+
+    checked = RUNNER.freshness(duplicated, tmp_path)
+
+    assert [o.status for o in checked] == ["published", "skipped"]
+    assert RUNNER.report(checked) == 1
+
+
+def test_plist_quotes_substituted_paths() -> None:
+    """Путь с пробелом иначе разбивается шеллом, и сбор не происходит никогда."""
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "com.steward.approval-facts.plist.template"
+    ).read_text(encoding="utf-8")
+
+    for placeholder in ("&lt;STEWARD_ROOT&gt;", "&lt;UV_BIN&gt;", "&lt;WORKSPACE_ROOT&gt;"):
+        assert f"'{placeholder}'" in template, f"{placeholder} не в кавычках"

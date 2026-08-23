@@ -63,8 +63,12 @@
          оболочке, и `uv` из `~/.local/bin` или Homebrew там не находится. Тогда
          плановый запуск падал бы с `uv: command not found`, сбор не происходил
          бы вовсе, а заметно это стало бы только по протухшему через сутки
-         бандлу. Подставить вывод `command -v uv`. -->
-    <string>cd &lt;STEWARD_ROOT&gt; &amp;&amp; &lt;UV_BIN&gt; run python scripts/collect_approval_facts.py --workspace-root &lt;WORKSPACE_ROOT&gt;</string>
+         бандлу. Подставить вывод `command -v uv`.
+
+         Пути в одинарных кавычках: подстановка сырая, и путь с пробелом
+         (`/Users/alice/AI Labs/steward`) иначе разбивается шеллом — агент
+         загружается, а сбор не происходит никогда. -->
+    <string>cd '&lt;STEWARD_ROOT&gt;' &amp;&amp; '&lt;UV_BIN&gt;' run python scripts/collect_approval_facts.py --workspace-root '&lt;WORKSPACE_ROOT&gt;'</string>
   </array>
 
   <key>StartInterval</key>

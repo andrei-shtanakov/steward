@@ -211,6 +211,42 @@ def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tu
     return proc.returncode, (proc.stderr or proc.stdout).strip()
 
 
+def _resolved(
+    repositories: list[Any], workspace_root: Path
+) -> list[tuple[Any, str, Path | None, str]]:
+    """Один обход охвата на оба прохода: сбор и проверка.
+
+    Проверка дубликатов живёт ЗДЕСЬ, а не в `collect()`, потому что иначе два
+    прохода расходятся: `--check` показывал бы зелёное на охвате, который сбор
+    отвергает. Обещанное доказательство установки не должно быть зелёным,
+    когда плановый сбор на том же охвате падает.
+
+    Бандл лежит по фиксированному пути внутри чекаута, поэтому две записи на
+    один чекаут — не двойной охват, а молчаливая потеря первого.
+    """
+    resolved: list[tuple[Any, str, Path | None, str]] = []
+    seen: dict[str, str] = {}
+    for entry in repositories:
+        repo = _label(entry)
+        path, refusal = preflight(entry, workspace_root)
+        if path is not None:
+            previous = seen.get(str(path))
+            if previous is not None:
+                resolved.append(
+                    (
+                        entry,
+                        repo,
+                        None,
+                        f"{repo}: чекаут {path} уже занят записью {previous} — второй "
+                        f"бандл затёр бы первый по тому же пути",
+                    )
+                )
+                continue
+            seen[str(path)] = repo
+        resolved.append((entry, repo, path, refusal))
+    return resolved
+
+
 def collect(
     repositories: list[dict[str, Any]], workspace_root: Path, policy: Path
 ) -> list[Outcome]:
@@ -221,29 +257,10 @@ def collect(
     видна только в хвосте лога.
     """
     outcomes: list[Outcome] = []
-    seen: dict[str, str] = {}
-    for entry in repositories:
-        repo = _label(entry)
-        path, refusal = preflight(entry, workspace_root)
+    for entry, repo, path, refusal in _resolved(repositories, workspace_root):
         if path is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
-        # Бандл лежит по фиксированному пути внутри чекаута, поэтому две записи
-        # на один чекаут — это не двойной охват, а молчаливая потеря первого:
-        # оба прогона отчитались бы `published`, а на диске остался бы
-        # последний. Отказ вместо перезаписи.
-        previous = seen.get(str(path))
-        if previous is not None:
-            outcomes.append(
-                Outcome(
-                    repo,
-                    "skipped",
-                    f"{repo}: чекаут {path} уже собран для {previous} — второй бандл "
-                    f"затёр бы первый по тому же пути",
-                )
-            )
-            continue
-        seen[str(path)] = repo
         numbers, refusal = pr_numbers(entry)
         if numbers is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
@@ -299,9 +316,7 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
     """
     outcomes: list[Outcome] = []
     now = datetime.now(UTC)
-    for entry in repositories:
-        repo = _label(entry)
-        path, refusal = preflight(entry, workspace_root)
+    for entry, repo, path, refusal in _resolved(repositories, workspace_root):
         if path is None:
             outcomes.append(Outcome(repo, "skipped", refusal))
             continue
@@ -311,8 +326,13 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
             continue
         try:
             header = json.loads(bundle.read_text(encoding="utf-8").splitlines()[0])
+            if not isinstance(header, dict):
+                # `[]`, `null`, строка — валидный JSON, но не заголовок.
+                # Индексация по нему даёт TypeError, который обрывал бы весь
+                # `--check`, не показав остальные репозитории.
+                raise TypeError(f"первая строка не объект: {type(header).__name__}")
             valid_until = datetime.fromisoformat(str(header["valid_until"]).replace("Z", "+00:00"))
-        except (ValueError, KeyError, IndexError) as exc:
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
             outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {exc}"))
             continue
         if valid_until.tzinfo is None:
