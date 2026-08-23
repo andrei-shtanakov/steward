@@ -526,6 +526,13 @@ product decision record (и наоборот). Как approved proposal стан
       ограничение head-YAML × base-скрипты обойдено без второго PR; до мержа
       кита фильтра в CI нет — явный отказ по потолку, честный и временный)
       @owner:github:andrei-shtanakov @id:review-kit-ci-generated-list
+- [ ] Вето head-стороны generated-деклараций скоупить до фактически
+      изменённых `.gitattributes`: сейчас правка одного файла деклараций
+      включает пересечение целиком и роняет base-side декларацию из другого
+      (multi-file топология; minor четырнадцатого захода на #99, край назван
+      в комментарии local.sh) — расхождение local↔CI в сторону ложного
+      отказа по потолку @owner:github:andrei-shtanakov
+      @id:review-kit-attr-veto-scope
 - [ ] Накопление вердиктов codex-review в jsonl-корпус (PR, head_sha, модель,
       effort, находки, что стало блокирующим) — жанр `gate_verdicts.jsonl` с
       header-записью уже есть (`src/steward/verdicts/emitter.py`); без

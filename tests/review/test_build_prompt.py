@@ -523,6 +523,34 @@ def test_only_exact_listed_paths_are_omitted(tmp_path: Path) -> None:
     assert "src-0" in result.stdout
 
 
+def test_rename_into_declared_path_stays_in_diff(tmp_path: Path) -> None:
+    """Rename в объявленный путь — НЕ generated: обе стороны обязаны быть в списке.
+
+    Четырнадцатый заход гейта на #99: классификация по одной b-стороне
+    заголовка прятала `diff --git a/notes.py b/uv.lock` — удаление и перенос
+    рукописного кода — под слабое правило «только согласованность». Блок
+    опускается, лишь когда И старый, И новый путь объявлены generated."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        "diff --git a/notes.py b/uv.lock\n"
+        "--- a/notes.py\n"
+        "+++ b/uv.lock\n"
+        "@@ -0,0 +1 @@\n"
+        "+smuggled-code\n",
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "smuggled-code" in result.stdout
+
+
 def test_generated_blocks_do_not_count_toward_file_ceiling(tmp_path: Path) -> None:
     """40 снапшотов + 2 исходника — не «42 файла», а 2: опущенные не считаются."""
     prompt = tmp_path / "p.md"
