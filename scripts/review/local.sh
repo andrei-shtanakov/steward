@@ -403,19 +403,35 @@ fi
 # Позиционные параметры шелла — единственный способ собрать argv по частям
 # без некавыченного раскрытия строки (тот же урок, что с ctx_args): `set --`
 # строит список, кавычки сохраняют каждый элемент целым.
-# Generated-доказательство (манифест-сосед) — из git-дерева РЕВЬЮИРУЕМОГО
-# `--head`-коммита, не из живой файловой системы: checkout не обязан
-# совпадать с ревьюируемым ref (pre-push пушит и не-checked-out ветки), и
-# манифест из checkout «доказывал» generated для lock-файла ветки, где
-# манифеста нет (пятый заход гейта на #99; третий заход — та же проверка
-# ломалась от cwd подкаталога). `--full-tree`: ls-tree cwd-зависим, а прогон
-# поддерживается из подкаталога. Пути со спецсимволами git C-квотит — в
-# список они попадают в квотированном виде, с сырым путём не совпадают и
-# остаются в дифе: отказ в сторону ревью, согласовано с кавыченными
-# заголовками дифа (@id:review-kit-quoted-diff-headers).
-git ls-tree -r --full-tree --name-only "$head_sha" > "$work/tree-paths.txt"
+# Generated — то, что репо ОБЪЯВИЛ: `.gitattributes linguist-generated`,
+# прочитанный из дерева РЕВЬЮИРУЕМОГО `--head`-коммита (`check-attr
+# --source`) — checkout не обязан совпадать с ревьюируемым ref (pre-push
+# пушит и не-checked-out ветки), а атрибут — паттерн дерева, не файл:
+# удалённый lock-файл остаётся объявленным, пока `.gitattributes` на head
+# его покрывает. Кит намерение не угадывает — семь заходов гейта на #99
+# показали, что на любую эвристику (basename, манифест-сосед, курируемые
+# каталоги, снапшот-каталоги) строится контрпример; декларация же сама
+# проходит ревью через PR. `core.quotePath=false` даёт сырые пути,
+# согласованные между diff --name-only и check-attr; кавыченные заголовки
+# самого дифа — @id:review-kit-quoted-diff-headers.
+git -c core.quotePath=false diff --name-only "$mb..$head_sha" \
+    > "$work/changed-paths.txt"
+# `--source` требует git >= 2.38; отказ инструмента здесь — конфигурационный
+# код 2 с называнием причины, не сырое сообщение git под `set -e`.
+if ! git -c core.quotePath=false check-attr --stdin \
+    --source="$head_sha" linguist-generated \
+    < "$work/changed-paths.txt" > "$work/generated-attrs.txt"; then
+    echo "не удалось прочитать linguist-generated из дерева $head_sha" \
+        "(git check-attr --source; нужен git >= 2.38)." >&2
+    exit 2
+fi
+# `linguist-generated=true` даёт значение "true", голый атрибут — "set";
+# оба — объявление. Парсинг с ХВОСТА строки: путь может содержать ": ".
+sed -n -e 's/: linguist-generated: true$//p' \
+    -e 's/: linguist-generated: set$//p' \
+    "$work/generated-attrs.txt" > "$work/generated-paths.txt"
 set -- --prompt "$prompt" --diff "$work/diff.patch" \
-    --tree-list "$work/tree-paths.txt"
+    --generated-list "$work/generated-paths.txt"
 [ "$use_context" -eq 1 ] && set -- "$@" --context "$work/context.txt"
 [ -n "$max_diff_bytes" ] && set -- "$@" --max-diff-bytes "$max_diff_bytes"
 [ -n "$max_diff_files" ] && set -- "$@" --max-diff-files "$max_diff_files"

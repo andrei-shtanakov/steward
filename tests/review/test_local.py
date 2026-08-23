@@ -809,21 +809,21 @@ def test_default_schema_and_prompt_resolve_from_repo_root_not_cwd(tmp_path: Path
     assert "нет файла инструкций" not in result.stderr
 
 
-def test_generated_filter_resolves_against_repo_root_from_subdir(tmp_path: Path) -> None:
-    """Generated-доказательство обязано браться от корня репо, не от cwd.
+def _big_lock_body() -> str:
+    return "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
 
-    `local.sh` поддерживает запуск из подкаталога, но `build-prompt.sh`
-    исполнялся в унаследованном cwd — манифест-сосед `./pyproject.toml` из
-    `sub/` не находился, перегенерированный `uv.lock` не фильтровался и
-    упирался в байтовый потолок: один и тот же патч проходил из корня и
-    отказывал из подкаталога (находка гейта на #99, третий заход)."""
+
+def test_declared_generated_is_filtered_from_subdir(tmp_path: Path) -> None:
+    """Декларация читается git'ом — прогон из подкаталога её видит.
+
+    Третий заход гейта на #99 ломался на относительном доказательстве от
+    cwd; у декларации (.gitattributes linguist-generated, git check-attr
+    --source) привязки к cwd нет."""
     _, local = make_repo(tmp_path)
-    (local / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    lock_body = "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
-    (local / "uv.lock").write_text(lock_body, encoding="utf-8")
+    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
     git(local, "commit", "-qm", "перегенерированный lock")
-    assert len(lock_body) > 400_000  # без фильтра упёрлись бы в потолок
 
     subdir = local / "sub"
     subdir.mkdir()
@@ -833,29 +833,25 @@ def test_generated_filter_resolves_against_repo_root_from_subdir(tmp_path: Path)
     assert "диф больше поддерживаемого" not in result.stderr
 
 
-def test_generated_proof_follows_reviewed_head_not_checkout(tmp_path: Path) -> None:
-    """Доказательство generated — из дерева ревьюируемого коммита, не checkout.
+def test_declaration_is_read_from_reviewed_head_not_checkout(tmp_path: Path) -> None:
+    """Декларация — из дерева ревьюируемого коммита, не из checkout.
 
-    `--head` замораживает ревьюируемый коммит (анти-TOCTOU из pre-push), но
-    доказательство манифестом-соседом бралось из живого дерева: checkout с
-    pyproject.toml «доказывал» generated для uv.lock из ветки, в которой
-    манифеста нет вовсе, — и промпт молча терял содержимое файла (находка
-    гейта на #99, пятый заход). Правильный исход — файл остаётся в дифе и
-    честно упирается в потолок."""
+    `--head` замораживает ревьюируемый коммит (анти-TOCTOU pre-push);
+    checkout с декларацией не должен «доказывать» generated для ветки, в
+    которой декларации нет (пятый заход гейта на #99, тот же класс). Файл
+    остаётся в дифе и честно упирается в потолок."""
     _, local = make_repo(tmp_path)
 
     git(local, "switch", "-qc", "other")
-    lock_body = "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
-    (local / "uv.lock").write_text(lock_body, encoding="utf-8")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
-    git(local, "commit", "-qm", "uv.lock без манифеста в этой ветке")
+    git(local, "commit", "-qm", "lock без декларации в этой ветке")
     other_sha = git(local, "rev-parse", "HEAD")
-    assert len(lock_body) > 400_000
 
     git(local, "switch", "-q", "master")
-    (local / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
     git(local, "add", "-A")
-    git(local, "commit", "-qm", "манифест только в checkout")
+    git(local, "commit", "-qm", "декларация только в checkout")
 
     result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", other_sha)
 
@@ -863,26 +859,57 @@ def test_generated_proof_follows_reviewed_head_not_checkout(tmp_path: Path) -> N
     assert "диф больше поддерживаемого" in result.stderr
 
 
-def test_generated_proof_from_head_tree_when_checkout_lacks_manifest(
+def test_declaration_from_head_tree_works_without_checkout_copy(
     tmp_path: Path,
 ) -> None:
-    """Обратная сторона: манифест есть в ревьюируемом коммите — фильтр работает,
-    даже если в checkout манифеста нет. Доказательство привязано к ref, не к
-    состоянию рабочей копии."""
+    """Обратная сторона: декларация есть в ревьюируемом коммите — фильтр
+    работает, даже если в checkout её нет."""
     _, local = make_repo(tmp_path)
 
     git(local, "switch", "-qc", "locked")
-    (local / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    lock_body = "".join(f"pin-{i} {'x' * 40}\n" for i in range(12_000))
-    (local / "uv.lock").write_text(lock_body, encoding="utf-8")
+    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
     git(local, "add", "-A")
-    git(local, "commit", "-qm", "манифест и lock в ревьюируемой ветке")
+    git(local, "commit", "-qm", "декларация и lock в ревьюируемой ветке")
     locked_sha = git(local, "rev-parse", "HEAD")
 
     git(local, "switch", "-q", "master")
-    assert not (local / "pyproject.toml").exists()
+    assert not (local / ".gitattributes").exists()
 
     result = run_local(local, make_stub(tmp_path, STUB_OK), "--head", locked_sha)
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
+def test_deleting_declared_lockfile_is_still_filtered(tmp_path: Path) -> None:
+    """Удаление объявленного lock-файла — тоже generated-изменение.
+
+    Седьмой заход гейта на #99: у эвристики «манифест-сосед» удаление
+    пакета вместе с lock'ом рушило доказательство, и гигантский диф
+    удаления упирался в потолок. Атрибут — паттерн дерева, а не файл:
+    пока .gitattributes на head покрывает путь, удалённый файл остаётся
+    объявленным."""
+    _, local = make_repo(tmp_path)
+
+    (local / ".gitattributes").write_text("uv.lock linguist-generated=true\n", encoding="utf-8")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "lock в базе диапазона")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    git(local, "rm", "-q", "uv.lock")
+    git(local, "commit", "-qm", "пакет удалён вместе с lock'ом")
+    head_sha = git(local, "rev-parse", "HEAD")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        "--head",
+        head_sha,
+    )
 
     assert result.returncode == 0, result.stderr
     assert "диф больше поддерживаемого" not in result.stderr

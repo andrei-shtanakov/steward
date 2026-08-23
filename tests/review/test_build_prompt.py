@@ -47,21 +47,6 @@ def run(prompt: Path, diff: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_in(tree: Path, prompt: Path, diff: Path) -> subprocess.CompletedProcess[str]:
-    """Прогон из корня дерева PR: generated-фильтр сверяется с этим деревом.
-
-    Классификация lock-файлов смотрит на соседний манифест в рабочем дереве,
-    поэтому тесты фильтра обязаны задавать cwd явно — иначе они молча зависят
-    от того, из какого репозитория запущен pytest.
-    """
-    return subprocess.run(
-        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff)],
-        capture_output=True,
-        text=True,
-        cwd=tree,
-    )
-
-
 def make(tmp_path: Path, prompt_text: str, diff_text: str) -> tuple[Path, Path]:
     prompt = tmp_path / "prompt.md"
     diff = tmp_path / "diff.patch"
@@ -460,15 +445,36 @@ def make_diff_block(path: str, body_lines: int = 1, filler: str = "new") -> str:
     )
 
 
-def test_generated_lock_is_omitted_by_name_not_reviewed(tmp_path: Path) -> None:
-    """Generated-блок опускается ИМЕНОВАННО: маркер с путём вместо тела.
+def run_gen(
+    prompt: Path, diff: Path, generated_list: Path, *extra: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "sh",
+            str(SCRIPT),
+            "--prompt",
+            str(prompt),
+            "--diff",
+            str(diff),
+            "--generated-list",
+            str(generated_list),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+    )
 
-    Перегенерированный uv.lock в одиночку пробивал байтовый потолок, и ревью
-    отказывало на PR, который по правилу как раз ревьюируем — правило
-    «generated только на согласованность» не успевало примениться (находка
-    гейта на #99). Опущение не молчаливое: маркер называет путь и отсылает к
-    проверке по дереву.
-    """
+
+def test_declared_generated_block_is_omitted_namedly(tmp_path: Path) -> None:
+    """Объявленный generated-блок опускается ИМЕНОВАННО: маркер вместо тела.
+
+    Что считать generated, кит не решает — список путей приходит от
+    вызывающего и строится из декларации репо (.gitattributes
+    linguist-generated дерева ревьюируемого коммита). Семь заходов гейта на
+    #99 показали: любая эвристика (basename, манифест-сосед, курируемые
+    каталоги, снапшот-каталоги) даёт конструируемый контрпример; декларация
+    сама проходит ревью через PR. Перегенерированный uv.lock при этом не
+    пробивает байтовый потолок."""
     prompt = tmp_path / "p.md"
     prompt.write_text("И", encoding="utf-8")
     diff = tmp_path / "d.patch"
@@ -478,11 +484,10 @@ def test_generated_lock_is_omitted_by_name_not_reviewed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert diff.stat().st_size > 400_000  # без опущения упёрлись бы в потолок
-    # Доказательство generated — манифест-сосед в дереве, из которого идёт
-    # прогон; без него lock-файл остался бы в дифе как обычный исходник.
-    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
 
-    result = run_in(tmp_path, prompt, diff)
+    result = run_gen(prompt, diff, gen)
 
     assert result.returncode == 0, result.stderr
     assert "generated-файл опущен из дифа: uv.lock" in result.stdout
@@ -492,16 +497,45 @@ def test_generated_lock_is_omitted_by_name_not_reviewed(tmp_path: Path) -> None:
     assert "diff --git a/src/a.py" in result.stdout
 
 
+def test_only_exact_listed_paths_are_omitted(tmp_path: Path) -> None:
+    """Опускается ровно объявленное: похожие имена и соседние файлы остаются.
+
+    Ложное опущение исходника хуже пропущенного lock'а — не объявлено,
+    значит ревьюируется построчно (отказ в сторону ревью)."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("uv.lock", filler="locked-")
+        + make_diff_block("docs/uv.lock.md", filler="doc-")
+        + make_diff_block("src/locker.py", filler="src-"),
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("generated-файл опущен") == 1
+    assert "locked-0" not in result.stdout
+    assert "doc-0" in result.stdout
+    assert "src-0" in result.stdout
+
+
 def test_generated_blocks_do_not_count_toward_file_ceiling(tmp_path: Path) -> None:
     """40 снапшотов + 2 исходника — не «42 файла», а 2: опущенные не считаются."""
     prompt = tmp_path / "p.md"
     prompt.write_text("И", encoding="utf-8")
+    snap_paths = [f"tests/__snapshots__/case{i}.snap" for i in range(40)]
     diff = tmp_path / "d.patch"
-    blocks = [make_diff_block(f"tests/__snapshots__/case{i}.snap") for i in range(40)]
+    blocks = [make_diff_block(path) for path in snap_paths]
     blocks += [make_diff_block("src/a.py"), make_diff_block("src/b.py")]
     diff.write_text("".join(blocks), encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("".join(f"{path}\n" for path in snap_paths), encoding="utf-8")
 
-    result = run(prompt, diff)
+    result = run_gen(prompt, diff, gen)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("generated-файл опущен") == 40
@@ -515,171 +549,54 @@ def test_omission_markers_do_not_consume_byte_ceiling(tmp_path: Path) -> None:
     гейта на #99). Потолки меряют то, что ревьюируется построчно."""
     prompt = tmp_path / "p.md"
     prompt.write_text("И", encoding="utf-8")
+    snap_paths = [f"tests/__snapshots__/case{i}.snap" for i in range(40)]
     diff = tmp_path / "d.patch"
-    blocks = [make_diff_block(f"tests/__snapshots__/case{i}.snap") for i in range(40)]
+    blocks = [make_diff_block(path) for path in snap_paths]
     blocks.append(make_diff_block("src/a.py"))
     diff.write_text("".join(blocks), encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("".join(f"{path}\n" for path in snap_paths), encoding="utf-8")
 
-    result = subprocess.run(
-        [
-            "sh",
-            str(SCRIPT),
-            "--prompt",
-            str(prompt),
-            "--diff",
-            str(diff),
-            "--max-diff-bytes",
-            "2000",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-    )
+    result = run_gen(prompt, diff, gen, "--max-diff-bytes", "2000")
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("generated-файл опущен") == 40
     assert "diff --git a/src/a.py" in result.stdout
 
 
-def test_source_file_is_never_treated_as_generated(tmp_path: Path) -> None:
-    """Ложное опущение исходника хуже пропущенного lock'а — список узкий."""
+def test_without_generated_list_nothing_is_omitted(tmp_path: Path) -> None:
+    """Без --generated-list фильтра нет: диф проходит как есть."""
     prompt = tmp_path / "p.md"
     prompt.write_text("И", encoding="utf-8")
     diff = tmp_path / "d.patch"
-    diff.write_text(
-        make_diff_block("src/locker.py") + make_diff_block("docs/uv.lock.md"),
-        encoding="utf-8",
-    )
+    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
 
     result = run(prompt, diff)
-
-    assert result.returncode == 0
-    assert "generated-файл опущен" not in result.stdout
-    assert "diff --git a/src/locker.py" in result.stdout
-    assert "diff --git a/docs/uv.lock.md" in result.stdout
-
-
-def test_lockfile_without_manifest_sibling_stays_in_diff(tmp_path: Path) -> None:
-    """`tests/fixtures/go.sum` без `go.mod` рядом — исходник, не generated.
-
-    Совпадение basename — только кандидатская гипотеза: рукописная копия
-    lock-файла в fixtures или docs ревьюируется как обычный код. Опущение
-    требует доказательства по дереву — манифеста-соседа (находка гейта на #99:
-    классификация по одному basename прятала исходники из ревью).
-    """
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(
-        make_diff_block("tests/fixtures/go.sum", filler="fixture-line-")
-        + make_diff_block("src/a.py"),
-        encoding="utf-8",
-    )
-
-    result = run_in(tmp_path, prompt, diff)
-
-    assert result.returncode == 0, result.stderr
-    assert "generated-файл опущен" not in result.stdout
-    assert "diff --git a/tests/fixtures/go.sum" in result.stdout
-    assert "fixture-line-0" in result.stdout
-
-
-def test_snap_outside_snapshot_dir_stays_in_diff(tmp_path: Path) -> None:
-    """`contracts/example.snap` вне снапшот-каталога — исходник.
-
-    Расширение `.snap` само по себе ничего не доказывает: generated —
-    только файлы внутри `__snapshots__/` (jest) или `snapshots/` (insta),
-    где их кладёт инструмент.
-    """
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(
-        make_diff_block("contracts/example.snap", filler="hand-written-"),
-        encoding="utf-8",
-    )
-
-    result = run_in(tmp_path, prompt, diff)
-
-    assert result.returncode == 0, result.stderr
-    assert "generated-файл опущен" not in result.stdout
-    assert "hand-written-0" in result.stdout
-
-
-def test_tree_list_overrides_filesystem_proof(tmp_path: Path) -> None:
-    """`--tree-list` — доказательство из списка путей, не из файловой системы.
-
-    local.sh ревьюирует замороженный `--head`-коммит, а живое дерево не
-    обязано им быть: доказательство манифестом-соседом приходит списком
-    `git ls-tree` ревьюируемого ref (находка гейта на #99, пятый заход).
-    Файловая система при заданном списке не опрашивается вовсе."""
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    tree_list = tmp_path / "tree.lst"
-    tree_list.write_text("pyproject.toml\nsrc/a.py\n", encoding="utf-8")
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            "sh",
-            str(SCRIPT),
-            "--prompt",
-            str(prompt),
-            "--diff",
-            str(diff),
-            "--tree-list",
-            str(tree_list),
-        ],
-        capture_output=True,
-        text=True,
-        cwd=elsewhere,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "generated-файл опущен из дифа: uv.lock" in result.stdout
-    assert "locked-0" not in result.stdout
-
-
-def test_tree_list_ignores_filesystem_manifest(tmp_path: Path) -> None:
-    """Список пуст — манифест из живого дерева НЕ доказательство: lock
-    остаётся в дифе, даже когда рядом на диске лежит pyproject.toml."""
-    tree = tmp_path / "tree"
-    tree.mkdir()
-    (tree / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    tree_list = tmp_path / "tree.lst"
-    tree_list.write_text("src/a.py\n", encoding="utf-8")
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            "sh",
-            str(SCRIPT),
-            "--prompt",
-            str(prompt),
-            "--diff",
-            str(diff),
-            "--tree-list",
-            str(tree_list),
-        ],
-        capture_output=True,
-        text=True,
-        cwd=tree,
-    )
 
     assert result.returncode == 0, result.stderr
     assert "generated-файл опущен" not in result.stdout
     assert "locked-0" in result.stdout
 
 
-def test_tree_list_missing_file_is_config_error(tmp_path: Path) -> None:
+def test_empty_generated_list_is_noop(tmp_path: Path) -> None:
+    """Пустой список — легитимное «в дифе нет объявленных»: фильтр молчит."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(make_diff_block("uv.lock", filler="locked-"), encoding="utf-8")
+    gen = tmp_path / "gen.lst"
+    gen.write_text("", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "locked-0" in result.stdout
+
+
+def test_generated_list_missing_file_is_config_error(tmp_path: Path) -> None:
     """Несуществующий список — ошибка конфигурации, не молчаливый прогон
-    с выключенным доказательством."""
+    с выключенным фильтром."""
     prompt, diff = make(tmp_path, "И", "Д")
     result = subprocess.run(
         [
@@ -689,92 +606,11 @@ def test_tree_list_missing_file_is_config_error(tmp_path: Path) -> None:
             str(prompt),
             "--diff",
             str(diff),
-            "--tree-list",
+            "--generated-list",
             str(tmp_path / "нет.lst"),
         ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 2
-    assert "путей дерева" in result.stderr
-
-
-def test_fixture_bundle_with_manifest_sibling_stays_in_diff(tmp_path: Path) -> None:
-    """Fixture-бандл `package.json`+`package-lock.json` — курируемый исходник.
-
-    Манифест-сосед сам по себе не доказательство: образец в fixtures нарочно
-    носит оба файла, и его lock ревьюируется как код (находка гейта на #99,
-    второй заход). Внутри курируемых компонентов пути — fixtures, testdata,
-    examples, docs — не опускается ничего.
-    """
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(
-        make_diff_block("tests/fixtures/npm-app/package-lock.json", filler="pin-"),
-        encoding="utf-8",
-    )
-    manifest = tmp_path / "tests/fixtures/npm-app/package.json"
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("{}\n", encoding="utf-8")
-
-    result = run_in(tmp_path, prompt, diff)
-
-    assert result.returncode == 0, result.stderr
-    assert "generated-файл опущен" not in result.stdout
-    assert "pin-0" in result.stdout
-
-
-@pytest.mark.parametrize(
-    "snap_path",
-    ["docs/snapshots/example.snap", "contracts/snapshots/schema.snap"],
-)
-def test_snap_in_generic_snapshots_dir_stays_in_diff(tmp_path: Path, snap_path: str) -> None:
-    """Компонент `snapshots/` в пути — не доказательство: слово, не инструмент.
-
-    Generated считается только `__snapshots__/` — имя, которым владеет
-    инструмент. Рукописный `.snap` в docs/ или contracts/ остаётся в дифе
-    (находка гейта на #99, второй заход); insta-конвенция `snapshots/` —
-    расширение списка правкой кита через ревью.
-    """
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(make_diff_block(snap_path, filler="hand-"), encoding="utf-8")
-
-    result = run_in(tmp_path, prompt, diff)
-
-    assert result.returncode == 0, result.stderr
-    assert "generated-файл опущен" not in result.stdout
-    assert "hand-0" in result.stdout
-
-
-@pytest.mark.parametrize(
-    ("lock_path", "manifest_path"),
-    [
-        ("go.sum", "go.mod"),
-        ("pkg/api/Cargo.lock", "pkg/api/Cargo.toml"),
-        ("web/package-lock.json", "web/package.json"),
-    ],
-)
-def test_lockfile_with_manifest_sibling_is_omitted(
-    tmp_path: Path, lock_path: str, manifest_path: str
-) -> None:
-    """Lock-файл рядом со своим манифестом в дереве — доказанно generated."""
-    prompt = tmp_path / "p.md"
-    prompt.write_text("И", encoding="utf-8")
-    diff = tmp_path / "d.patch"
-    diff.write_text(
-        make_diff_block(lock_path, filler="locked-") + make_diff_block("src/a.py"),
-        encoding="utf-8",
-    )
-    manifest = tmp_path / manifest_path
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text("manifest\n", encoding="utf-8")
-
-    result = run_in(tmp_path, prompt, diff)
-
-    assert result.returncode == 0, result.stderr
-    assert f"generated-файл опущен из дифа: {lock_path}" in result.stdout
-    assert "locked-0" not in result.stdout
-    assert "diff --git a/src/a.py" in result.stdout
+    assert "generated" in result.stderr
