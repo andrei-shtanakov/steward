@@ -298,3 +298,35 @@ def test_crlf_pin_is_parsed_not_rejected(tmp_path: Path) -> None:
     result = run(root, pin)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_symlinked_pin_is_config_error(tmp_path: Path) -> None:
+    """PIN-симлинк — негодная конфигурация: якорь проверки обязан быть
+    обычным файлом, как и члены кита (само-ревью после шестого захода)."""
+    root = make_kit(tmp_path)
+    real_pin = full_pin(root)
+    aside = root / "aside-PIN"
+    aside.write_text(real_pin.read_text(encoding="utf-8"), encoding="utf-8")
+    real_pin.unlink()
+    real_pin.symlink_to(aside)
+
+    result = run(root, real_pin)
+
+    assert result.returncode == 2, result.stderr
+    assert "PIN" in result.stderr
+
+
+def test_directory_at_kit_path_is_named_honestly(tmp_path: Path) -> None:
+    """Каталог на месте члена кита — «не обычный файл», не «отсутствует»:
+    ложное «нет в копии» отправляет чинить не то (само-ревью)."""
+    root = make_kit(tmp_path)
+    pin = full_pin(root)
+    target = root / "scripts" / "review" / "local.sh"
+    target.unlink()
+    target.mkdir()
+
+    result = run(root, pin)
+
+    assert result.returncode == 1, result.stderr
+    assert "scripts/review/local.sh" in result.stderr
+    assert "ОТСУТСТВУЕТ" not in result.stderr
