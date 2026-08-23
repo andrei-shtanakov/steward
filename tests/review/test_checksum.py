@@ -1,6 +1,7 @@
 """Тесты scripts/review/checksum.sh — переносимая сверка вендор-копии с PIN."""
 
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -330,3 +331,33 @@ def test_directory_at_kit_path_is_named_honestly(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stderr
     assert "scripts/review/local.sh" in result.stderr
     assert "ОТСУТСТВУЕТ" not in result.stderr
+
+
+def test_hasher_failure_is_checker_error_not_drift(tmp_path: Path) -> None:
+    """Сломанный хешер — отказ чекера (код 2), не «РАСХОЖДЕНИЕ».
+
+    Пайплайн `sha256sum | cut` глотал статус хешера: файл, исчезнувший или
+    ставший нечитаемым МЕЖДУ пречеками и хешированием, давал пустой хеш и
+    совет ре-вендорить (minor седьмого захода гейта на #101). Симулируется
+    PATH-шимом с падающими sha256sum/shasum."""
+    root = make_kit(tmp_path)
+    pin = full_pin(root)
+    shim_dir = tmp_path / "broken-hash-bin"
+    shim_dir.mkdir()
+    for name in ("sha256sum", "shasum"):
+        shim = shim_dir / name
+        shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        shim.chmod(0o755)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{shim_dir}:{env['PATH']}"
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--pin", str(pin)],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        env=env,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "РАСХОЖДЕНИЕ" not in result.stderr
