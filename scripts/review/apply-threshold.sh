@@ -45,7 +45,7 @@ esac
 
 # Невалидный вердикт — отказ (код 2), а не «замечаний нет». Проверяется ЗДЕСЬ,
 # а не доверяется схеме codex: порог ниже читает `severity`/`confidence` как
-# allow-list, и значение вне enum'а обязано отвергнуться, а не молча оценíться
+# allow-list, и значение вне enum'а обязано отвергнуться, а не молча оцениться
 # как «не блокирует» — иначе негодный вердикт красится зелёным, инвертируя
 # инвариант кита. `type == "object" and (...)` — короткое замыкание jq: на
 # элементе-не-объекте не индексируем поля и не падаем случайным кодом jq.
@@ -65,11 +65,11 @@ jq -e '(.findings | type == "array")
                and (.confidence | IN("high", "medium", "low"))
                and ([.title, .file, .scenario, .observed_result, .expected_result]
                     | all(type == "string"))
-               and (.line | type == "number")
+               and (.line | type == "number" and . == floor and . >= 0)
                and (.evidence | type == "array")
                and all(.evidence[]; type == "object"
                        and (.file | type == "string")
-                       and (.line | type == "number")
+                       and (.line | type == "number" and . == floor and . >= 0)
                        and (.reason | type == "string")))
        and (.note | type == "string")' \
     "$verdict" >/dev/null 2>&1 \

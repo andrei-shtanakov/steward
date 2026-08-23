@@ -50,7 +50,7 @@ def finding(**overrides: object) -> dict:
     """Полная находка схемы v2; поля переопределяются по месту.
 
     По умолчанию — блокирующая major: high confidence, заполненные scenario/
-    observed_result и один элемент evidence. Тесты, проверяющие небло­кировку,
+    observed_result и один элемент evidence. Тесты, проверяющие неблокировку,
     выключают ровно одно требование — так каждое из них закреплено отдельно.
     """
     base: dict = {
@@ -150,6 +150,11 @@ def test_findings_not_an_array_is_config_error(tmp_path: Path) -> None:
         {"title": 7},
         {"file": ["a"]},
         {"line": "десять"},
+        # Схема требует integer >= 0: дробное и отрицательное — вне схемы,
+        # хотя для jq оба «number» (замечание Copilot на #98).
+        {"line": 3.5},
+        {"line": -1},
+        {"evidence": [{"file": "a", "line": 2.5, "reason": "r"}]},
         {"scenario": {"x": 1}},
         {"observed_result": 3.5},
         {"evidence": "прочитал всё"},
