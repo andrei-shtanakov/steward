@@ -86,12 +86,27 @@ jobs:
           for f in .github/codex/review-prompt.md .github/codex/review-schema.json \
                    scripts/review/build-prompt.sh scripts/review/apply-threshold.sh \
                    scripts/review/collect-context.sh; do
-            if ! git show "$BASE_SHA:$f" > "$KIT/$(basename "$f")"; then
-              echo "::error::$f нет в base ($BASE_SHA). Механика ревьюера читается из base"\
-                   "по построению — иначе автор PR правит порог себе. PR, вводящий её,"\
-                   "этим чеком не проверяется; смержите его."
-              exit 1
-            fi
+            # Режим записи в дереве — как у collect-context.sh, и по той же
+            # причине: у симлинка `git show` отдаёт ТЕКСТ цели, и `sh` получил
+            # бы вместо скрипта одну строку-путь — каждый PR краснел бы до
+            # старта ревью с диагнозом «сломалась склейка», а не «в base
+            # симлинк». Проверяем здесь, где отказ может назвать себя.
+            mode=$(git ls-tree "$BASE_SHA" -- "$f" 2>/dev/null | cut -d' ' -f1)
+            case "$mode" in
+              100644|100755) ;;
+              "")
+                echo "::error::$f нет в base ($BASE_SHA). Механика ревьюера читается из base"\
+                     "по построению — иначе автор PR правит порог себе. PR, вводящий её,"\
+                     "этим чеком не проверяется; смержите его."
+                exit 1
+                ;;
+              *)
+                echo "::error::$f в base — не обычный файл (режим $mode): механика"\
+                     "ревьюера обязана быть исполнимым текстом, не ссылкой."
+                exit 1
+                ;;
+            esac
+            git show "$BASE_SHA:$f" > "$KIT/$(basename "$f")"
           done
 
       - name: Забрать диф — указатель на область ревью
