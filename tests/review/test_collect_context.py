@@ -315,7 +315,25 @@ def test_directory_in_manifest_is_a_refusal(repo: Path) -> None:
     res = run(repo, base)
 
     assert res.returncode == 2, res.stdout
-    assert "не файл, а tree" in res.stderr
+    assert "не файл (режим 040000)" in res.stderr
+
+
+def test_symlink_in_manifest_is_a_refusal(repo: Path) -> None:
+    """Симлинк — отказ, хотя `git cat-file -t` называет его `blob`.
+
+    Проверять тип объекта недостаточно: у симлинка тоже `blob`, только
+    содержимое блоба — путь цели. Он приложился бы с заголовком, отпечатком и
+    зелёным чеком, а ревьюер получил бы строку `generated/producer.py` вместо
+    кода модуля. Отличает их только режим записи в дереве (120000).
+    """
+    (repo / "src" / "link.py").symlink_to("producer.py")
+    write(repo, MANIFEST, "src/link.py\n")
+    base = commit(repo, "симлинк в манифесте")
+
+    res = run(repo, base)
+
+    assert res.returncode == 2, res.stdout
+    assert "симлинк" in res.stderr
 
 
 def test_crlf_manifest_still_resolves_paths(repo: Path) -> None:

@@ -883,3 +883,67 @@ def test_context_path_with_space_in_work_dir(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert "нет файла контекста" not in result.stderr
     assert "контекст: 1 файл(ов)" in result.stdout
+
+
+def _kit_without_collector(tmp_path: Path) -> Path:
+    """Копия кита без `collect-context.sh` — состояние «обновили наполовину»."""
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    for name in ("local.sh", "build-prompt.sh", "apply-threshold.sh"):
+        shutil.copy(ROOT / "scripts" / "review" / name, kit / name)
+    return kit
+
+
+def test_missing_collector_falls_back_to_diff_only(tmp_path: Path) -> None:
+    """Нет сборщика и нет манифеста — ревью по одному дифу, а не падение.
+
+    CI такой случай различает явно; локальный прогон обязан вести себя так же,
+    иначе половины одного кита расходятся. Без ветки `sh <нет файла>` дал бы
+    `can't open` и уронил весь прогон кодом 2 там, где по документации штатное
+    «контекст не настроен».
+    """
+    _, local = make_repo(tmp_path)
+    (local / "changed.txt").write_text("правка\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка ветки")
+
+    kit = _kit_without_collector(tmp_path)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"REVIEW_KIT_DIR": str(kit)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "сборщика нет в ките" in result.stdout
+
+
+def test_manifest_without_collector_is_a_refusal(tmp_path: Path) -> None:
+    """Манифест в базе БЕЗ сборщика — отказ, а не тихий съезд на «только диф».
+
+    Это не бутстрап: механику потеряли, данные остались. Промолчать здесь
+    значило бы выдать ревью без контекста за ревью с ним.
+    """
+    remote, local = make_repo(tmp_path)
+    git(remote, "config", "receive.denyCurrentBranch", "ignore")
+    (local / ".github" / "codex").mkdir(parents=True)
+    (local / "ctx.py").write_text("CONTEXT_MARKER = 1\n", encoding="utf-8")
+    (local / ".github" / "codex" / "review-context.txt").write_text("ctx.py\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "манифест в базе")
+    git(local, "push", "-q", "origin", "master")
+    git(local, "remote", "set-head", "origin", "-a")
+
+    (local / "changed.txt").write_text("правка\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка ветки")
+
+    kit = _kit_without_collector(tmp_path)
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"REVIEW_KIT_DIR": str(kit)},
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "механика потеряна" in result.stderr
