@@ -100,7 +100,10 @@ def _git(path: Path, *args: str) -> str | None:
 #: `owner/name` — не тот же объект: в этом воркспейсе такое есть (atp-platform
 #: держит GitHub и GitLab-зеркало), и совпадение имени приняло бы зеркало за
 #: оригинал.
-GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+#: `ssh.github.com` — штатный хост GitHub для SSH поверх 443, которым люди
+#: пользуются из-за корпоративных фаерволов. Не включить его значило бы
+#: объявить исправный чекаут зеркалом.
+GITHUB_HOSTS = frozenset({"github.com", "www.github.com", "ssh.github.com"})
 
 
 def _origin_host_and_slug(url: str) -> tuple[str | None, str | None]:
@@ -375,6 +378,15 @@ def collect(
         if valid_until is None:
             outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
             continue
+        owner, refusal = bundle_repository(bundle)
+        if owner is None:
+            outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
+            continue
+        if owner != repo:
+            outcomes.append(
+                Outcome(repo, "failed", f"код 0, но бандл заявляет репозиторий {owner!r}")
+            )
+            continue
         if datetime.now(UTC) >= valid_until:
             # Продюсер мог записать уже протухший lease. Публикация, которая
             # родилась просроченной, — не публикация.
@@ -409,6 +421,33 @@ def _digest(path: Path) -> str | None:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+def bundle_repository(bundle: Path) -> tuple[str | None, str]:
+    """`repository` из заголовка — чей это бандл.
+
+    Без этой сверки `--check` зеленел бы на ЧУЖОМ файле: бандл соседнего
+    репозитория, положенный в этот чекаут, несёт валидный lease и `result`-и,
+    и по всем прочим признакам неотличим.
+
+    `scope_sha256` здесь намеренно только проверяется на наличие, а не
+    пересчитывается: канонизация — инвариант продюсера, у него же и покрыта
+    (`contracts/approval-facts/v2`, инварианты читателя). Второй реализацией
+    того же дайджеста мы завели бы ровно ту пару, которая расходится молча.
+    """
+    try:
+        first = bundle.read_text(encoding="utf-8").splitlines()[0]
+        header = json.loads(first)
+    except (OSError, ValueError, IndexError) as exc:
+        return None, f"заголовок нечитаем: {exc}"
+    if not isinstance(header, dict):
+        return None, "первая строка не объект"
+    repository = header.get("repository")
+    if not isinstance(repository, str) or not repository:
+        return None, "в заголовке нет `repository`"
+    if not header.get("scope_sha256"):
+        return None, "в заголовке нет `scope_sha256`"
+    return repository, ""
 
 
 def bundle_header(bundle: Path) -> tuple[datetime | None, str]:
@@ -529,6 +568,13 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
         valid_until, refusal = bundle_header(bundle)
         if valid_until is None:
             outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {refusal}"))
+            continue
+        owner, refusal = bundle_repository(bundle)
+        if owner is None:
+            outcomes.append(Outcome(repo, "failed", refusal))
+            continue
+        if owner != repo:
+            outcomes.append(Outcome(repo, "failed", f"бандл заявляет репозиторий {owner!r}"))
             continue
         if now >= valid_until:
             hours = int((now - valid_until).total_seconds() // 3600)

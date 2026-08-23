@@ -64,6 +64,8 @@ def _publishing_producer(prs_by_call: list[list[int]] | None = None):
         header = {
             "kind": "header",
             "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "repository": REPO,
+            "scope_sha256": "sha256:" + "0" * 64,
             "scope": [{"kind": "pr", "value": str(n)} for n in prs],
         }
         lines = [json.dumps(header)] + [
@@ -216,6 +218,8 @@ def _bundle(path: Path, valid_until: datetime, prs: list[int] | None = None) -> 
         "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
         # Заголовок обязан нести охват: `--check` сверяет с ним настроенный,
         # иначе свежий бандл под выросшим охватом читался бы зелёным.
+        "repository": REPO,
+        "scope_sha256": "sha256:" + "0" * 64,
         "scope": [{"kind": "pr", "value": str(n)} for n in (prs if prs is not None else [1])],
     }
     lines = [json.dumps(header)] + [
@@ -921,6 +925,8 @@ def test_header_must_declare_what_the_records_answer(tmp_path: Path) -> None:
     header = {
         "kind": "header",
         "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "repository": REPO,
+        "scope_sha256": "sha256:" + "0" * 64,
         "scope": [{"kind": "pr", "value": "1"}],
     }
     record = {"kind": "result", "request": {"kind": "pr", "value": "2"}, "state": "merged"}
@@ -981,3 +987,47 @@ def test_pipe_is_listed_among_forbidden_path_characters() -> None:
     constraint = doc[doc.index("Ограничение путей") : doc.index("Установка.")]
 
     assert "`|`" in constraint
+
+
+def test_bundle_of_another_repository_is_failed(tmp_path: Path) -> None:
+    """Чужой бандл в этом чекауте несёт валидный lease и записи — и неотличим
+    по всем прочим признакам. Отличает только заявленный `repository`."""
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    lines = bundle.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    header["repository"] = "andrei-shtanakov/maestro"
+    bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path)
+
+    assert outcomes[0].status == "failed"
+    assert "заявляет репозиторий" in outcomes[0].detail
+
+
+def test_header_without_scope_digest_is_failed(tmp_path: Path) -> None:
+    """`scope_sha256` проверяется на наличие, но не пересчитывается.
+
+    Канонизация — инвариант продюсера, у него же и покрыта. Второй реализацией
+    того же дайджеста мы завели бы пару, которая расходится молча — ровно тот
+    класс, который эта ветка чинила трижды.
+    """
+    path = _checkout(tmp_path, "steward")
+    _bundle(path, datetime.now(UTC) + timedelta(hours=6))
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    lines = bundle.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    del header["scope_sha256"]
+    bundle.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    assert RUNNER.freshness([_entry()], tmp_path)[0].status == "failed"
+
+
+def test_ssh_over_443_host_is_accepted() -> None:
+    """`ssh.github.com` — штатный обход корпоративных фаерволов, не зеркало."""
+    assert RUNNER._origin_host_and_slug("git@ssh.github.com:andrei-shtanakov/steward.git") == (
+        "ssh.github.com",
+        REPO,
+    )
+    assert "ssh.github.com" in RUNNER.GITHUB_HOSTS
