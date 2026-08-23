@@ -435,3 +435,73 @@ def test_non_numeric_limit_is_config_error_not_fail_open(
     )
     assert result.returncode == 2, result.stdout
     assert "целым числом" in result.stderr
+
+
+def make_diff_block(path: str, body_lines: int = 1, filler: str = "new") -> str:
+    body = "".join(f"+{filler}{i}\n" for i in range(body_lines))
+    return (
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+        f"@@ -0,0 +{body_lines} @@\n{body}"
+    )
+
+
+def test_generated_lock_is_omitted_by_name_not_reviewed(tmp_path: Path) -> None:
+    """Generated-блок опускается ИМЕНОВАННО: маркер с путём вместо тела.
+
+    Перегенерированный uv.lock в одиночку пробивал байтовый потолок, и ревью
+    отказывало на PR, который по правилу как раз ревьюируем — правило
+    «generated только на согласованность» не успевало примениться (находка
+    гейта на #99). Опущение не молчаливое: маркер называет путь и отсылает к
+    проверке по дереву.
+    """
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("uv.lock", body_lines=20_000, filler="x" * 30)
+        + make_diff_block("src/a.py"),
+        encoding="utf-8",
+    )
+    assert diff.stat().st_size > 400_000  # без опущения упёрлись бы в потолок
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен из дифа: uv.lock" in result.stdout
+    assert "согласованность с источником" in result.stdout
+    # Тело lock-файла не доехало, исходник — доехал.
+    assert "xxxxx" not in result.stdout
+    assert "diff --git a/src/a.py" in result.stdout
+
+
+def test_generated_blocks_do_not_count_toward_file_ceiling(tmp_path: Path) -> None:
+    """40 снапшотов + 2 исходника — не «42 файла», а 2: опущенные не считаются."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    blocks = [make_diff_block(f"tests/__snapshots__/case{i}.snap") for i in range(40)]
+    blocks += [make_diff_block("src/a.py"), make_diff_block("src/b.py")]
+    diff.write_text("".join(blocks), encoding="utf-8")
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("generated-файл опущен") == 40
+
+
+def test_source_file_is_never_treated_as_generated(tmp_path: Path) -> None:
+    """Ложное опущение исходника хуже пропущенного lock'а — список узкий."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        make_diff_block("src/locker.py") + make_diff_block("docs/uv.lock.md"),
+        encoding="utf-8",
+    )
+
+    result = run(prompt, diff)
+
+    assert result.returncode == 0
+    assert "generated-файл опущен" not in result.stdout
+    assert "diff --git a/src/locker.py" in result.stdout
+    assert "diff --git a/docs/uv.lock.md" in result.stdout
