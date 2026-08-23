@@ -281,12 +281,53 @@ def collect(
         if before is not None and bundle.stat().st_mtime_ns == before:
             outcomes.append(Outcome(repo, "failed", f"код 0, но бандл не обновлён: {bundle}"))
             continue
+        valid_until, refusal = bundle_header(bundle)
+        if valid_until is None:
+            outcomes.append(Outcome(repo, "failed", f"код 0, но {refusal}"))
+            continue
+        if datetime.now(UTC) >= valid_until:
+            # Продюсер мог записать уже протухший lease. Публикация, которая
+            # родилась просроченной, — не публикация.
+            outcomes.append(
+                Outcome(repo, "failed", f"код 0, но бандл уже просрочен ({valid_until})")
+            )
+            continue
         gap = bundle_gap(bundle, numbers)
         if gap is not None:
             outcomes.append(Outcome(repo, "failed", f"код 0, но {gap}"))
         else:
             outcomes.append(Outcome(repo, "published", str(bundle)))
     return outcomes
+
+
+def bundle_header(bundle: Path) -> tuple[datetime | None, str]:
+    """Заголовок бандла и его lease, или причина, почему это не бандл.
+
+    Живёт отдельно, потому что нужна ОБОИМ проходам: `collect()` как
+    постусловие публикации, `--check` как проверка установки. Пока проверка
+    была только в одном, продюсер, записавший `result`-строки без заголовка
+    или с уже протухшим `valid_until`, проходил как `published`.
+    """
+    try:
+        lines = bundle.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return None, f"бандл не читается: {exc}"
+    if not lines:
+        return None, "бандл пуст"
+    try:
+        header = json.loads(lines[0])
+    except ValueError as exc:
+        return None, f"заголовок не JSON: {exc}"
+    if not isinstance(header, dict) or header.get("kind") != "header":
+        return None, "первая строка не `kind: header`"
+    raw = header.get("valid_until")
+    try:
+        valid_until = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError) as exc:
+        return None, f"`valid_until` нечитаем ({raw!r}): {exc}"
+    if valid_until.tzinfo is None:
+        return None, f"`valid_until` без часового пояса: {valid_until}"
+    return valid_until, ""
 
 
 def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
@@ -347,30 +388,9 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
         if not bundle.is_file():
             outcomes.append(Outcome(repo, "failed", f"бандла нет — {bundle}"))
             continue
-        try:
-            header = json.loads(bundle.read_text(encoding="utf-8").splitlines()[0])
-            if not isinstance(header, dict):
-                # `[]`, `null`, строка — валидный JSON, но не заголовок.
-                # Индексация по нему даёт TypeError, который обрывал бы весь
-                # `--check`, не показав остальные репозитории.
-                raise TypeError(f"первая строка не объект: {type(header).__name__}")
-            if header.get("kind") != "header":
-                # Объект с `valid_until`, но без `kind: header`, — структурно
-                # не бандл. Признать его годным значит показать зелёное на
-                # файле, который потребитель не примет.
-                raise KeyError("первая строка не `kind: header`")
-            valid_until = datetime.fromisoformat(str(header["valid_until"]).replace("Z", "+00:00"))
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {exc}"))
-            continue
-        if valid_until.tzinfo is None:
-            # Сравнение naive с aware бросает TypeError и обрывало бы `--check`
-            # на первом же таком репозитории, не показав остальные. По смыслу
-            # это тот же нечитаемый заголовок: момент времени без зоны не
-            # определён.
-            outcomes.append(
-                Outcome(repo, "failed", f"`valid_until` без часового пояса: {valid_until}")
-            )
+        valid_until, refusal = bundle_header(bundle)
+        if valid_until is None:
+            outcomes.append(Outcome(repo, "failed", f"заголовок нечитаем: {refusal}"))
             continue
         if now >= valid_until:
             hours = int((now - valid_until).total_seconds() // 3600)

@@ -591,3 +591,57 @@ def test_install_instructions_substitute_the_log_dir() -> None:
 
     assert "mkdir -p @LOG_DIR@" not in install
     assert 'mkdir -p "$LOGS"' in install
+
+
+def test_publication_of_an_already_expired_bundle_is_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Публикация, родившаяся просроченной, — не публикация."""
+    path = _checkout(tmp_path, "steward")
+
+    def stale_producer(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
+        _bundle(root, datetime.now(UTC) - timedelta(hours=1), prs=prs)
+        return 0, ""
+
+    monkeypatch.setattr(RUNNER, "run_producer", stale_producer)
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "просрочен" in outcomes[0].detail
+
+
+def test_publication_without_a_header_is_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`result`-строки без заголовка проходили как успешная публикация."""
+    path = _checkout(tmp_path, "steward")
+
+    def headerless(repo: str, root: Path, policy: Path, prs: list[int]) -> tuple[int, str]:
+        bundle = root / RUNNER.BUNDLE_RELPATH
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        bundle.write_text(
+            json.dumps({"kind": "result", "request": {"kind": "pr", "value": "1"}}) + "\n",
+            encoding="utf-8",
+        )
+        return 0, ""
+
+    monkeypatch.setattr(RUNNER, "run_producer", headerless)
+
+    outcomes = RUNNER.collect([_entry()], tmp_path, tmp_path / "policy.yaml")
+
+    assert outcomes[0].status == "failed"
+    assert "kind: header" in outcomes[0].detail
+
+
+def test_path_constraint_is_stated_not_silently_broken() -> None:
+    """Экранировать XML и shell одной строкой `sed` честно нельзя.
+
+    Молчаливый отказ стоил бы дороже названного ограничения: plist установился
+    бы, а сбор не запускался бы никогда.
+    """
+    doc = (
+        Path(__file__).resolve().parents[2] / "scripts" / "approval-facts-schedule.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Ограничение путей" in doc
