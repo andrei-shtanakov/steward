@@ -17,7 +17,12 @@
 name: codex-review
 
 on:
+  # Экономный триггер (@id:review-kit-on-demand-trigger): полный прогон Codex
+  # получают только не-драфты и драфты с лейблом `codex-review` — итеративная
+  # разработка в драфте не платит за прогон на каждый пуш. `ready_for_review`
+  # и `labeled` в списке, чтобы запрос ревью срабатывал сам, без пустого пуша.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 permissions: {}
 
@@ -38,6 +43,34 @@ jobs:
       # послабление форджа, а не наше право: закроют репо, и диф отвалится молча.
       pull-requests: read
     steps:
+      # Экономный триггер (@id:review-kit-on-demand-trigger): драфт без
+      # лейбла `codex-review` не ревьюируется — Codex не вызывается, тяжёлые
+      # шаги пропускаются. Форма отказа — СИНТЕТИЧЕСКИЙ вердикт и красный
+      # `report` с причиной, НЕ пропуск джобов: инвариант report'а — «красное
+      # везде, где нет годного вердикта», а пропущенный джоб GitHub
+      # засчитывает required-чеку как пройденный (см. развёрнутый довод у
+      # `if:` джоба report — состояния из `always()` уже дважды пробовали
+      # вычитать, и оба раза вычитание открывало дыру). Fail-closed сходится:
+      # драфт немержабелен форджей в принципе, красный чек на нём — честное
+      # «ревью не проводилось», а `ready_for_review`/`labeled` запускают
+      # настоящий прогон, замещающий синтетический на том же SHA.
+      - name: Запрошено ли ревью
+        id: request
+        env:
+          # Вычисляется выражением форджи из event-контекста (draft-флаг и
+          # имена лейблов), не из текста автора PR.
+          REQUESTED: ${{ (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'codex-review')) && 'true' || 'false' }}
+          WORK: ${{ runner.temp }}/review-work
+        run: |
+          set -euo pipefail
+          echo "requested=$REQUESTED" >> "$GITHUB_OUTPUT"
+          if [ "$REQUESTED" != true ]; then
+            mkdir -p "$WORK"
+            printf '{"review_deferred": true}\n' > "$WORK/verdict.json"
+            echo "::notice::драфт без лейбла codex-review — ревью отложено," \
+              "Codex не вызывается; report красный с этой причиной."
+          fi
+
       # Checkout — ИТОГОВОЕ ДЕРЕВО PR, решение владельца 2026-08-23
       # (`review-kit-final-tree`): ревьюер читает настоящие версии изменённых
       # файлов и ходит по импортам, вместо того чтобы мысленно накладывать диф
@@ -59,11 +92,13 @@ jobs:
       # шагом, до любого использования дерева, — автор патча по-прежнему не
       # может переписать инструкции или порог своему же ревьюеру.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.request.outputs.requested == 'true'
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           persist-credentials: false
 
       - name: Извлечь доверенную механику из base
+        if: steps.request.outputs.requested == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           KIT: ${{ runner.temp }}/trusted-kit
@@ -111,6 +146,11 @@ jobs:
 
       - name: Забрать диф — указатель на область ревью
         id: diff
+        # При отложенном ревью шаг пропущен, и `steps.diff.outputs.skip`
+        # ПУСТ — условия `== 'false'` у шагов ниже ложны, тяжёлая часть не
+        # исполняется; синтетический вердикт уже записан шагом request, и
+        # безусловная выгрузка артефакта его подхватывает.
+        if: steps.request.outputs.requested == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
@@ -500,6 +540,20 @@ jobs:
               gh pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE" \
                 || echo "::warning::комментарий не опубликован; чек всё равно красный"
             fi
+            exit 1
+          fi
+
+          # Ревью ОТЛОЖЕНО политикой триггера (драфт без лейбла): красный с
+          # причиной — «нет годного вердикта» по инварианту выше, — но БЕЗ
+          # комментария в PR (пуши в драфт не должны засорять тред) и БЕЗ
+          # apply-threshold: синтетический маркер отложенности — политика
+          # вызывающего, кит и его схема вердикта про неё не знают, и валить
+          # это в «невалидный вердикт = отказ инструмента» значило бы врать
+          # о причине красного.
+          if jq -e '.review_deferred == true' "$VERDICT_FILE" >/dev/null 2>&1; then
+            echo "::error::ревью отложено: PR в драфте без лейбла" \
+              "codex-review. Снимите драфт или поставьте лейбл — прогон" \
+              "запустится сам. Красное намеренно: годного вердикта нет."
             exit 1
           fi
 
