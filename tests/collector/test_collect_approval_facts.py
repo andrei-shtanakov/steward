@@ -782,7 +782,9 @@ def test_symlinked_bundle_dir_is_refused(tmp_path: Path, monkeypatch: pytest.Mon
 
     outcomes = RUNNER.collect([_entry()], tmp_path, _policy(tmp_path))
 
-    assert outcomes[0].status == "skipped"
+    # `failed`, не `skipped`: увод публикации наружу чекаута — поломанное
+    # состояние, а не «не спрашивали»; оператор должен его увидеть как отказ.
+    assert outcomes[0].status == "failed"
     assert "вне чекаута" in outcomes[0].detail
 
 
@@ -892,7 +894,9 @@ def test_unresolvable_path_does_not_abort_the_batch(
         _policy(tmp_path),
     )
 
-    assert [o.status for o in outcomes] == ["skipped", "published"]
+    # Нерезолвящийся путь — отказ ИНСТРУМЕНТА (ELOOP), не конфигурация:
+    # с шестого зрячего раунда такие состояния — `failed`, не `skipped`.
+    assert [o.status for o in outcomes] == ["failed", "published"]
 
 
 def test_path_alias_of_the_same_checkout_is_a_duplicate(
@@ -1011,7 +1015,8 @@ def _preflight_with_origin(tmp_path: Path, url: str) -> "Any":
     path = _checkout(tmp_path, "steward", origin=None)
     subprocess.run(["git", "init", "-q", str(path)], check=True)
     subprocess.run(["git", "-C", str(path), "remote", "add", "origin", url], check=True)
-    return RUNNER.preflight(_entry(), tmp_path)
+    resolved, refusal, _status = RUNNER.preflight(_entry(), tmp_path)
+    return resolved, refusal
 
 
 @pytest.mark.parametrize(
@@ -1651,7 +1656,7 @@ def test_policy_change_during_collection_is_not_a_false_failure(
     новой политикой. Снапшот берётся после продюсера — в том же порядке, в
     котором читал бы гейт.
     """
-    path = _checkout(tmp_path, "steward")
+    _checkout(tmp_path, "steward")
     policy = _policy(tmp_path)
     changed = POLICY_TEXT + "# правка в середине обхода\n"
     changed_digest = "sha256:" + __import__("hashlib").sha256(changed.encode()).hexdigest()
@@ -1673,3 +1678,53 @@ def test_policy_change_during_collection_is_not_a_false_failure(
     outcomes = RUNNER.collect([_entry()], tmp_path, policy)
 
     assert outcomes[0].status == "published", outcomes[0].detail
+
+
+def test_nested_checkout_sharing_a_bundle_file_is_a_duplicate(tmp_path: Path) -> None:
+    """Два чекаута, чьи бандлы резолвятся в ОДИН файл, — дубликат, а не пара.
+
+    Идентичность каталога чекаута этого не ловит: `outer/.steward` симлинком на
+    `outer/inner/.steward` даёт разные каталоги (разные иноды), `_inside`
+    доволен (inner внутри outer), а файл бандла один — вторая публикация молча
+    затирала бы первую, обе отчитываясь `published`. Ключ дубликатов обязан
+    включать резолвнутый путь самого файла.
+    """
+    outer = _checkout(tmp_path, "outer")
+    inner = _checkout(tmp_path / "outer", "inner")
+    (inner / ".steward").mkdir()
+    (outer / ".steward").symlink_to(inner / ".steward", target_is_directory=True)
+    _bundle(inner, datetime.now(UTC) + timedelta(hours=6))
+
+    outcomes = RUNNER.freshness(
+        [
+            {"repo": REPO, "checkout": "outer/inner", "prs": [1]},
+            {"repo": REPO, "checkout": "outer", "prs": [1]},
+        ],
+        tmp_path,
+        _policy(tmp_path),
+    )
+
+    statuses = [o.status for o in outcomes]
+    assert statuses[0] == "published"
+    assert statuses[1] == "skipped"
+    assert "уже занят" in outcomes[1].detail
+
+
+def test_git_probe_timeout_is_failed_not_no_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Зависший или отсутствующий git — отказ инструмента, не «нет origin».
+
+    `_run` схлопывал таймаут и ENOENT в None, и preflight читал это как факт о
+    чекауте: репозиторий числился `skipped` с сообщением про origin, хотя
+    опросить его не удалось вовсе. Тот же класс, что уже чинился на замке:
+    поломка прибора не должна выглядеть свойством объекта.
+    """
+    _checkout(tmp_path, "steward")
+    monkeypatch.setattr(RUNNER, "_run", lambda *a, **k: None)
+
+    outcomes = RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))
+
+    assert outcomes[0].status == "failed"
+    assert "не смог опросить" in outcomes[0].detail
+    assert "нет origin" not in outcomes[0].detail

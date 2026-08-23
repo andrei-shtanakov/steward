@@ -168,11 +168,20 @@ def _run(argv: list[str], *, cwd: Path | None = None, timeout: int) -> Any:
 GIT_BIN = shutil.which("git") or "/usr/bin/git"
 
 
-def _git(path: Path, *args: str) -> str | None:
+def _git(path: Path, *args: str) -> tuple[str | None, bool]:
+    """`(stdout, сломан_ли_инструмент)`.
+
+    Два «None» здесь принципиально разные. Git отработал и ответил ненулевым
+    кодом — это факт О ЧЕКАУТЕ (нет origin, не репозиторий): конфигурация,
+    `skipped`. Git не запустился или завис на таймауте — это факт ОБ
+    ИНСТРУМЕНТЕ: чекаут опросить не удалось вовсе, и звать это «нет origin»
+    значило бы выдать поломку прибора за свойство объекта — тот же класс, что
+    уже чинился на замке (`_claim`, OSError ≠ параллельный прогон).
+    """
     proc = _run([GIT_BIN, "-C", str(path), *args], timeout=30)
     if proc is None:
-        return None
-    return proc.stdout.strip() if proc.returncode == 0 else None
+        return None, True
+    return (proc.stdout.strip() if proc.returncode == 0 else None), False
 
 
 #: Продюсер спрашивает GraphQL GitHub, поэтому наблюдаемым может быть только
@@ -234,37 +243,39 @@ def _label(entry: Any) -> str:
     return f"<негодная запись охвата: {entry!r}>"
 
 
-def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None, str]:
+def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None, str, str]:
     """Тот ли это чекаут. Возвращает (путь, причина отказа).
 
     Проверки идут до вызова продюсера и все до единой обязательны: неверный
     путь не должен «просто не сработать», он должен не дойти до записи.
     """
     if not isinstance(entry, dict):
-        return None, f"элемент охвата не объект: {entry!r}"
+        return None, f"элемент охвата не объект: {entry!r}", "skipped"
     repo = entry.get("repo")
     checkout = entry.get("checkout")
     if not isinstance(repo, str) or "/" not in repo:
-        return None, f"в охвате нет корректного `repo`: {repo!r}"
+        return None, f"в охвате нет корректного `repo`: {repo!r}", "skipped"
     if not isinstance(checkout, str) or not checkout:
-        return None, f"{repo}: в охвате нет `checkout`"
+        return None, f"{repo}: в охвате нет `checkout`", "skipped"
 
     path, refusal = _resolve(workspace_root / checkout)
     if path is None:
-        return None, f"{repo}: {refusal}"
+        return None, f"{repo}: {refusal}", "failed"
     root, refusal = _resolve(workspace_root)
     if root is None:
-        return None, f"{repo}: {refusal}"
+        return None, f"{repo}: {refusal}", "failed"
     if not path.is_relative_to(root):
-        return None, f"{repo}: чекаут {path} вне workspace-root {root}"
+        return None, f"{repo}: чекаут {path} вне workspace-root {root}", "skipped"
     if not path.is_dir():
-        return None, f"{repo}: чекаута нет — {path}"
+        return None, f"{repo}: чекаута нет — {path}", "skipped"
     if not (path / ".git").exists():
-        return None, f"{repo}: {path} не git-корень"
+        return None, f"{repo}: {path} не git-корень", "skipped"
 
-    origin = _git(path, "remote", "get-url", "origin")
+    origin, probe_broken = _git(path, "remote", "get-url", "origin")
+    if probe_broken:
+        return None, f"{repo}: git не смог опросить {path} (таймаут или git недоступен)", "failed"
     if origin is None:
-        return None, f"{repo}: у {path} нет origin"
+        return None, f"{repo}: у {path} нет origin", "skipped"
     # Разбор origin — ТЕМ ЖЕ кодом, которым его разберёт продюсер
     # (`publish.py::parse_origin`), и это не удобство, а условие смысла всей
     # проверки: собственный, более терпимый разбор (принимавший
@@ -277,10 +288,14 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
     try:
         owner, name = parse_origin(origin)
     except OriginError:
-        return None, (
-            f"{repo}: origin {origin!r} не в форме, которую принимает продюсер "
-            f"(git@github.com:, ssh://git@github.com/ или https://github.com/); "
-            f"факты берутся из GitHub, пропишите канонический origin"
+        return (
+            None,
+            (
+                f"{repo}: origin {origin!r} не в форме, которую принимает продюсер "
+                f"(git@github.com:, ssh://git@github.com/ или https://github.com/); "
+                f"факты берутся из GitHub, пропишите канонический origin"
+            ),
+            "skipped",
         )
     slug = f"{owner}/{name}"
     # GitHub не различает регистр в слагах, поэтому и мы не должны: иначе
@@ -288,8 +303,8 @@ def preflight(entry: dict[str, Any], workspace_root: Path) -> tuple[Path | None,
     if slug.lower() != repo.lower():
         # Самая опасная из ошибок конфигурации: путь есть, git есть, а
         # наблюдали бы не тот объект — и бандл выглядел бы законным.
-        return None, f"{repo}: origin чекаута — {slug!r}, а не {repo!r}"
-    return path, ""
+        return None, f"{repo}: origin чекаута — {slug!r}, а не {repo!r}", "skipped"
+    return path, "", ""
 
 
 def pr_numbers(entry: dict[str, Any]) -> tuple[list[int] | None, str]:
@@ -370,7 +385,7 @@ def run_producer(repo: str, repo_root: Path, policy: Path, prs: list[int]) -> tu
 
 def _resolved(
     repositories: list[Any], workspace_root: Path
-) -> list[tuple[str, Path | None, list[int], str]]:
+) -> list[tuple[str, Path | None, list[int], str, str]]:
     """Один обход охвата на оба прохода: сбор и проверка.
 
     Проверка дубликатов живёт ЗДЕСЬ, а не в `collect()`, потому что иначе два
@@ -381,38 +396,45 @@ def _resolved(
     Бандл лежит по фиксированному пути внутри чекаута, поэтому две записи на
     один чекаут — не двойной охват, а молчаливая потеря первого.
     """
-    resolved: list[tuple[str, Path | None, list[int], str]] = []
+    resolved: list[tuple[str, Path | None, list[int], str, str]] = []
     seen: dict[str, str] = {}
     for entry in repositories:
         repo = _label(entry)
         numbers: list[int] = []
-        path, refusal = preflight(entry, workspace_root)
+        path, refusal, status = preflight(entry, workspace_root)
         if path is not None:
             # Резолвим ПУТЬ БАНДЛА, а не только чекаут: `.steward` может быть
             # симлинком, и тогда публикация уезжает наружу, а два репозитория
-            # пишут в один файл, оба выглядя успешными. Ключ дубликатов —
-            # именно резолвнутый файл, а не каталог, который на него указывает.
+            # пишут в один файл, оба выглядя успешными.
             escape = _inside(path / BUNDLE_RELPATH, path)
             if escape is not None:
-                resolved.append((repo, None, [], f"{repo}: {escape}"))
+                resolved.append((repo, None, [], f"{repo}: {escape}", "failed"))
                 continue
             bundle, _ = _resolve(path / BUNDLE_RELPATH)
-            # Ключ — идентичность каталога в ФС, а не строка пути. На
-            # case-insensitive томе (APFS по умолчанию) `steward` и `Steward`
-            # резолвятся в РАЗНЫЕ строки, но в один каталог, и вторая запись
-            # тихо затирала бы первую. `os.path.normcase` тут не помогает: на
-            # POSIX это тождественная функция, она понижает регистр только на
-            # Windows — защита выглядела бы работающей и не работала.
-            # Путь бандла внутри чекаута фиксирован, поэтому идентичности
-            # каталога достаточно.
             # Валидация охвата ДО занятия слота: битая первая запись иначе
             # застолбила бы чекаут и подавила рабочую вторую для того же пути.
             numbers, refusal_prs = pr_numbers(entry)
             if numbers is None:
-                resolved.append((repo, None, [], refusal_prs))
+                resolved.append((repo, None, [], refusal_prs, "skipped"))
                 continue
-            key = _identity(path)
-            previous = seen.get(key)
+            # Дубликаты ключуются ДВУМЯ идентичностями сразу, и обе обязательны.
+            #
+            # Идентичность каталога чекаута (dev, ino) ловит регистровые
+            # алиасы: на case-insensitive томе (APFS) `steward` и `Steward`
+            # резолвятся в разные СТРОКИ, но один каталог; `os.path.normcase`
+            # не помогает — на POSIX он тождественная функция.
+            #
+            # Резолвнутая СТРОКА пути бандла ловит то, что идентичность
+            # чекаута пропускает: вложенные чекауты, где `outer/.steward` —
+            # симлинк на `outer/inner/.steward`. Каталоги разные (разные
+            # иноды), `_inside` доволен (inner внутри outer), а файл бандла
+            # ОДИН — вторая публикация молча затирала бы первую, обе
+            # отчитываясь `published`. Комментарий здесь и раньше обещал
+            # «ключ — резолвнутый файл»; код обещанию не следовал — найдено
+            # машинным ревью.
+            previous = None
+            for key in (_identity(path), f"bundle:{bundle}"):
+                previous = previous or seen.get(key)
             if previous is not None:
                 resolved.append(
                     (
@@ -421,11 +443,13 @@ def _resolved(
                         [],
                         f"{repo}: бандл {bundle} уже занят записью {previous} — второй "
                         f"затёр бы первый по тому же пути",
+                        "skipped",
                     )
                 )
                 continue
-            seen[key] = repo
-        resolved.append((repo, path, numbers, refusal))
+            seen[_identity(path)] = repo
+            seen[f"bundle:{bundle}"] = repo
+        resolved.append((repo, path, numbers, refusal, status))
     return resolved
 
 
@@ -504,9 +528,9 @@ def collect(
     load_approval_policy(policy)
 
     outcomes: list[Outcome] = []
-    for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
+    for repo, path, numbers, refusal, status in _resolved(repositories, workspace_root):
         if path is None:
-            outcomes.append(Outcome(repo, "skipped", refusal))
+            outcomes.append(Outcome(repo, status or "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
         lock, second, third = _claim(bundle)
@@ -703,9 +727,9 @@ def freshness(
 
     outcomes: list[Outcome] = []
     now = datetime.now(UTC)
-    for repo, path, numbers, refusal in _resolved(repositories, workspace_root):
+    for repo, path, numbers, refusal, status in _resolved(repositories, workspace_root):
         if path is None:
-            outcomes.append(Outcome(repo, "skipped", refusal))
+            outcomes.append(Outcome(repo, status or "skipped", refusal))
             continue
         bundle = path / BUNDLE_RELPATH
         if not bundle.is_file():
