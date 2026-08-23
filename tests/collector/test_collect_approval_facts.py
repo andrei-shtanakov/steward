@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import xml.dom.minidom
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -65,7 +66,13 @@ def _publishing_producer(prs_by_call: list[list[int]] | None = None):
             "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "scope": [{"kind": "pr", "value": str(n)} for n in prs],
         }
-        bundle.write_text(json.dumps(header) + "\n", encoding="utf-8")
+        lines = [json.dumps(header)] + [
+            json.dumps(
+                {"kind": "result", "request": {"kind": "pr", "value": str(n)}, "state": "merged"}
+            )
+            for n in prs
+        ]
+        bundle.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return 0, ""
 
     return fake
@@ -211,8 +218,14 @@ def _bundle(path: Path, valid_until: datetime, prs: list[int] | None = None) -> 
         # иначе свежий бандл под выросшим охватом читался бы зелёным.
         "scope": [{"kind": "pr", "value": str(n)} for n in (prs if prs is not None else [1])],
     }
+    lines = [json.dumps(header)] + [
+        json.dumps(
+            {"kind": "result", "request": {"kind": "pr", "value": str(n)}, "state": "merged"}
+        )
+        for n in (prs if prs is not None else [1])
+    ]
     (path / ".steward" / "approval_facts.jsonl").write_text(
-        json.dumps(header) + "\n", encoding="utf-8"
+        "\n".join(lines) + "\n", encoding="utf-8"
     )
 
 
@@ -396,7 +409,7 @@ def test_grown_scope_is_not_green_until_collected(tmp_path: Path) -> None:
     outcomes = RUNNER.freshness([_entry(prs=[1, 2])], tmp_path)
 
     assert outcomes[0].status == "failed"
-    assert "охват вырос" in outcomes[0].detail
+    assert "нет записей по PR" in outcomes[0].detail
 
 
 def test_producer_is_called_from_the_active_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -454,28 +467,20 @@ def test_zero_exit_without_touching_the_bundle_is_failed(
     assert "не обновлён" in outcomes[0].detail
 
 
-def test_scope_of_a_different_kind_does_not_count_as_coverage(tmp_path: Path) -> None:
-    """`merge_sha:75` — не доказательство, что спрашивали PR №75."""
+def test_record_of_a_different_kind_does_not_count_as_coverage(tmp_path: Path) -> None:
+    """Ответ про `merge_sha:75` — не ответ про PR №75."""
     path = _checkout(tmp_path, "steward")
     (path / ".steward").mkdir(parents=True, exist_ok=True)
+    header = {
+        "kind": "header",
+        "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    record = {"kind": "result", "request": {"kind": "merge_sha", "value": "75"}, "state": "merged"}
     (path / ".steward" / "approval_facts.jsonl").write_text(
-        json.dumps(
-            {
-                "kind": "header",
-                "valid_until": (datetime.now(UTC) + timedelta(hours=6)).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
-                ),
-                "scope": [{"kind": "merge_sha", "value": "75"}],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+        json.dumps(header) + "\n" + json.dumps(record) + "\n", encoding="utf-8"
     )
 
-    outcomes = RUNNER.freshness([_entry(prs=[75])], tmp_path)
-
-    assert outcomes[0].status == "failed"
-    assert "охват вырос" in outcomes[0].detail
+    assert RUNNER.freshness([_entry(prs=[75])], tmp_path)[0].status == "failed"
 
 
 def test_non_object_header_is_failed_not_a_traceback(tmp_path: Path) -> None:
@@ -511,13 +516,33 @@ def test_check_refuses_the_same_duplicate_scope_that_collect_refuses(
     assert RUNNER.report(checked) == 1
 
 
+PLIST = (
+    Path(__file__).resolve().parents[2] / "scripts" / "com.steward.approval-facts.plist.template"
+)
+
+
 def test_plist_quotes_substituted_paths() -> None:
     """Путь с пробелом иначе разбивается шеллом, и сбор не происходит никогда."""
-    template = (
-        Path(__file__).resolve().parents[2]
-        / "scripts"
-        / "com.steward.approval-facts.plist.template"
-    ).read_text(encoding="utf-8")
+    template = PLIST.read_text(encoding="utf-8")
 
-    for placeholder in ("&lt;STEWARD_ROOT&gt;", "&lt;UV_BIN&gt;", "&lt;WORKSPACE_ROOT&gt;"):
+    for placeholder in ("@STEWARD_ROOT@", "@UV_BIN@", "@WORKSPACE_ROOT@"):
         assert f"'{placeholder}'" in template, f"{placeholder} не в кавычках"
+
+
+def test_plist_template_is_valid_xml() -> None:
+    """XML-комментарий не может содержать `--`, а инструкция полна `--flag`.
+
+    Пока проза лежала внутри комментария, шаблон был невалидным XML, и
+    `launchctl load` не принял бы его вовсе: сбор не запускался бы никогда, а
+    plist выглядел бы установленным. Проза вынесена в
+    `scripts/approval-facts-schedule.md`; этот тест сторожит возврат.
+    """
+    xml.dom.minidom.parse(str(PLIST))
+
+
+def test_plist_placeholders_are_not_angle_bracketed() -> None:
+    """`<ИМЯ>` внутри XML пришлось бы экранировать, и `sed` по `<ИМЯ>` не нашёл
+    бы ничего: plist установился бы с литеральными плейсхолдерами."""
+    template = PLIST.read_text(encoding="utf-8")
+
+    assert "&lt;" not in template and "&gt;" not in template

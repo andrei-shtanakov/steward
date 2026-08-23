@@ -1,54 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Шаблон host-local расписания для сбора `approval-facts/v2` (Stage A0).
-
-  НЕ УСТАНАВЛИВАЕТСЯ РЕПОЗИТОРИЕМ. Это host-local prerequisite: путь к
-  воркспейсу и к логам у каждой машины свой, а решение «пусть на этом ноутбуке
-  что-то просыпается» принимает владелец машины, не PR.
-
-  Почему локально, а не в Actions. Продюсер пишет
-  `<checkout>/.steward/approval_facts.jsonl`, а потребитель читает файл из
-  чекаута. У CI чекаутов флота нет по построению, и артефакт прогона до
-  потребителя не доходит. Это не откат перехода launchd→CI: тогда в Actions
-  уводили проверки, которым нужен был только GitHub.
-
-  Возражение против локального планировщика было одно и остаётся верным —
-  «выключенный ноутбук не способен сам сообщить, что launchd не сработал».
-  Здесь на него отвечает сам артефакт: в заголовке бандла лежит `valid_until`
-  (lease 24 ч), поэтому молчание расписания **обнаружимо при чтении**. Оно не
-  сообщается само — обнаружить его должен тот, кто читает; до появления
-  потребителя это делается глазами:
-
-      uv run python scripts/collect_approval_facts.py --workspace-root <WS> --check
-
-  Период 6 часов при lease 24 часа. Запас не косметический: у расписаний
-  GitHub измеренный дрейф очереди 40–70 мин (см. комментарий в
-  `.github/workflows/impresario-contract-drift.yml`), у launchd сна машины —
-  неограниченный, поэтому период обязан покрывать `старт + прогон` с
-  многократным перекрытием, а не «формально меньше lease».
-
-  После установки обязательно убедиться, что запуск вообще происходит: plist,
-  который не стартует, ничем себя не выдаёт, кроме протухшего через сутки бандла.
-
-      launchctl kickstart -k gui/$(id -u)/com.steward.approval-facts
-      tail -n 20 <LOG_DIR>/approval-facts.err.log
-
-  Установка (подставив свои пути):
-
-      sed -e 's|<WORKSPACE_ROOT>|/Users/you/labs/all_ai_orchestrators|g' \
-          -e 's|<STEWARD_ROOT>|/Users/you/labs/all_ai_orchestrators/steward|g' \
-          -e "s|<UV_BIN>|$(command -v uv)|g" \
-          -e 's|<LOG_DIR>|/Users/you/Library/Logs/steward|g' \
-          scripts/com.steward.approval-facts.plist.template \
-          > ~/Library/LaunchAgents/com.steward.approval-facts.plist
-      mkdir -p <LOG_DIR>
-      launchctl load ~/Library/LaunchAgents/com.steward.approval-facts.plist
-
-  Снятие:
-
-      launchctl unload ~/Library/LaunchAgents/com.steward.approval-facts.plist
-      rm ~/Library/LaunchAgents/com.steward.approval-facts.plist
--->
+<!-- Шаблон host-local расписания сбора approval-facts (Stage A0).
+     НЕ УСТАНАВЛИВАЕТСЯ РЕПОЗИТОРИЕМ: пути свои у каждой машины.
+     Инструкция и обоснование: scripts/approval-facts-schedule.md
+     Плейсхолдеры вида @ИМЯ@ подставляются sed при установке. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
@@ -58,31 +12,23 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <!-- `uv` по АБСОЛЮТНОМУ пути. Голое имя было бы той же ошибкой, от которой
-         защищает `uv run` внутри: PATH у launchd не тот, что в интерактивной
-         оболочке, и `uv` из `~/.local/bin` или Homebrew там не находится. Тогда
-         плановый запуск падал бы с `uv: command not found`, сбор не происходил
-         бы вовсе, а заметно это стало бы только по протухшему через сутки
-         бандлу. Подставить вывод `command -v uv`.
-
-         Пути в одинарных кавычках: подстановка сырая, и путь с пробелом
-         (`/Users/alice/AI Labs/steward`) иначе разбивается шеллом — агент
-         загружается, а сбор не происходит никогда. -->
-    <string>cd '&lt;STEWARD_ROOT&gt;' &amp;&amp; '&lt;UV_BIN&gt;' run python scripts/collect_approval_facts.py --workspace-root '&lt;WORKSPACE_ROOT&gt;'</string>
+    <!-- uv по АБСОЛЮТНОМУ пути: PATH у launchd не тот, что в оболочке.
+         Пути в кавычках: подстановка сырая, путь с пробелом иначе делится. -->
+    <string>cd '@STEWARD_ROOT@' &amp;&amp; '@UV_BIN@' run python scripts/collect_approval_facts.py --workspace-root '@WORKSPACE_ROOT@'</string>
   </array>
 
   <key>StartInterval</key>
-  <integer>21600</integer><!-- 6 часов -->
+  <integer>21600</integer><!-- 6 часов при lease 24 часа -->
 
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- Именованные host-local логи: без них отказ раннера виден только по
-       протухшему бандлу сутки спустя, а причина не видна вовсе. -->
+  <!-- Именованные логи: иначе отказ раннера виден только по протухшему
+       бандлу сутки спустя, а причина не видна вовсе. -->
   <key>StandardOutPath</key>
-  <string>&lt;LOG_DIR&gt;/approval-facts.out.log</string>
+  <string>@LOG_DIR@/approval-facts.out.log</string>
   <key>StandardErrorPath</key>
-  <string>&lt;LOG_DIR&gt;/approval-facts.err.log</string>
+  <string>@LOG_DIR@/approval-facts.err.log</string>
 
   <key>ProcessType</key>
   <string>Background</string>

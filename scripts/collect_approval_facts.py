@@ -277,33 +277,54 @@ def collect(
         # том, что публикации не было.
         if not bundle.is_file():
             outcomes.append(Outcome(repo, "failed", f"код 0, но бандла нет: {bundle}"))
-        elif before is not None and bundle.stat().st_mtime_ns == before:
+            continue
+        if before is not None and bundle.stat().st_mtime_ns == before:
             outcomes.append(Outcome(repo, "failed", f"код 0, но бандл не обновлён: {bundle}"))
+            continue
+        gap = bundle_gap(bundle, numbers)
+        if gap is not None:
+            outcomes.append(Outcome(repo, "failed", f"код 0, но {gap}"))
         else:
             outcomes.append(Outcome(repo, "published", str(bundle)))
     return outcomes
 
 
-def _scope_gap(header: dict[str, Any], numbers: list[int]) -> str | None:
-    """Чего из настроенного охвата нет в опубликованном бандле.
+def bundle_gap(bundle: Path, numbers: list[int]) -> str | None:
+    """Чего из настроенного охвата нет в бандле — по ЗАПИСЯМ, а не по заявке.
 
-    Свежесть без этой сверки — зелёное без факта: добавили PR в
-    `approval-facts-scope.yaml`, а бандл до истечения lease продолжает
-    показываться как `published`, хотя новый охват ни разу не собирался.
-    Заголовок сам несёт `scope`, так что сравнивать есть с чем.
+    Сверять с `scope` в заголовке было слабее по двум причинам сразу, и обе
+    нашлись машинным ревью:
+
+    * заголовок объявляет, что спрашивали, но не доказывает, что ответ записан;
+      обрезанный после заголовка файл читался бы зелёным без единого факта;
+    * запись другого вида (`{"kind": "merge_sha", "value": "75"}`) засчитывалась
+      бы как покрытие PR №75.
+
+    Поэтому считаются `result`-записи с `request.kind == "pr"`. Заодно это
+    постусловие публикации: продюсер, вернувший 0 и оставивший пустой или
+    нечитаемый файл, больше не проходит как `published`.
     """
-    scope = header.get("scope")
-    if not isinstance(scope, list):
-        return "в заголовке нет `scope`"
-    # `kind` обязателен: запись `{"kind": "merge_sha", "value": "75"}` иначе
-    # засчиталась бы как покрытие PR №75 — зелёное на подложном доказательстве.
-    published = {
-        str(item.get("value"))
-        for item in scope
-        if isinstance(item, dict) and item.get("kind") == "pr" and "value" in item
-    }
-    missing = [n for n in numbers if str(n) not in published]
-    return f"охват вырос, но не собран: нет {missing}" if missing else None
+    try:
+        lines = bundle.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return f"бандл не читается: {exc}"
+    if not lines:
+        return "бандл пуст"
+    answered: set[str] = set()
+    for number, line in enumerate(lines, start=1):
+        try:
+            record = json.loads(line)
+        except ValueError as exc:
+            return f"строка {number} не JSON: {exc}"
+        if not isinstance(record, dict):
+            return f"строка {number} не объект"
+        if record.get("kind") == "header":
+            continue
+        request = record.get("request")
+        if isinstance(request, dict) and request.get("kind") == "pr":
+            answered.add(str(request.get("value")))
+    missing = [n for n in numbers if str(n) not in answered]
+    return f"в бандле нет записей по PR {missing}" if missing else None
 
 
 def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[Outcome]:
@@ -349,7 +370,7 @@ def freshness(repositories: list[dict[str, Any]], workspace_root: Path) -> list[
             outcomes.append(Outcome(repo, "failed", f"lease истёк {hours} ч назад ({valid_until})"))
         else:
             numbers, refusal = pr_numbers(entry)
-            gap = _scope_gap(header, numbers) if numbers is not None else refusal
+            gap = bundle_gap(bundle, numbers) if numbers is not None else refusal
             if gap is not None:
                 outcomes.append(Outcome(repo, "failed", gap))
             else:
