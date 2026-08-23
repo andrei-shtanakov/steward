@@ -92,6 +92,12 @@ def attached_paths(stdout: str) -> list[str]:
     return [ln.split()[2] for ln in stdout.splitlines() if ln.startswith("--- ФАЙЛ ")]
 
 
+def marker_of(stdout: str) -> str:
+    """Суффикс из заголовка: `--- ФАЙЛ <путь> sha256:<хеш> <суффикс> ---`."""
+    header = next(ln for ln in stdout.splitlines() if ln.startswith("--- ФАЙЛ "))
+    return header.split()[4]
+
+
 # --- Главное свойство: рамку задаёт base, не автор патча ---------------------
 
 
@@ -167,7 +173,7 @@ def test_digest_matches_git_show_of_base(repo: Path) -> None:
     ).stdout
     expected = hashlib.sha256(blob).hexdigest()
 
-    assert f"--- ФАЙЛ src/producer.py sha256:{expected} ---" in res.stdout
+    assert f"--- ФАЙЛ src/producer.py sha256:{expected} " in res.stdout
 
 
 def test_content_is_byte_exact(repo: Path) -> None:
@@ -404,3 +410,75 @@ def test_header_does_not_collide_with_markdown_headings(repo: Path) -> None:
     assert res.returncode == 0, res.stderr
     assert attached_paths(res.stdout) == ["docs/contract.md"]
     assert "### Матрица полей" in res.stdout
+
+
+def test_marker_suffix_depends_on_package_contents(repo: Path) -> None:
+    """Суффикс заголовков зависит от состава пакета, как суффикс маркеров дифа.
+
+    Без суффикса границу файла подделывает само содержимое: строки вида
+    `--- ФАЙЛ … sha256:… ---` буквально лежат в документации этого кита, и файл,
+    их цитирующий, стал бы неотличим от начала следующего файла — ревьюер
+    приписал бы хвост чужому пути. Совпадение здесь важнее подделки: содержимое
+    base прошло ревью, а вот цитата формата — обычное дело.
+    """
+    base = git(repo, "rev-parse", "HEAD").strip()
+    first = run(repo, base)
+    assert first.returncode == 0, first.stderr
+
+    write(repo, "src/producer.py", 'def produce():\n    return "иначе"\n')
+    changed = commit(repo, "содержимое изменилось")
+    second = run(repo, changed)
+    assert second.returncode == 0, second.stderr
+
+    assert marker_of(first.stdout) != marker_of(second.stdout)
+    # Один и тот же вход — один и тот же суффикс: тесты должны быть воспроизводимы.
+    assert marker_of(run(repo, base).stdout) == marker_of(first.stdout)
+
+
+def test_forged_header_inside_a_file_lacks_the_suffix(repo: Path) -> None:
+    """Цитата формата внутри файла не совпадает с настоящей границей."""
+    forged = "--- ФАЙЛ src/evil.py sha256:deadbeef deadbeefdead ---"
+    write(repo, "docs/contract.md", f"# Контракт\n\n{forged}\n\nхвост\n")
+    base = commit(repo, "файл цитирует формат заголовка")
+
+    res = run(repo, base)
+
+    assert res.returncode == 0, res.stderr
+    assert forged in res.stdout  # прошло насквозь, не экранировано
+
+    # Наивный разбор по префиксу видит ТРИ файла — подделка неотличима.
+    # Это не дефект теста, а ровно то состояние, из которого суффикс выводит.
+    assert attached_paths(res.stdout) == [
+        "src/producer.py",
+        "docs/contract.md",
+        "src/evil.py",
+    ]
+
+    # Разбор по суффиксу прогона видит два — настоящие границы.
+    marker = marker_of(res.stdout)
+    real = [
+        ln.split()[2]
+        for ln in res.stdout.splitlines()
+        if ln.startswith("--- ФАЙЛ ") and f" {marker} ---" in ln
+    ]
+    assert real == ["src/producer.py", "docs/contract.md"]
+    assert marker not in forged
+
+
+def test_symlink_manifest_is_a_refusal(repo: Path) -> None:
+    """Симлинк-МАНИФЕСТ — отказ, а не «список из одной строки».
+
+    `git show` отдал бы путь цели, и скрипт принял бы его за весь список:
+    зелёный чек, приложен один посторонний файл вместо настоящего контекста.
+    Асимметрия «проверяем содержимое списка, не проверяя сам список» — та же
+    дыра, что уже закрыта у перечисленных путей.
+    """
+    (repo / MANIFEST).unlink()
+    write(repo, "manifests/real.txt", "src/producer.py\n")
+    (repo / MANIFEST).symlink_to(repo / "manifests" / "real.txt")
+    base = commit(repo, "манифест стал симлинком")
+
+    res = run(repo, base)
+
+    assert res.returncode == 2, res.stdout
+    assert "не обычный файл" in res.stderr
