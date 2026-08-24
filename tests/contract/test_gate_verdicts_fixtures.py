@@ -22,7 +22,16 @@ def _lines(name: str) -> list[str]:
     return (FIXTURES / name).read_text().splitlines()
 
 
-@pytest.mark.parametrize("name", ["clean.jsonl", "findings.jsonl", "dangling_artifact.jsonl"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "clean.jsonl",
+        "findings.jsonl",
+        "dangling_artifact.jsonl",
+        "chained.jsonl",
+        "broken_chain.jsonl",  # schema-silent on purpose: the chain verifier sees it
+    ],
+)
 def test_schema_valid_fixtures(name: str) -> None:
     records = [json.loads(line) for line in _lines(name)]
     for record in records:
@@ -66,3 +75,42 @@ def test_dangling_artifact_is_semantic_not_schematic() -> None:
     inventory = {r["path"] for r in records if r["kind"] == "artifact"}
     dangling = [r for r in records if r["kind"] == "finding" and r["artifact"] not in inventory]
     assert len(dangling) == 1
+
+
+def test_chained_fixture_verifies_and_legacy_fixtures_stay_legacy() -> None:
+    # read_bytes(), not read_text(): the verifier must see raw bytes — text
+    # mode would normalize a CRLF rewrite away (README pins this pattern).
+    from steward.verdicts.chain import verify_chain
+
+    assert verify_chain((FIXTURES / "chained.jsonl").read_bytes()).status == "chained"
+    # Files predating prev_hash stay valid — the additive rule, verbatim.
+    assert verify_chain((FIXTURES / "clean.jsonl").read_bytes()).status == "legacy"
+    assert verify_chain((FIXTURES / "findings.jsonl").read_bytes()).status == "legacy"
+
+
+def test_future_schema_fixture_never_verifies_as_valid() -> None:
+    # Codex gate on PR #109, round 4: schema_version is const "1" — a v1
+    # verifier must classify any other version as unsupported, never valid.
+    from steward.verdicts.chain import verify_chain
+
+    report = verify_chain((FIXTURES / "future_schema.jsonl").read_bytes())
+    assert report.status == "broken"
+    assert "schema_version" in (report.reason or "")
+
+
+def test_broken_chain_fixture_is_schema_silent_but_verifier_red() -> None:
+    from steward.verdicts.chain import verify_chain
+
+    report = verify_chain((FIXTURES / "broken_chain.jsonl").read_text())
+    assert report.status == "broken"
+    assert report.broken_line == 5  # line 4 was substituted; its successor exposes it
+
+
+def test_malformed_fixture_never_verifies_as_valid() -> None:
+    # The verifier mirrors the contract header: an unparseable line is
+    # 'unreadable', never clean — and never "legacy-valid" either.
+    from steward.verdicts.chain import verify_chain
+
+    report = verify_chain((FIXTURES / "malformed_line.jsonl").read_bytes())
+    assert report.status == "broken"
+    assert report.broken_line == 3
