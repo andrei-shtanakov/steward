@@ -257,3 +257,64 @@ def test_unreadable_subdirectory_is_not_checked_not_a_crash(tmp_path: Path) -> N
     assert result.scanned == ["ok.py"]
     assert result.not_checked[0]["path"] == "vendor"
     assert "PermissionError" in result.not_checked[0]["reason"]
+
+
+def test_call_in_default_value_is_flagged(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 2: default values evaluate at definition
+    # time — at import, before the first call.
+    write(tmp_path, "m.py", "import os\n\n\ndef bootstrap(cmd=os.system('id')):\n    pass\n")
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert result.findings[0].check == "SCAN-TOPLEVEL-EFFECT"
+    assert "def header" in result.findings[0].message
+
+
+def test_call_decorator_is_flagged_but_bare_name_decorator_is_not(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "call.py",
+        "import functools\n\n\n@functools.lru_cache(maxsize=1)\ndef f():\n    pass\n",
+    )
+    write(tmp_path, "name.py", "import functools\n\n\n@functools.cache\ndef g():\n    pass\n")
+    result = scan_tree(tmp_path)
+    assert [f.path for f in result.findings] == ["call.py"]
+
+
+def test_class_body_call_is_flagged(tmp_path: Path) -> None:
+    # A class body executes at import in full.
+    write(tmp_path, "m.py", "import os\n\n\nclass A:\n    os.system('id')\n")
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert result.findings[0].line == 5
+
+
+def test_class_base_and_metaclass_calls_are_flagged(tmp_path: Path) -> None:
+    write(tmp_path, "m.py", "def mk():\n    return object\n\n\nclass A(mk()):\n    pass\n")
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert "class header" in result.findings[0].message
+
+
+def test_constant_defaults_and_plain_class_stay_clean(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "m.py",
+        "def f(x=3, *, y='a'):\n    pass\n\n\nclass A:\n    '''doc'''\n\n    x = 1\n\n    def m(self):\n        pass\n",
+    )
+    assert scan_tree(tmp_path).verdict == "clean"
+
+
+def test_not_checked_order_is_deterministic(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 2 (minor): iterdir() order is
+    # filesystem-dependent; the JSON contract promises byte-stability.
+    write(tmp_path, "ok.py", "import json\n")
+    for name in ("zz", "aa"):
+        locked = tmp_path / name
+        locked.mkdir()
+        locked.chmod(0o000)
+    try:
+        result = scan_tree(tmp_path)
+    finally:
+        for name in ("zz", "aa"):
+            (tmp_path / name).chmod(0o755)
+    assert [u["path"] for u in result.not_checked] == ["aa", "zz"]

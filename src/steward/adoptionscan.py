@@ -123,6 +123,9 @@ def scan_tree(target: Path) -> ScanResult:
         scanned.append(rel)
 
     findings.sort(key=lambda f: (f.path, f.line, f.check))
+    # not_checked is sorted like findings/scanned: iterdir() order is
+    # filesystem-dependent, and the JSON on stdout promises byte-stability.
+    unchecked.sort(key=lambda u: (u["path"], u["reason"]))
     if findings:
         verdict = "failed"
     elif unchecked or not scanned:
@@ -174,12 +177,12 @@ def _scan_module(tree: ast.Module, rel: str) -> list[ScanFinding]:
 #: Assignments are allowed as a documented limitation: flagging every
 #: ``logger = logging.getLogger(__name__)`` would bury the signal the scan
 #: exists for (a bare top-level call — the incident's trigger shape).
+#: ``def``/``class`` are NOT blanket-benign — their headers (decorators,
+#: defaults, bases, metaclass keywords) and a class *body* execute at
+#: definition time, i.e. at import; they get their own handling below.
 _BENIGN_TOPLEVEL = (
     ast.Import,
     ast.ImportFrom,
-    ast.FunctionDef,
-    ast.AsyncFunctionDef,
-    ast.ClassDef,
     ast.Assign,
     ast.AnnAssign,
     ast.AugAssign,
@@ -207,6 +210,19 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
             continue  # docstring / bare literal
         if isinstance(stmt, _BENIGN_TOPLEVEL):
             continue
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # The header executes at definition time — decorators and default
+            # values run at import (`def f(x=os.system(...))` fires before the
+            # first call; Codex gate on steward PR #108). The body does not.
+            findings.extend(_flag_header_calls(stmt, rel))
+            continue
+        if isinstance(stmt, ast.ClassDef):
+            # A class BODY executes at import in full, so it is recursed with
+            # the same rules; the header (decorators, bases, metaclass
+            # keywords) evaluates then too.
+            findings.extend(_flag_header_calls(stmt, rel))
+            findings.extend(_scan_toplevel(stmt.body, rel))
+            continue
         if isinstance(stmt, ast.If):
             findings.extend(_flag_calls_in_test(stmt.test, rel))
             if not _is_main_guard(stmt.test):
@@ -229,6 +245,40 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
             )
         )
     return findings
+
+
+def _flag_header_calls(
+    stmt: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, rel: str
+) -> list[ScanFinding]:
+    """Flag calls in a def/class header — they run at definition time.
+
+    Covered: decorators, argument defaults (positional and keyword-only),
+    class bases and metaclass keywords. Annotations are deliberately NOT
+    scanned: under ``from __future__ import annotations`` they never
+    evaluate, and typing constructs would drown the signal — a documented
+    limitation, same trade as top-level assignments.
+    """
+    header_exprs: list[ast.expr] = list(stmt.decorator_list)
+    if isinstance(stmt, ast.ClassDef):
+        header_exprs.extend(stmt.bases)
+        header_exprs.extend(kw.value for kw in stmt.keywords)
+        what = "class header"
+    else:
+        args = stmt.args
+        header_exprs.extend(d for d in args.defaults if d is not None)
+        header_exprs.extend(d for d in args.kw_defaults if d is not None)
+        what = "def header (decorator or default value)"
+    return [
+        ScanFinding(
+            check="SCAN-TOPLEVEL-EFFECT",
+            path=rel,
+            line=node.lineno,
+            message=f"call in a top-level {what} executes at import time",
+        )
+        for expr in header_exprs
+        for node in ast.walk(expr)
+        if isinstance(node, ast.Call)
+    ]
 
 
 def _flag_calls_in_test(test: ast.expr, rel: str) -> list[ScanFinding]:
