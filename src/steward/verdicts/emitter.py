@@ -19,11 +19,14 @@ Design decisions this module implements:
   ``dirty`` flag taken from git at emit time. No resolvable provenance — no
   file (:class:`ProvenanceError`); a stale leftover file is the reader's
   stale-classification problem, which is exactly the designed path.
+- Tamper evidence (steward#105): every record after line 1 carries
+  ``prev_hash`` of the previous line (see :mod:`steward.verdicts.chain`), so
+  a mid-ledger substitution or break is machine-detectable by
+  ``steward verdicts-verify`` and by any consumer of the vendored contract.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
@@ -34,6 +37,7 @@ from steward.gatecatalog import GateCatalog
 from steward.gatecheck.checks import Artifact, Finding
 from steward.graph import SpecGraph
 from steward.meta import parse_owner_roles
+from steward.verdicts.chain import serialize_chained
 
 __all__ = ["EmitError", "ProvenanceError", "emit_verdicts"]
 
@@ -184,8 +188,13 @@ def _role_slugs(graph: SpecGraph, artifact: Artifact) -> list[str]:
 
 
 def _atomic_write_jsonl(path: Path, records: list[dict]) -> None:
+    # Записи сцепляются hash-chain'ом (steward#105): каждая строка после первой
+    # несёт `prev_hash` предыдущей — подмена/обрыв в середине леджера становятся
+    # машинно-обнаружимыми (`steward verdicts-verify`). Хеш считается от байтов
+    # УЖЕ сериализованной строки, поэтому цепочка строится здесь, на записи,
+    # а не на построении записей.
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+    payload = serialize_chained(records)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".gate_verdicts-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

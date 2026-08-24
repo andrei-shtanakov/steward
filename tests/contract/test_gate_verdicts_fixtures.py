@@ -22,7 +22,16 @@ def _lines(name: str) -> list[str]:
     return (FIXTURES / name).read_text().splitlines()
 
 
-@pytest.mark.parametrize("name", ["clean.jsonl", "findings.jsonl", "dangling_artifact.jsonl"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "clean.jsonl",
+        "findings.jsonl",
+        "dangling_artifact.jsonl",
+        "chained.jsonl",
+        "broken_chain.jsonl",  # schema-silent on purpose: the chain verifier sees it
+    ],
+)
 def test_schema_valid_fixtures(name: str) -> None:
     records = [json.loads(line) for line in _lines(name)]
     for record in records:
@@ -66,3 +75,20 @@ def test_dangling_artifact_is_semantic_not_schematic() -> None:
     inventory = {r["path"] for r in records if r["kind"] == "artifact"}
     dangling = [r for r in records if r["kind"] == "finding" and r["artifact"] not in inventory]
     assert len(dangling) == 1
+
+
+def test_chained_fixture_verifies_and_legacy_fixtures_stay_legacy() -> None:
+    from steward.verdicts.chain import verify_chain
+
+    assert verify_chain((FIXTURES / "chained.jsonl").read_text()).status == "chained"
+    # Files predating prev_hash stay valid — the additive rule, verbatim.
+    assert verify_chain((FIXTURES / "clean.jsonl").read_text()).status == "legacy"
+    assert verify_chain((FIXTURES / "findings.jsonl").read_text()).status == "legacy"
+
+
+def test_broken_chain_fixture_is_schema_silent_but_verifier_red() -> None:
+    from steward.verdicts.chain import verify_chain
+
+    report = verify_chain((FIXTURES / "broken_chain.jsonl").read_text())
+    assert report.status == "broken"
+    assert report.broken_line == 5  # line 4 was substituted; its successor exposes it

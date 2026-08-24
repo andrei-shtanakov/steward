@@ -342,6 +342,46 @@ def approval_facts(
     typer.echo(f"ok: {len(results)} result(s) published to {target}")
 
 
+@app.command("verdicts-verify")
+def verdicts_verify(
+    file: Path = typer.Argument(
+        Path(".steward/gate_verdicts.jsonl"),
+        help="gate_verdicts.jsonl to verify (default: the bundle emission path)",
+    ),
+) -> None:
+    """Verify the hash chain of a `gate_verdicts.jsonl` ledger (steward#105).
+
+    Three outcomes: ``chained`` (every record from the first carrier on links
+    to its predecessor), ``legacy`` (no ``prev_hash`` anywhere — valid by the
+    contract's additive rule, files predating the field), ``broken`` (a
+    substituted, missing or unparseable line inside the chained region).
+
+    Exit codes mirror gate-check: ``0`` chained or legacy, ``1`` broken,
+    ``2`` config error (file missing/unreadable). The chain proves mid-ledger
+    integrity only — tail truncation or a wholesale rewrite with recomputed
+    hashes needs an external anchor and is documented as out of scope in the
+    contract README.
+    """
+    from steward.verdicts.chain import verify_chain
+
+    try:
+        text = file.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"config error: cannot read {file}: {exc}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from exc
+    report = verify_chain(text)
+    if report.status == "broken":
+        typer.echo(
+            f"broken: line {report.broken_line} of {report.lines} — {report.reason}"
+            + (f" (chained from line {report.chained_from})" if report.chained_from else "")
+        )
+        raise typer.Exit(1)
+    if report.status == "legacy":
+        typer.echo(f"legacy: {report.lines} line(s), no prev_hash — valid, chain not present")
+        return
+    typer.echo(f"chained: {report.lines} line(s), chain intact from line {report.chained_from}")
+
+
 @app.command("proposal-intake")
 def proposal_intake(
     bundle_dir: Path = typer.Argument(
