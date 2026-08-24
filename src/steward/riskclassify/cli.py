@@ -366,7 +366,11 @@ def verdicts_verify(
     from steward.verdicts.chain import verify_chain
 
     try:
-        text = file.read_text(encoding="utf-8")
+        # Сырые байты, не read_text(): universal newlines превратили бы \r\n
+        # обратно в \n ДО верификации, и CRLF-переписанный леджер прошёл бы
+        # как chained — ровно тот байт-риврайт, который контракт обязывает
+        # ловить (Codex-гейт на PR #109).
+        text = file.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         typer.echo(f"config error: cannot read {file}: {exc}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from exc

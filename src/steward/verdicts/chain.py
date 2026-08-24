@@ -90,10 +90,23 @@ def verify_chain(text: str) -> ChainReport:
     unparseable line must never verify as valid — "legacy" is a statement
     about a *readable* pre-chain file, not a fallback for corrupt input
     (Codex gate on steward PR #109, accepted).
+
+    Line 1 must be a ``kind: header`` record — the contract makes the header
+    mandatory, so an empty or headerless file is ``broken``, never a valid
+    "legacy" ledger (Codex gate, round 3, accepted). Deeper schema validity
+    stays the reader's job; the verifier checks only what the chain and the
+    file's own shape require.
     """
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the trailing newline of the last record, not an empty line
+    if not lines:
+        return ChainReport(
+            status="broken",
+            lines=0,
+            broken_line=1,
+            reason="empty file — the mandatory line-1 header record is missing",
+        )
     parsed: list[object] = []
     for index, line in enumerate(lines):
         try:
@@ -105,6 +118,14 @@ def verify_chain(text: str) -> ChainReport:
                 broken_line=index + 1,
                 reason="unparseable line — the file cannot verify as chained or legacy",
             )
+    first = parsed[0]
+    if not (isinstance(first, dict) and first.get("kind") == "header"):
+        return ChainReport(
+            status="broken",
+            lines=len(lines),
+            broken_line=1,
+            reason="line 1 is not a 'kind: header' record — the contract requires the header",
+        )
     start: int | None = None  # 0-based index of the first chained record
     for index, record in enumerate(parsed):
         if isinstance(record, dict) and _PREV_HASH_KEY in record:

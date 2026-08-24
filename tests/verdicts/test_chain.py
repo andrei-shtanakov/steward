@@ -94,8 +94,21 @@ def test_prev_hash_on_line_1_is_broken() -> None:
     assert report.broken_line == 1
 
 
-def test_empty_file_is_legacy() -> None:
-    assert verify_chain("").status == "legacy"
+def test_empty_file_is_broken_missing_header() -> None:
+    # Codex gate, round 3: line 1 header is contractually mandatory — an
+    # empty file is not a valid "legacy" ledger.
+    report = verify_chain("")
+    assert report.status == "broken"
+    assert report.broken_line == 1
+    assert "header" in (report.reason or "")
+
+
+def test_headerless_file_is_broken_not_legacy() -> None:
+    text = json.dumps({"kind": "artifact", "path": "a.md"}) + "\n"
+    report = verify_chain(text)
+    assert report.status == "broken"
+    assert report.broken_line == 1
+    assert "header" in (report.reason or "")
 
 
 def test_cli_chained_exit_0(tmp_path: Path) -> None:
@@ -175,6 +188,17 @@ def test_unparseable_line_in_legacy_file_is_broken_not_legacy() -> None:
 def test_cli_malformed_legacy_file_exit_1(tmp_path: Path) -> None:
     target = tmp_path / "gate_verdicts.jsonl"
     target.write_text(json.dumps(RECORDS[0]) + "\n" + "not json\n", encoding="utf-8")
+    result = runner.invoke(app, ["verdicts-verify", str(target)])
+    assert result.exit_code == 1
+    assert "broken" in result.stdout
+
+
+def test_cli_crlf_file_on_disk_is_broken_exit_1(tmp_path: Path) -> None:
+    # Codex gate, round 3: read_text() would normalize CRLF back to LF
+    # before verification — the CLI must read raw bytes.
+    target = tmp_path / "gate_verdicts.jsonl"
+    payload = serialize_chained(RECORDS).replace("\n", "\r\n")
+    target.write_bytes(payload.encode("utf-8"))
     result = runner.invoke(app, ["verdicts-verify", str(target)])
     assert result.exit_code == 1
     assert "broken" in result.stdout

@@ -314,3 +314,17 @@ def test_emitted_file_carries_an_intact_hash_chain(tmp_path: Path) -> None:
     report = verify_chain("".join(line + "\n" for line in lines))
     assert report.status == "broken"
     assert report.broken_line == 3
+
+
+def test_emitted_bytes_are_lf_only_and_verify_from_disk(tmp_path: Path) -> None:
+    # Codex gate on PR #109, round 3: the producer must write exactly the
+    # bytes it hashed — text-mode newline translation would break every
+    # freshly emitted chain on Windows. Assert at the byte level; read_text()
+    # would normalize the very defect this test exists to catch.
+    from steward.verdicts.chain import verify_chain
+
+    repo, spec = _repo(tmp_path)
+    _emit(repo, spec)
+    raw = (repo / ".steward" / "gate_verdicts.jsonl").read_bytes()
+    assert b"\r" not in raw
+    assert verify_chain(raw.decode("utf-8")).status == "chained"

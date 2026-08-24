@@ -197,7 +197,11 @@ def _atomic_write_jsonl(path: Path, records: list[dict]) -> None:
     payload = serialize_chained(records)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".gate_verdicts-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        # newline="" — без платформенной трансляции \n: хеши цепочки посчитаны
+        # по LF-строкам ДО записи, и text-mode на Windows переписал бы \n в
+        # \r\n, ломая контрактную byte-идентичность каждого свежеэмитированного
+        # файла (Codex-гейт на PR #109).
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(payload)
         os.replace(tmp_name, path)
     except BaseException:
