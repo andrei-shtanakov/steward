@@ -92,3 +92,13 @@ def test_broken_chain_fixture_is_schema_silent_but_verifier_red() -> None:
     report = verify_chain((FIXTURES / "broken_chain.jsonl").read_text())
     assert report.status == "broken"
     assert report.broken_line == 5  # line 4 was substituted; its successor exposes it
+
+
+def test_malformed_fixture_never_verifies_as_valid() -> None:
+    # The verifier mirrors the contract header: an unparseable line is
+    # 'unreadable', never clean — and never "legacy-valid" either.
+    from steward.verdicts.chain import verify_chain
+
+    report = verify_chain((FIXTURES / "malformed_line.jsonl").read_text())
+    assert report.status == "broken"
+    assert report.broken_line == 3

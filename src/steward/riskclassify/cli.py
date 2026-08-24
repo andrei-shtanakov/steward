@@ -352,9 +352,10 @@ def verdicts_verify(
     """Verify the hash chain of a `gate_verdicts.jsonl` ledger (steward#105).
 
     Three outcomes: ``chained`` (every record from the first carrier on links
-    to its predecessor), ``legacy`` (no ``prev_hash`` anywhere — valid by the
-    contract's additive rule, files predating the field), ``broken`` (a
-    substituted, missing or unparseable line inside the chained region).
+    to its predecessor), ``legacy`` (every line parses and no ``prev_hash``
+    anywhere — valid by the contract's additive rule, files predating the
+    field), ``broken`` (a substituted or chain-dropping line, or ANY
+    unparseable line — corrupt input never verifies as valid).
 
     Exit codes mirror gate-check: ``0`` chained or legacy, ``1`` broken,
     ``2`` config error (file missing/unreadable). The chain proves mid-ledger

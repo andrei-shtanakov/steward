@@ -79,16 +79,34 @@ def verify_chain(text: str) -> ChainReport:
     verify as intact though its bytes changed, and a legitimate raw U+2028
     inside a JSON string (legal there, and ``ensure_ascii=False`` writes it
     raw) would split one record in two (Copilot review on steward PR #109).
+    An LF→CRLF conversion therefore verifies as *broken* — an owner ruling,
+    not an accident: the producer only ever writes LF, so a CRLF ledger did
+    not come out of the producer, and a tamper-evident check has no notion
+    of a "benign" byte rewrite (the opposite reading was proposed by the
+    Codex gate on the same PR and rejected; the contract README pins the
+    line definition).
+
+    Every line must parse as JSON, chained or not: a file with an
+    unparseable line must never verify as valid — "legacy" is a statement
+    about a *readable* pre-chain file, not a fallback for corrupt input
+    (Codex gate on steward PR #109, accepted).
     """
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the trailing newline of the last record, not an empty line
-    start: int | None = None  # 0-based index of the first chained record
+    parsed: list[object] = []
     for index, line in enumerate(lines):
         try:
-            record = json.loads(line)
+            parsed.append(json.loads(line))
         except json.JSONDecodeError:
-            continue  # unreadable lines are the reader's problem; chain-wise: not chained
+            return ChainReport(
+                status="broken",
+                lines=len(lines),
+                broken_line=index + 1,
+                reason="unparseable line — the file cannot verify as chained or legacy",
+            )
+    start: int | None = None  # 0-based index of the first chained record
+    for index, record in enumerate(parsed):
         if isinstance(record, dict) and _PREV_HASH_KEY in record:
             start = index
             break
@@ -103,16 +121,7 @@ def verify_chain(text: str) -> ChainReport:
         )
     for index in range(start, len(lines)):
         number = index + 1
-        try:
-            record = json.loads(lines[index])
-        except json.JSONDecodeError:
-            return ChainReport(
-                status="broken",
-                lines=len(lines),
-                chained_from=start + 1,
-                broken_line=number,
-                reason="unparseable line inside the chained region",
-            )
+        record = parsed[index]  # every line already proved parseable above
         if not isinstance(record, dict) or _PREV_HASH_KEY not in record:
             return ChainReport(
                 status="broken",
