@@ -342,6 +342,37 @@ def approval_facts(
     typer.echo(f"ok: {len(results)} result(s) published to {target}")
 
 
+@app.command("adoption-scan")
+def adoption_scan(
+    target: Path = typer.Argument(
+        ...,
+        help="checkout of the external tool/repo to scan BEFORE first run/import",
+    ),
+) -> None:
+    """Pre-adoption scan of an external tool (steward#104): look before importing.
+
+    Deterministic AST-only checks over every ``*.py`` file — top-level side
+    effects, hardcoded network endpoints, ``exec``/``eval``/``compile`` over
+    non-literal data. Verdict is three-valued: ``clean`` / ``failed`` /
+    ``not_checked`` — "not scanned" is never "clean" (an unparsable file or a
+    tree without Python cannot prove anything).
+
+    Exit codes mirror gate-check: ``0`` clean; ``1`` findings OR
+    ``not_checked`` (both block adoption without human eyes); ``2`` config
+    error (target missing / not a directory). Byte-stable JSON on stdout.
+    """
+    from steward.adoptionscan import AdoptionScanError, scan_tree
+
+    try:
+        result = scan_tree(target)
+    except AdoptionScanError as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from exc
+    typer.echo(json.dumps(asdict(result), sort_keys=True, indent=2))
+    if result.verdict != "clean":
+        raise typer.Exit(1)
+
+
 @app.command("verdicts-verify")
 def verdicts_verify(
     file: Path = typer.Argument(
