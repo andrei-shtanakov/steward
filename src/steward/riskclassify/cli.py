@@ -366,7 +366,7 @@ def verdicts_verify(
 
     try:
         text = file.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         typer.echo(f"config error: cannot read {file}: {exc}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from exc
     report = verify_chain(text)

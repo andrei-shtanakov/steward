@@ -129,3 +129,29 @@ def test_cli_broken_exit_1(tmp_path: Path) -> None:
 def test_cli_missing_file_exit_2(tmp_path: Path) -> None:
     result = runner.invoke(app, ["verdicts-verify", str(tmp_path / "нет.jsonl")])
     assert result.exit_code == 2
+
+
+def test_crlf_conversion_is_detected_as_broken() -> None:
+    # Copilot review on PR #109: splitlines() would normalize away the \r and
+    # verify a CRLF-converted file as intact though its bytes changed.
+    text = serialize_chained(RECORDS).replace("\n", "\r\n")
+    report = verify_chain(text)
+    assert report.status == "broken"
+    assert report.broken_line == 2
+
+
+def test_raw_u2028_inside_a_message_stays_one_record() -> None:
+    # U+2028 is legal raw inside a JSON string and ensure_ascii=False writes
+    # it raw; splitlines() would have split the record in two.
+    records = [dict(RECORDS[0]), {"kind": "finding", "message": "до после"}]
+    text = serialize_chained(records)
+    report = verify_chain(text)
+    assert report.status == "chained"
+    assert report.lines == 2
+
+
+def test_cli_non_utf8_file_exit_2(tmp_path: Path) -> None:
+    target = tmp_path / "gate_verdicts.jsonl"
+    target.write_bytes(b'\xff\xfe{"kind": "header"}\n')
+    result = runner.invoke(app, ["verdicts-verify", str(target)])
+    assert result.exit_code == 2

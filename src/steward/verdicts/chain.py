@@ -72,8 +72,17 @@ def verify_chain(text: str) -> ChainReport:
     record on, every line must be parseable JSON, must carry ``prev_hash``,
     and the hash must match the previous raw line. ``prev_hash`` on line 1
     is broken by definition — nothing precedes it.
+
+    Lines are split on ``\\n`` exactly, NOT ``splitlines()``: that helper
+    normalizes every Unicode line boundary (``\\r``, U+2028, …), which breaks
+    byte-for-byte fidelity in both directions — a CRLF-converted file would
+    verify as intact though its bytes changed, and a legitimate raw U+2028
+    inside a JSON string (legal there, and ``ensure_ascii=False`` writes it
+    raw) would split one record in two (Copilot review on steward PR #109).
     """
-    lines = text.splitlines()
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # the trailing newline of the last record, not an empty line
     start: int | None = None  # 0-based index of the first chained record
     for index, line in enumerate(lines):
         try:
