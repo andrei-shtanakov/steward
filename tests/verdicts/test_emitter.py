@@ -292,3 +292,39 @@ def test_cli_emit_refuses_no_fs(tmp_path: Path) -> None:
         [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--emit-verdicts"],
     )
     assert result.exit_code == 2  # provenance-free verdicts are forbidden, config error
+
+
+def test_emitted_file_carries_an_intact_hash_chain(tmp_path: Path) -> None:
+    # steward#105: every record after line 1 links to its predecessor, and a
+    # mid-ledger edit is exposed by the successor's prev_hash.
+    from steward.verdicts.chain import line_hash, verify_chain
+
+    repo, spec = _repo(tmp_path)
+    _emit(repo, spec)
+    out = repo / ".steward" / "gate_verdicts.jsonl"
+    lines = out.read_text().splitlines()
+    assert "prev_hash" not in json.loads(lines[0])  # the header anchors the chain
+    for i in range(1, len(lines)):
+        assert json.loads(lines[i])["prev_hash"] == line_hash(lines[i - 1])
+    assert verify_chain(out.read_text()).status == "chained"
+
+    tampered = json.loads(lines[1])
+    tampered["path"] = tampered["path"] + "-tampered"
+    lines[1] = json.dumps(tampered, ensure_ascii=False)
+    report = verify_chain("".join(line + "\n" for line in lines))
+    assert report.status == "broken"
+    assert report.broken_line == 3
+
+
+def test_emitted_bytes_are_lf_only_and_verify_from_disk(tmp_path: Path) -> None:
+    # Codex gate on PR #109, round 3: the producer must write exactly the
+    # bytes it hashed — text-mode newline translation would break every
+    # freshly emitted chain on Windows. Assert at the byte level; read_text()
+    # would normalize the very defect this test exists to catch.
+    from steward.verdicts.chain import verify_chain
+
+    repo, spec = _repo(tmp_path)
+    _emit(repo, spec)
+    raw = (repo / ".steward" / "gate_verdicts.jsonl").read_bytes()
+    assert b"\r" not in raw
+    assert verify_chain(raw.decode("utf-8")).status == "chained"
