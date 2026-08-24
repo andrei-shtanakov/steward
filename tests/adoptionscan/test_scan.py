@@ -218,3 +218,42 @@ def test_cli_not_checked_exit_1(tmp_path: Path) -> None:
 def test_cli_missing_target_exit_2(tmp_path: Path) -> None:
     result = runner.invoke(app, ["adoption-scan", str(tmp_path / "нет")])
     assert result.exit_code == 2
+
+
+def test_call_in_if_condition_is_flagged(tmp_path: Path) -> None:
+    write(tmp_path, "m.py", "import os\nif os.system('id'):\n    pass\n")
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert result.findings[0].check == "SCAN-TOPLEVEL-EFFECT"
+    assert "condition" in result.findings[0].message
+
+
+def test_else_branch_of_main_guard_is_scanned(tmp_path: Path) -> None:
+    # Copilot review on PR #108: `__name__ != "__main__"` is precisely the
+    # import case — the guard's else branch runs on first import.
+    write(
+        tmp_path,
+        "m.py",
+        "def go():\n    pass\n\nif __name__ == '__main__':\n    go()\nelse:\n    go()\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert result.findings[0].line == 7  # the else-branch call, not the guarded body
+
+
+def test_unreadable_subdirectory_is_not_checked_not_a_crash(tmp_path: Path) -> None:
+    # Codex gate on PR #108: a PermissionError during traversal must surface
+    # as the documented not_checked outcome, never as a traceback.
+    write(tmp_path, "ok.py", "import json\n")
+    locked = tmp_path / "vendor"
+    locked.mkdir()
+    write(locked, "inner.py", "print('hi')\n")
+    locked.chmod(0o000)
+    try:
+        result = scan_tree(tmp_path)
+    finally:
+        locked.chmod(0o755)
+    assert result.verdict == "not_checked"
+    assert result.scanned == ["ok.py"]
+    assert result.not_checked[0]["path"] == "vendor"
+    assert "PermissionError" in result.not_checked[0]["reason"]

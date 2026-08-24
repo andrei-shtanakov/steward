@@ -111,7 +111,7 @@ def scan_tree(target: Path) -> ScanResult:
     scanned: list[str] = []
     unchecked: list[dict[str, str]] = []
 
-    for path in sorted(_iter_python_files(target)):
+    for path in sorted(_iter_python_files(target, unchecked)):
         rel = path.relative_to(target).as_posix()
         try:
             source = path.read_text(encoding="utf-8")
@@ -132,17 +132,28 @@ def scan_tree(target: Path) -> ScanResult:
     return ScanResult(verdict=verdict, findings=findings, scanned=scanned, not_checked=unchecked)
 
 
-def _iter_python_files(target: Path):
+def _iter_python_files(target: Path, unchecked: list[dict[str, str]]):
     """Yield ``*.py`` files, skipping generated trees and symlinks.
 
     Symlinks (files and directories) are skipped, not followed: a link can
     point outside the checkout, and the scan promises to judge the tree it
     was given, not whatever the link's author aimed it at.
+
+    A directory that cannot be traversed (permissions, I/O) is recorded in
+    ``unchecked`` instead of crashing the scan: an unreadable subtree is
+    exactly "not scanned", and "not scanned" must surface as ``not_checked``,
+    never as a crash and never as clean (Codex gate on steward PR #108).
     """
     stack = [target]
     while stack:
         directory = stack.pop()
-        for entry in directory.iterdir():
+        try:
+            entries = list(directory.iterdir())
+        except OSError as exc:
+            rel = directory.relative_to(target).as_posix()
+            unchecked.append({"path": rel, "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        for entry in entries:
             if entry.is_symlink():
                 continue
             if entry.is_dir():
@@ -182,8 +193,13 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
     ``if``/``try`` are recursed with the same rules rather than allowed or
     flagged wholesale: ``try: import x`` fallbacks and ``if TYPE_CHECKING:``
     are everyday benign, while a call hidden under ``if sys.platform...``
-    still runs at import time. The main guard is skipped entirely — its body
-    runs only on explicit invocation, which is not "at first import".
+    still runs at import time. Only the main guard's *body* is skipped — it
+    runs on explicit invocation, not at import. Its ``else`` branch is the
+    opposite: ``__name__ != "__main__"`` is precisely the import case, so it
+    is scanned like any other block (Copilot review on steward PR #108). The
+    ``if`` *condition* itself always evaluates at import, so a call inside
+    any top-level test is flagged too (Codex gate on the same PR) — the main
+    guard's shape (Name vs Constant compare) cannot contain one.
     """
     findings: list[ScanFinding] = []
     for stmt in body:
@@ -192,9 +208,9 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
         if isinstance(stmt, _BENIGN_TOPLEVEL):
             continue
         if isinstance(stmt, ast.If):
-            if _is_main_guard(stmt.test):
-                continue
-            findings.extend(_scan_toplevel(stmt.body, rel))
+            findings.extend(_flag_calls_in_test(stmt.test, rel))
+            if not _is_main_guard(stmt.test):
+                findings.extend(_scan_toplevel(stmt.body, rel))
             findings.extend(_scan_toplevel(stmt.orelse, rel))
             continue
         if isinstance(stmt, ast.Try):
@@ -213,6 +229,20 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
             )
         )
     return findings
+
+
+def _flag_calls_in_test(test: ast.expr, rel: str) -> list[ScanFinding]:
+    """A call in a top-level ``if`` condition executes at import — flag it."""
+    return [
+        ScanFinding(
+            check="SCAN-TOPLEVEL-EFFECT",
+            path=rel,
+            line=node.lineno,
+            message="call in a top-level if condition executes at import time",
+        )
+        for node in ast.walk(test)
+        if isinstance(node, ast.Call)
+    ]
 
 
 def _is_main_guard(test: ast.expr) -> bool:
