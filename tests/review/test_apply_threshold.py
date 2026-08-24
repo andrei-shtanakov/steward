@@ -317,3 +317,23 @@ def test_bare_format_flag_is_config_error(interpreter: str, tmp_path: Path) -> N
     )
     assert result.returncode == 2
     assert "usage" in result.stderr
+
+
+def test_missing_jq_is_config_error_not_127(tmp_path: Path) -> None:
+    """Без jq в PATH — отказ конфигурации (код 2), а не смерть шелла (127).
+
+    PATH сужается до пустого каталога: до префлайта скрипт живёт на одних
+    builtins, поэтому падение возможно только на внешнем инструменте — и оно
+    обязано быть названным отказом контракта 0/1/2, а не кодом 127.
+    """
+    verdict = write(tmp_path, {"findings": [], "note": ""})
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    result = subprocess.run(
+        ["/bin/sh", str(SCRIPT), "--verdict", str(verdict)],
+        capture_output=True,
+        text=True,
+        env={"PATH": str(empty_bin)},
+    )
+    assert result.returncode == 2
+    assert "jq" in result.stderr
