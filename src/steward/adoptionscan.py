@@ -66,6 +66,29 @@ _NET_MODULES = frozenset(
 
 _DYNAMIC_EXEC_NAMES = frozenset({"exec", "eval", "compile"})
 
+#: High-risk callables — process execution and raw network. A call to one of
+#: these on the right-hand side of a top-level assignment is flagged even
+#: though generic assignment calls are not: the noise trade stays
+#: (``logger = logging.getLogger(__name__)`` is silent), but a
+#: ``trigger = subprocess.run(...)`` shape must not pass as clean (Codex
+#: gate on steward PR #108, round 3). Matched against the dotted call name
+#: after resolving import aliases (``import subprocess as sp``,
+#: ``from os import system``), so renaming does not dodge the list.
+_HIGH_RISK_EXACT = frozenset({"os.system", "os.popen", "os.fork", "os.startfile", "pty.spawn"})
+_HIGH_RISK_PREFIXES = (
+    "os.exec",
+    "os.spawn",
+    "os.posix_spawn",
+    "subprocess.",
+    "socket.",
+    "requests.",
+    "httpx.",
+    "aiohttp.",
+    "urllib.",
+    "urllib3.",
+    "ctypes.",
+)
+
 #: Directories never descended into. ``.git`` is not the tool's code; the
 #: rest are standard generated/vendored-interpreter trees whose contents the
 #: adopter does not import as the tool.
@@ -136,16 +159,19 @@ def scan_tree(target: Path) -> ScanResult:
 
 
 def _iter_python_files(target: Path, unchecked: list[dict[str, str]]):
-    """Yield ``*.py`` files, skipping generated trees and symlinks.
+    """Yield ``*.py`` files, skipping generated trees; symlinks go to ``unchecked``.
 
-    Symlinks (files and directories) are skipped, not followed: a link can
-    point outside the checkout, and the scan promises to judge the tree it
-    was given, not whatever the link's author aimed it at.
+    Symlinks are never followed: a link can point outside the checkout, and
+    the scan promises to judge the tree it was given, not whatever the
+    link's author aimed it at. But "not followed" is "not scanned", and not
+    scanned must never read as clean — a symlinked ``*.py`` or a symlinked
+    directory (outside the generated-tree skip list) is recorded in
+    ``unchecked``, so a mixed tree cannot come out ``clean`` while part of
+    it was silently dropped (Codex gate on steward PR #108, round 3).
 
     A directory that cannot be traversed (permissions, I/O) is recorded in
     ``unchecked`` instead of crashing the scan: an unreadable subtree is
-    exactly "not scanned", and "not scanned" must surface as ``not_checked``,
-    never as a crash and never as clean (Codex gate on steward PR #108).
+    exactly "not scanned" too (Codex gate on steward PR #108).
     """
     stack = [target]
     while stack:
@@ -157,7 +183,15 @@ def _iter_python_files(target: Path, unchecked: list[dict[str, str]]):
             unchecked.append({"path": rel, "reason": f"{type(exc).__name__}: {exc}"})
             continue
         for entry in entries:
+            rel = entry.relative_to(target).as_posix()
             if entry.is_symlink():
+                if entry.is_dir():
+                    if entry.name not in _SKIP_DIRS:
+                        unchecked.append(
+                            {"path": rel, "reason": "symlinked directory — not followed"}
+                        )
+                elif entry.suffix == ".py":
+                    unchecked.append({"path": rel, "reason": "symlinked module — not followed"})
                 continue
             if entry.is_dir():
                 if entry.name not in _SKIP_DIRS:
@@ -167,30 +201,29 @@ def _iter_python_files(target: Path, unchecked: list[dict[str, str]]):
 
 
 def _scan_module(tree: ast.Module, rel: str) -> list[ScanFinding]:
-    findings = _scan_toplevel(tree.body, rel)
+    aliases = _import_aliases(tree)
+    findings = _scan_toplevel(tree.body, rel, aliases)
     findings.extend(_scan_net_literals(tree, rel))
     findings.extend(_scan_dynamic_exec(tree, rel))
     return findings
 
 
 #: Top-level statements that never execute foreign code by themselves.
-#: Assignments are allowed as a documented limitation: flagging every
-#: ``logger = logging.getLogger(__name__)`` would bury the signal the scan
-#: exists for (a bare top-level call — the incident's trigger shape).
+#: Assignments get their own branch: generic calls on the right-hand side
+#: stay silent as a documented limitation (flagging every
+#: ``logger = logging.getLogger(__name__)`` would bury the signal), but
+#: high-risk process/network calls there are flagged — see _HIGH_RISK_*.
 #: ``def``/``class`` are NOT blanket-benign — their headers (decorators,
 #: defaults, bases, metaclass keywords) and a class *body* execute at
 #: definition time, i.e. at import; they get their own handling below.
 _BENIGN_TOPLEVEL = (
     ast.Import,
     ast.ImportFrom,
-    ast.Assign,
-    ast.AnnAssign,
-    ast.AugAssign,
     ast.Pass,
 )
 
 
-def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
+def _scan_toplevel(body: list[ast.stmt], rel: str, aliases: dict[str, str]) -> list[ScanFinding]:
     """Flag executable top-level statements; recurse into if/try blocks.
 
     ``if``/``try`` are recursed with the same rules rather than allowed or
@@ -208,6 +241,14 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
     for stmt in body:
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
             continue  # docstring / bare literal
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            # The right-hand side executes at import. Generic calls stay
+            # silent (documented noise trade), but high-risk process/network
+            # calls are flagged — `trigger = subprocess.run(...)` must not
+            # pass as clean (Codex gate on steward PR #108, round 3).
+            if stmt.value is not None:
+                findings.extend(_flag_high_risk_calls(stmt.value, rel, aliases))
+            continue
         if isinstance(stmt, _BENIGN_TOPLEVEL):
             continue
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -221,17 +262,17 @@ def _scan_toplevel(body: list[ast.stmt], rel: str) -> list[ScanFinding]:
             # the same rules; the header (decorators, bases, metaclass
             # keywords) evaluates then too.
             findings.extend(_flag_header_calls(stmt, rel))
-            findings.extend(_scan_toplevel(stmt.body, rel))
+            findings.extend(_scan_toplevel(stmt.body, rel, aliases))
             continue
         if isinstance(stmt, ast.If):
             findings.extend(_flag_calls_in_test(stmt.test, rel))
             if not _is_main_guard(stmt.test):
-                findings.extend(_scan_toplevel(stmt.body, rel))
-            findings.extend(_scan_toplevel(stmt.orelse, rel))
+                findings.extend(_scan_toplevel(stmt.body, rel, aliases))
+            findings.extend(_scan_toplevel(stmt.orelse, rel, aliases))
             continue
         if isinstance(stmt, ast.Try):
             for block in (stmt.body, *(h.body for h in stmt.handlers), stmt.orelse, stmt.finalbody):
-                findings.extend(_scan_toplevel(block, rel))
+                findings.extend(_scan_toplevel(block, rel, aliases))
             continue
         findings.append(
             ScanFinding(
@@ -279,6 +320,66 @@ def _flag_header_calls(
         for node in ast.walk(expr)
         if isinstance(node, ast.Call)
     ]
+
+
+def _import_aliases(tree: ast.Module) -> dict[str, str]:
+    """Local name → canonical dotted origin, from every import in the module.
+
+    ``import subprocess as sp`` maps ``sp`` → ``subprocess``;
+    ``from os import system as s`` maps ``s`` → ``os.system``. Relative
+    imports are skipped — they name the tool's own modules, not stdlib risk
+    surfaces.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                aliases[bound] = alias.name if alias.asname else alias.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _dotted_name(func: ast.expr, aliases: dict[str, str]) -> str | None:
+    """Dotted call target with the base name resolved through import aliases."""
+    parts: list[str] = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    base = aliases.get(node.id, node.id)
+    parts.append(base)
+    return ".".join(reversed(parts))
+
+
+def _is_high_risk(dotted: str) -> bool:
+    return dotted in _HIGH_RISK_EXACT or dotted.startswith(_HIGH_RISK_PREFIXES)
+
+
+def _flag_high_risk_calls(value: ast.expr, rel: str, aliases: dict[str, str]) -> list[ScanFinding]:
+    """Flag high-risk process/network calls inside an import-time expression."""
+    findings: list[ScanFinding] = []
+    for node in ast.walk(value):
+        if not isinstance(node, ast.Call):
+            continue
+        dotted = _dotted_name(node.func, aliases)
+        if dotted is not None and _is_high_risk(dotted):
+            findings.append(
+                ScanFinding(
+                    check="SCAN-TOPLEVEL-EFFECT",
+                    path=rel,
+                    line=node.lineno,
+                    message=(
+                        f"high-risk call {dotted}() in a top-level assignment "
+                        "executes at import time"
+                    ),
+                )
+            )
+    return findings
 
 
 def _flag_calls_in_test(test: ast.expr, rel: str) -> list[ScanFinding]:
@@ -371,7 +472,7 @@ def _scan_dynamic_exec(tree: ast.Module, rel: str) -> list[ScanFinding]:
         name = _callable_name(node.func)
         if name not in _DYNAMIC_EXEC_NAMES:
             continue
-        if node.args and isinstance(node.args[0], ast.Constant):
+        if _dynamic_exec_arg_is_literal(node):
             continue  # literal code object: reviewable by eye, not wire data
         suffix = (
             f"; module imports network-capable modules: {', '.join(net_imports)}"
@@ -389,11 +490,39 @@ def _scan_dynamic_exec(tree: ast.Module, rel: str) -> list[ScanFinding]:
     return findings
 
 
+def _dynamic_exec_arg_is_literal(node: ast.Call) -> bool:
+    """The code argument is a constant — first positional, or keyword form.
+
+    ``compile()`` accepts ``source=`` as a keyword (``eval``/``exec`` take
+    the code positionally-only, but the check is name-based and cannot know
+    that); treating a constant keyword source as non-literal flagged
+    ``compile(source='1+1', ...)`` for nothing (Copilot review on steward
+    PR #108).
+    """
+    if node.args:
+        return isinstance(node.args[0], ast.Constant)
+    for kw in node.keywords:
+        if kw.arg in ("source", "object"):
+            return isinstance(kw.value, ast.Constant)
+    return False
+
+
 def _callable_name(func: ast.expr) -> str | None:
-    """``exec`` both as a bare name and as ``builtins.exec``."""
+    """``exec`` as a bare name, or as an attribute of ``builtins`` ONLY.
+
+    Returning ``func.attr`` for any attribute call flagged every
+    ``re.compile(pattern)`` and ``template.eval(ctx)`` as dynamic exec —
+    false positives that would block adoption for nothing (Copilot review
+    and Codex gate on steward PR #108). An attribute form counts only when
+    the receiver is literally ``builtins``/``__builtins__``.
+    """
     if isinstance(func, ast.Name):
         return func.id
-    if isinstance(func, ast.Attribute):
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id in ("builtins", "__builtins__")
+    ):
         return func.attr
     return None
 

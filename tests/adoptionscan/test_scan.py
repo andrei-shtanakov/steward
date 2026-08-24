@@ -318,3 +318,90 @@ def test_not_checked_order_is_deterministic(tmp_path: Path) -> None:
         for name in ("zz", "aa"):
             (tmp_path / name).chmod(0o755)
     assert [u["path"] for u in result.not_checked] == ["aa", "zz"]
+
+
+def test_mixed_tree_with_symlinked_module_is_not_clean(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 3: a symlinked module is "not scanned",
+    # and not scanned must never read as clean on a mixed tree.
+    write(tmp_path, "ok.py", "import json\n")
+    payload = tmp_path.parent / "payload108.py"
+    payload.write_text("print('hi')\n", encoding="utf-8")
+    (tmp_path / "plugin.py").symlink_to(payload)
+    result = scan_tree(tmp_path)
+    assert result.verdict == "not_checked"
+    assert result.scanned == ["ok.py"]
+    assert result.not_checked == [
+        {"path": "plugin.py", "reason": "symlinked module — not followed"}
+    ]
+
+
+def test_symlinked_directory_is_recorded_not_silently_dropped(tmp_path: Path) -> None:
+    write(tmp_path, "ok.py", "import json\n")
+    hidden = tmp_path.parent / "hidden108"
+    hidden.mkdir(exist_ok=True)
+    (tmp_path / "vendor").symlink_to(hidden)
+    result = scan_tree(tmp_path)
+    assert result.verdict == "not_checked"
+    assert result.not_checked[0]["path"] == "vendor"
+
+
+def test_high_risk_call_in_assignment_is_flagged(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 3: generic assignment calls stay silent,
+    # but `trigger = subprocess.run(...)` must not pass as clean.
+    write(tmp_path, "m.py", "import subprocess\n\ntrigger = subprocess.run(['id'])\n")
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert "subprocess.run" in result.findings[0].message
+
+
+def test_high_risk_call_resolves_import_aliases(tmp_path: Path) -> None:
+    write(tmp_path, "a.py", "import subprocess as sp\n\nx = sp.check_output(['id'])\n")
+    write(tmp_path, "b.py", "from os import system as s\n\ny = s('id')\n")
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert [f.path for f in result.findings] == ["a.py", "b.py"]
+    assert "os.system" in result.findings[1].message
+
+
+def test_benign_assignment_calls_stay_clean(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "m.py",
+        "import logging\nfrom pathlib import Path\n\n"
+        "logger = logging.getLogger(__name__)\nROOT = Path('x').resolve()\n",
+    )
+    assert scan_tree(tmp_path).verdict == "clean"
+
+
+def test_method_named_compile_or_eval_is_not_dynamic_exec(tmp_path: Path) -> None:
+    # Copilot review + Codex minor on PR #108: `re.compile(pattern)` and
+    # `template.eval(ctx)` are ordinary methods, not builtin dynamic exec.
+    write(
+        tmp_path,
+        "m.py",
+        "import re\n\n\ndef f(pattern, template, ctx):\n"
+        "    rx = re.compile(pattern)\n    return rx, template.eval(ctx)\n",
+    )
+    assert scan_tree(tmp_path).verdict == "clean"
+
+
+def test_compile_with_literal_keyword_source_is_not_flagged(tmp_path: Path) -> None:
+    # Copilot review on PR #108: a constant source passed by keyword is as
+    # literal as a positional one.
+    write(
+        tmp_path,
+        "m.py",
+        "def f():\n    return compile(source='1+1', filename='x', mode='eval')\n",
+    )
+    assert scan_tree(tmp_path).verdict == "clean"
+
+
+def test_compile_with_nonliteral_keyword_source_is_flagged(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "m.py",
+        "def f(code):\n    return compile(source=code, filename='x', mode='eval')\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert result.findings[0].check == "SCAN-DYNAMIC-EXEC"
