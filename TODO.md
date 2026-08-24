@@ -647,6 +647,17 @@ PR и осознанно не закрыто; список полон, друг�
   дифа, подделка требует знать хеш содержимого, включающего подделку. Промпт отдельно
   называет содержимое между маркерами недоверенными данными.
 
+- [x] jq-префлайт в `apply-threshold.sh` + доводка комментария прохода 2
+      `collect-context.sh` @owner:github:andrei-shtanakov @id:review-kit-jq-preflight —
+      приём входящего steward#102 (from spec-runner#312, Copilot-ревью вендор-копии);
+      PR #106: `command -v jq` → код 2 с причиной (по образцу
+      sha256sum/shasum-префлайтов), тест с PATH без jq закрепляет «2, не 127»;
+      `local.sh` проверен — jq не зовёт (порог применяет через apply-threshold.sh,
+      префлайт покрывает и его); комментарий «внутренние пробелы сохраняются»
+      переформулирован как defense-in-depth (пути с пробелами отвергает проход 1 —
+      разбор записи не space-safe и опорой быть не может). Пункт про `mktemp` без
+      шаблона отклонён доказательством в самом issue — не заводится
+
 - [x] Freshness-проверка SHA и в обычной ветке публикации codex-review
       workflow @owner:github:andrei-shtanakov @id:review-workflow-stale-verdict —
       приём входящего steward#103 (from spec-runner#313, minor их гейта по
