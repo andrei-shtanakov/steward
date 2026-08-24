@@ -64,8 +64,16 @@ class ChainReport:
     reason: str | None = None
 
 
-def verify_chain(text: str) -> ChainReport:
-    """Verify the hash chain of a verdicts file's raw text.
+def verify_chain(text: str | bytes) -> ChainReport:
+    """Verify the hash chain of a verdicts file's raw content.
+
+    Pass the file's RAW BYTES (``path.read_bytes()``) or a string that never
+    went through newline translation. ``Path.read_text()`` is the trap: its
+    universal-newlines mode rewrites ``\\r\\n`` back to ``\\n`` before this
+    function sees the content, silently un-breaking a CRLF-rewritten ledger
+    (Codex gate on steward PR #109, round 4). Bytes input closes that hole
+    at the API level — ``bytes.decode()`` performs no newline translation.
+    Undecodable bytes are ``broken``: an unreadable file never verifies.
 
     The additive rule of the contract, verbatim: a legacy tail without the
     field is valid **up to the first record that carries it**; from that
@@ -91,12 +99,23 @@ def verify_chain(text: str) -> ChainReport:
     about a *readable* pre-chain file, not a fallback for corrupt input
     (Codex gate on steward PR #109, accepted).
 
-    Line 1 must be a ``kind: header`` record — the contract makes the header
-    mandatory, so an empty or headerless file is ``broken``, never a valid
-    "legacy" ledger (Codex gate, round 3, accepted). Deeper schema validity
-    stays the reader's job; the verifier checks only what the chain and the
-    file's own shape require.
+    Line 1 must be a ``kind: header`` record with ``schema_version == "1"``
+    — the contract makes the header mandatory and pins the version as const,
+    and a consumer must classify any other version as unsupported, never as
+    a valid ledger (Codex gate, rounds 3-4, accepted). Deeper schema
+    validity stays the reader's job; the verifier checks only what the chain
+    and the file's own self-identification require.
     """
+    if isinstance(text, bytes):
+        try:
+            text = text.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return ChainReport(
+                status="broken",
+                lines=0,
+                broken_line=1,
+                reason=f"not valid UTF-8 — the file cannot verify: {exc}",
+            )
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the trailing newline of the last record, not an empty line
@@ -125,6 +144,16 @@ def verify_chain(text: str) -> ChainReport:
             lines=len(lines),
             broken_line=1,
             reason="line 1 is not a 'kind: header' record — the contract requires the header",
+        )
+    if first.get("schema_version") != "1":
+        return ChainReport(
+            status="broken",
+            lines=len(lines),
+            broken_line=1,
+            reason=(
+                f"unsupported schema_version {first.get('schema_version')!r} — "
+                "a v1 verifier must never report such a file as valid"
+            ),
         )
     start: int | None = None  # 0-based index of the first chained record
     for index, record in enumerate(parsed):

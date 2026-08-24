@@ -202,3 +202,25 @@ def test_cli_crlf_file_on_disk_is_broken_exit_1(tmp_path: Path) -> None:
     result = runner.invoke(app, ["verdicts-verify", str(target)])
     assert result.exit_code == 1
     assert "broken" in result.stdout
+
+
+def test_library_bytes_input_catches_crlf_rewrite() -> None:
+    # Codex gate on PR #109, round 4: the advertised library API accepts raw
+    # bytes, so a consumer cannot self-normalize CRLF away via read_text().
+    data = serialize_chained(RECORDS).replace("\n", "\r\n").encode("utf-8")
+    report = verify_chain(data)
+    assert report.status == "broken"
+
+
+def test_library_bytes_input_not_utf8_is_broken() -> None:
+    report = verify_chain(b'\xff\xfe{"kind": "header"}\n')
+    assert report.status == "broken"
+    assert "UTF-8" in (report.reason or "")
+
+
+def test_unsupported_schema_version_is_broken() -> None:
+    records = [dict(RECORDS[0], schema_version="99"), *RECORDS[1:]]
+    report = verify_chain(serialize_chained(records))
+    assert report.status == "broken"
+    assert report.broken_line == 1
+    assert "schema_version" in (report.reason or "")
