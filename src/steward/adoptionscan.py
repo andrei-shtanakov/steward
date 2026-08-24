@@ -223,7 +223,9 @@ _BENIGN_TOPLEVEL = (
 )
 
 
-def _scan_toplevel(body: list[ast.stmt], rel: str, aliases: dict[str, str]) -> list[ScanFinding]:
+def _scan_toplevel(
+    body: list[ast.stmt], rel: str, aliases: dict[str, frozenset[str]]
+) -> list[ScanFinding]:
     """Flag executable top-level statements; recurse into if/try blocks.
 
     ``if``/``try`` are recursed with the same rules rather than allowed or
@@ -262,7 +264,11 @@ def _scan_toplevel(body: list[ast.stmt], rel: str, aliases: dict[str, str]) -> l
             # the same rules; the header (decorators, bases, metaclass
             # keywords) evaluates then too.
             findings.extend(_flag_header_calls(stmt, rel, aliases))
-            findings.extend(_scan_toplevel(stmt.body, rel, aliases))
+            # Class-body imports bind names visible to the rest of the class
+            # body, which executes at import — merge them in for that scan
+            # (Codex gate, round 5).
+            class_aliases = _merge_aliases(aliases, _collect_import_bindings(stmt.body))
+            findings.extend(_scan_toplevel(stmt.body, rel, class_aliases))
             continue
         if isinstance(stmt, ast.If):
             findings.extend(_flag_calls_in_test(stmt.test, rel))
@@ -319,7 +325,7 @@ _BENIGN_BARE_DECORATOR_PREFIXES = (
 def _flag_header_calls(
     stmt: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
     rel: str,
-    aliases: dict[str, str],
+    aliases: dict[str, frozenset[str]],
 ) -> list[ScanFinding]:
     """Flag calls in a def/class header — they run at definition time.
 
@@ -335,9 +341,12 @@ def _flag_header_calls(
     for deco in stmt.decorator_list:
         if isinstance(deco, ast.Call):
             continue  # picked up by the generic Call walk below
-        dotted = _dotted_name(deco, aliases)
-        if dotted is not None and (
-            dotted in _BENIGN_BARE_DECORATORS or dotted.startswith(_BENIGN_BARE_DECORATOR_PREFIXES)
+        candidates = _dotted_names(deco, aliases)
+        # Exempt only when EVERY candidate origin is a known effect-free
+        # stdlib decorator — fail-closed over conditional rebinding.
+        if candidates and all(
+            d in _BENIGN_BARE_DECORATORS or d.startswith(_BENIGN_BARE_DECORATOR_PREFIXES)
+            for d in candidates
         ):
             continue
         findings.append(
@@ -346,8 +355,8 @@ def _flag_header_calls(
                 path=rel,
                 line=deco.lineno,
                 message=(
-                    f"decorator @{dotted or '<expression>'} is applied at import time"
-                    " and is not a known effect-free stdlib decorator"
+                    f"decorator @{candidates[0] if candidates else '<expression>'} is applied"
+                    " at import time and is not a known effect-free stdlib decorator"
                 ),
             )
         )
@@ -375,74 +384,104 @@ def _flag_header_calls(
     return findings
 
 
-def _import_aliases(tree: ast.Module) -> dict[str, str]:
-    """Local name → canonical dotted origin, from MODULE-SCOPE imports only.
+def _import_aliases(tree: ast.Module) -> dict[str, frozenset[str]]:
+    """Local name → ALL candidate dotted origins, from MODULE-SCOPE imports.
 
-    ``import subprocess as sp`` maps ``sp`` → ``subprocess``;
-    ``from os import system as s`` maps ``s`` → ``os.system``. Relative
+    ``import subprocess as sp`` maps ``sp`` → ``{subprocess}``;
+    ``from os import system as s`` maps ``s`` → ``{os.system}``. Relative
     imports are skipped — they name the tool's own modules, not stdlib risk
     surfaces.
 
-    Nested scopes are NOT walked: an import inside a function binds a local
-    name, and letting it overwrite the module-scope entry would let
+    Union, not last-writer-wins: a name conditionally rebound
+    (``try: import requests as r`` / ``except: import mock as r``) keeps
+    EVERY candidate origin, and risk matching fires if any candidate is
+    high-risk — which binding wins at runtime is undecidable statically, so
+    the scanner fails closed instead of betting on traversal order (Codex
+    gate, round 5). This also makes collection order irrelevant.
+
+    Nested function scopes are NOT walked: an import inside a function binds
+    a local name, and letting it pollute the module map would let
     ``def helper(): import logging as subprocess`` hide a top-level
-    ``subprocess.run(...)`` from the high-risk list (Codex gate, round 4).
-    Module-scope ``if``/``try`` blocks DO bind module names and are followed.
+    ``subprocess.run(...)`` (Codex gate, round 4). Module-scope ``if``/``try``
+    blocks DO bind module names and are followed; class-body imports bind
+    class attributes and are merged in only for that class body's own scan.
     """
-    aliases: dict[str, str] = {}
-    stack: list[ast.stmt] = list(tree.body)
+    return _collect_import_bindings(tree.body)
+
+
+def _collect_import_bindings(stmts: list[ast.stmt]) -> dict[str, frozenset[str]]:
+    bindings: dict[str, set[str]] = {}
+    stack: list[ast.stmt] = list(stmts)
     while stack:
         node = stack.pop()
         if isinstance(node, ast.Import):
             for alias in node.names:
                 bound = alias.asname or alias.name.split(".")[0]
-                aliases[bound] = alias.name if alias.asname else alias.name.split(".")[0]
+                origin = alias.name if alias.asname else alias.name.split(".")[0]
+                bindings.setdefault(bound, set()).add(origin)
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.level == 0:
                 for alias in node.names:
-                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+                    bindings.setdefault(alias.asname or alias.name, set()).add(
+                        f"{node.module}.{alias.name}"
+                    )
         elif isinstance(node, ast.If):
             stack.extend(node.body)
             stack.extend(node.orelse)
         elif isinstance(node, ast.Try):
             for block in (node.body, *(h.body for h in node.handlers), node.orelse, node.finalbody):
                 stack.extend(block)
-    return aliases
+    return {name: frozenset(origins) for name, origins in bindings.items()}
 
 
-def _dotted_name(func: ast.expr, aliases: dict[str, str]) -> str | None:
-    """Dotted call target with the base name resolved through import aliases."""
+def _merge_aliases(
+    base: dict[str, frozenset[str]], extra: dict[str, frozenset[str]]
+) -> dict[str, frozenset[str]]:
+    merged = dict(base)
+    for name, origins in extra.items():
+        merged[name] = merged.get(name, frozenset()) | origins
+    return merged
+
+
+def _dotted_names(func: ast.expr, aliases: dict[str, frozenset[str]]) -> list[str]:
+    """Every candidate dotted call target, base resolved through the alias map."""
     parts: list[str] = []
     node = func
     while isinstance(node, ast.Attribute):
         parts.append(node.attr)
         node = node.value
     if not isinstance(node, ast.Name):
-        return None
-    base = aliases.get(node.id, node.id)
-    parts.append(base)
-    return ".".join(reversed(parts))
+        return []
+    tail = list(reversed(parts))
+    bases = aliases.get(node.id, frozenset({node.id}))
+    return sorted(".".join([base, *tail]) for base in bases)
 
 
 def _is_high_risk(dotted: str) -> bool:
     return dotted in _HIGH_RISK_EXACT or dotted.startswith(_HIGH_RISK_PREFIXES)
 
 
-def _flag_high_risk_calls(value: ast.expr, rel: str, aliases: dict[str, str]) -> list[ScanFinding]:
-    """Flag high-risk process/network calls inside an import-time expression."""
+def _flag_high_risk_calls(
+    value: ast.expr, rel: str, aliases: dict[str, frozenset[str]]
+) -> list[ScanFinding]:
+    """Flag high-risk process/network calls inside an import-time expression.
+
+    Any-candidate semantics: if any possible origin of the called name is
+    high-risk, the call is flagged — fail-closed over runtime binding.
+    """
     findings: list[ScanFinding] = []
     for node in ast.walk(value):
         if not isinstance(node, ast.Call):
             continue
-        dotted = _dotted_name(node.func, aliases)
-        if dotted is not None and _is_high_risk(dotted):
+        risky = [d for d in _dotted_names(node.func, aliases) if _is_high_risk(d)]
+        if risky:
             findings.append(
                 ScanFinding(
                     check="SCAN-TOPLEVEL-EFFECT",
                     path=rel,
                     line=node.lineno,
                     message=(
-                        f"high-risk call {dotted}() in a top-level assignment "
+                        f"high-risk call {risky[0]}() in a top-level assignment "
                         "executes at import time"
                     ),
                 )

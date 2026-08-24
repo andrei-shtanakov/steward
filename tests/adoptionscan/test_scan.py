@@ -459,3 +459,30 @@ def test_call_in_except_handler_expression_is_flagged(tmp_path: Path) -> None:
     result = scan_tree(tmp_path)
     assert result.verdict == "failed"
     assert "except handler" in result.findings[0].message
+
+
+def test_conditional_rebinding_keeps_every_candidate_origin(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 5: which branch wins at runtime is
+    # statically undecidable — if ANY candidate origin is high-risk, flag.
+    write(
+        tmp_path,
+        "m.py",
+        "try:\n    import requests as r\nexcept ImportError:\n    import mock as r\n\n"
+        "resp = r.get('http://203.0.113.7')\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert any("requests.get" in f.message for f in result.findings)
+
+
+def test_class_body_import_binds_for_class_body_scan(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 5: a class-body import binds a name the
+    # rest of the class body (which executes at import) can use.
+    write(
+        tmp_path,
+        "m.py",
+        "class A:\n    import subprocess\n\n    out = subprocess.run(['id'])\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert any("subprocess.run" in f.message for f in result.findings)
