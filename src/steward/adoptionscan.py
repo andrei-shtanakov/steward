@@ -255,13 +255,13 @@ def _scan_toplevel(body: list[ast.stmt], rel: str, aliases: dict[str, str]) -> l
             # The header executes at definition time — decorators and default
             # values run at import (`def f(x=os.system(...))` fires before the
             # first call; Codex gate on steward PR #108). The body does not.
-            findings.extend(_flag_header_calls(stmt, rel))
+            findings.extend(_flag_header_calls(stmt, rel, aliases))
             continue
         if isinstance(stmt, ast.ClassDef):
             # A class BODY executes at import in full, so it is recursed with
             # the same rules; the header (decorators, bases, metaclass
             # keywords) evaluates then too.
-            findings.extend(_flag_header_calls(stmt, rel))
+            findings.extend(_flag_header_calls(stmt, rel, aliases))
             findings.extend(_scan_toplevel(stmt.body, rel, aliases))
             continue
         if isinstance(stmt, ast.If):
@@ -271,6 +271,14 @@ def _scan_toplevel(body: list[ast.stmt], rel: str, aliases: dict[str, str]) -> l
             findings.extend(_scan_toplevel(stmt.orelse, rel, aliases))
             continue
         if isinstance(stmt, ast.Try):
+            # handler.type evaluates at import when the try body raises during
+            # module import (`except trigger():` — Codex gate, round 4), so a
+            # call there is an import-time effect like any if-condition call.
+            for handler in stmt.handlers:
+                if handler.type is not None:
+                    findings.extend(
+                        _flag_calls_in_test(handler.type, rel, where="except handler expression")
+                    )
             for block in (stmt.body, *(h.body for h in stmt.handlers), stmt.orelse, stmt.finalbody):
                 findings.extend(_scan_toplevel(block, rel, aliases))
             continue
@@ -288,17 +296,61 @@ def _scan_toplevel(body: list[ast.stmt], rel: str, aliases: dict[str, str]) -> l
     return findings
 
 
+#: Decorators applied bare (``@name`` without parentheses) are still calls at
+#: import time — ``@detonate`` invokes ``detonate(f)`` when the module loads.
+#: Flagging every decorated def would fail ~every real repo, so well-known
+#: effect-free stdlib decorators are exempt; everything else (a local or
+#: unknown decorator — the attack shape) is flagged. Matched on the dotted
+#: name after alias resolution.
+_BENIGN_BARE_DECORATORS = frozenset(
+    {"property", "staticmethod", "classmethod", "dataclasses.dataclass", "functools.cache"}
+)
+_BENIGN_BARE_DECORATOR_PREFIXES = (
+    "abc.",
+    "contextlib.",
+    "dataclasses.",
+    "enum.",
+    "functools.",
+    "typing.",
+    "warnings.",
+)
+
+
 def _flag_header_calls(
-    stmt: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, rel: str
+    stmt: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    rel: str,
+    aliases: dict[str, str],
 ) -> list[ScanFinding]:
     """Flag calls in a def/class header — they run at definition time.
 
-    Covered: decorators, argument defaults (positional and keyword-only),
-    class bases and metaclass keywords. Annotations are deliberately NOT
-    scanned: under ``from __future__ import annotations`` they never
-    evaluate, and typing constructs would drown the signal — a documented
-    limitation, same trade as top-level assignments.
+    Covered: decorators (call-form always; bare-form unless a well-known
+    effect-free stdlib decorator — applying ``@detonate`` executes it at
+    import, Codex gate round 4), argument defaults (positional and
+    keyword-only), class bases and metaclass keywords. Annotations are
+    deliberately NOT scanned: under ``from __future__ import annotations``
+    they never evaluate, and typing constructs would drown the signal — a
+    documented limitation, same trade as top-level assignments.
     """
+    findings: list[ScanFinding] = []
+    for deco in stmt.decorator_list:
+        if isinstance(deco, ast.Call):
+            continue  # picked up by the generic Call walk below
+        dotted = _dotted_name(deco, aliases)
+        if dotted is not None and (
+            dotted in _BENIGN_BARE_DECORATORS or dotted.startswith(_BENIGN_BARE_DECORATOR_PREFIXES)
+        ):
+            continue
+        findings.append(
+            ScanFinding(
+                check="SCAN-TOPLEVEL-EFFECT",
+                path=rel,
+                line=deco.lineno,
+                message=(
+                    f"decorator @{dotted or '<expression>'} is applied at import time"
+                    " and is not a known effect-free stdlib decorator"
+                ),
+            )
+        )
     header_exprs: list[ast.expr] = list(stmt.decorator_list)
     if isinstance(stmt, ast.ClassDef):
         header_exprs.extend(stmt.bases)
@@ -309,7 +361,7 @@ def _flag_header_calls(
         header_exprs.extend(d for d in args.defaults if d is not None)
         header_exprs.extend(d for d in args.kw_defaults if d is not None)
         what = "def header (decorator or default value)"
-    return [
+    findings.extend(
         ScanFinding(
             check="SCAN-TOPLEVEL-EFFECT",
             path=rel,
@@ -319,26 +371,42 @@ def _flag_header_calls(
         for expr in header_exprs
         for node in ast.walk(expr)
         if isinstance(node, ast.Call)
-    ]
+    )
+    return findings
 
 
 def _import_aliases(tree: ast.Module) -> dict[str, str]:
-    """Local name → canonical dotted origin, from every import in the module.
+    """Local name → canonical dotted origin, from MODULE-SCOPE imports only.
 
     ``import subprocess as sp`` maps ``sp`` → ``subprocess``;
     ``from os import system as s`` maps ``s`` → ``os.system``. Relative
     imports are skipped — they name the tool's own modules, not stdlib risk
     surfaces.
+
+    Nested scopes are NOT walked: an import inside a function binds a local
+    name, and letting it overwrite the module-scope entry would let
+    ``def helper(): import logging as subprocess`` hide a top-level
+    ``subprocess.run(...)`` from the high-risk list (Codex gate, round 4).
+    Module-scope ``if``/``try`` blocks DO bind module names and are followed.
     """
     aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
+    stack: list[ast.stmt] = list(tree.body)
+    while stack:
+        node = stack.pop()
         if isinstance(node, ast.Import):
             for alias in node.names:
                 bound = alias.asname or alias.name.split(".")[0]
                 aliases[bound] = alias.name if alias.asname else alias.name.split(".")[0]
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.level == 0:
+                for alias in node.names:
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.If):
+            stack.extend(node.body)
+            stack.extend(node.orelse)
+        elif isinstance(node, ast.Try):
+            for block in (node.body, *(h.body for h in node.handlers), node.orelse, node.finalbody):
+                stack.extend(block)
     return aliases
 
 
@@ -382,14 +450,14 @@ def _flag_high_risk_calls(value: ast.expr, rel: str, aliases: dict[str, str]) ->
     return findings
 
 
-def _flag_calls_in_test(test: ast.expr, rel: str) -> list[ScanFinding]:
-    """A call in a top-level ``if`` condition executes at import — flag it."""
+def _flag_calls_in_test(test: ast.expr, rel: str, where: str = "if condition") -> list[ScanFinding]:
+    """A call in a top-level ``if`` condition / ``except`` header runs at import."""
     return [
         ScanFinding(
             check="SCAN-TOPLEVEL-EFFECT",
             path=rel,
             line=node.lineno,
-            message="call in a top-level if condition executes at import time",
+            message=f"call in a top-level {where} executes at import time",
         )
         for node in ast.walk(test)
         if isinstance(node, ast.Call)

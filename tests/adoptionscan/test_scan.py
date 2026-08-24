@@ -405,3 +405,57 @@ def test_compile_with_nonliteral_keyword_source_is_flagged(tmp_path: Path) -> No
     result = scan_tree(tmp_path)
     assert result.verdict == "failed"
     assert result.findings[0].check == "SCAN-DYNAMIC-EXEC"
+
+
+def test_bare_local_decorator_is_flagged(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 4: applying @detonate calls it at import;
+    # only well-known effect-free stdlib decorators are exempt.
+    write(
+        tmp_path,
+        "m.py",
+        "def detonate(f):\n    return f\n\n\n@detonate\ndef payload():\n    pass\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert "@detonate" in result.findings[0].message
+
+
+def test_benign_stdlib_bare_decorators_stay_clean(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "m.py",
+        "import functools\nimport abc\n\n\nclass A(abc.ABC):\n"
+        "    @property\n    def x(self):\n        return 1\n\n"
+        "    @abc.abstractmethod\n    def y(self):\n        ...\n\n\n"
+        "@functools.cache\ndef f():\n    pass\n",
+    )
+    assert scan_tree(tmp_path).verdict == "clean"
+
+
+def test_nested_import_cannot_shadow_module_alias(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 4: an import inside a function binds a
+    # local name — it must not overwrite the module-scope alias map and hide
+    # a top-level subprocess.run from the high-risk list.
+    write(
+        tmp_path,
+        "m.py",
+        "import subprocess\n\n\ndef helper():\n    import logging as subprocess\n\n\n"
+        "trigger = subprocess.run(['id'])\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert "subprocess.run" in result.findings[0].message
+
+
+def test_call_in_except_handler_expression_is_flagged(tmp_path: Path) -> None:
+    # Codex gate on PR #108, round 4: `except trigger():` evaluates the
+    # handler expression at import when the try body raises during import.
+    write(
+        tmp_path,
+        "m.py",
+        "def trigger():\n    return ImportError\n\n\ntry:\n    import missing_dep\n"
+        "except trigger():\n    pass\n",
+    )
+    result = scan_tree(tmp_path)
+    assert result.verdict == "failed"
+    assert "except handler" in result.findings[0].message
