@@ -271,6 +271,7 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       поведение молча, а молчаливую подмену чинить нечем.
 - [ ] Раскатать `CODEX_REVIEW_API_KEY` и workflow по флоту @owner:github:andrei-shtanakov @blocked_by:todo://steward/codex-review-promotion @id:codex-review-rollout — второй ключ к ротации по 21 репо тем же скриптом `_cowork_output/ops/install-merge-broker-credentials.sh`; делать только после того, как вердикты доказали пользу на одном репо @epic:eco.codex-review-rollout
 - [ ] Прикрыть authority-root steward сторожем I2: `DEFAULT_GLOBS` зонтика не покрывают ни `.github/workflows/merge-broker.yml`, ни `profiles/approval-policy.yaml` @owner:github:andrei-shtanakov @trigger:"в `ci/governance/authority_root_guard.py` зонтика добавлены оба пути" @id:authority-guard-coverage — `authority-guard: true` в нашем каллере включать НЕЛЬЗЯ до этого: сторож отработает по чужим глобам, не найдёт ничего и покажет зелёное — ровно «неизвестность как зелёное». Сегодня I2 держит сам брокер (свой guard-список внутри workflow), а сторож зонтика — вторая, независимая линия; правка нужна в соседнем репо, у которого нет TODO-узла в Robin, поэтому здесь триггер, а не `@blocked_by` @epic:eco.governance-plane
+- [ ] **update-branch-дисциплина брокера против stale-merge-дерева** — условие включения D1, не делать до снятия блокера @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/agent-merge-observability @id:merge-broker-update-branch-discipline @epic:eco.governance-plane — приём входящего steward#116 (from atp-platform, вердикт гейта codex-review на atp-platform#306). Правило: перед мержем, если PR отстал от base → `update-branch` → дождаться зелёного rollup на обновлённом SHA → мержить. Дыра: зелёный rollup относится к merge-дереву на момент прогонов, движение base ничего не перезапускает (событие в PR не приходит) — пока мержит человек, границей служит его взгляд (плашка out-of-date), при включении D1 взгляда в контуре нет. Отклонённые альтернативы (довод в atp-platform#306): ruleset «Require branches to be up to date» — каскад O(N²) полных CI-прогонов при серийном мерже агентских PR; merge queue — гоняет только required-чеки на событии `merge_group`, которого нет ни в одном workflow флота (вернуться, когда/если required-чеки переведут на merge_group). Цена принята: каждый update-branch на не-драфте = платный прогон codex-review, при мерж-очередях брокера это штатный расход. Реализация брокера живёт в зонтике (`ai-orchestrators-workspace`) — при снятии блокера понадобится issue соседу, здесь останется пин каллера
 - [ ] Перейти с `app-id` на `client-id` в `actions/create-github-app-token` @owner:github:andrei-shtanakov @trigger:"вышел v4 действия либо app-id перестал приниматься" @id:merge-broker-client-id — в v3 `app-id` помечен deprecated. Переход требует раскатать по 21 репо ещё одну переменную (`MERGE_BROKER_CLIENT_ID`); делать это заранее ради предупреждения в логах смысла нет, но и забыть нельзя: когда вход уберут, мерж встанет во всём флоте разом @epic:eco.governance-plane
 - [x] Переформулировать обоснование `agent_merge_allowed: false` в `profiles/approval-policy.yaml` @owner:github:andrei-shtanakov @trigger:"ADR-ECO-008 ратифицирован (prograph-vault#80 смержен)" @id:agent-merge-policy-rationale-refresh — сейчас комментарий объясняет запрет статусом `proposed`. После ратификации запрет остаётся, но уже по другой причине: I4 не выполнен и различимой merge-личности не существует. Причина не должна протухнуть раньше факта, который она объясняет — иначе профиль начнёт ссылаться на снятое возражение и будет читаться как забытый
 
@@ -549,12 +550,22 @@ product decision record (и наоборот). Как approved proposal стан
       pyproject.toml, ни в uv.lock. Один язык, один пакет-менеджер — вся
       таблица детекторов ai-review не нужна
       @owner:github:andrei-shtanakov @id:review-kit-import-detector
-- [ ] Бамп пина openai/codex-action v1.11 → v1.12 (8636508, 2026-08-20):
+- [x] Бамп пина openai/codex-action v1.11 → v1.12 (8636508, 2026-08-20):
       усиление изоляции привилегий и отклонение оверрайдов, конфликтующих с
       protected execution settings — прямо наша модель угроз (ключ в джобе,
       читающей недоверенный текст). Перед бампом проверить CHANGELOG и
       требование unprivileged user namespaces на ubuntu-раннерах
-      @owner:github:andrei-shtanakov @id:review-kit-action-pin-bump
+      @owner:github:andrei-shtanakov @id:review-kit-action-pin-bump — PR этой
+      ветки, батчем со steward#115 (`review-kit-base-staleness-rationale`).
+      Пин — на коммит `86365089eb2b84e0a8fb0717b304f8bdcb13b20e`, разыменован
+      из аннотированного тега v1.12 напрямую у форджи (тег → tag-объект
+      `cac0877` → commit; короткий `8636508` из этого пункта совпал). Предчек
+      выполнен: CHANGELOG v1.12 подтверждает оба заявленных свойства;
+      требование unprivileged user namespaces закрывает сам action — его
+      префлайт включает `kernel.unprivileged_userns_clone` ДО drop-sudo
+      (дефолтная safety-strategy), а наш джоб review sudo/Docker/
+      привилегированные сокеты не использует, довод записан комментарием у
+      шага в workflow
 - [ ] Инлайн-аннотации из вердикта: report-джоба печатает
       `::error file=…,line=…,title=…::` для блокирующих и `::warning::` для
       остальных — находки появляются в Files changed, новых прав не нужно
@@ -687,6 +698,27 @@ PR и осознанно не закрыто; список полон, друг�
       файле каждый новый потребитель кита платил бы за находку заново
       (прецедент: spec-runner#313 → §13). Зеркала — обычным синком caller'ов
       потребителей после мержа
+
+- [x] Довод «staleness при движении base — свойство всех PR-чеков, лекарство —
+      ruleset» дописан в шапку `codex-review.yml`
+      @owner:github:andrei-shtanakov @id:review-kit-base-staleness-rationale —
+      приём входящего steward#115 (from atp-platform; major их гейта на
+      atp-platform#306, отклонённый с доводом); PR этой ветки, батчем с
+      `review-kit-action-pin-bump` (оба меняют один файл — одна волна синка
+      caller'ов вместо двух, потребителей шесть; прецедент батч-дисциплины —
+      steward#112): комментарий у триггера, рядом с доводом metadata-событий,
+      фиксирует — вердикт ключуется head SHA, событие «base сдвинулся» в
+      PR-контур форджи не приходит, перезапуск кодом workflow невыразим,
+      merge-ref-OID-ключ тоже ничего не запускает; так стареет любой PR-чек,
+      лекарство системное (ruleset «Require branches to be up to date» либо
+      merge queue — у владельца, все чеки разом), агентский путь закрывает
+      update-branch-дисциплина брокера
+      (`todo://steward/merge-broker-update-branch-discipline`). Смежный minor
+      того же вердикта (накопление комментариев) — существующий пункт
+      `review-kit-comment-dedup`. Гейт вердиктов не помнит — без довода в
+      файле каждый следующий потребитель платил бы за находку заново. После
+      мержа — синк caller'ов по флоту; в синк-PR kapelle/atp-platform/
+      arbiter/dispatcher попутно закрыть их чекбоксы `codex-review-caller`
 
 ## Ждём от других проектов
 
