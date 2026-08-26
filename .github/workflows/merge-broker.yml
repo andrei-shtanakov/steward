@@ -1,5 +1,7 @@
 # Merge-broker caller (ADR-ECO-008a). Тонкий каллер: пиненая ссылка на канонический
-# исполнитель ai-orchestrators-workspace/.github/workflows/merge-broker.yml@97c84db38a38e4911699c88a2ff6e9f0cc5d6f6f.
+# исполнитель ai-orchestrators-workspace/.github/workflows/merge-broker.yml@938a3318efc88c5d2b34899077dc9d71f1a31fac
+# (зонтик #25: update-branch-дисциплина против stale-merge-дерева, steward#116 —
+# отставание от base проверяется до чтения rollup; отстал → update-branch + отказ).
 # Код сюда НЕ копируется — предусловия мержа живут в одном месте на весь флот.
 #
 # Файл authority-root по I2 (он объявляет, что репозиторий делегирует право мержа) —
@@ -31,7 +33,7 @@ on:
 
 jobs:
   merge:
-    uses: andrei-shtanakov/ai-orchestrators-workspace/.github/workflows/merge-broker.yml@97c84db38a38e4911699c88a2ff6e9f0cc5d6f6f
+    uses: andrei-shtanakov/ai-orchestrators-workspace/.github/workflows/merge-broker.yml@938a3318efc88c5d2b34899077dc9d71f1a31fac
     with:
       pr: ${{ inputs.pr }}
       # `vars` каллера разрешается однозначно — в отличие от чтения переменных
