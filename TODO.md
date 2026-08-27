@@ -590,16 +590,19 @@ product decision record (и наоборот). Как approved proposal стан
       входящего steward#126 (from ecosystem-kb, PROPOSAL §6 C4; прототип
       prime-agent) @owner:github:andrei-shtanakov @id:review-dedup-diff-hash
       @trigger:"дефолт терминального ревью (2026-08-28) закреплён — эксперимент запускать после закрепления, принятие ≠ делать сегодня"
-- [ ] Линза подмены тестов в `review-prompt.md`: удаление/ослабление проверки
+- [x] Линза подмены тестов в `review-prompt.md`: удаление/ослабление проверки
       без замены (снятые assertions, skip/xfail на живых тестах, сужение
-      параметризации, выключение проверки в конфиге) = находка minimum major;
-      дифф, где тестов стало меньше, а кода больше, требует явного довода в
-      описании PR. Сейчас такой дифф читается гейтом как обычный код — tdd-gate
-      держит байт-лок только в TDD-режиме, обычные PR не покрыты вовсе. Размер
-      S: секция в промпте, разъезжается по 7 репо штатным re-vendor'ом; промпт
+      параметризации, выключение проверки в конфиге) = находка minimum major.
+      Сейчас такой дифф читается гейтом как обычный код — tdd-gate держит
+      байт-лок только в TDD-режиме, обычные PR не покрыты вовсе. Размер S:
+      секция в промпте, разъезжается по 7 репо штатным re-vendor'ом; промпт
       общий для CI и терминального канала — линза ужесточает оба — приём
       входящего steward#127 (from ecosystem-kb, PROPOSAL §6 C9; прототип
-      CodeJury) @owner:github:andrei-shtanakov @id:review-lens-test-tampering
+      CodeJury) @owner:github:andrei-shtanakov @id:review-lens-test-tampering —
+      PR этой ветки: абзац-линза в §4 промпта; форма «явный довод в описании
+      PR» из issue заменена на «довод, видимый в дереве» — описание PR в вход
+      ревьюера не попадает (ни в CI, ни в local.sh), требование, которое
+      ревьюер не может проверить, было бы мёртвой буквой
 - [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики
       precision блокирующих/recall major+blocker/ложные блокировки/доля без
       evidence/стоимость; для гейта precision важнее полноты
@@ -687,7 +690,7 @@ PR и осознанно не закрыто; список полон, друг�
   дифа, подделка требует знать хеш содержимого, включающего подделку. Промпт отдельно
   называет содержимое между маркерами недоверенными данными.
 
-- [ ] Док-абзац в README кита: потолок `timeout-minutes` — не гарантия во время аварии Actions @owner:github:andrei-shtanakov @id:review-kit-ceiling-vs-actions-outage @epic:eco.codex-review-rollout
+- [x] Док-абзац: потолок `timeout-minutes` — не гарантия во время аварии Actions @owner:github:andrei-shtanakov @id:review-kit-ceiling-vs-actions-outage @epic:eco.codex-review-rollout
 
   Приём входящего steward#124 (from dispatcher; боевой день 2026-08-26, major
   outage Actions) — принят с понижением: приоритет низкий, правка — не код, а
@@ -702,6 +705,12 @@ PR и осознанно не закрыто; список полон, друг�
   «потолок превращает зависание в именованный отказ в норме, но НЕ во время
   аварии Actions; диагностика — githubstatus components (Actions !=
   operational); ручной рычаг — force-cancel».
+
+  Закрыт PR этой ветки: абзац дописан к существующему доводу потолка у
+  `timeout-minutes` в `codex-review.yml` (steward#121), а не в README —
+  workflow разъезжается синком caller'ов по всем потребителям кита, README
+  steward остаётся дома; довод живёт там, где будущий читатель «посчитает
+  потолок гарантией».
 
 - [x] jq-префлайт в `apply-threshold.sh` + доводка комментария прохода 2
       `collect-context.sh` @owner:github:andrei-shtanakov @id:review-kit-jq-preflight —
