@@ -489,26 +489,22 @@ product decision record (и наоборот). Как approved proposal стан
       base во временный доверенный каталог, чекаут — head PR, codex read-only по
       получившемуся дереву, диф — указатель на область ревью; ничего из PR не
       исполнять @owner:github:andrei-shtanakov @id:review-kit-final-tree
-- [ ] Переписать шкалу severity: blocker сужен (эксплуатация, необратимая потеря,
+- [ ] Переписать шкалу severity: blocker сужен (эксплуатация, необратимая потеря, @owner:github:andrei-shtanakov @id:review-kit-severity-rewrite
       обход authority, гарантированная невозможность основного сценария), для
       blocker/major обязательны файл+строка, вход, наблюдаемый результат, ссылка
       на проверенный код и почему существующие проверки не ловят
-      @owner:github:andrei-shtanakov @id:review-kit-severity-rewrite
-- [ ] Сократить промпт до 4 разделов (~700–1200 слов): что ревьюируется,
+- [ ] Сократить промпт до 4 разделов (~700–1200 слов): что ревьюируется, @owner:github:andrei-shtanakov @id:review-kit-prompt-diet
       инструменты/файлы, условия валидной находки, шкала+формат; механику
       доверия обеспечивает runner, а не проза
-      @owner:github:andrei-shtanakov @id:review-kit-prompt-diet
-- [ ] Статический контекст — только архитектурные контракты и инварианты; обычные
+- [ ] Статический контекст — только архитектурные контракты и инварианты; обычные @owner:github:andrei-shtanakov @id:review-kit-context-demotion
       исходники уходят (доступны деревом), в промпт — требование читать callers,
       callees и тесты изменённого кода
-      @owner:github:andrei-shtanakov @id:review-kit-context-demotion
 - [ ] Усилить схему вердикта: file/line/scenario/observed/expected/evidence[]/
       confidence; блокируют только blocker/major с confidence: high и заполненным
       evidence @owner:github:andrei-shtanakov @id:review-kit-verdict-schema-v2
-- [ ] Большие PR: до ~20–30 файлов один прогон; крупнее — chunked по подсистемам +
+- [ ] Большие PR: до ~20–30 файлов один прогон; крупнее — chunked по подсистемам + @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode
       финальный межмодульный проход; generated/lock/snapshots не ревьюировать как
       код; обрезка дифа не молча, а явным infrastructure failure
-      @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode
 
   Гардрейл влит 2026-08-23: `build-prompt.sh` (общая точка CI и local.sh)
   отказывает кодом 2 на дифе шире 30 файлов / 400 000 байт, называя причину и
@@ -518,45 +514,40 @@ product decision record (и наоборот). Как approved proposal стан
   межмодульный проход; при любой схеме чанкинга нужен dedup-ключ находок
   `(file, line, нормализованное сообщение)` — одна находка приедет из
   нескольких чанков.
-- [ ] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со
+- [ ] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers
       спецсимволами/пробелами): такой путь не совпадает с сырым членом
       `--generated-list` и остаётся в дифе — худший исход сегодня это явный
       отказ по потолку (fail в сторону ревью, находка minor гейта на #99,
       подтверждена шестым заходом). Правка — нормализация кавыченной формы в
       awk `build-prompt.sh` согласованно с `core.quotePath=false` у сборки
       списка в local.sh
-      @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers
-- [x] CI передаёт `--generated-list` в `build-prompt.sh` — включается
+- [x] CI передаёт `--generated-list` в `build-prompt.sh` — включается @owner:github:andrei-shtanakov @id:review-kit-ci-generated-list
       ДЕТЕКЦИЕЙ литерала флага в извлечённой из base механике (деплой-
       ограничение head-YAML × base-скрипты обойдено без второго PR; до мержа
       кита фильтра в CI нет — явный отказ по потолку, честный и временный)
-      @owner:github:andrei-shtanakov @id:review-kit-ci-generated-list
-- [ ] Вето head-стороны generated-деклараций скоупить до фактически
+- [ ] Вето head-стороны generated-деклараций скоупить до фактически @id:review-kit-attr-veto-scope
       изменённых `.gitattributes`: сейчас правка одного файла деклараций
       включает пересечение целиком и роняет base-side декларацию из другого
       (multi-file топология; minor четырнадцатого захода на #99, край назван
       в комментарии local.sh) — расхождение local↔CI в сторону ложного
       отказа по потолку @owner:github:andrei-shtanakov
-      @id:review-kit-attr-veto-scope
-- [ ] Накопление вердиктов codex-review в jsonl-корпус (PR, head_sha, модель,
+- [ ] Накопление вердиктов codex-review в jsonl-корпус (PR, head_sha, модель, @owner:github:andrei-shtanakov @id:review-kit-verdict-corpus
       effort, находки, что стало блокирующим) — жанр `gate_verdicts.jsonl` с
       header-записью уже есть (`src/steward/verdicts/emitter.py`); без
       накопления eval-харнесс упрётся в ручной сбор прошлых PR. ОТКРЫТЫЙ
       ДИЗАЙН-ВОПРОС владельцу: кто и куда пишет из CI — у джобы нет права
       коммитить в master; варианты «аггрегация артефактов по расписанию» и
       «ветка-корпус» дают разные гарантии
-      @owner:github:andrei-shtanakov @id:review-kit-verdict-corpus
-- [ ] Детерминированный пре-фильтр в report-джобе (без ключа, без LLM):
+- [ ] Детерминированный пре-фильтр в report-джобе (без ключа, без LLM): @owner:github:andrei-shtanakov @id:review-kit-import-detector
       детектор галлюцинированных импортов — импорт, которого нет ни в
       pyproject.toml, ни в uv.lock. Один язык, один пакет-менеджер — вся
       таблица детекторов ai-review не нужна
-      @owner:github:andrei-shtanakov @id:review-kit-import-detector
-- [x] Бамп пина openai/codex-action v1.11 → v1.12 (8636508, 2026-08-20):
+- [x] Бамп пина openai/codex-action v1.11 → v1.12 (8636508, 2026-08-20): @owner:github:andrei-shtanakov @id:review-kit-action-pin-bump
       усиление изоляции привилегий и отклонение оверрайдов, конфликтующих с
       protected execution settings — прямо наша модель угроз (ключ в джобе,
       читающей недоверенный текст). Перед бампом проверить CHANGELOG и
       требование unprivileged user namespaces на ubuntu-раннерах
-      @owner:github:andrei-shtanakov @id:review-kit-action-pin-bump — PR этой
+      — PR этой
       ветки, батчем со steward#115 (`review-kit-base-staleness-rationale`).
       Пин — на коммит `86365089eb2b84e0a8fb0717b304f8bdcb13b20e`, разыменован
       из аннотированного тега v1.12 напрямую у форджи (тег → tag-объект
@@ -567,14 +558,12 @@ product decision record (и наоборот). Как approved proposal стан
       (дефолтная safety-strategy), а наш джоб review sudo/Docker/
       привилегированные сокеты не использует, довод записан комментарием у
       шага в workflow
-- [ ] Инлайн-аннотации из вердикта: report-джоба печатает
+- [ ] Инлайн-аннотации из вердикта: report-джоба печатает @owner:github:andrei-shtanakov @id:review-kit-inline-annotations
       `::error file=…,line=…,title=…::` для блокирующих и `::warning::` для
       остальных — находки появляются в Files changed, новых прав не нужно
-      @owner:github:andrei-shtanakov @id:review-kit-inline-annotations
-- [ ] Дедуп сводок в треде PR: скрытый маркер в теле комментария + поиск
+- [ ] Дедуп сводок в треде PR: скрытый маркер в теле комментария + поиск @owner:github:andrei-shtanakov @id:review-kit-comment-dedup
       своего последнего + правка вместо создания (10 раундов на #99 = 10
       сводок, актуальна одна). Маркер обязан пережить смену формата тела
-      @owner:github:andrei-shtanakov @id:review-kit-comment-dedup
 - [ ] Дедуп ревью по снимку диффа — вердикт не перегоняется на байт-идентичном входе @owner:github:andrei-shtanakov @id:review-dedup-diff-hash @blocked_by:todo://devtools/review-pr-fp-slurp-compat
 
   Отпечаток входа = sha256(канонизированный `git diff base...head` + промпт +
@@ -620,19 +609,16 @@ product decision record (и наоборот). Как approved proposal стан
       PR» из issue заменена на «довод, видимый в дереве» — описание PR в вход
       ревьюера не попадает (ни в CI, ни в local.sh), требование, которое
       ревьюер не может проверить, было бы мёртвой буквой
-- [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики
+- [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики @owner:github:andrei-shtanakov @id:review-kit-eval-harness
       precision блокирующих/recall major+blocker/ложные блокировки/доля без
       evidence/стоимость; для гейта precision важнее полноты
-      @owner:github:andrei-shtanakov @id:review-kit-eval-harness
-- [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта
+- [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
       модели × два уровня), не по рассуждению в комментарии workflow
-      @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
-- [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся
+- [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
       (итерация бесплатна); запрос = снятие драфта (автозапуск) или лейбл
       `codex-review` (действует на следующие пуши драфта). Форма отказа —
       синтетический вердикт + красный report с причиной, не skipped-джобы
       (пропущенный джоб засчитывается required-чеку как пройденный)
-      @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
 
 ### 10. codex-review kit: известные хвосты
 
@@ -752,8 +738,8 @@ PR и осознанно не закрыто; список полон, друг�
       сверка↔публикация; код выхода чека устаревание не меняет (чек висит на
       старом коммите). spec-runner зеркалит после мержа
 
-- [x] Довод триггеров codex-review расширен на `converted_to_draft`/`unlabeled`
-      @owner:github:andrei-shtanakov @id:review-kit-trigger-metadata-rationale —
+- [x] Довод триггеров codex-review расширен на `converted_to_draft`/`unlabeled` @owner:github:andrei-shtanakov @id:review-kit-trigger-metadata-rationale
+      —
       приём входящего steward#111 (from maestro; major их гейта на maestro#214,
       отклонённый с доводом); PR этой ветки: комментарий у триггера в
       `codex-review.yml` теперь фиксирует, почему оба события намеренно
@@ -767,9 +753,9 @@ PR и осознанно не закрыто; список полон, друг�
       (прецедент: spec-runner#313 → §13). Зеркала — обычным синком caller'ов
       потребителей после мержа
 
-- [x] Довод «staleness при движении base — свойство всех PR-чеков, лекарство —
+- [x] Довод «staleness при движении base — свойство всех PR-чеков, лекарство — @owner:github:andrei-shtanakov @id:review-kit-base-staleness-rationale
       ruleset» дописан в шапку `codex-review.yml`
-      @owner:github:andrei-shtanakov @id:review-kit-base-staleness-rationale —
+      —
       приём входящего steward#115 (from atp-platform; major их гейта на
       atp-platform#306, отклонённый с доводом); PR этой ветки, батчем с
       `review-kit-action-pin-bump` (оба меняют один файл — одна волна синка
@@ -790,13 +776,12 @@ PR и осознанно не закрыто; список полон, друг�
 
 ## Ждём от других проектов
 
-- [x] **devtools → догоняющая волна re-vendor кита после steward#129**: промпт с
+- [x] **devtools → догоняющая волна re-vendor кита после steward#129**: промпт с @id:review-kit-prompt-lens-wave-wait @blocked_by:todo://devtools/review-kit-prompt-lens-wave
       линзой ослабления тестов (22 репо с prompt+PIN) + caller-workflow с доводом
       потолка (6 репо); волна 2026-08-27 разъехалась с e4c43cc — ДО #129, а
       drift-вахта потребителей ни промпт, ни caller-yml не сравнивает — сама не
       догонит @owner:repo:devtools
-      @blocked_by:todo://devtools/review-kit-prompt-lens-wave
-      @id:review-kit-prompt-lens-wave-wait — волна прошла (devtools#69),
+      — волна прошла (devtools#69),
       доставка сверена по форджу 2026-08-28: git-sha `review-prompt.md`
       байт-совпадает со steward master у выборки 8 потребителей,
       `codex-review.yml` — у всех 6 caller-репо
