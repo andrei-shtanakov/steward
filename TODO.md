@@ -175,7 +175,16 @@ verification-rule поверх verdict-записей. Maestro (WS-006 M-1) со
       менялась → `version: 2` остаётся** — потребителю пересматривать состав не
       нужно, только перевендорить файл.
 - [x] Hash-chain для `gate_verdicts.jsonl` — тампер-эвидентный леджер @owner:github:andrei-shtanakov @id:gate-verdicts-hash-chain — приём входящего steward#105 (from ai-repos-research#proposal-v3-harvest). PR этой ветки: каждая запись после строки 1 несёт `prev_hash` (SHA-256 hex байтов предыдущей строки без `\n`; header — якорь, поле не несёт никогда — его `$def` в схеме поля не объявляет); эмиссия в `verdicts/chain.py::serialize_chained` (хеш от УЖЕ сериализованной строки — проверка перегоняется байт-в-байт), верификатор `steward verdicts-verify` (chained|legacy → 0, broken → 1, config → 2) + библиотека `verify_chain`; правило аддитивности из issue дословно: файл без поля — legacy-валиден, цепочка обязательна с первой записи, несущей поле. Схема v1 расширена опциональным `prev_hash` (artifact/finding; прецедент — `obligation`), фикстуры `chained.jsonl`/`broken_chain.jsonl`, README: раздел «Целостность» с честными границами (усечение хвоста и полная перезапись с пересчётом цепочкой НЕ ловятся — нужен внешний якорь, вне scope v1). Ре-вендоринг пиненой копии у dispatcher — inbox-handoff по ADR-ECO-006, ожидание — следующим пунктом; до него их прежняя копия классифицирует новые файлы unreadable — fail-closed, не тихое зелёное
-- [ ] dispatcher перевендоривает `contracts/gate-verdicts/v1` с `prev_hash` (dispatcher#173) @owner:repo:dispatcher @blocked_by:dispatcher#gate-verdicts-v1-prev-hash-revendor @id:gate-verdicts-prev-hash-dispatcher-revendor — до ре-вендоринга их панель классифицирует сцепленные файлы unreadable (красное, но fail-closed); признак «сделано» — их copy-integrity зелёная на byte-equal копии @epic:eco.governance-plane
+- [x] dispatcher перевендоривает `contracts/gate-verdicts/v1` с `prev_hash` (dispatcher#173) @owner:repo:dispatcher @id:gate-verdicts-prev-hash-dispatcher-revendor — до ре-вендоринга их панель классифицировала сцепленные файлы unreadable (красное, но fail-closed); признак «сделано» — их copy-integrity зелёная на byte-equal копии @epic:eco.governance-plane
+
+  Закрыт 2026-08-28 по PF-BLOCKER-STALE (dispatcher свой пункт завершил):
+  признак сверен по форджу, не со слов — `SCHEMA.json` в
+  `dispatcher/contracts/steward-gate-verdicts/v1/` на их дефолтной ветке
+  git-sha-идентичен steward master (`2d3c7d3a`), manifest.json пинует
+  producer_commit `9916787f`. Ожидание жило тегом
+  `@blocked_by:dispatcher#gate-verdicts-v1-prev-hash-revendor`; по
+  плану-доку gate-id-catalog зависимость закрытого пункта хранится прозой,
+  тег с чекбокса снят.
 - [ ] Read-only панель состояния бандла в dispatcher (рендер — на их стороне) @owner:github:andrei-shtanakov @id:dispatcher-bundle-status-panel @epic:eco.governance-plane
       Unblocked by steward#33 (2026-08-06). Acceptance-сверка с фактической
       панелью dispatcher (2026-08-06): 5/6 критериев подтверждены кодом —
