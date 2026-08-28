@@ -1337,3 +1337,201 @@ def test_local_forwards_diff_ceiling_overrides(tmp_path: Path) -> None:
     # С override — проходит.
     passed = run_local(local, make_stub(tmp_path, STUB_OK), "--max-diff-files", "40")
     assert passed.returncode == 0, passed.stdout + passed.stderr
+
+
+# --- --fingerprint-only (@id:review-dedup-diff-hash, steward#126) -----------
+#
+# REVIEW_CMD во всех тестах отпечатка — КОНСТАНТА "false", по двум причинам
+# разом: путь к tmp-стабу различается между репозиториями и ломал бы
+# равенство отпечатков (REVIEW_CMD — компонент отпечатка), а вызов `false`
+# уронил бы прогон кодом 3 — то есть равенство и «ревьюер не вызывается»
+# доказываются одной и той же подстановкой.
+
+FP_ENV = {"REVIEW_CMD": "false"}
+HEX64 = "0123456789abcdef"
+
+
+def is_hex64(line: str) -> bool:
+    return len(line) == 64 and all(c in HEX64 for c in line)
+
+
+def make_repo_with_feature(
+    tmp_path: Path,
+    name: str,
+    *,
+    base_files: dict[str, str] | None = None,
+    feature_content: str = "новое\n",
+) -> Path:
+    """Репо с базой (опц. доп. файлы) и одним feature-коммитом поверх."""
+    remote = tmp_path / f"{name}-remote"
+    remote.mkdir()
+    subprocess.run(["git", "-C", str(remote), "init", "-q", "-b", "master"], check=True)
+    git(remote, "config", "user.email", "t@t")
+    git(remote, "config", "user.name", "t")
+    (remote / "base.txt").write_text("base\n", encoding="utf-8")
+    for rel, content in (base_files or {}).items():
+        path = remote / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "base")
+
+    local = tmp_path / f"{name}-local"
+    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True, capture_output=True)
+    git(local, "config", "user.email", "t@t")
+    git(local, "config", "user.name", "t")
+    git(local, "remote", "set-head", "origin", "-a")
+    (local / "new.txt").write_text(feature_content, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    return local
+
+
+def fingerprint(
+    repo: Path,
+    *args: str,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = dict(FP_ENV)
+    if env_overrides:
+        env.update(env_overrides)
+    return run_local(repo, "false", "--fingerprint-only", *args, env_overrides=env)
+
+
+def test_fingerprint_only_prints_single_hex_line_and_is_deterministic(
+    tmp_path: Path,
+) -> None:
+    """stdout — ровно одна строка 64 hex; повторный прогон даёт ту же."""
+    local = make_repo_with_feature(tmp_path, "det")
+    first = fingerprint(local)
+    second = fingerprint(local)
+    assert first.returncode == 0, first.stdout + first.stderr
+    lines = first.stdout.splitlines()
+    assert len(lines) == 1, first.stdout
+    assert is_hex64(lines[0]), lines[0]
+    assert first.stdout == second.stdout
+
+
+def test_fingerprint_only_does_not_call_reviewer_or_threshold(tmp_path: Path) -> None:
+    """REVIEW_CMD=false: вызов ревьюера дал бы код 3 — его не должно быть."""
+    local = make_repo_with_feature(tmp_path, "nocall")
+    result = fingerprint(local)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_fingerprint_only_rejects_fetch(tmp_path: Path) -> None:
+    """--fetch несовместим: отпечаток обязан быть оффлайн-вычислимым."""
+    local = make_repo_with_feature(tmp_path, "nofetch")
+    result = fingerprint(local, "--fetch")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--fingerprint-only" in result.stderr
+
+
+def test_fingerprint_only_skips_network_freshness_check(tmp_path: Path) -> None:
+    """При недоступном remote обычный прогон предупреждает, fp-режим — молчит:
+    ls-remote в оффлайн-режиме не вызывается вовсе."""
+    local = make_repo_with_feature(tmp_path, "offline")
+    git(local, "remote", "set-url", "origin", str(tmp_path / "нет-такого"))
+    noisy = run_local(local, "false", env_overrides=FP_ENV)
+    assert "свежесть базы не проверена" in noisy.stderr
+    quiet = fingerprint(local)
+    assert quiet.returncode == 0, quiet.stdout + quiet.stderr
+    assert "свежесть базы не проверена" not in quiet.stderr
+
+
+def test_fingerprint_stable_across_head_sha_for_same_input(tmp_path: Path) -> None:
+    """Тот же эффективный вход при другом head SHA — тот же отпечаток
+    (близнец боевого повода: close/reopen, rerun)."""
+    local = make_repo_with_feature(tmp_path, "amend")
+    before = fingerprint(local)
+    assert before.returncode == 0, before.stdout + before.stderr
+    assert is_hex64(before.stdout.strip()), before.stdout
+    old_sha = git(local, "rev-parse", "HEAD")
+    git(local, "commit", "--amend", "-qm", "работа (другое сообщение)")
+    assert git(local, "rev-parse", "HEAD") != old_sha
+    after = fingerprint(local)
+    assert before.stdout == after.stdout
+
+
+def test_fingerprint_changes_with_diff_content(tmp_path: Path) -> None:
+    a = fingerprint(make_repo_with_feature(tmp_path, "diff-a"))
+    b = fingerprint(make_repo_with_feature(tmp_path, "diff-b", feature_content="иное\n"))
+    assert a.stdout != b.stdout
+
+
+def test_fingerprint_changes_with_base_context(tmp_path: Path) -> None:
+    """Правка контекста в базе меняет отпечаток при неизменном дифе."""
+    manifest = ".github/codex/review-context.txt"
+
+    def repo(name: str, ctx: str) -> Path:
+        return make_repo_with_feature(
+            tmp_path, name, base_files={manifest: "ctx.md\n", "ctx.md": ctx}
+        )
+
+    a = fingerprint(repo("ctx-a", "инвариант один\n"))
+    b = fingerprint(repo("ctx-b", "инвариант другой\n"))
+    assert a.returncode == 0 and b.returncode == 0, a.stderr + b.stderr
+    assert a.stdout != b.stdout
+
+
+def test_fingerprint_changes_with_generated_filter_result(tmp_path: Path) -> None:
+    """Декларация generated в базе меняет вход (файл уходит в маркер) — и отпечаток."""
+    a = fingerprint(make_repo_with_feature(tmp_path, "gen-a"))
+    b = fingerprint(
+        make_repo_with_feature(
+            tmp_path,
+            "gen-b",
+            base_files={".gitattributes": "new.txt linguist-generated\n"},
+        )
+    )
+    assert a.returncode == 0 and b.returncode == 0, a.stderr + b.stderr
+    assert a.stdout != b.stdout
+
+
+def test_fingerprint_changes_with_prompt_schema_threshold_review_cmd(
+    tmp_path: Path,
+) -> None:
+    """Каждая компонента входа — промпт, схема, порог, REVIEW_CMD — меняет отпечаток."""
+    local = make_repo_with_feature(tmp_path, "components")
+    baseline = fingerprint(local)
+    assert baseline.returncode == 0, baseline.stderr
+
+    prompt_copy = tmp_path / "prompt.md"
+    prompt_copy.write_text(
+        (ROOT / ".github" / "codex" / "review-prompt.md").read_text(encoding="utf-8")
+        + "\nдоп. правило\n",
+        encoding="utf-8",
+    )
+    schema_copy = tmp_path / "schema.json"
+    schema_copy.write_text(
+        (ROOT / ".github" / "codex" / "review-schema.json").read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+    kit_copy = tmp_path / "kit"
+    shutil.copytree(ROOT / "scripts" / "review", kit_copy)
+    threshold = kit_copy / "apply-threshold.sh"
+    threshold.write_text(
+        threshold.read_text(encoding="utf-8") + "\n# порог пересмотрен\n",
+        encoding="utf-8",
+    )
+
+    variants = [
+        fingerprint(local, env_overrides={"REVIEW_PROMPT": str(prompt_copy)}),
+        fingerprint(local, env_overrides={"REVIEW_SCHEMA": str(schema_copy)}),
+        fingerprint(local, env_overrides={"REVIEW_KIT_DIR": str(kit_copy)}),
+        fingerprint(local, env_overrides={"REVIEW_CMD": "false --model другой"}),
+    ]
+    outs = [v.stdout for v in variants]
+    for v in variants:
+        assert v.returncode == 0, v.stderr
+    assert len({baseline.stdout, *outs}) == 5, outs
+
+
+def test_fingerprint_only_empty_diff_prints_no_hex(tmp_path: Path) -> None:
+    """Пустой диф — штатный исход «ревьюировать нечего», без отпечатка:
+    контракт «ровно одна строка 64-hex» — только для непустого входа."""
+    _, local = make_repo(tmp_path)
+    result = fingerprint(local)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not any(is_hex64(line) for line in result.stdout.splitlines())
+    assert "ревьюировать нечего" in result.stdout + result.stderr
