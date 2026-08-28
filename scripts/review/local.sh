@@ -604,7 +604,20 @@ if [ "$fp_only" -eq 1 ]; then
         echo "хеширование отпечатка не удалось ($sha_cmd)." >&2
         exit 2
     fi
-    printf '%s\n' "$fp_line" | cut -c1-64
+    # Дайджест валидируется, а не обрезается: хешер с кодом 0, но битым
+    # выводом (сломанный shim в PATH) иначе печатал бы «отпечаток»,
+    # нарушающий контракт 64-hex, — и будущий caller унёс бы его как
+    # cache key (находка гейта этой же ветки).
+    set -- $fp_line
+    fp_digest="${1:-}"
+    case "$fp_digest" in
+        *[!0-9a-f]*) fp_digest="" ;;
+    esac
+    if [ "${#fp_digest}" -ne 64 ]; then
+        echo "хешер вернул не 64-hex дайджест ($sha_cmd): '$fp_line'" >&2
+        exit 2
+    fi
+    printf '%s\n' "$fp_digest"
     exit 0
 fi
 

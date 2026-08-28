@@ -1549,3 +1549,17 @@ def test_fingerprint_component_read_failure_is_config_error(tmp_path: Path) -> N
     result = fingerprint(local, env_overrides={"REVIEW_KIT_DIR": str(kit_copy)})
     assert result.returncode == 2, result.stdout + result.stderr
     assert not any(is_hex64(line) for line in result.stdout.splitlines())
+
+
+def test_fingerprint_rejects_corrupt_hasher_output(tmp_path: Path) -> None:
+    """Хешер с кодом 0, но битым выводом (сломанный shim) — код 2, не
+    «отпечаток», нарушающий контракт 64-hex."""
+    local = make_repo_with_feature(tmp_path, "bad-hasher")
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "sha256sum"
+    shim.write_text("#!/bin/sh\ncat > /dev/null\necho oops\n", encoding="utf-8")
+    shim.chmod(0o755)
+    result = fingerprint(local, env_overrides={"PATH": f"{shim_dir}:{os.environ['PATH']}"})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert not any(is_hex64(line) for line in result.stdout.splitlines())
