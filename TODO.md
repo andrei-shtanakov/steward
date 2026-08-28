@@ -773,13 +773,16 @@ PR и осознанно не закрыто; список полон, друг�
 
 ## Ждём от других проектов
 
-- [ ] **devtools → догоняющая волна re-vendor кита после steward#129**: промпт с
+- [x] **devtools → догоняющая волна re-vendor кита после steward#129**: промпт с
       линзой ослабления тестов (22 репо с prompt+PIN) + caller-workflow с доводом
-      потолка (6 репо); сегодняшняя волна разъехалась с e4c43cc — ДО #129, а
+      потолка (6 репо); волна 2026-08-27 разъехалась с e4c43cc — ДО #129, а
       drift-вахта потребителей ни промпт, ни caller-yml не сравнивает — сама не
       догонит @owner:repo:devtools
       @blocked_by:todo://devtools/review-kit-prompt-lens-wave
-      @id:review-kit-prompt-lens-wave-wait
+      @id:review-kit-prompt-lens-wave-wait — волна прошла (devtools#69),
+      доставка сверена по форджу 2026-08-28: git-sha `review-prompt.md`
+      байт-совпадает со steward master у выборки 8 потребителей,
+      `codex-review.yml` — у всех 6 caller-репо
 - **spec-runner → C2**: `owner_role` + `SPEC_META_CONTRACT = 2`. В работе (ветка
   `feat/specmeta-contract-v2`). Единственная внешняя блокировка steward-кода — и туда срочно
   уходит уточнённый ask по DEC-007 (singular slug).
