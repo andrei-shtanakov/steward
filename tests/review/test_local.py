@@ -1535,3 +1535,17 @@ def test_fingerprint_only_empty_diff_prints_no_hex(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert not any(is_hex64(line) for line in result.stdout.splitlines())
     assert "ревьюировать нечего" in result.stdout + result.stderr
+
+
+def test_fingerprint_component_read_failure_is_config_error(tmp_path: Path) -> None:
+    """Нечитаемая компонента (порог — каталог) — код 2, а не отпечаток от
+    неполного входа: разные поломки не должны схлопываться в один cache-key."""
+    local = make_repo_with_feature(tmp_path, "broken-threshold")
+    kit_copy = tmp_path / "kit-broken"
+    shutil.copytree(ROOT / "scripts" / "review", kit_copy)
+    threshold = kit_copy / "apply-threshold.sh"
+    threshold.unlink()
+    threshold.mkdir()
+    result = fingerprint(local, env_overrides={"REVIEW_KIT_DIR": str(kit_copy)})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert not any(is_hex64(line) for line in result.stdout.splitlines())

@@ -562,11 +562,13 @@ sh "$kit_dir/build-prompt.sh" "$@" > "$work/prompt.txt"
 # кэша — в сторону полного ревью, не в сторону ложного наследования.
 if [ "$fp_only" -eq 1 ]; then
     threshold_script="$kit_dir/apply-threshold.sh"
-    [ -r "$threshold_script" ] || {
-        echo "нет файла порога: $threshold_script — порог есть компонент" \
-            "отпечатка." >&2
+    # `-f` вместе с `-r`: читаемый КАТАЛОГ проходит `-r`, а `cat` на нём падает
+    # уже внутри сборки потока (находка гейта этой же ветки).
+    if [ ! -f "$threshold_script" ] || [ ! -r "$threshold_script" ]; then
+        echo "порог нечитаем или не файл: $threshold_script — порог есть" \
+            "компонент отпечатка." >&2
         exit 2
-    }
+    fi
     if command -v sha256sum >/dev/null 2>&1; then
         sha_cmd="sha256sum"
     elif command -v shasum >/dev/null 2>&1; then
@@ -576,18 +578,33 @@ if [ "$fp_only" -eq 1 ]; then
         exit 2
     fi
     fp_component() {
-        # $1 — имя компоненты, $2 — файл с её точными байтами.
-        printf 'component %s length %s\n' "$1" "$(wc -c < "$2" | tr -d ' 	')"
-        cat "$2"
+        # $1 — имя компоненты, $2 — файл с её точными байтами. Каждый шаг с
+        # явным `|| return 1`: сбой чтения обязан провалить сборку потока, а
+        # не выродиться в отпечаток от неполного входа.
+        fp_len=$(wc -c < "$2" | tr -d ' 	') || return 1
+        printf 'component %s length %s\n' "$1" "$fp_len" || return 1
+        cat "$2" || return 1
+    }
+    assemble_fp_stream() {
+        printf 'protocol codex-terminal-review-fingerprint-v1\n' &&
+            fp_component prompt "$work/prompt.txt" &&
+            fp_component schema "$schema" &&
+            fp_component threshold "$threshold_script" &&
+            fp_component review_cmd "$work/review-cmd.txt"
     }
     printf '%s' "$review_cmd" > "$work/review-cmd.txt"
-    {
-        printf 'protocol codex-terminal-review-fingerprint-v1\n'
-        fp_component prompt "$work/prompt.txt"
-        fp_component schema "$schema"
-        fp_component threshold "$threshold_script"
-        fp_component review_cmd "$work/review-cmd.txt"
-    } | $sha_cmd | cut -c1-64
+    # Поток — через файл, не пайплайн: статус пайплайна в POSIX sh — статус
+    # ПОСЛЕДНЕЙ команды, и упавший производитель молча маскировался бы хешем
+    # обрезанного потока.
+    if ! assemble_fp_stream > "$work/fp-stream.bin"; then
+        echo "не удалось собрать поток отпечатка (компонент нечитаем)." >&2
+        exit 2
+    fi
+    if ! fp_line=$($sha_cmd < "$work/fp-stream.bin"); then
+        echo "хеширование отпечатка не удалось ($sha_cmd)." >&2
+        exit 2
+    fi
+    printf '%s\n' "$fp_line" | cut -c1-64
     exit 0
 fi
 
