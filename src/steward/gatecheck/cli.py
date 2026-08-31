@@ -34,6 +34,7 @@ from steward.gatecheck.architecture import (
     collect_arch_bundle,
     load_arch_policy,
 )
+from steward.gatecheck.candidate import NOT_EVALUATED, CandidateGitFacts
 from steward.gatecheck.checks import Finding, collect_bundle, run_checks
 from steward.gatecheck.git_facts import (
     FactsError,
@@ -59,6 +60,12 @@ _EXIT_CONFIG = 2
 
 _STAGES = frozenset({"authoring", "release"})
 _DEFAULT_STAGE = "authoring"
+
+# Where this run's facts came from. Reported in both renderers so a consumer
+# never has to infer from flags what the exit code actually covered.
+_MODE_LIVE = "live"
+_MODE_INJECTED = "injected"
+_MODE_CANDIDATE = "candidate"
 
 
 def _fail_config(message: str) -> None:
@@ -247,7 +254,7 @@ def _git_facts(no_fs: Path | None, spec_dir: Path) -> GitFacts:
     return LiveGitFacts(Path(proc.stdout.strip()), spec_dir)
 
 
-def _render_text(findings: list[Finding]) -> None:
+def _render_text(findings: list[Finding], mode: str) -> None:
     for finding in findings:
         typer.echo(
             f"{finding.severity.upper():5} {finding.rule_id:16} "
@@ -255,15 +262,41 @@ def _render_text(findings: list[Finding]) -> None:
         )
     errors = sum(1 for f in findings if f.severity == "error")
     warns = len(findings) - errors
-    typer.echo(f"gate-check: {errors} error(s), {warns} warning(s)")
+    typer.echo(f"gate-check[{mode}]: {errors} error(s), {warns} warning(s)")
 
 
-def _render_json(findings: list[Finding]) -> None:
-    payload = {
+def _echo_not_evaluated() -> None:
+    """Declare the gates a prospective run structurally could not reach.
+
+    On **stderr**, and emitted for every output branch — including
+    ``--trace-matrix``, whose stdout is a derived view rather than a findings
+    list. stdout stays exactly one parseable payload (findings text, findings
+    JSON, or the matrix) while the declaration reaches a human in all three;
+    the machine-readable copy rides in the JSON payload's ``not_evaluated``.
+    Silence here would be the fail-open the mode exists to avoid: an exit code
+    that looks like every gate ran.
+    """
+    typer.echo("не проверено в prospective-режиме:", err=True)
+    for entry in NOT_EVALUATED:
+        typer.echo(f"  {entry.label}: {entry.reason}", err=True)
+
+
+def _render_json(findings: list[Finding], mode: str) -> None:
+    payload: dict[str, object] = {
+        "mode": mode,
         "findings": [vars(f) for f in findings],
         "errors": sum(1 for f in findings if f.severity == "error"),
         "warnings": sum(1 for f in findings if f.severity == "warn"),
     }
+    # Only the prospective run declares this: the list is a property of the
+    # MODE (which gates it structurally cannot reach), not a per-run audit.
+    # Emitting `[]` for a ref-bound run would read as "everything else ran",
+    # which is a claim gate-check is not making — a gate can be inapplicable
+    # to a bundle for reasons that have nothing to do with git.
+    if mode == _MODE_CANDIDATE:
+        payload["not_evaluated"] = [
+            {"gate": e.gate_id, "scope": e.scope, "reason": e.reason} for e in NOT_EVALUATED
+        ]
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
@@ -301,6 +334,16 @@ def main(
         "--arch-stage",
         help=r"\[deprecated alias of --stage]",
     ),
+    candidate: bool = typer.Option(
+        False,
+        "--candidate",
+        help="Prospective mode: lint the directory as a CANDIDATE revision — "
+        "content that is not a git ref yet (uncommitted files, an assembled "
+        "bundle). Runs the content-addressed gates, including the stale "
+        "cascade; ref-bound gates are reported as not evaluated, never as "
+        "passed. Does not require a git checkout. Incompatible with --no-fs, "
+        "--emit-verdicts, --approval-facts and --stage release.",
+    ),
     approval_facts: Path | None = typer.Option(
         None,
         "--approval-facts",
@@ -322,6 +365,29 @@ def main(
             "and cannot run under --no-fs"
         )
 
+    # Every conflict below is one shape of the same defect: a flag that only
+    # means something about a committed revision, asked of content that has
+    # none. Rejected as a config error (exit 2) rather than quietly ignored —
+    # an ignored --approval-facts would look like evidence was consulted.
+    if candidate:
+        if no_fs is not None:
+            _fail_config("--candidate and --no-fs are two different fact sources")
+        if emit_verdicts_flag:
+            _fail_config(
+                "--emit-verdicts needs live git provenance (HEAD + dirty state) "
+                "and cannot run under --candidate"
+            )
+        if approval_facts is not None:
+            _fail_config(
+                "--approval-facts is merge evidence keyed by merge SHA; a candidate "
+                "revision has not been merged"
+            )
+        if resolved_stage == "release":
+            _fail_config(
+                "--stage release consults merge evidence, which a candidate revision "
+                "cannot have — run the candidate at --stage authoring"
+            )
+
     profile_path = _resolve_profile_path(profile)
     roles_catalog = _load_roles(profile_path)
     try:
@@ -340,7 +406,12 @@ def main(
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm
 
-    git = _git_facts(no_fs, spec_dir)
+    if candidate:
+        git: GitFacts = CandidateGitFacts(spec_dir)
+        mode = _MODE_CANDIDATE
+    else:
+        git = _git_facts(no_fs, spec_dir)
+        mode = _MODE_INJECTED if no_fs is not None else _MODE_LIVE
 
     artifacts, findings = collect_bundle(graph, spec_dir)
 
@@ -350,7 +421,7 @@ def main(
         _fail_config("\n".join([*role_problems, f"roles catalog: {roles_path}"]))
 
     try:
-        findings.extend(run_checks(graph, artifacts, git, assignments))
+        findings.extend(run_checks(graph, artifacts, git, assignments, prospective=candidate))
     except FactsError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
@@ -392,7 +463,12 @@ def main(
             raise AssertionError from None  # unreachable; keeps type-checkers calm
         findings.extend(check_arch_schema(arch))
         findings.extend(check_arch_evidence(arch))
-        findings.extend(check_arch_conformance(arch, policy, git))
+        # All three arch gates run prospectively. Only D9 self-freshness inside
+        # GC-ARCH-CONFORMANCE reads history, and `prospective` suppresses just
+        # that: the rest of the gate (report present, parseable, schema-valid,
+        # manifest hash, snapshot complete, verdict/finding policy, snapshot
+        # age) is derived from bytes and holds for a candidate.
+        findings.extend(check_arch_conformance(arch, policy, git, prospective=candidate))
 
     if emit_verdicts_flag:
         catalog = _load_catalog(profile_path, roles_catalog)
@@ -414,9 +490,12 @@ def main(
         renderer = render_matrix_json if output == "json" else render_matrix_text
         typer.echo(renderer(matrix))
     elif output == "json":
-        _render_json(findings)
+        _render_json(findings, mode)
     else:
-        _render_text(findings)
+        _render_text(findings, mode)
+
+    if mode == _MODE_CANDIDATE:
+        _echo_not_evaluated()
 
     if any(f.severity == "error" for f in findings):
         raise typer.Exit(_EXIT_FINDINGS)

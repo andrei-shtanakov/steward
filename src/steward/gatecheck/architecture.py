@@ -592,6 +592,7 @@ def check_arch_conformance(
     git: GitFacts,
     *,
     now: dt.datetime | None = None,
+    prospective: bool = False,
 ) -> list[Finding]:
     """GC-ARCH-CONFORMANCE: consume the co-located conformance report.
 
@@ -603,6 +604,17 @@ def check_arch_conformance(
     ``fail_on_findings`` / ``fail_on_verdicts`` / the unknown-verdict
     allowlists, D9 self-freshness (when ``require_self_fresh`` and
     ``self_project`` are set), and ``max_snapshot_age_hours``.
+
+    ``prospective`` marks a candidate revision (``gate-check --candidate``,
+    :mod:`steward.gatecheck.candidate`). It suppresses **only** D9
+    self-freshness — the one part of this gate that reads history (``git``
+    is not touched anywhere else here). Everything above and around it is
+    derived from the report and manifest bytes and therefore holds for
+    content that no ref points at: a missing report, unparseable JSON, a
+    schema violation, a manifest hash that no longer matches, an incomplete
+    snapshot, a blocking verdict or a stale snapshot are all still errors.
+    Skipping the whole gate instead would drop that entire class silently —
+    an "unknown rendered green" the candidate mode exists to avoid.
     """
     report_rel = arch.report_rel
     if report_rel is None:
@@ -660,7 +672,7 @@ def check_arch_conformance(
     findings.extend(_check_findings_policy(report, policy, report_rel))
     findings.extend(_check_verdicts_policy(report, policy, report_rel))
     findings.extend(_check_unknown_policy(report, policy, report_rel))
-    if policy.require_self_fresh and policy.self_project is not None:
+    if policy.require_self_fresh and policy.self_project is not None and not prospective:
         findings.extend(_check_self_fresh(arch, report, policy, git, report_rel))
     findings.extend(_check_snapshot_age(report, policy, report_rel, now))
     return findings

@@ -158,7 +158,14 @@ def test_json_format_shape(tmp_path: Path, write_roles: Path, write_role_assignm
     )
     payload = json.loads(result.output)
     assert payload["errors"] == 0
-    assert set(payload) == {"findings", "errors", "warnings"}
+    # `mode` joined the shape with the prospective run (steward#140): a consumer
+    # must never have to infer from the flags it passed what the exit code
+    # actually covered. It is always present and always names the fact source.
+    # `not_evaluated` is NOT here on purpose — it is a candidate-mode
+    # declaration, and an empty list on a ref-bound run would read as a claim
+    # that everything else ran.
+    assert set(payload) == {"mode", "findings", "errors", "warnings"}
+    assert payload["mode"] == "injected"
 
 
 # --- GC-ARCH-* wiring (Task 4) -----------------------------------------------

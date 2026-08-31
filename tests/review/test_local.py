@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 cat > /dev/null
-printf '{"findings":[{"severity":"major","title":"t","file":"a.py","line":1,"scenario":"s","observed_result":"o","expected_result":"e","evidence":[{"file":"b.py","line":2,"reason":"r"}],"confidence":"high"}],"note":"stub"}' \\
+printf '{"findings":[{"kind":"defect","severity":"major","title":"t","file":"a.py","line":1,"scenario":"s","observed_result":"o","expected_result":"e","evidence":[{"file":"b.py","line":2,"reason":"r"}],"confidence":"high"}],"note":"stub"}' \\
     > "$out"
 """
 

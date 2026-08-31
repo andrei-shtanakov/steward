@@ -105,8 +105,24 @@ def run_checks(
     artifacts: list[Artifact],
     git: GitFacts,
     assignments: RoleAssignments | None = None,
+    *,
+    prospective: bool = False,
 ) -> list[Finding]:
-    """Run every check and concatenate their findings."""
+    """Run every check and concatenate their findings.
+
+    ``prospective`` marks a **candidate revision** — bundle content that is not
+    a git ref yet (``gate-check --candidate``, :mod:`steward.gatecheck.candidate`).
+    It skips exactly the ref-bound checks, and the skip lives here, in the one
+    place the check list is written, so that a check added later cannot join
+    the prospective run by accident: whoever adds it has to decide which side
+    of this branch it belongs on. What is skipped is not silently passed — the
+    CLI prints :data:`steward.gatecheck.candidate.NOT_EVALUATED`.
+
+    ``check_stale_cascade`` deliberately stays on the prospective side: it
+    reaches only for ``blob_hash``, which is a content address a candidate can
+    answer (and answer more accurately than a live checkout, which would read
+    the last commit instead of the files in front of it).
+    """
     # Local import: behaviour.py imports Artifact/Finding from this module.
     from steward.gatecheck.behaviour import check_behaviour_spec
 
@@ -114,7 +130,8 @@ def run_checks(
     findings.extend(check_completeness(graph, artifacts))
     findings.extend(check_traceability(graph, artifacts))
     findings.extend(check_upstream_approved(graph, artifacts))
-    findings.extend(check_status_git(graph, artifacts, git, assignments))
+    if not prospective:
+        findings.extend(check_status_git(graph, artifacts, git, assignments))
     findings.extend(check_stale_cascade(graph, artifacts, git))
     findings.extend(check_compile_block(artifacts))
     findings.extend(check_behaviour_spec(graph, artifacts))

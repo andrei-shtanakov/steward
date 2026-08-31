@@ -86,6 +86,31 @@ def test_canonical_agent_identities_carry_no_bot_suffix() -> None:
     assert suffixed == [], f"identities in REST grammar will never match facts: {suffixed}"
 
 
+def test_canonical_policy_carries_the_darkfactory_merger() -> None:
+    """ADR-ECO-011 D3: the agent merges from the `ai-prosto` account, so
+    `merged_by` discriminates agent from human without a new runtime."""
+    assert "github:ai-prosto" in load_approval_policy(CANONICAL).agent_identities
+
+
+def test_ai_prosto_is_classified_only_by_the_allowlist_entry() -> None:
+    """The DarkFactory merger is a machine **user**, not a GitHub App: GraphQL
+    reports `__typename: User`, so the "Bot" hint does not classify it. Unlike
+    `merge-broker`/`dependabot` — whose entries are declarations the hint would
+    cover anyway — this line is load-bearing, and dropping it silently returns
+    the fleet's default merger to `unknown`."""
+    policy = load_approval_policy(CANONICAL)
+    assert classify_actor("github:ai-prosto", "User", policy) == "agent"
+
+    without = ApprovalPolicy(
+        version=policy.version,
+        human_identities=policy.human_identities,
+        agent_identities=policy.agent_identities - {"github:ai-prosto"},
+        agent_merge_allowed=policy.agent_merge_allowed,
+        approval_facts_lease_seconds=policy.approval_facts_lease_seconds,
+    )
+    assert classify_actor("github:ai-prosto", "User", without) == "unknown"
+
+
 def test_load_policy_empty_lists_are_legitimate(tmp_path: Path) -> None:
     """Empty allowlists mean "we don't know anyone yet" — a legal state,
     not a config error."""
@@ -146,10 +171,16 @@ def test_load_policy_missing_file_fails_closed(tmp_path: Path) -> None:
         load_approval_policy(tmp_path / "nope.yaml")
 
 
-def test_canonical_policy_denies_agent_merge_by_default() -> None:
-    """The shipped policy must keep agent_merge denied: ADR-ECO-008 is
-    `proposed`, and merging that document is not ratifying it."""
-    assert load_approval_policy(CANONICAL).agent_merge_allowed is False
+def test_canonical_policy_allows_agent_merge() -> None:
+    """The shipped policy permits agent merge since ADR-ECO-011 «DarkFactory»
+    (ratified 2026-08-30): D1 makes the agent the default merger on both
+    session types, and OQ-1 rules that `merged_by` audit suffices — closing
+    the standing objection this field carried (dispatcher's detection loop).
+
+    Asserted on the canonical file rather than left implicit: permission is
+    granted by an explicit `true`, and a silent revert to the fail-closed
+    default would change enforcement for every release-stage run."""
+    assert load_approval_policy(CANONICAL).agent_merge_allowed is True
 
 
 def test_absent_agent_merge_allowed_defaults_to_denied(tmp_path: Path) -> None:
