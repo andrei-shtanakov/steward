@@ -106,16 +106,23 @@ Per `TODO.md` (open items) and `NEXT-STEPS.md` (why that order) — do not start
   advisory-фолбэк, его красноту/зависание не перегонять (SSOT:
   `../prograph-vault/authored/rules/git-workflow.md`).
 - **Мерж — агент по умолчанию** (ADR-ECO-011 «DarkFactory», ратифицирован 2026-08-30):
-  при approve ревью-контура и зелёных обязательных проверках PR мержит агент от
-  учётки **ai-prosto**, и он же делает хвост (`git pull --ff-only` в дефолтной ветке,
-  удаление влитой ветки в обеих половинах, prune). Человеческий мерж — opt-in
-  строкой `Мерж: человек` в этой секции. **Всегда человеку, без переопределения:**
+  при approve ревью-контура и зелёных обязательных проверках PR мержит агент, и он же
+  делает хвост (`git pull --ff-only` в дефолтной ветке, удаление влитой ветки в обеих
+  половинах, prune). Мерж — **только от профиля ai-prosto**:
+  `GH_CONFIG_DIR=~/.config/review gh pr merge`, и перед ним сверить логин
+  (`GH_CONFIG_DIR=~/.config/review gh api user --jq .login` → `ai-prosto`). Голый
+  `gh pr merge` уйдёт от основного аккаунта и запишет агентский мерж человеческим,
+  обнулив `merged_by` — наблюдаемый различитель agent/human. Человеческий мерж — opt-in
+  строкой `Мерж: человек` в этой секции либо `merge_policy` экосистемного конфига.
+  Объявление прогона (`merge_authority: human`, ADR-ECO-008 D5) — третий, самый
+  узкий уровень: прогон может ужесточить политику до человеческого мержа, ослабить
+  репо-оверрайд — нет. **Всегда человеку, без переопределения:**
   PR, трогающий authority-root пути (`profiles/approval-policy.yaml`,
   `profiles/authority.yaml`, `.github/workflows/merge-broker.yml`), PR без
   предъявленного evidence базового слоя, request-changes или неприбывшее ревью
   (`unknown` ⇒ не мержим). `merged_by` — наблюдаемый различитель agent/human,
   аудит: `gh pr list --json mergedBy`.
-- После мержа пользователем: `git switch master && git pull --ff-only`, затем удалить
+- После мержа (кем бы то ни было): `git switch master && git pull --ff-only`, затем удалить
   влитую ветку в **обеих половинах**: локально `git branch -d <ветка>` (после squash-мержа
   `-d` откажется — сверить, что `git diff master <ветка>` пуст, и удалить
   `git branch -D <ветка>`) и на origin
