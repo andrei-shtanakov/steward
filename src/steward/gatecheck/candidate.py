@@ -23,6 +23,14 @@ and checkable *more* correctly than the live path, which reads ``HEAD:<path>``
 and would compare pins against the last commit rather than against the content
 in front of it.
 
+Note what this split does *not* license: skipping a whole gate because one of
+its clauses reads history. ``GC-ARCH-CONFORMANCE`` is mostly content — report
+present, parseable, schema-valid, manifest hash matching, snapshot complete,
+verdict policy — with a single history-reading clause (D9 self-freshness), and
+only that clause is suppressed here. Dropping the gate wholesale would have
+hidden every one of those errors behind a line that says "not evaluated", which
+is the same fail-open in a more respectable outfit.
+
 *Ref questions.* ``on_default_branch``, ``is_ancestor``, ``changed_paths_since``
 and ``merge_provenance`` ask where content sits in history. For a candidate the
 answer is not "no" — it is "not askable yet". Returning ``False`` would fabricate
@@ -45,13 +53,36 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from typing import NamedTuple
+
 from steward.gatecheck.git_facts import Approval, FactsError, MergeProvenance
 
 __all__ = [
     "NOT_EVALUATED",
     "CandidateGitFacts",
+    "NotEvaluated",
     "blob_hash_of",
 ]
+
+
+class NotEvaluated(NamedTuple):
+    """One gate (or one clause of one) a prospective run cannot reach.
+
+    ``gate_id`` stays a bare catalog id so it can be checked mechanically
+    against ``profiles/gate-catalog.yaml``; ``scope`` carries the qualifier
+    for a gate only *partly* out of reach (empty for a whole gate). Folding
+    the qualifier into the id would have made the declaration unverifiable
+    the moment it became precise — the wrong trade in both directions.
+    """
+
+    gate_id: str
+    scope: str
+    reason: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.gate_id} ({self.scope})" if self.scope else self.gate_id
+
 
 #: Gate classes a prospective run structurally cannot evaluate, each with the
 #: reason. Declared, not silently dropped: the CLI prints this list on every
@@ -60,25 +91,31 @@ __all__ = [
 #: Scope note: this describes the **mode**, not the run. A ref-bound run emits
 #: no such list, and that absence does not claim every gate fired — a gate can
 #: still be inapplicable to a given bundle (no arch manifest, authoring stage).
-NOT_EVALUATED: tuple[tuple[str, str], ...] = (
-    (
+NOT_EVALUATED: tuple[NotEvaluated, ...] = (
+    NotEvaluated(
         "GC-GIT-BRANCH",
+        "",
         "status↔git зеркало спрашивает, лежит ли артефакт на дефолтной ветке; "
         "у кандидатной ревизии ещё нет ref'а, на котором он мог бы лежать",
     ),
-    (
+    NotEvaluated(
         "GC-GIT-ROLE",
+        "",
         "авторизация аппрувера читается из approval-фактов форджи, привязанных "
         "к PR/мержу; у кандидатной ревизии ни того, ни другого не существует",
     ),
-    (
+    NotEvaluated(
         "GC-ARCH-CONFORMANCE",
-        "вердикт conformance-отчёта сверяется с self-freshness по истории "
-        "(ancestors/changed_paths_since) — истории у кандидата нет; схема и "
-        "наличие evidence при этом проверяются (GC-ARCH-SCHEMA/-EVIDENCE)",
+        "D9 self-freshness",
+        "не проверяется ТОЛЬКО часть D9: она сверяет provenance-коммит отчёта с "
+        "историей (ancestors/changed_paths_since), которой у кандидата нет. "
+        "Остальное в этом гейте выводится из байтов и работает — наличие отчёта, "
+        "разбор JSON, схема, совпадение manifest.sha256, snapshot.complete, "
+        "политика findings/verdicts/unknown и возраст снапшота",
     ),
-    (
+    NotEvaluated(
         "GC-APPROVAL-MISSING",
+        "",
         "merge-evidence приезжает из approval-facts/v2 по merge SHA; кандидат "
         "не смержен и SHA не имеет (стадия release в этом режиме запрещена)",
     ),

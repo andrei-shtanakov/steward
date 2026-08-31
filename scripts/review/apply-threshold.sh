@@ -21,6 +21,14 @@
 # здесь тип только ВАЛИДИРУЕТСЯ (значение вне enum — негодный вердикт, код 2,
 # как severity/confidence) и рендерится, чтобы человек увидел заявленный класс.
 #
+# Заодно проверяется `line == 0` у file-missing. JSON-схема этого выразить не
+# может: структурированный вывод модели не принимает условные конструкции
+# (`if`/`then`), поэтому единственный оракул правила — здесь. Без него
+# требование промпта («у отсутствующего файла нет строки») осталось бы
+# декларацией без проверки и разошлось бы с вердиктами молча — тот же класс,
+# что и `merge-broker[bot]` в approval-policy.yaml: строка, которая выглядит
+# работающей и не работает.
+#
 # Коды выхода: 0 — блокирующих нет; 1 — есть; 2 — вердикт негоден.
 # `pipefail` не используется — его нет в POSIX sh.
 set -eu
@@ -79,6 +87,7 @@ command -v jq >/dev/null 2>&1 || {
 jq -e '(.findings | type == "array")
        and all(.findings[]; type == "object"
                and (.kind | IN("defect", "file-missing"))
+               and (.kind != "file-missing" or .line == 0)
                and (.severity | IN("blocker", "major", "minor", "nit"))
                and (.confidence | IN("high", "medium", "low"))
                and ([.title, .file, .scenario, .observed_result, .expected_result]
@@ -92,8 +101,9 @@ jq -e '(.findings | type == "array")
        and (.note | type == "string")' \
     "$verdict" >/dev/null 2>&1 \
     || { echo "вердикт нечитаем: находка вне схемы v2 — отсутствующее или нестроковое" \
-        "текстовое поле, kind/severity/confidence вне enum, line не число, evidence не" \
-        "массив объектов file/line/reason, либо note не строка" >&2; exit 2; }
+        "текстовое поле, kind/severity/confidence вне enum, line не число или не 0" \
+        "при kind: file-missing, evidence не массив объектов file/line/reason," \
+        "либо note не строка" >&2; exit 2; }
 
 total=$(jq '.findings | length' "$verdict")
 

@@ -277,8 +277,8 @@ def _echo_not_evaluated() -> None:
     that looks like every gate ran.
     """
     typer.echo("не проверено в prospective-режиме:", err=True)
-    for gate_id, reason in NOT_EVALUATED:
-        typer.echo(f"  {gate_id:20} {reason}", err=True)
+    for entry in NOT_EVALUATED:
+        typer.echo(f"  {entry.label}: {entry.reason}", err=True)
 
 
 def _render_json(findings: list[Finding], mode: str) -> None:
@@ -295,7 +295,7 @@ def _render_json(findings: list[Finding], mode: str) -> None:
     # to a bundle for reasons that have nothing to do with git.
     if mode == _MODE_CANDIDATE:
         payload["not_evaluated"] = [
-            {"gate": gate_id, "reason": reason} for gate_id, reason in NOT_EVALUATED
+            {"gate": e.gate_id, "scope": e.scope, "reason": e.reason} for e in NOT_EVALUATED
         ]
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -456,21 +456,19 @@ def main(
 
     arch = collect_arch_bundle(spec_dir)
     if arch is not None:
+        try:
+            policy = load_arch_policy(profile_path.parent / "arch-policy.yaml", resolved_stage)
+        except ArchPolicyError as err:
+            _fail_config(str(err))
+            raise AssertionError from None  # unreachable; keeps type-checkers calm
         findings.extend(check_arch_schema(arch))
         findings.extend(check_arch_evidence(arch))
-        # Schema and evidence-presence are content questions and stay on; the
-        # conformance verdict is compared against self-freshness read from
-        # history, which a candidate has none of (NOT_EVALUATED). arch-policy.yaml
-        # is loaded inside this branch and not above it: it is the conformance
-        # gate's input and nothing else's, so a prospective run must not fail
-        # with exit 2 over a policy file it was never going to consult.
-        if not candidate:
-            try:
-                policy = load_arch_policy(profile_path.parent / "arch-policy.yaml", resolved_stage)
-            except ArchPolicyError as err:
-                _fail_config(str(err))
-                raise AssertionError from None  # unreachable; keeps type-checkers calm
-            findings.extend(check_arch_conformance(arch, policy, git))
+        # All three arch gates run prospectively. Only D9 self-freshness inside
+        # GC-ARCH-CONFORMANCE reads history, and `prospective` suppresses just
+        # that: the rest of the gate (report present, parseable, schema-valid,
+        # manifest hash, snapshot complete, verdict/finding policy, snapshot
+        # age) is derived from bytes and holds for a candidate.
+        findings.extend(check_arch_conformance(arch, policy, git, prospective=candidate))
 
     if emit_verdicts_flag:
         catalog = _load_catalog(profile_path, roles_catalog)

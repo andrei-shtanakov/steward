@@ -21,10 +21,18 @@ git ничего. Коды выхода прежние — `0` чисто, `1` �
 |---|---|
 | `GC-META`, `GC-STAGE`, `GC-DUP` | `GC-GIT-BRANCH` |
 | `GC-COMPLETENESS`, `GC-TRACE`, `GC-TRACE-EMPTY` | `GC-GIT-ROLE` |
-| `GC-UPSTREAM`, `GC-COMPILE` | `GC-ARCH-CONFORMANCE` |
-| `GC-STALE`, `GC-STALE-UNPINNED`, `GC-STALE-KEY` | `GC-APPROVAL-MISSING` |
+| `GC-UPSTREAM`, `GC-COMPILE` | `GC-APPROVAL-MISSING` |
+| `GC-STALE`, `GC-STALE-UNPINNED`, `GC-STALE-KEY` | `GC-ARCH-CONFORMANCE` — **только клауза D9** (self-freshness) |
 | `GC-BEH-*`, `GC-CHECK-*` | |
 | `GC-ARCH-SCHEMA`, `GC-ARCH-EVIDENCE` | |
+| `GC-ARCH-CONFORMANCE` — всё, кроме D9 | |
+
+Про `GC-ARCH-CONFORMANCE` отдельно: гейт почти целиком выводится из байтов —
+наличие отчёта, разбор JSON, схема, совпадение `manifest.sha256`,
+`snapshot.complete`, политика findings/verdicts/unknown, возраст снапшота. Историю
+читает ровно одна клауза (D9 self-freshness), и подавляется только она. Пропускать
+гейт целиком значило бы спрятать весь этот класс ошибок за строкой «не проверено»
+— тот же fail-open, только в приличном костюме (находка ревью-гейта на этом PR).
 
 Правая колонка — не «прошло»: она **печатается каждым прогоном на stderr**, во
 всех трёх ветках вывода (текст, JSON, `--trace-matrix`). Машиночитаемая копия
@@ -33,9 +41,11 @@ git ничего. Коды выхода прежние — `0` чисто, `1` �
 доходит до человека; молча опускать ref-зависимые гейты значило бы красить
 неизвестность зелёным.
 
-Канон списка — `steward.gatecheck.candidate.NOT_EVALUATED`; тест сверяет каждый id
-с каталогом гейтов, чтобы переименованный гейт не превратил объявление в мёртвую
-строку.
+Канон списка — `steward.gatecheck.candidate.NOT_EVALUATED`; тест сверяет каждый
+`gate_id` с каталогом гейтов, чтобы переименованный гейт не превратил объявление в
+мёртвую строку. Квалификатор частично пропущенного гейта живёт отдельным полем
+`scope`, а не внутри id — иначе объявление стало бы непроверяемым ровно в тот
+момент, когда стало точным.
 
 ## Почему это режим, а не ещё один адаптер фактов
 
@@ -93,7 +103,10 @@ stdout — ровно один пейлоад: находки текстом, н
   "findings": [],
   "errors": 0,
   "warnings": 0,
-  "not_evaluated": [{"gate": "GC-GIT-BRANCH", "reason": "…"}]
+  "not_evaluated": [
+    {"gate": "GC-GIT-BRANCH", "scope": "", "reason": "…"},
+    {"gate": "GC-ARCH-CONFORMANCE", "scope": "D9 self-freshness", "reason": "…"}
+  ]
 }
 ```
 

@@ -400,6 +400,32 @@ def test_kind_does_not_change_the_threshold(fmt: str, tmp_path: Path) -> None:
     у которого есть дерево; этот скрипт дерева не видит и снимать блокировку
     по одному лишь типу не вправе.
     """
-    result = run(write(tmp_path, {"findings": [finding(kind="file-missing")], "note": ""}), fmt)
+    result = run(
+        write(tmp_path, {"findings": [finding(kind="file-missing", line=0)], "note": ""}), fmt
+    )
     assert result.returncode == 1
     assert "БЛОКИРУЕТ" in result.stdout
+
+
+def test_file_missing_with_a_nonzero_line_is_unreadable(tmp_path: Path) -> None:
+    """`line: 0` for file-missing is the one clause the JSON schema cannot
+    express — structured output rejects conditional (`if`/`then`) constructs —
+    so this script is its only oracle. Unchecked, the prompt's rule would drift
+    from the verdicts silently.
+    """
+    result = run(
+        write(
+            tmp_path,
+            {"findings": [finding(kind="file-missing", file="a.md", line=17)], "note": ""},
+        )
+    )
+    assert result.returncode == 2
+    assert "file-missing" in result.stderr
+
+
+def test_defect_keeps_its_ordinary_line(tmp_path: Path) -> None:
+    """The rule is scoped to the typed class: an ordinary finding still points
+    at a real line, and forcing 0 on everything would destroy the location."""
+    result = run(write(tmp_path, {"findings": [finding(line=42)], "note": ""}))
+    assert result.returncode == 1
+    assert "a.py:42" in result.stdout or "`src/a.py:42`" in result.stdout

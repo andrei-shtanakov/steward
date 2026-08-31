@@ -208,24 +208,79 @@ def test_declaration_survives_the_trace_matrix_branch(
     assert "не проверено в prospective-режиме" in result.stderr
 
 
-def test_arch_policy_is_not_required_by_a_prospective_run(
+_VALID_MANIFEST = """\
+schema: intended-graph/v1
+system: t-sys
+components:
+  - id: a.svc
+    project: alpha
+    kind: service
+    owner: architects
+    responsibility: "serves"
+    evidence: [FR-01]
+interfaces:
+  - id: I-01
+    producer: a.svc
+    consumer: "file:beta/data.txt"
+    detector: declared
+    evidence: [BEH-01]
+constraints:
+  - id: C-01
+    rule: "forbidden: alpha -> beta"
+    detector: import
+    evidence: [FR-02]
+"""
+
+
+_ARCH_POLICY = """\
+self_project: alpha
+stages:
+  authoring:
+    fail_on_findings: []
+    fail_on_verdicts: [violation]
+    unknown_policy: {allowed_reasons: [manual-evidence], allowed_elements: []}
+    require_self_fresh: false
+    max_snapshot_age_hours: null
+  release:
+    fail_on_findings: [missing-required-edge]
+    fail_on_verdicts: [violation]
+    unknown_policy: {allowed_reasons: [manual-evidence], allowed_elements: []}
+    require_self_fresh: true
+    max_snapshot_age_hours: 24
+"""
+
+
+def test_arch_conformance_still_fires_on_its_content_clauses(
     tmp_path: Path, write_roles: Path, write_role_assignments: Path
 ) -> None:
-    """arch-policy.yaml is the conformance gate's input and nothing else's.
-    A candidate run never consults it, so a missing or broken file next to the
-    profile must not turn into exit 2 — refusing over an input the run was
-    never going to read is a config error invented by the mode.
+    """Only D9 self-freshness reads history inside GC-ARCH-CONFORMANCE; the
+    rest of the gate is derived from bytes and must keep firing prospectively.
+
+    A schema-valid manifest with no co-located conformance-report.json is the
+    cheapest of those content clauses. Skipping the gate wholesale would hide
+    this — and every sibling clause (unparseable JSON, schema violation, stale
+    manifest hash, incomplete snapshot, blocking verdict) — behind a line that
+    says "not evaluated", which is the fail-open this mode exists to avoid.
     """
     spec = _bundle(tmp_path)
-    (spec / "intended-graph.yaml").write_text("not: a valid manifest\n")
-    (tmp_path / "arch-policy.yaml").write_text("::: not yaml at all\n")
+    (spec / "intended-graph.yaml").write_text(_VALID_MANIFEST)
+    (tmp_path / "arch-policy.yaml").write_text(_ARCH_POLICY)
 
     result = _candidate(spec, "--format", "json")
-    assert result.exit_code != 2, result.stderr
-    gates = {f["rule_id"] for f in json.loads(result.stdout)["findings"]}
-    # the content-side arch gates still ran; the ref-bound one did not
-    assert "GC-ARCH-SCHEMA" in gates
-    assert "GC-ARCH-CONFORMANCE" not in gates
+    assert result.exit_code == 1, result.stderr
+    findings = json.loads(result.stdout)["findings"]
+    conformance = [f for f in findings if f["rule_id"] == "GC-ARCH-CONFORMANCE"]
+    assert conformance, findings
+    assert "conformance-report.json" in conformance[0]["message"]
+
+
+def test_conformance_is_declared_only_for_its_history_clause() -> None:
+    """The declaration must name the *clause*, not the gate: a bare
+    GC-ARCH-CONFORMANCE line would tell a reader the whole gate was skipped,
+    which is exactly the claim the fix above disproves."""
+    (entry,) = [e for e in NOT_EVALUATED if e.gate_id == "GC-ARCH-CONFORMANCE"]
+    assert entry.scope == "D9 self-freshness"
+    assert entry.label == "GC-ARCH-CONFORMANCE (D9 self-freshness)"
 
 
 def test_ref_bound_gates_are_declared_not_dropped(
@@ -234,8 +289,8 @@ def test_ref_bound_gates_are_declared_not_dropped(
     spec = _bundle(tmp_path)
     result = _candidate(spec)
     assert "не проверено в prospective-режиме" in result.output
-    for gate_id, _reason in NOT_EVALUATED:
-        assert gate_id in result.output
+    for entry in NOT_EVALUATED:
+        assert entry.label in result.stderr
 
 
 def test_no_ref_bound_finding_is_emitted(
@@ -268,8 +323,11 @@ def test_no_ref_bound_finding_is_emitted(
     result = _candidate(spec, "--format", "json")
     payload = json.loads(result.stdout)
     emitted = {f["rule_id"] for f in payload["findings"]}
-    declared = {gate_id for gate_id, _ in NOT_EVALUATED}
-    assert emitted & declared == set()
+    # Only the WHOLLY skipped gates: GC-ARCH-CONFORMANCE is declared for one
+    # clause (D9) and must still be able to fire on its content clauses —
+    # see test_arch_conformance_still_fires_on_its_content_clauses.
+    wholly_skipped = {e.gate_id for e in NOT_EVALUATED if not e.scope}
+    assert emitted & wholly_skipped == set()
 
 
 def test_stale_cascade_sees_the_candidate_content(
@@ -306,7 +364,7 @@ def test_json_declares_mode_and_not_evaluated(
     payload = json.loads(_candidate(spec, "--format", "json").stdout)
     assert payload["mode"] == "candidate"
     assert payload["not_evaluated"] == [
-        {"gate": gate_id, "reason": reason} for gate_id, reason in NOT_EVALUATED
+        {"gate": e.gate_id, "scope": e.scope, "reason": e.reason} for e in NOT_EVALUATED
     ]
 
 
@@ -376,12 +434,12 @@ def test_declared_gate_ids_exist_in_the_catalog() -> None:
         (Path(__file__).parents[2] / "profiles" / "gate-catalog.yaml").read_text(encoding="utf-8")
     )
     known = set(catalog["gates"])
-    declared = {gate_id for gate_id, _ in NOT_EVALUATED}
+    declared = {e.gate_id for e in NOT_EVALUATED}
     assert declared <= known, declared - known
 
 
 def test_every_declared_gate_carries_a_reason() -> None:
-    assert all(reason.strip() for _gate, reason in NOT_EVALUATED)
+    assert all(e.reason.strip() for e in NOT_EVALUATED)
 
 
 def test_trace_matrix_works_prospectively(
