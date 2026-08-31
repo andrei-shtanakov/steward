@@ -129,6 +129,18 @@ def blob_hash_of(data: bytes) -> str:
     by the object format, not by a repository, and a candidate revision may
     well sit outside any checkout. ``sha1`` here is a content address in git's
     own object format, not a security primitive.
+
+    **Stated limitation: git's SHA-1 object format only** (the default, and the
+    only one in use across this fleet). A repository configured with
+    ``objectformat = sha256`` writes 64-character blob ids, and its
+    ``upstream_hashes`` pins would then never match what this computes — an
+    unchanged bundle would collect ``GC-STALE`` (found by the review gate on
+    the PR that introduced this mode, minor). The mode cannot detect the
+    format, because it deliberately runs without a repository to ask. Named
+    here rather than guessed at: a limitation a reader can see is a different
+    thing from a wrong answer nobody declared. Supporting SHA-256 means
+    carrying the source repository's object format into the candidate run,
+    which is a new input and an owner decision, not a widening of this helper.
     """
     header = f"blob {len(data)}\0".encode()
     return hashlib.sha1(header + data).hexdigest()  # noqa: S324 — git object id, not a MAC
