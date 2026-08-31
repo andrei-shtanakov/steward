@@ -464,3 +464,29 @@ def test_trace_matrix_works_prospectively(
     )
     assert {f["rule_id"] for f in json.loads(findings.stdout)["findings"]} == {"GC-CHECK-PLANNED"}
     assert result.exit_code == findings.exit_code == 1
+
+
+def test_arch_policy_is_required_when_a_manifest_is_present(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """The policy is GC-ARCH-CONFORMANCE's input, and the gate runs here, so a
+    missing arch-policy.yaml is a config error in this mode too — pinned
+    because the doc once claimed the opposite while the code did this.
+    """
+    spec = _bundle(tmp_path)
+    (spec / "intended-graph.yaml").write_text(_VALID_MANIFEST)
+    assert not (tmp_path / "arch-policy.yaml").exists()
+
+    result = _candidate(spec)
+    assert result.exit_code == 2
+    assert "arch-policy.yaml" in result.stderr
+
+
+def test_arch_policy_is_only_needed_when_a_manifest_is_present(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """No manifest, no arch gates, no policy — the requirement is scoped to
+    bundles that actually carry architecture evidence."""
+    spec = _bundle(tmp_path)
+    assert not (tmp_path / "arch-policy.yaml").exists()
+    assert _candidate(spec).exit_code == 0
