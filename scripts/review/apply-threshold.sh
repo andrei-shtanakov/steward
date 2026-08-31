@@ -12,6 +12,15 @@
 # рендерится — с явной пометкой, чего ей не хватило: молча понижать её значило
 # бы прятать от человека сигнал, который модель сочла major.
 #
+# Порог НЕ зависит от `kind`: машинный тип находки (`defect` | `file-missing`,
+# схема v2) существует для потребителя вердикта, а не для этого скрипта.
+# `file-missing` объявляет, что находка целиком сводится к «файла нет», и её
+# `file` — ровно тот путь; потребитель, у которого есть дерево, проверяет это
+# одной командой (`git cat-file -e <head>:<путь>`) и опровергает известный
+# ложный класс фактом. Сам скрипт дерева не видит и опровергать не вправе:
+# здесь тип только ВАЛИДИРУЕТСЯ (значение вне enum — негодный вердикт, код 2,
+# как severity/confidence) и рендерится, чтобы человек увидел заявленный класс.
+#
 # Коды выхода: 0 — блокирующих нет; 1 — есть; 2 — вердикт негоден.
 # `pipefail` не используется — его нет в POSIX sh.
 set -eu
@@ -69,6 +78,7 @@ command -v jq >/dev/null 2>&1 || {
 # схемы, судить по нему нельзя вовсе.
 jq -e '(.findings | type == "array")
        and all(.findings[]; type == "object"
+               and (.kind | IN("defect", "file-missing"))
                and (.severity | IN("blocker", "major", "minor", "nit"))
                and (.confidence | IN("high", "medium", "low"))
                and ([.title, .file, .scenario, .observed_result, .expected_result]
@@ -82,7 +92,7 @@ jq -e '(.findings | type == "array")
        and (.note | type == "string")' \
     "$verdict" >/dev/null 2>&1 \
     || { echo "вердикт нечитаем: находка вне схемы v2 — отсутствующее или нестроковое" \
-        "текстовое поле, severity/confidence вне enum, line не число, evidence не" \
+        "текстовое поле, kind/severity/confidence вне enum, line не число, evidence не" \
         "массив объектов file/line/reason, либо note не строка" >&2; exit 2; }
 
 total=$(jq '.findings | length' "$verdict")
@@ -127,6 +137,10 @@ elif [ "$format" = markdown ]; then
     # не разъезжался.
     jq -r "$BLOCKING_DEF"'
         def cell: (. // "") | tostring | gsub("\r?\n"; " ");
+        def kindline: if .kind == "file-missing" then
+                          "- Тип: `file-missing` — находка утверждает, что файла "
+                          + "нет; проверяется по дереву\n"
+                      else "" end;
         def ev: [.evidence[]? | "`\(.file|cell):\(.line|cell)` — \(.reason|cell)"]
                 | join("; ");
         def gate: if (.severity | IN("blocker", "major")) | not then
@@ -135,6 +149,7 @@ elif [ "$format" = markdown ]; then
                   else "не блокирует: " + (missing | join(", ")) end;
         .findings[]
         | "### [\(.severity|cell)] \(.title|cell) — `\(.file|cell):\(.line|cell)`\n"
+          + kindline
           + "- Сценарий: \(.scenario|cell)\n"
           + "- Наблюдаемое: \(.observed_result|cell)\n"
           + "- Ожидаемое: \(.expected_result|cell)\n"
@@ -144,12 +159,17 @@ elif [ "$format" = markdown ]; then
 else
     jq -r "$BLOCKING_DEF"'
         def cell: (. // "") | tostring | gsub("\r?\n"; " ");
+        def kindline: if .kind == "file-missing" then
+                          "    тип: file-missing — находка утверждает, что файла "
+                          + "нет; проверяется по дереву\n"
+                      else "" end;
         def gate: if (.severity | IN("blocker", "major")) | not then
                       "не блокирует по severity"
                   elif blocking then "БЛОКИРУЕТ"
                   else "не блокирует: " + (missing | join(", ")) end;
         .findings[]
         | "[\(.severity|cell)/\(.confidence|cell)] \(.title|cell) (\(.file|cell):\(.line|cell))\n"
+          + kindline
           + "    сценарий: \(.scenario|cell)\n"
           + "    наблюдаемое: \(.observed_result|cell); ожидаемое: \(.expected_result|cell)\n"
           + "    evidence: \([.evidence[]? | "\(.file|cell):\(.line|cell) — \(.reason|cell)"] | join("; "))\n"

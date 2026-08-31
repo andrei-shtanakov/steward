@@ -54,6 +54,7 @@ def finding(**overrides: object) -> dict:
     выключают ровно одно требование — так каждое из них закреплено отдельно.
     """
     base: dict = {
+        "kind": "defect",
         "severity": "major",
         "title": "продюсер молчит про пустой ответ",
         "file": "src/a.py",
@@ -337,3 +338,68 @@ def test_missing_jq_is_config_error_not_127(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "jq" in result.stderr
+
+
+# --- kind: машинный тип находки (steward#141, from devtools#behaviour-runner) ---
+
+
+def test_missing_kind_is_unreadable_verdict(tmp_path: Path) -> None:
+    """Отсутствие `kind` — вердикт вне схемы v2 (код 2), а не «тип неизвестен».
+
+    Терпимость здесь стоила бы ровно того, ради чего тип введён: потребитель
+    не смог бы отличить «старый кит без типов» от «находка не про отсутствие
+    файла» и либо перестал бы опровергать ложный класс, либо начал бы
+    перепроверять существование по каждой находке подряд.
+    """
+    bad = finding()
+    del bad["kind"]
+    result = run(write(tmp_path, {"findings": [bad], "note": ""}))
+    assert result.returncode == 2
+    assert "kind" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["missing-file", "", "defect ", 1, None, ["defect"]])
+def test_kind_outside_enum_is_unreadable_verdict(value: object, tmp_path: Path) -> None:
+    """Значение вне enum отвергается наравне с severity/confidence: иначе
+    неизвестный тип молча оценился бы как «не file-missing» — неизвестность,
+    покрашенная зелёным."""
+    result = run(write(tmp_path, {"findings": [finding(kind=value)], "note": ""}))
+    assert result.returncode == 2
+    assert "kind" in result.stderr
+
+
+def test_file_missing_kind_is_rendered(tmp_path: Path) -> None:
+    """Заявленный класс виден человеку — он же адресат опровержения."""
+    result = run(
+        write(
+            tmp_path,
+            {
+                "findings": [finding(kind="file-missing", file="docs/plan.md", line=0)],
+                "note": "",
+            },
+        )
+    )
+    assert result.returncode == 1
+    assert "file-missing" in result.stdout
+    assert "docs/plan.md" in result.stdout
+
+
+def test_defect_kind_adds_no_render_noise(tmp_path: Path) -> None:
+    """Обычная находка не обрастает строкой типа: тип печатается только там,
+    где он что-то меняет для читателя."""
+    result = run(write(tmp_path, {"findings": [finding()], "note": ""}))
+    assert result.returncode == 1
+    assert "file-missing" not in result.stdout
+    assert "Тип:" not in result.stdout
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "text"])
+def test_kind_does_not_change_the_threshold(fmt: str, tmp_path: Path) -> None:
+    """Порог не зависит от типа: `file-missing` с полным evidence блокирует
+    так же, как любая другая major-находка. Опровержение — работа потребителя,
+    у которого есть дерево; этот скрипт дерева не видит и снимать блокировку
+    по одному лишь типу не вправе.
+    """
+    result = run(write(tmp_path, {"findings": [finding(kind="file-missing")], "note": ""}), fmt)
+    assert result.returncode == 1
+    assert "БЛОКИРУЕТ" in result.stdout
