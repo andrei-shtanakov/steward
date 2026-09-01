@@ -506,10 +506,10 @@ product decision record (и наоборот). Как approved proposal стан
 до пустого вердикта» не сходится и стоит ~$0.5/раунд; качество дальше повышают
 пункты ниже, в порядке владельца.
 
-- [ ] Итоговое дерево PR для ревьюера: control plane (промпт, схема, скрипты) из
-      base во временный доверенный каталог, чекаут — head PR, codex read-only по
-      получившемуся дереву, диф — указатель на область ревью; ничего из PR не
-      исполнять @owner:github:andrei-shtanakov @id:review-kit-final-tree
+- [ ] Итоговое дерево PR для ревьюера @owner:github:andrei-shtanakov @id:review-kit-final-tree
+      Control plane (промпт, схема, скрипты) из base во временный доверенный
+      каталог, чекаут — head PR, codex read-only по получившемуся дереву,
+      диф — указатель на область ревью; ничего из PR не исполнять.
 - [ ] Переписать шкалу severity: blocker сужен (эксплуатация, необратимая потеря, @owner:github:andrei-shtanakov @id:review-kit-severity-rewrite
       обход authority, гарантированная невозможность основного сценария), для
       blocker/major обязательны файл+строка, вход, наблюдаемый результат, ссылка
@@ -520,9 +520,9 @@ product decision record (и наоборот). Как approved proposal стан
 - [ ] Статический контекст — только архитектурные контракты и инварианты; обычные @owner:github:andrei-shtanakov @id:review-kit-context-demotion
       исходники уходят (доступны деревом), в промпт — требование читать callers,
       callees и тесты изменённого кода
-- [ ] Усилить схему вердикта: file/line/scenario/observed/expected/evidence[]/
-      confidence; блокируют только blocker/major с confidence: high и заполненным
-      evidence @owner:github:andrei-shtanakov @id:review-kit-verdict-schema-v2
+- [ ] Усилить схему вердикта @owner:github:andrei-shtanakov @id:review-kit-verdict-schema-v2
+      `file`/`line`/`scenario`/`observed`/`expected`/`evidence[]`/`confidence`;
+      блокируют только blocker/major с `confidence: high` и заполненным evidence.
 - [ ] Большие PR: до ~20–30 файлов один прогон; крупнее — chunked по подсистемам + @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode
       финальный межмодульный проход; generated/lock/snapshots не ревьюировать как
       код; обрезка дифа не молча, а явным infrastructure failure
