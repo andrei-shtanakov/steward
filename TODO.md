@@ -635,7 +635,7 @@ product decision record (и наоборот). Как approved proposal стан
   Остаток: снять долю унаследованных против платных после накопления
   органических событий (первый органический кросс-head инцидент —
   update-branch брокера — станет виден прямо в опубликованных маркерах).
-- [ ] Волна re-vendor fp-кита по флоту: `local.sh --fingerprint-only` есть @owner:github:andrei-shtanakov @id:review-kit-fp-wave @blocked_by:todo://devtools/review-kit-fp-wave
+- [ ] Волна re-vendor fp-кита по флоту: `local.sh --fingerprint-only` есть @owner:github:andrei-shtanakov @id:review-kit-fp-wave
       только в steward, `review-pr.sh` feature-detect'ит флаг по-репно —
       до волны дедуп на остальном флоте молча выключен, каждый прогон
       платный, наследовать не из чего. Исходящее devtools#79 (состав:
