@@ -34,8 +34,12 @@
   `gate-check --profile team-exp workstreams/WS-005-gate-verdicts/spec/` → 0 err / 0 warn.
 - ✅ **Фундамент** (WS-001/002/004/006, C2/C3/C5) — профили как данные + `graph.py`;
   `gate-check` (completeness, traceability, status↔git, stale-каскад `GC-STALE*`,
-  `--no-fs`, exit 0/1/2); `steward-compile` (`project-yaml` + `delegation`, корневой
-  `project.yaml` держится byte-equal golden-тестами); risk-модель и waivers.
+  `--no-fs`, exit 0/1/2); C2 steward-половина — PR #14; `steward-compile`
+  (`project-yaml` + `delegation`, корневой `project.yaml` держится byte-equal
+  golden-тестами) — PR #15; risk-модель и waivers — PR #5→#8, #12; authority policy
+  v1 (RD-006 M2) — `5816ab5`; governance-каллер в CI — PR #19. Номера оставлены
+  здесь намеренно: отдельных чекбоксов у этих работ в файле нет, и без них
+  провенанс жил бы только в git-истории вопреки правилу ведения.
   Из исходного scope отложен только OSS-мост (REQ-209, P2).
 - ✅ **DEC-007 role identity — закрыт целиком** (§1): `roles.py` + `roleassignments.py`,
   `profiles/roles.yaml` + `profiles/role-assignments.yaml`, канонический singular
@@ -49,18 +53,24 @@
   (ruling steward#62 ↔ maestro#160: `enforcement` — поле Maestro, здесь его нет никогда).
 - ✅ **V1 живой прогон — PASS** (§4, 2026-08-08/09), evidence по DoD:
   `docs/evidence/2026-08-08-v1-live-run/`.
-- ✅ **Контракты наружу** (`contracts/`, все вендорятся пиненой копией): `gate-verdicts/v1`
-  (+ `prev_hash` hash-chain и `steward verdicts-verify`; ре-вендоринг dispatcher сверен
-  по форджу 2026-08-28), `approval-facts/v2` (§9; приёмка на реальных мержах —
-  `docs/evidence/2026-08-21-approval-facts-v2-migration/`), обе схемы prograph,
-  оба контракта impresario. Плюс SSOT-политики `profiles/{authority,roles,approval-policy}.yaml`
-  для arbiter / dispatcher / devtools.
+- ✅ **Контракты — два разных класса, не путать направление**:
+  **наружу** (steward — producer и владелец схемы, соседи вендорят копию):
+  `contracts/gate-verdicts/v1` (+ `prev_hash` hash-chain и `steward verdicts-verify`;
+  ре-вендоринг dispatcher сверен по форджу 2026-08-28) и `contracts/approval-facts/v2`
+  (§9; приёмка на реальных мержах — `docs/evidence/2026-08-21-approval-facts-v2-migration/`),
+  плюс SSOT-политики `profiles/{authority,roles,approval-policy}.yaml` для
+  arbiter / dispatcher / devtools. **Внутрь** (чужой контракт, вендоренная пиненая
+  копия, steward — офлайн-потребитель): обе схемы prograph и оба контракта impresario.
 - ✅ **CLI сверх `gate-check` и `steward-compile`**: `steward {risk-classify, waivers-check,
   approval-facts, verdicts-verify, adoption-scan, proposal-intake}`; плюс
   `gate-check --candidate` — prospective-прогон по кандидатной ревизии (§6c).
-- 🟡 **Governance gate в CI по-прежнему advisory** — `.github/workflows/governance.yml`,
-  пин `governance-v1`. Ни один из пяти пунктов §5 не сдвинулся с июля: FP/FN не разобраны,
-  break-glass не описан, ownership гейта не определён. Главный незакрытый долг репо.
+- 🟡 **Governance gate в CI по-прежнему advisory** — `.github/workflows/governance.yml`.
+  Четыре evidence-пункта §5 не сдвинулись с июля: FP/FN не разобраны, break-glass не
+  описан, ownership гейта не определён, в required-чеки гейт не переведён. Главный
+  незакрытый долг репо. Пятый пункт §5 (перепин каллера) в неоднозначном состоянии и
+  ждёт сверки владельцем: `uses:` пинует **голый SHA** `51513e8a`, а комментарий того же
+  файла называет целью тег `governance-v2` и утверждает, что SHA ему соответствует —
+  тега `governance-v1` из прежней редакции шапки в дереве нет вообще.
 - 🟡 **Мерж — агент по умолчанию с 2026-08-31** (ADR-ECO-011: `agent_merge_allowed: true`,
   `github:ai-prosto` в `agent_identities`), но **типизированный `agent_merge`-evidence
   ещё не написан** (§6, `@blocked_by:todo://prograph-vault/adr-eco-004-deferred`).
@@ -866,9 +876,12 @@ PR и осознанно не закрыто; список полон, друг�
       доставка сверена по форджу 2026-08-28: git-sha `review-prompt.md`
       байт-совпадает со steward master у выборки 8 потребителей,
       `codex-review.yml` — у всех 6 caller-репо
-- **spec-runner → C2**: `owner_role` + `SPEC_META_CONTRACT = 2`. В работе (ветка
-  `feat/specmeta-contract-v2`). Единственная внешняя блокировка steward-кода — и туда срочно
-  уходит уточнённый ask по DEC-007 (singular slug).
+- **spec-runner → C2**: **закрыто со стороны steward 2026-08-09** (§2, PR #61 — пин
+  `v2.22.0` / `de9a31c4`; ask по DEC-007 доставлен spec-runner#125). Прежняя
+  формулировка «единственная внешняя блокировка steward-кода» снята как неверная:
+  блокировок кода не осталось. Открыт не блокирующий хвост —
+  `todo://steward/spec-runner-authoring-contract-ask` (остаток authoring-контракта
+  по DEC-008).
 - **Maestro → WS-006 M-1…M-4**: guard-hook на переходах `WorkstreamStatus` + persistent
   verdict-record, аннотации advisory-fail, SHA-инвалидация вердиктов, `kind: gate-verdict` в
   evidence-ref v2. Tier не считает — консюмит JSON `risk-classify`.

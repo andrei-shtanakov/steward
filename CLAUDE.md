@@ -31,7 +31,7 @@ Package management is **uv only** (never pip):
 
 Python >= 3.12.
 
-CI runs two workflows: `ci.yml` (ruff format/check, `pyrefly check`, pytest — needs `fetch-depth: 0` for gate-check) and `governance.yml`, a thin caller of the umbrella's reusable governance gate pinned to the immutable tag `governance-v1` (ADR-ECO-004 D5). The governance gate is **advisory** until `governance / gate` is added as a required status check in the `master` ruleset — that last mile is an open TODO item, not an oversight.
+CI runs two workflows: `ci.yml` (ruff format/check, `pyrefly check`, pytest — needs `fetch-depth: 0` for gate-check) and `governance.yml`, a thin caller of the umbrella's reusable governance gate pinned to the umbrella commit `51513e8a` (ADR-ECO-004 D5; the caller's own comment names `governance-v2` as the intended tag line and asserts the SHA matches it — the earlier `governance-v1` wording was stale, no such tag is referenced anywhere in the tree). The governance gate is **advisory** until `governance / gate` is added as a required status check in the `master` ruleset — that last mile is an open TODO item, not an oversight.
 
 ## Ecosystem rules (non-negotiable)
 
