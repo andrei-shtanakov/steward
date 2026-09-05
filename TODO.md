@@ -77,7 +77,9 @@
   Практика обогнала governance-модель; асимметрия названа, а не замолчана.
 - 🟡 **Ревью**: CI-контур `codex-review` снят 2026-08-31 (`3f0e06b`, −811 строк — платные
   прогоны OpenAI API + исчерпанный лимит Actions). Дефолт — терминальный `review-pr.sh`
-  от ai-prosto; часть хвостов §10/§10a переоценивается под это решение (issue #147).
+  от ai-prosto. Переоценки под это решение ждут не только §10/§10a (issue #147), но и два
+  пункта §6, чьи посылки дерево уже опровергает: `codex-review-promotion` продвигает чек,
+  которого в `.github/workflows/` нет, а `codex-review-rollout` раскатывает снятый workflow.
 - ⛔ **WS-003 (git approval)** — invalidated ADR-ECO-004 D4; но узел
   `git-approval-integration` всё ещё в compile-блоке и DAG (§6, `ws-003-compile-dag-fate`).
 - ⬜ **WS-005 (dispatcher panel)** — бандл, аппрувы и контракт закрыты; открыт точный
