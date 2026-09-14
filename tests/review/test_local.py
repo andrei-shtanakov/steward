@@ -1619,3 +1619,24 @@ def test_context_from_subdirectory_reaches_the_prompt(tmp_path: Path) -> None:
     assert "CONTEXT_MARKER_FROM_BASE = 1" in prompts["subdir"]
     assert "--- ФАЙЛ src/ctx.py sha256:" in prompts["subdir"]
     assert prompts["subdir"] == prompts["root"]
+
+
+def test_non_tree_manifest_override_is_a_named_config_refusal(tmp_path: Path) -> None:
+    """`REVIEW_CONTEXT_MANIFEST=/abs/…` — код 2 с причиной сборщика, без ложного
+    «манифест контекста есть»: отказ по форме пути случается ДО проверки его
+    наличия в base, и вызывающий не вправе утверждать то, чего не проверял
+    (minor приёмочного ревью #151)."""
+    _, local = make_repo(tmp_path)
+    (local / "changed.txt").write_text("правка\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка ветки")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"REVIEW_CONTEXT_MANIFEST": str(local / ".github/codex/review-context.txt")},
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "не путь в дереве" in result.stderr
+    assert "манифест контекста есть" not in result.stderr
