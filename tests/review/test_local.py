@@ -1848,6 +1848,46 @@ def test_print_review_cmd_is_exclusive(tmp_path: Path, other: str) -> None:
     assert "--print-review-cmd" in res.stderr
 
 
+# --- REVIEW_EFFORT (спека review-eval D13) -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({"REVIEW_EFFORT": "high"}, "codex exec -c model_reasoning_effort=high"),
+        (
+            {"REVIEW_MODEL": "gpt-5.4", "REVIEW_EFFORT": "low"},
+            "codex exec -m gpt-5.4 -c model_reasoning_effort=low",
+        ),
+        (
+            {"REVIEW_HARNESS": "claude", "REVIEW_EFFORT": "high"},
+            "harness-claude --model claude-opus-5 --effort high",
+        ),
+        ({"REVIEW_CMD": "my-reviewer", "REVIEW_EFFORT": "high"}, "my-reviewer"),
+    ],
+)
+def test_effort_resolution(tmp_path: Path, env: dict[str, str], expected: str) -> None:
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env=env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert res.stdout == expected + "\n"
+
+
+def test_effort_changes_fingerprint_and_matches_explicit_cmd(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    with_effort = harness_fp(repo, {"REVIEW_EFFORT": "high"})
+    assert with_effort != harness_fp(repo)
+    assert with_effort == harness_fp(
+        repo, {"REVIEW_CMD": "codex exec -c model_reasoning_effort=high"}
+    )
+
+
+def test_effort_empty_is_config_error(tmp_path: Path) -> None:
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env={"REVIEW_EFFORT": ""})
+    assert res.returncode == 2 and "REVIEW_EFFORT" in res.stderr
+
+
 # --- Сквозной путь claude: вердикт доезжает до apply-threshold.sh -------------
 
 # Копия из test_harness_claude.py: pyrefly резолвит импорты только от src/ и не

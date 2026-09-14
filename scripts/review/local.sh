@@ -63,9 +63,19 @@ else
             "модель." >&2
         exit 2
     fi
+    # REVIEW_EFFORT — reasoning-уровень (спека review-eval D13): та же
+    # пустота-отказ, что у REVIEW_MODEL, и та же логика — значение не
+    # валидируется, только непустота. Effort — часть команды, значит и
+    # отпечатка: при REVIEW_CMD-оверрайде выше эта ветка не выполняется,
+    # и effort вместе с harness/model игнорируется целиком.
+    if [ -n "${REVIEW_EFFORT+x}" ] && [ -z "$REVIEW_EFFORT" ]; then
+        echo "REVIEW_EFFORT задан пустым — уберите переменную или назовите" \
+            "уровень." >&2
+        exit 2
+    fi
     case "${REVIEW_HARNESS-codex}" in
         codex)
-            review_cmd="codex exec${REVIEW_MODEL:+ -m $REVIEW_MODEL}"
+            review_cmd="codex exec${REVIEW_MODEL:+ -m $REVIEW_MODEL}${REVIEW_EFFORT:+ -c model_reasoning_effort=$REVIEW_EFFORT}"
             ;;
         claude)
             # Адаптер — член кита; зовётся по АБСОЛЮТНОМУ пути
@@ -94,7 +104,7 @@ else
                 exit 2
             fi
             reviewer_exec="$kit_dir/harness-claude"
-            review_cmd="harness-claude --model ${REVIEW_MODEL:-claude-opus-5}"
+            review_cmd="harness-claude --model ${REVIEW_MODEL:-claude-opus-5}${REVIEW_EFFORT:+ --effort $REVIEW_EFFORT}"
             ;;
         *)
             echo "неизвестный харнесс REVIEW_HARNESS='${REVIEW_HARNESS}'" \
