@@ -112,9 +112,11 @@ set -e
 # Разбор конверта: только успешный ответ с непустым объектом
 # structured_output становится вердиктом. `jq -e` даёт не-0 и на false/null
 # фильтра, и на битом JSON (код 2 парсера) — оба случая один класс.
+# `is_error` обязан быть явным `false`: `null | not` даёт true, и конверт
+# без поля проходил бы как успешный.
 if ! jq -e '
         type == "object"
-        and (.is_error | not)
+        and (.is_error == false)
         and .subtype == "success"
         and (.structured_output | type == "object")
         and (.structured_output | length > 0)

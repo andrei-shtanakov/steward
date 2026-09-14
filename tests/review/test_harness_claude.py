@@ -281,6 +281,11 @@ def test_verdict_is_canonical_jq_compact(tmp_path: Path) -> None:
         envelope({}),
         envelope("строка вместо объекта"),
         '{"type":"result","subtype":"success","is_error":false}',
+        # `is_error` ОТСУТСТВУЕТ (не false) — `envelope()` всегда добавляет
+        # поле, поэтому конструируется литералом. В jq `null | not` даёт
+        # true, и старый фильтр `(.is_error | not)` принимал бы это как
+        # успех — находка второго терминального ревью ветки.
+        json.dumps({"type": "result", "subtype": "success", "structured_output": VERDICT_OK}),
         "это не JSON {",
         "",
     ],
