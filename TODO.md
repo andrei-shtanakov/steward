@@ -868,6 +868,16 @@ PR и осознанно не закрыто; список полон, друг�
     spec-runner `9d5f8e7`. Сделано = все 23 `# SOURCE: steward @ a2d7e71`
     (или новее) с 7 строками PIN, и `review-pr.sh … --harness claude` печатает
     `harness-claude` в теле ревью.
+    **PR-1 волны закрыт 2026-09-14** (сверено продюсером по default-веткам через
+    API): все 22 копии с GitHub-remote — `SOURCE @ a2d7e71`, `checksum.sh`
+    байт-в-байт с master, `review-prompt.md` синхронизирован (решение владельца:
+    схема v2 `kind` + apply-threshold + промпт атомарно, исключение spec-runner
+    @ `761285f` снято), 6 строк PIN, адаптера нигде нет — ожидаемое состояние
+    между шагами. `atp-platform-testing-en` — локальная папка без remote, вне
+    флота (ранее считалась 23-й копией). Осталось PR-2: адаптер `100755` +
+    7-я строка PIN; волна взяла `a2d7e71`, а `collect-context.sh` с тех пор
+    изменён (#157, steward#154) — предложено поднять его тем же PR-2, чтобы
+    флот стал `57170da` целиком.
 
   - [ ] Перевести `?scripts/review/harness-claude` из переходного в обязательный член инвентаря `checksum.sh` @owner:github:andrei-shtanakov @id:review-kit-harness-member-promotion @blocked_by:todo://steward/review-kit-harness-fleet-wave @epic:eco.codex-review-rollout
 
