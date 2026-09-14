@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.review.test_harness_claude import CLAUDE_STUB, envelope
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "review" / "local.sh"
 
@@ -1837,3 +1839,77 @@ def test_print_review_cmd_is_exclusive(tmp_path: Path, other: str) -> None:
     res = run_local_env(local, "--print-review-cmd", other)
     assert res.returncode == 2, res.stdout + res.stderr
     assert "--print-review-cmd" in res.stderr
+
+
+# --- Сквозной путь claude: вердикт доезжает до apply-threshold.sh -------------
+
+MAJOR_FINDING = {
+    "findings": [
+        {
+            "kind": "defect",
+            "severity": "major",
+            "title": "t",
+            "file": "a.py",
+            "line": 1,
+            "scenario": "s",
+            "observed_result": "o",
+            "expected_result": "e",
+            "evidence": [{"file": "b.py", "line": 2, "reason": "r"}],
+            "confidence": "high",
+        }
+    ],
+    "note": "stub",
+}
+
+
+def _claude_stand(tmp_path: Path, structured: object) -> dict[str, str]:
+    """PATH с подставным claude + env для стаба; возвращает env для run_local_env."""
+    bin_dir = tmp_path / "claude-bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "claude"
+    stub.write_text(CLAUDE_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    env_file = tmp_path / "envelope.json"
+    env_file.write_text(envelope(structured), encoding="utf-8")
+    return {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "CLAUDE_STUB_ARGV": str(tmp_path / "argv.txt"),
+        "CLAUDE_STUB_PROMPT": str(tmp_path / "prompt.txt"),
+        "CLAUDE_STUB_ENVELOPE": str(env_file),
+        "REVIEW_HARNESS": "claude",
+    }
+
+
+@pytest.mark.parametrize(
+    "structured, code", [({"findings": [], "note": "stub"}, 0), (MAJOR_FINDING, 1)]
+)
+def test_claude_harness_end_to_end_reaches_threshold(
+    tmp_path: Path, structured: object, code: int
+) -> None:
+    """Один env-переключатель — и вердикт claude проходит через apply-threshold.sh
+    (код 0/1 по содержимому), включая прогон из подкаталога."""
+    repo = make_repo_with_diff(tmp_path)
+    sub = repo / "sub"
+    sub.mkdir()
+    env = _claude_stand(tmp_path, structured)
+    res = run_local_env(repo, env=env, cwd=sub)
+    assert res.returncode == code, res.stdout + res.stderr
+    prompt = Path(env["CLAUDE_STUB_PROMPT"]).read_text(encoding="utf-8")
+    assert "new.txt" in prompt  # диф реально дошёл до claude
+
+
+def test_kit_dir_path_prefix_does_not_leak_into_preparation(tmp_path: Path) -> None:
+    """D7: $kit_dir подмешан в PATH только у вызова ревьюера. Подставной `git`
+    в копии кита, падающий кодом 99, НЕ должен подхватываться подготовкой
+    дифа/отпечатка — при `export PATH` на весь local.sh прогон умер бы."""
+    repo = make_repo_with_diff(tmp_path)
+    kit = _kit_copy(tmp_path, with_adapter=True)
+    fake_git = kit / "git"
+    fake_git.write_text(
+        "#!/bin/sh\necho 'подставной git подхвачен' >&2\nexit 99\n", encoding="utf-8"
+    )
+    fake_git.chmod(0o755)
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    res = run_local_env(repo, env=env, kit_dir=kit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "подставной git" not in res.stderr
