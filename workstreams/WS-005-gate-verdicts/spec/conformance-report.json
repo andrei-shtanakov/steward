@@ -86,7 +86,7 @@
       "suppressed_by": null
     }
   ],
-  "generated_at": "2026-08-08T13:34:38Z",
+  "generated_at": "2026-09-14T05:48:10Z",
   "manifest": {
     "path": "workstreams/WS-005-gate-verdicts/spec/intended-graph.yaml",
     "project": "steward",
@@ -94,20 +94,20 @@
   },
   "projects": {
     "dispatcher": {
-      "commit": "02df5c2c218c1e33c956512f5afa2b4e6d440a09",
+      "commit": "13d500061f3372adeb3ecfc0d5b653ebda381ff4",
       "dirty": false
     },
     "steward": {
-      "commit": "9b79700cb7edb7b6930734ecd10b7ad230870bc6",
+      "commit": "9d5f8e70c1b7f6a7ad5999189c20153162d9c015",
       "dirty": false
     }
   },
   "schema": "conformance-report/v1",
   "snapshot": {
     "complete": true,
-    "content_hash": "prograph-snapshot/v1+sha256:78037530d03d93438199b3e8a67c02aeee9806f215125bc80ebc515f1c2b7b5e",
-    "id": 13,
-    "indexed_at": "2026-08-08T13:34:37Z"
+    "content_hash": "prograph-snapshot/v1+sha256:69f5c6981cbb997318f15a8743546b82039226281ca22102445b059064f8c093",
+    "id": 14,
+    "indexed_at": "2026-09-14T05:48:06Z"
   },
   "summary": {
     "findings": {
