@@ -85,6 +85,7 @@ command -v jq >/dev/null 2>&1 \
 verdict_dir=$(dirname "$verdict")
 tmp=$(mktemp "$verdict_dir/.verdict.XXXXXX") \
     || fail 2 "не удалось создать временный файл в $verdict_dir"
+trap 'rm -f "$tmp"' EXIT
 envelope=$(mktemp) || fail 2 "не удалось создать временный файл для ответа"
 trap 'rm -f "$tmp" "$envelope"' EXIT
 

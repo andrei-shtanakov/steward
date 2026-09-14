@@ -192,3 +192,124 @@ def test_missing_jq_in_path_is_config_error_not_127(tmp_path: Path) -> None:
     res = s.run(*s.codex_args(), path=str(s.bin))  # только подставной claude, без jq
     assert res.returncode == 2, res.stderr
     assert "jq" in res.stderr
+
+
+# --- Боевой путь: argv claude, промпт, вердикт ---------------------------------
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+def test_success_writes_structured_output_and_uses_readonly_claude_flags(
+    tmp_path: Path, interp: str
+) -> None:
+    """Вердикт JSON-семантически равен structured_output; claude получил ровно
+    read-only набор флагов и промпт со stdin (диф не в argv)."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args("--model", "claude-opus-5"), interp=interp, stdin="ДИФ-В-STDIN\n")
+
+    assert res.returncode == 0, res.stderr
+    assert json.loads(s.verdict.read_text(encoding="utf-8")) == VERDICT_OK
+    argv = s.argv.read_text(encoding="utf-8").splitlines()
+    assert argv[:3] == ["-p", "--model", "claude-opus-5"]
+    for flag in (
+        "--json-schema",
+        "--output-format",
+        "json",
+        "--restricted",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--permission-prompts",
+        "none",
+        "--tools",
+        "Read",
+        "Glob",
+        "Grep",
+    ):
+        assert flag in argv, flag
+    assert "ДИФ-В-STDIN" not in " ".join(argv)
+    assert s.prompt.read_text(encoding="utf-8") == "ДИФ-В-STDIN\n"
+    # Схема передаётся СОДЕРЖИМЫМ файла; точная форма пробелов — не контракт.
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == {"type": "object"}
+
+
+def test_default_model_is_opus_5(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args())
+    assert res.returncode == 0, res.stderr
+    argv = s.argv.read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--model") + 1] == "claude-opus-5"
+
+
+def test_verdict_is_canonical_jq_compact(tmp_path: Path) -> None:
+    """Каноническая сериализация — `jq -c`: без пробелов, одной строкой."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), envelope_text=envelope({"findings": [], "note": "x y"}))
+    assert res.returncode == 0, res.stderr
+    text = s.verdict.read_text(encoding="utf-8")
+    assert text == '{"findings":[],"note":"x y"}\n'
+
+
+# --- Негодные ответы: не-0 и никакого вердикта ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        envelope(VERDICT_OK, is_error=True),
+        envelope(VERDICT_OK, subtype="error_max_turns"),
+        envelope(None),
+        envelope({}),
+        envelope("строка вместо объекта"),
+        '{"type":"result","subtype":"success","is_error":false}',
+        "это не JSON {",
+        "",
+    ],
+)
+@pytest.mark.parametrize("interp", INTERPRETERS)
+def test_bad_envelope_is_failure_without_verdict(tmp_path: Path, bad: str, interp: str) -> None:
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), envelope_text=bad, interp=interp)
+    assert res.returncode == 3, res.stderr
+    assert "structured_output" in res.stderr
+    assert not s.verdict.exists()
+    assert list(s.out.glob(".verdict.*")) == [], "осиротевший временный файл"
+
+
+def test_claude_nonzero_exit_is_failure_with_stderr_passthrough(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), claude_exit="7")
+    assert res.returncode == 3, res.stderr
+    assert "кодом 7" in res.stderr
+    assert "падаю по просьбе" in res.stderr
+    assert not s.verdict.exists()
+    assert list(s.out.glob(".verdict.*")) == []
+
+
+def test_temp_file_lives_next_to_verdict(tmp_path: Path) -> None:
+    """Временный файл — в каталоге целевого: только тогда mv — rename, а не
+    копирование через границу ФС. Подставной claude «зависает» ровно настолько,
+    чтобы увидеть .verdict.* рядом с целевым путём."""
+    s = Stand(tmp_path)
+    probe = tmp_path / "probe.txt"
+    stub = s.bin / "claude"
+    stub.write_text(
+        f'#!/bin/sh\ncat > /dev/null\nls -a "{s.out}" > "{probe}"\ncat "{s.env_file}"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    res = s.run(*s.codex_args())
+    assert res.returncode == 0, res.stderr
+    assert ".verdict." in probe.read_text(encoding="utf-8")
+    assert list(s.out.glob(".verdict.*")) == []
+
+
+def test_adapter_is_executable_in_git_tree() -> None:
+    """Бит исполнения зафиксирован в ДЕРЕВЕ (100755), не в чекауте: адаптер
+    запускается по PATH голым именем (D7), и потерянный при вендоринге бит
+    ловит префлайт local.sh, а не copy-integrity (checksum сверяет байты)."""
+    out = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-s", "scripts/review/harness-claude"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out.startswith("100755 "), out
