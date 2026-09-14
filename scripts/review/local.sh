@@ -23,13 +23,69 @@ if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
 fi
 schema="${REVIEW_SCHEMA:-$repo_root/.github/codex/review-schema.json}"
 prompt="${REVIEW_PROMPT:-$repo_root/.github/codex/review-prompt.md}"
+# --- харнесс ревьюера (спека 2026-09-14) ------------------------------------
 # REVIEW_CMD — КОМАНДА, не путь к бинарю: умолчание несёт `exec` внутри
 # себя, а не как отдельный литерал ниже в вызове. Раньше `exec` был жёстко
 # приклеен к вызову, и REVIEW_CMD='codex exec --model X' искал файл с таким
-# именем целиком (ENOENT → код 3 "ревьюер не отработал"), хотя план и
-# описывает умолчание именно как `codex exec`. Подменить хочется команду
-# целиком, включая флаги, — не только бинарь.
-review_cmd="${REVIEW_CMD:-codex exec}"
+# именем целиком (ENOENT → код 3 "ревьюер не отработал"). Подменить хочется
+# команду целиком, включая флаги, — не только бинарь.
+#
+# Приоритет: НЕПУСТОЙ REVIEW_CMD — осознанный оверрайд целиком, резолв
+# харнесса не запускается (D5); REVIEW_CMD="" — как unset, так работал
+# `${REVIEW_CMD:-…}` и до патча, и обещание совместимости обязано это
+# сохранить. Иначе — REVIEW_HARNESS (умолчание codex: строка `codex exec`
+# в отпечатке НЕ меняется, опубликованные наследования остаются валидными —
+# D1) и REVIEW_MODEL. Кит читает только окружение процесса: ни файлового,
+# ни git-конфига (D2) — harness.env остаётся деталью review-pr.sh.
+#
+# REVIEW_MODEL="" и REVIEW_HARNESS="" — ОТКАЗЫ, не умолчания: пустое
+# значение приходит только от явной, но сломанной настройки (`export
+# REVIEW_MODEL=` без значения), и молча уйти на codex значило бы сжечь
+# ровно тот лимит, ради которого переменная выставлялась. Факт объявления
+# проверяется `${REVIEW_MODEL+x}`, а не `${REVIEW_MODEL:-…}` (D6).
+if [ -n "${REVIEW_CMD:-}" ]; then
+    review_cmd="$REVIEW_CMD"
+else
+    if [ -n "${REVIEW_MODEL+x}" ] && [ -z "$REVIEW_MODEL" ]; then
+        echo "REVIEW_MODEL задан пустым — уберите переменную или назовите" \
+            "модель." >&2
+        exit 2
+    fi
+    case "${REVIEW_HARNESS-codex}" in
+        codex)
+            review_cmd="codex exec${REVIEW_MODEL:+ -m $REVIEW_MODEL}"
+            ;;
+        claude)
+            # Адаптер — член кита, запускаемый по PATH голым именем (D7):
+            # в отпечаток идёт `harness-claude`, а не абсолютный путь,
+            # иначе отпечатки разошлись бы между машинами. PATH здесь НЕ
+            # меняется — $kit_dir подмешивается префиксом только к самому
+            # вызову ревьюера (см. ниже), иначе выбор claude менял бы
+            # разрешение git/grep/wc/хешера при подготовке дифа и отпечатка.
+            # Перекос версий копий кита — штатный режим раскатки: нет
+            # адаптера — именованный отказ, не `command not found` → код 3.
+            # checksum.sh сверяет байты, не режим, поэтому потерянный при
+            # вендоринге бит исполнения ловится здесь.
+            if [ ! -f "$kit_dir/harness-claude" ]; then
+                echo "REVIEW_HARNESS=claude, а $kit_dir/harness-claude нет:" \
+                    "кит обновлён наполовину — ре-вендорьте кит целиком" \
+                    "или уберите переменную (умолчание codex)." >&2
+                exit 2
+            fi
+            if [ ! -x "$kit_dir/harness-claude" ]; then
+                echo "адаптер без бита исполнения:" \
+                    "chmod +x $kit_dir/harness-claude" >&2
+                exit 2
+            fi
+            review_cmd="harness-claude --model ${REVIEW_MODEL:-claude-opus-5}"
+            ;;
+        *)
+            echo "неизвестный харнесс REVIEW_HARNESS='${REVIEW_HARNESS}'" \
+                "(claude|codex)." >&2
+            exit 2
+            ;;
+    esac
+fi
 
 base=""
 head_ref="HEAD"
@@ -641,7 +697,13 @@ fi
 # нести свои флаги, например 'codex exec --model X'), и должна разбиться на
 # отдельные argv-слова через word splitting, а не уйти одним литералом в
 # argv[0], где `exec`/бинарь с пробелом внутри имени не существует (ENOENT).
-if ! $review_cmd --sandbox read-only \
+# PATH расширяется ТОЛЬКО здесь и только для этой команды (D7): префикс-
+# присваивание в POSIX sh действует на окружение одной команды и сочетается
+# с word-splitting $review_cmd (первое слово строки — имя команды). Для
+# codex префикс безвреден: $kit_dir просматривается первым, но бинаря
+# `codex` в нём нет. Кит не должен когда-либо получить член с именем
+# `codex` или `claude` — это превратило бы префикс в подмену ревьюера.
+if ! PATH="$kit_dir:$PATH" $review_cmd --sandbox read-only \
         --output-schema "$schema" \
         --output-last-message "$work/verdict.json" \
         - < "$work/prompt.txt" >/dev/null 2>"$work/reviewer.err"; then

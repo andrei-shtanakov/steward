@@ -1640,3 +1640,149 @@ def test_non_tree_manifest_override_is_a_named_config_refusal(tmp_path: Path) ->
     assert result.returncode == 2, result.stdout + result.stderr
     assert "не путь в дереве" in result.stderr
     assert "манифест контекста есть" not in result.stderr
+
+
+# --- Харнесс ревьюера: REVIEW_CMD > REVIEW_MODEL > REVIEW_HARNESS (спека 2026-09-14)
+
+
+def make_repo_with_diff(tmp_path: Path) -> Path:
+    _, local = make_repo(tmp_path)
+    (local / "new.txt").write_text("новое\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "работа")
+    return local
+
+
+def run_local_env(
+    repo: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    kit_dir: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Как run_local, но БЕЗ REVIEW_CMD: проверяется резолв харнесса, а
+    REVIEW_CMD его выключает целиком. Переменные харнесса приходят только
+    через `env`; всё, чего в `env` нет, из окружения теста вычищается."""
+    base = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("REVIEW_CMD", "REVIEW_HARNESS", "REVIEW_MODEL")
+    }
+    base["REVIEW_KIT_DIR"] = str(kit_dir or ROOT / "scripts" / "review")
+    base["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
+    base["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    if env:
+        base.update(env)
+    return subprocess.run(
+        ["sh", str(SCRIPT), *args],
+        cwd=str(cwd or repo),
+        capture_output=True,
+        text=True,
+        env=base,
+    )
+
+
+def harness_fp(repo: Path, env: dict[str, str] | None = None, **kw: object) -> str:
+    """Отпечаток для тестов харнесса. НЕ `fingerprint`: такой хелпер в модуле
+    уже есть (возвращает CompletedProcess, ставит REVIEW_CMD=false, принимает
+    позиционные флаги) и им пользуются 13 живых тестов — позднее определение
+    на уровне модуля затенило бы его и сломало их."""
+    res = run_local_env(repo, "--fingerprint-only", env=env, **kw)  # type: ignore[arg-type]
+    assert res.returncode == 0, res.stdout + res.stderr
+    return res.stdout.strip()
+
+
+def test_default_fingerprint_equals_explicit_codex_exec_and_is_unchanged(tmp_path: Path) -> None:
+    """D1: умолчание — побайтно `codex exec`. Доказательство через отпечаток:
+    он включает review_cmd, и равенство с явным REVIEW_CMD='codex exec'
+    означает, что строка умолчания не изменилась — опубликованные
+    наследования остаются валидными."""
+    repo = make_repo_with_diff(tmp_path)
+    assert harness_fp(repo) == harness_fp(repo, {"REVIEW_CMD": "codex exec"})
+    assert harness_fp(repo) == harness_fp(repo, {"REVIEW_HARNESS": "codex"})
+
+
+def test_empty_review_cmd_behaves_as_unset(tmp_path: Path) -> None:
+    """D5: `REVIEW_CMD=""` — как unset (`${REVIEW_CMD:-…}` до патча)."""
+    repo = make_repo_with_diff(tmp_path)
+    assert harness_fp(repo, {"REVIEW_CMD": ""}) == harness_fp(repo)
+
+
+@pytest.mark.parametrize(
+    "env, equivalent_cmd",
+    [
+        ({"REVIEW_MODEL": "gpt-5.4"}, "codex exec -m gpt-5.4"),
+        ({"REVIEW_HARNESS": "codex", "REVIEW_MODEL": "gpt-5.4"}, "codex exec -m gpt-5.4"),
+        ({"REVIEW_HARNESS": "claude"}, "harness-claude --model claude-opus-5"),
+        (
+            {"REVIEW_HARNESS": "claude", "REVIEW_MODEL": "claude-sonnet-5"},
+            "harness-claude --model claude-sonnet-5",
+        ),
+    ],
+)
+def test_resolution_table_via_fingerprint(
+    tmp_path: Path, env: dict[str, str], equivalent_cmd: str
+) -> None:
+    """Таблица §6 спеки, построчно: отпечаток с харнесс-переменными равен
+    отпечатку с эквивалентным явным REVIEW_CMD — значит review_cmd
+    резолвится ровно в эту строку."""
+    repo = make_repo_with_diff(tmp_path)
+    assert harness_fp(repo, env) == harness_fp(repo, {"REVIEW_CMD": equivalent_cmd})
+    assert harness_fp(repo, env) != harness_fp(repo)
+
+
+def test_review_cmd_wins_over_harness(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    both = {"REVIEW_CMD": "codex exec", "REVIEW_HARNESS": "claude", "REVIEW_MODEL": "x"}
+    assert harness_fp(repo, both) == harness_fp(repo)
+
+
+@pytest.mark.parametrize(
+    "env, reason",
+    [
+        ({"REVIEW_HARNESS": "gemini"}, "неизвестный харнесс"),
+        ({"REVIEW_HARNESS": ""}, "неизвестный харнесс"),
+        ({"REVIEW_MODEL": ""}, "REVIEW_MODEL"),
+        ({"REVIEW_HARNESS": "claude", "REVIEW_MODEL": ""}, "REVIEW_MODEL"),
+    ],
+)
+def test_broken_harness_settings_are_config_errors(
+    tmp_path: Path, env: dict[str, str], reason: str
+) -> None:
+    """Пустые/неизвестные значения — отказ, не умолчание: они приходят только
+    от явной, но сломанной настройки, и молча уйти на codex значило бы сжечь
+    ровно тот лимит, ради которого переменная выставлялась."""
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, "--fingerprint-only", env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert reason in res.stderr
+
+
+def _kit_copy(tmp_path: Path, *, with_adapter: bool, executable: bool = True) -> Path:
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    for name in ("local.sh", "build-prompt.sh", "apply-threshold.sh", "collect-context.sh"):
+        shutil.copy(ROOT / "scripts" / "review" / name, kit / name)
+    if with_adapter:
+        target = kit / "harness-claude"
+        shutil.copy(ROOT / "scripts" / "review" / "harness-claude", target)
+        target.chmod(0o755 if executable else 0o644)
+    return kit
+
+
+def test_claude_without_adapter_is_half_updated_kit(tmp_path: Path) -> None:
+    """Перекос версий копий — штатный режим раскатки: отказ именованный (код 2),
+    а не `command not found` → код 3 «ревьюер не отработал»."""
+    repo = make_repo_with_diff(tmp_path)
+    kit = _kit_copy(tmp_path, with_adapter=False)
+    res = run_local_env(repo, "--fingerprint-only", env={"REVIEW_HARNESS": "claude"}, kit_dir=kit)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "наполовину" in res.stderr
+
+
+def test_claude_with_non_executable_adapter_names_chmod(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    kit = _kit_copy(tmp_path, with_adapter=True, executable=False)
+    res = run_local_env(repo, "--fingerprint-only", env={"REVIEW_HARNESS": "claude"}, kit_dir=kit)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "chmod +x" in res.stderr
