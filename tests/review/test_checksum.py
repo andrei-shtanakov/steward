@@ -407,6 +407,24 @@ def test_optional_member_present_is_verified(tmp_path: Path) -> None:
     assert "scripts/review/new-helper.sh" in result.stderr
 
 
+def test_optional_member_present_without_pin_line_is_integrity_failure(tmp_path: Path) -> None:
+    """Optional-член, присутствующий у потребителя БЕЗ строки PIN, — отказ
+    copy-integrity (код 1), не пропуск: `?path` без PIN-строки легален только
+    когда файла НЕТ в копии. Иначе REVIEW_HARNESS=claude выполнил бы
+    незапинованный (ни с чем не сверенный) файл при зелёном copy-integrity —
+    терминальное ревью ветки, третий заход."""
+    root = make_kit(tmp_path)
+    helper = root / "scripts" / "review" / "new-helper.sh"
+    helper.write_text("helper\n", encoding="utf-8")
+    pin = full_pin(root)  # без строки для new-helper.sh
+
+    result = run_env(root, pin, "CHECKSUM_KIT_EXTRA", OPTIONAL_EXTRA)
+
+    assert result.returncode == 1, result.stderr
+    assert "scripts/review/new-helper.sh" in result.stderr
+    assert "не запинован" in result.stderr
+
+
 def test_env_cannot_shrink_mandatory_inventory(tmp_path: Path) -> None:
     """Env-хук не сужает обязательный инвентарь — только добавляет.
 
@@ -421,3 +439,65 @@ def test_env_cannot_shrink_mandatory_inventory(tmp_path: Path) -> None:
     result = run_env(root, pin, "CHECKSUM_KIT_INVENTORY", "scripts/review/build-prompt.sh")
 
     assert result.returncode == 2, result.stderr
+
+
+# --- harness-claude: переходный член инвентаря по умолчанию (спека 2026-09-14 §7)
+
+ADAPTER = "scripts/review/harness-claude"
+
+
+def test_default_inventory_has_adapter_as_optional_and_absent_is_green(
+    tmp_path: Path,
+) -> None:
+    """Двухшаговый ре-вендор (§5 базовой спеки): в этом релизе адаптер — `?path`.
+    Потребитель без файла остаётся на codex и ничего не теряет. Зелёный без
+    CHECKSUM_KIT_EXTRA — член в ЗАШИТОМ инвентаре, не в env."""
+    root = make_kit(tmp_path)
+    assert ADAPTER not in KIT_FILES  # стенд без адаптера — ровно старый потребитель
+    result = run(root, full_pin(root))
+    assert result.returncode == 0, result.stderr
+    assert "?" + ADAPTER in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_optional_marker_is_not_glob_expanded(tmp_path: Path) -> None:
+    """`?path` в инвентаре некавыченно раскрывается словорасщеплением — `?`
+    заодно glob-метасимвол. Посторонний путь вида `ascripts/review/…` в cwd
+    (той же длины/формы, что `?scripts/review/…`) не должен подменить собой
+    маркер и превратить переходный член в обязательный (minor терминального
+    ревью ветки, четвёртый заход)."""
+    root = make_kit(tmp_path)
+    decoy = root / "ascripts" / "review" / "harness-claude"
+    decoy.parent.mkdir(parents=True, exist_ok=True)
+    decoy.write_text("decoy\n", encoding="utf-8")
+    pin = full_pin(root)  # без адаптера — старый потребитель без него
+
+    result = run(root, pin)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_adapter_present_is_verified_like_a_mandatory_member(tmp_path: Path) -> None:
+    root = make_kit(tmp_path)
+    (root / ADAPTER).write_text("adapter\n", encoding="utf-8")
+    pin = full_pin(root, extra=[pin_line(root, ADAPTER)])
+    assert run(root, pin).returncode == 0
+    (root / ADAPTER).write_text("drift\n", encoding="utf-8")
+    result = run(root, pin)
+    assert result.returncode == 1, result.stderr
+
+
+def test_adapter_present_without_pin_line_is_integrity_failure(tmp_path: Path) -> None:
+    """Незапинованный `harness-claude` у потребителя (в умолчательном
+    инвентаре, не через CHECKSUM_KIT_EXTRA) — отказ, а не тихий пропуск:
+    иначе присутствующий, но ни с чем не сверенный адаптер исполнялся бы при
+    зелёном copy-integrity."""
+    root = make_kit(tmp_path)
+    (root / ADAPTER).write_text("adapter\n", encoding="utf-8")
+    pin = full_pin(root)  # без строки для ADAPTER
+
+    result = run(root, pin)
+
+    assert result.returncode == 1, result.stderr
+    assert ADAPTER in result.stderr
+    assert "не запинован" in result.stderr
+    assert ADAPTER in result.stderr
