@@ -92,8 +92,12 @@ git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
 # пусто читалось как штатный код 3, и настроенный обязательный контекст молча
 # выпадал из промпта при зелёном прогоне (steward#150 ← spec-runner#474).
 # С флагом путь означает одно и то же из любого cwd.
-manifest_entry=$(git ls-tree --full-tree "$base" -- "$manifest" 2>/dev/null) \
-    || manifest_entry=""
+# `core.quotePath=false` — сырые пути: при умолчании git C-квотирует не-ASCII
+# имена (`"docs/\320\272…"`), и структурная проверка «путь равен запрошенному»
+# ниже отвергла бы легитимный `docs/контракт.md` (тот же довод, что у
+# `diff --name-only` в local.sh).
+manifest_entry=$(git -c core.quotePath=false ls-tree --full-tree "$base" \
+    -- "$manifest" 2>/dev/null) || manifest_entry=""
 if [ -z "$manifest_entry" ]; then
     echo "манифест контекста отсутствует в base ($base:$manifest)" >&2
     echo "курируемый контекст в этом репозитории не настроен." >&2
@@ -200,7 +204,9 @@ while IFS= read -r line; do
     #
     # `--full-tree` — по той же причине, что у манифеста выше: пути в списке
     # тоже от корня дерева и не должны зависеть от cwd вызывающего.
-    entry=$(git ls-tree --full-tree "$base" -- "$path" 2>/dev/null) || entry=""
+    # `core.quotePath=false` — по той же причине, что у манифеста выше.
+    entry=$(git -c core.quotePath=false ls-tree --full-tree "$base" \
+        -- "$path" 2>/dev/null) || entry=""
     [ -n "$entry" ] || {
         echo "файл контекста не читается из base: $base:$path" >&2
         exit 2

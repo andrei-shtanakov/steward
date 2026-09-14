@@ -602,3 +602,22 @@ def test_manifest_path_with_trailing_slash_or_magic_is_refused(repo: Path, bad: 
 
     assert res.returncode == 2, res.stdout + res.stderr
     assert "не путь в дереве" in res.stderr
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+def test_non_ascii_path_resolves_to_itself(repo: Path, interp: str) -> None:
+    """Структурная проверка «путь равен запрошенному» обязана сравнивать СЫРОЕ
+    имя: при умолчании `core.quotePath=true` `git ls-tree` печатает не-ASCII
+    путь C-квотированным (`"docs/\\320\\272…"`), и легитимный `docs/контракт.md`
+    считался бы разрешившимся «не в себя» (major терминального ревью ветки
+    steward#154). Оба вызова ls-tree идут с `-c core.quotePath=false`, как
+    уже делает local.sh для путей дифа."""
+    write(repo, "docs/контракт.md", "# Контракт\n\nне-ASCII имя файла\n")
+    write(repo, MANIFEST, "docs/контракт.md\n")
+    base = commit(repo, "не-ASCII путь в манифесте")
+
+    res = run(repo, base, interp=interp)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert attached_paths(res.stdout) == ["docs/контракт.md"]
+    assert "не-ASCII имя файла" in res.stdout
