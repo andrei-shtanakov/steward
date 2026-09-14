@@ -58,6 +58,10 @@
 **Interfaces:**
 - Produces: env `REVIEW_VERDICT_OUT=<path>` → после успешного вызова ревьюера файл с байтами `$work/verdict.json` существует по этому пути (atomic), независимо от исхода `apply-threshold.sh`.
 
+- [ ] **Step 0: Изоляция окружения тестов**
+
+В `tests/review/test_local.py` хелпер `run_local_env` вычищает из наследуемого `os.environ` только `REVIEW_CMD`, `REVIEW_HARNESS`, `REVIEW_MODEL`. Расширить кортеж до `("REVIEW_CMD", "REVIEW_HARNESS", "REVIEW_MODEL", "REVIEW_EFFORT", "REVIEW_VERDICT_OUT", "REVIEW_USAGE_OUT")` — иначе экспортированный в shell разработчика `REVIEW_EFFORT` (переменная для этого и заводится) менял бы ожидания `--print-review-cmd`/отпечатков, а `REVIEW_VERDICT_OUT` заставлял бы тесты писать по чужому пути. Аналогично в `tests/review/test_harness_claude.py` `Stand.run`: строить env из `os.environ` без `REVIEW_USAGE_OUT`/`REVIEW_EFFORT`, добавить параметр `extra_env: dict[str, str] | None = None` и применять его поверх — тесты Task 2 передают путь sidecar через `extra_env`, не через `monkeypatch.setenv`.
+
 - [ ] **Step 1: Падающие тесты**
 
 Добавить в конец `tests/review/test_local.py` (хелперы `make_repo_with_diff`, `run_local_env`, `harness_fp`, `_claude_stand`, `MAJOR_FINDING` уже есть в файле):
@@ -169,12 +173,10 @@ def _usage_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return {"REVIEW_USAGE_OUT": str(out)}, out
 
 
-def test_usage_sidecar_written_on_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_usage_sidecar_written_on_success(tmp_path: Path) -> None:
     s = Stand(tmp_path)
     env, out = _usage_env(tmp_path)
-    for k, v in env.items():
-        monkeypatch.setenv(k, v)
-    res = s.run(*s.codex_args("--model", "claude-opus-5", "--effort", "high"), envelope_text=FULL_ENVELOPE)
+    res = s.run(*s.codex_args("--model", "claude-opus-5", "--effort", "high"), envelope_text=FULL_ENVELOPE, extra_env=env)
     assert res.returncode == 0, res.stderr
     u = json.loads(out.read_text(encoding="utf-8"))
     assert u["schema"] == "review-usage/v1" and u["provider"] == "claude"
@@ -185,34 +187,31 @@ def test_usage_sidecar_written_on_success(tmp_path: Path, monkeypatch: pytest.Mo
     assert argv[argv.index("--effort") + 1] == "high"
 
 
-def test_usage_sidecar_written_on_error_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_usage_sidecar_written_on_error_envelope(tmp_path: Path) -> None:
     """Ошибочный ответ тоже стоил денег (D12): sidecar есть, outcome=error, код адаптера 3."""
     s = Stand(tmp_path)
     env, out = _usage_env(tmp_path)
-    monkeypatch.setenv("REVIEW_USAGE_OUT", env["REVIEW_USAGE_OUT"])
     bad = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True,
                       "total_cost_usd": 0.05, "usage": {"input_tokens": 10, "output_tokens": 1}})
-    res = s.run(*s.codex_args(), envelope_text=bad)
+    res = s.run(*s.codex_args(), envelope_text=bad, extra_env=env)
     assert res.returncode == 3
     u = json.loads(out.read_text(encoding="utf-8"))
     assert u["outcome"] == "error" and u["total_cost_usd"] == 0.05
     assert u["provider_duration_ms"] is None  # отсутствует → null, не 0
 
 
-def test_usage_sidecar_on_unparseable_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_usage_sidecar_on_unparseable_envelope(tmp_path: Path) -> None:
     s = Stand(tmp_path)
     env, out = _usage_env(tmp_path)
-    monkeypatch.setenv("REVIEW_USAGE_OUT", env["REVIEW_USAGE_OUT"])
-    res = s.run(*s.codex_args(), envelope_text="not json {")
+    res = s.run(*s.codex_args(), envelope_text="not json {", extra_env=env)
     assert res.returncode == 3
     u = json.loads(out.read_text(encoding="utf-8"))
     assert u["outcome"] == "error" and u["usage"] is None
 
 
-def test_usage_out_empty_is_config_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_usage_out_empty_is_config_error(tmp_path: Path) -> None:
     s = Stand(tmp_path)
-    monkeypatch.setenv("REVIEW_USAGE_OUT", "")
-    res = s.run(*s.codex_args())
+    res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": ""})
     assert res.returncode == 2 and "REVIEW_USAGE_OUT" in res.stderr
 
 
@@ -222,7 +221,7 @@ def test_no_effort_flag_without_effort_arg(tmp_path: Path) -> None:
     assert "--effort" not in s.argv.read_text(encoding="utf-8").splitlines()
 ```
 
-(`Stand.run` строит env из `os.environ`, поэтому `monkeypatch.setenv` доходит до адаптера.)
+(`Stand.run` после Task 1 Step 0 принимает `extra_env` и вычищает `REVIEW_USAGE_OUT`/`REVIEW_EFFORT` из наследуемого окружения.)
 
 - [ ] **Step 2: RED** — `uv run pytest tests/review/test_harness_claude.py -k "usage or effort" -q` → все FAIL кроме `no_effort_flag` (ratchet).
 
@@ -386,9 +385,11 @@ class Match: files: tuple[str, ...]; line_window: int; keywords_any: tuple[str, 
 @dataclass(frozen=True)
 class Defect: id: str; severity: str; file: str; line_hint: int; scenario: str; evidence: tuple[str, ...]; match: Match
 @dataclass(frozen=True)
+class NonDefect: id: str; file: str; line_hint: int; scenario: str; match: Match   # без severity/evidence — их наличие в YAML non_defects → CorpusError
+@dataclass(frozen=True)
 class Annotation: status: str; blocking_complete: bool; adjudicated_by: str | None; adjudicated_at: str | None; source: str
 @dataclass(frozen=True)
-class Case: case_id: str; repo: str; pr: int; base_sha: str; head_sha: str; cls: str; local_args: tuple[str, ...]; expected_outcome: str; annotation: Annotation; defects: tuple[Defect, ...]; non_defects: tuple[Defect, ...]; notes: str
+class Case: case_id: str; repo: str; pr: int; base_sha: str; head_sha: str; cls: str; local_args: tuple[str, ...]; expected_outcome: str; annotation: Annotation; defects: tuple[Defect, ...]; non_defects: tuple[NonDefect, ...]; notes: str
 class CorpusError(Exception)
 def load_case(path: Path) -> Case            # CorpusError на нарушении схемы
 def load_corpus(dir: Path) -> list[Case]     # + уникальность case_id/defect id, реестр _ids.txt
@@ -396,7 +397,7 @@ def corpus_digest(cases: list[Case]) -> str  # sha256 канонического
 def is_gold(case: Case) -> bool              # annotation.status == "adjudicated"
 ```
 
-Правила валидации (каждое — тест): `schema == "review-eval-case/v1"`; `case_id == f"{repo.split('/')[1]}-{pr}"`; `base_sha`/`head_sha` — 40 hex, различны; `cls ∈ {defective, clean, large}`; `large` требует `local_args` непустой **или** `expected_outcome == "guardrail_rejection"`; `expected_outcome ∈ {verdict, guardrail_rejection}`; `annotation.status ∈ {draft, adjudicated}`, `adjudicated` требует `adjudicated_by`/`adjudicated_at`; `defects[].severity ∈ {blocker, major, minor}`; id формата `D-<repo>-<pr>-<n>` / `NF-…`, уникальны по всему корпусу; каждый id из корпуса присутствует в `_ids.txt`, а id из `_ids.txt`, отсутствующий в корпусе, — допустим (удалённый) и **не может** появиться снова с другим содержимым (реестр хранит `id sha256(defect-json)`; повторное появление с другим хешем → `CorpusError`).
+Правила валидации (каждое — тест): `schema == "review-eval-case/v1"`; `case_id == f"{repo.split('/')[1]}-{pr}"`; `base_sha`/`head_sha` — 40 hex, различны; `cls ∈ {defective, clean, large}`; `large` требует `local_args` непустой **или** `expected_outcome == "guardrail_rejection"`; `expected_outcome ∈ {verdict, guardrail_rejection}`; `annotation.status ∈ {draft, adjudicated}`, `adjudicated` требует `adjudicated_by`/`adjudicated_at`; `defects[].severity ∈ {blocker, major, minor}`; `non_defects[]` без `severity`/`evidence` (присутствие — ошибка); id формата `D-<repo>-<pr>-<n>` / `NF-…`, уникальны по всему корпусу; каждый id из корпуса присутствует в `_ids.txt`, а id из `_ids.txt`, отсутствующий в корпусе, — допустим (удалённый) и **не может** появиться снова с другим содержимым (реестр хранит `id sha256(defect-json)`; повторное появление с другим хешем → `CorpusError`).
 
 Steps: тесты (валидный кейс из фикстуры YAML; каждое правило → `CorpusError`) → RED → реализация (`yaml.safe_load`, ручная проверка полей, без pydantic) → GREEN → commit `feat(review-eval): корпус — модель кейса, валидация, реестр id`.
 
@@ -461,12 +462,12 @@ class MatchResult:
 def rules_digest() -> str
 def build_edges(preds: Sequence[Prediction], defects: Sequence[Defect]) -> list[Edge]
 def assign(edges: Sequence[Edge]) -> tuple[dict[int, str], list[Edge]]   # mutual-best до неподвижной точки; остаток
-def match(preds, defects, non_defects) -> MatchResult
+def match(preds: Sequence[Prediction], defects: Sequence[Defect], non_defects: Sequence[NonDefect]) -> MatchResult
 ```
 
-`build_edges`: файл prediction (нормализованный: `./` снят, слэши) ∈ `match.files`; `abs(line − line_hint) ≤ line_window`; ≥ 1 keyword (casefold) в `title + scenario + expected_result`; вес `(kw_hits, |evidence-файлы prediction ∩ файлы из defect.evidence|, −abs(dline))`. `assign`: цикл — для каждого prediction лучший по весу (уникальный: единственное ребро с максимальным весом), для каждого defect аналогично; пара назначается только если она лучшая для обоих; удалить пару и все её рёбра; повторять до отсутствия новых назначений. Остаток рёбер группируется в компоненты связности → `ambiguous`. `duplicates`: prediction, у которого все рёбра ведут к уже назначенным defect. `known_fp`: те же правила против `non_defects`, **после** назначения по дефектам (defect приоритетнее). Порядок: результат вычисляется как множества; для стабильного вывода сортировать ключи.
+`build_edges`: файл prediction (нормализованный: `./` снят, слэши) ∈ `match.files`; `abs(line − line_hint) ≤ line_window`; ≥ 1 keyword (casefold) в `title + scenario + expected_result`; вес `(kw_hits, |evidence-файлы prediction ∩ файлы из defect.evidence|, −abs(dline))`. `assign`: цикл — для каждого prediction лучший по весу (уникальный: единственное ребро с максимальным весом), для каждого defect аналогично; пара назначается только если она лучшая для обоих; удалить **обе вершины** пары и все инцидентные им рёбра; повторять до отсутствия новых назначений. Классификация остатка — по **исходному** множеству рёбер `E0` (не по остатку после удаления): `unlabeled` — prediction без рёбер в `E0`; `duplicates` — неназначенный prediction, у которого в `E0` есть ребро к назначенному defect **и нет** рёбер к неназначенным defect (спека D10: «ребро к уже назначенному» — хотя бы одно); prediction с рёбрами и к назначенному, и к неназначенному defect — в `ambiguous` (вместе со своей компонентой остатка), не в duplicates; остаток рёбер к неназначенным вершинам группируется в компоненты связности → `ambiguous`. `known_fp`: те же правила против `non_defects`, **после** назначения по дефектам (defect приоритетнее), только для prediction, не попавших в assigned/duplicates/ambiguous. Порядок: результат вычисляется как множества; для стабильного вывода сортировать ключи.
 
-Тесты: перефразированная находка (keywords в scenario) → assigned; другой файл → unlabeled; две находки на один defect с разным весом → 1 assigned + 1 duplicate; равные веса на один defect → ambiguous (компонента с 2 pred, 1 defect), `assigned` пуст; цепочка A→d1 лучший для A, но d1 лучший для B, B лучший для d2 — назначаются только взаимно-лучшие (B–d1? нет: d1 лучший для B, B лучший для d2 → ни одной пары mutual → всё в ambiguous) — зафиксировать ожидаемый результат явно; инвариантность: для входов ≤ 4×4 — все перестановки `preds` и `defects` дают равные `MatchResult` (сравнение по множествам); `non_defect` → known_fp; `rules_digest()` меняется при изменении константы `LINE_TOLERANCE_DEFAULT`/весовой функции (тест сравнивает с зафиксированным значением и объясняет, что смена требует бампа `MATCHER_VERSION`). Commit `feat(review-eval): матчер — рёбра, mutual-best назначение, дубликаты, очередь`.
+Тесты: перефразированная находка (keywords в scenario) → assigned; другой файл → unlabeled; две находки на один defect с разным весом → 1 assigned + 1 duplicate (по `E0`, несмотря на удаление инцидентных рёбер); prediction с рёбрами к назначенному d1 и к неназначенному d2 → ambiguous, не duplicate; `duplicates ∩ unlabeled = ∅` на всех входах property-теста; равные веса на один defect → ambiguous (компонента с 2 pred, 1 defect), `assigned` пуст; цепочка A→d1 лучший для A, но d1 лучший для B, B лучший для d2 — назначаются только взаимно-лучшие (B–d1? нет: d1 лучший для B, B лучший для d2 → ни одной пары mutual → всё в ambiguous) — зафиксировать ожидаемый результат явно; инвариантность: для входов ≤ 4×4 — все перестановки `preds` и `defects` дают равные `MatchResult` (сравнение по множествам); `non_defect` → known_fp; `rules_digest()` меняется при изменении константы `LINE_TOLERANCE_DEFAULT`/весовой функции (тест сравнивает с зафиксированным значением и объясняет, что смена требует бампа `MATCHER_VERSION`). Commit `feat(review-eval): матчер — рёбра, mutual-best назначение, дубликаты, очередь`.
 
 ---
 
@@ -492,9 +493,16 @@ def run_case(case: Case, variant: Variant, rep: int, *, kit: KitUnderTest, cache
 def run_all(cases, variants, *, repetitions, out_dir, kit, cache_root, jobs=1, rerun=False, keep_worktrees=False) -> RunManifest   # пишет run.json
 ```
 
-`run_case`: worktree (Task 5) → env = `env_base` без `REVIEW_CMD`/`REVIEW_*` + `REVIEW_KIT_DIR`, `REVIEW_PROMPT`, `REVIEW_SCHEMA`, `REVIEW_HARNESS`, `REVIEW_MODEL`, `REVIEW_EFFORT` (если есть), `REVIEW_VERDICT_OUT`, `REVIEW_USAGE_OUT` → `subprocess.run(["sh", kit_dir/"local.sh", "--base", base, "--head", head, "--format", "text", *local_args], cwd=worktree, capture_output=True, text=True)` с `time.monotonic()` вокруг → классификация: 0/1 и валидный по `review-schema.json` `verdict.json` → `verdict`; 2 и в stderr подстрока `диф больше поддерживаемого` → `guardrail_rejection`; иной 2 → `config_failure`; 3 → `mechanical_failure`; 0/1 без валидного вердикта → `invalid_verdict`; сверка с `case.expected_outcome` → `unexpected_outcome` при несовпадении (кроме пар `verdict`↔`verdict`). `cost_status = available` если `usage.json` существует и `total_cost_usd` не `null`. Идемпотентность: готовый `result.json` пропускается без `rerun`. `run.json`: kit, `tools` (`claude --version`, `codex --version`, `git --version` — `unavailable` при отсутствии), variants, `corpus_digest`, `matcher_version`, `rules_digest`, `started/finished`, `jobs`, `repetitions`.
+`run_case`: worktree (Task 5) → env = `env_base` без `REVIEW_CMD`/`REVIEW_*` + `REVIEW_KIT_DIR`, `REVIEW_PROMPT`, `REVIEW_SCHEMA`, `REVIEW_HARNESS`, `REVIEW_MODEL`, `REVIEW_EFFORT` (если есть), `REVIEW_VERDICT_OUT`, `REVIEW_USAGE_OUT` → `subprocess.run(["sh", kit_dir/"local.sh", "--base", base, "--head", head, "--format", "text", *local_args], cwd=worktree, capture_output=True, text=True)` с `time.monotonic()` вокруг → классификация (порядок проверок важен; «sidecar есть» = файл `REVIEW_VERDICT_OUT` существует и непуст — он пишется `local.sh` **до** порога, поэтому наличие sidecar означает «ревьюер отработал»):
+   - код 0/1 **и** sidecar есть **и** проходит `review-schema.json` → `verdict`;
+   - код 2 **и** в stderr подстрока `диф больше поддерживаемого` → `guardrail_rejection`;
+   - код 2 **и** sidecar есть → `invalid_verdict` (вердикт получен, но отвергнут порогом: правила `apply-threshold.sh` строже схемы — например `kind: file-missing` с `line > 0`; это ошибка **модели**, не конфигурации);
+   - код 0/1 **и** sidecar есть, но не проходит схему → `invalid_verdict`;
+   - код 2 без sidecar → `config_failure`; код 3 → `mechanical_failure`; код 0/1 без sidecar → `mechanical_failure` (кит обещает sidecar до порога — его отсутствие при успехе значит, что ревьюер не отработал по контракту);
+   - сверка с `case.expected_outcome` → `unexpected_outcome` при несовпадении (`verdict`↔`verdict`, `guardrail_rejection`↔`guardrail_rejection` — совпадения; `invalid_verdict` — всегда ожидаемым не бывает, но метрики валидности по нему считаются).
+   Поле `reviewer_ran: bool` (= sidecar есть) пишется в `result.json` — знаменатель `valid_verdict_rate` (Task 9). `cost_status = available` если `usage.json` существует и `total_cost_usd` не `null`. Идемпотентность: готовый `result.json` пропускается без `rerun`. `run.json`: kit, `tools` (`claude --version`, `codex --version`, `git --version` — `unavailable` при отсутствии), variants, `corpus_digest`, `matcher_version`, `rules_digest`, `started/finished`, `jobs`, `repetitions`.
 
-Тесты: подставной `local.sh` в временном kit_dir (записывает `REVIEW_*` в файл, пишет `verdict.json`/`usage.json` по путям из env, выходит заданным кодом; вариант со stderr «диф больше поддерживаемого» и кодом 2) + фикстурный репо → проверки: env без `REVIEW_CMD`; артефакты на местах; классификация каждого исхода; `wall_clock_s > 0`; `cost_status unavailable` без usage; `requested_effort` записан; повторный `run_all` пропускает готовые; объект вне кэша → `CacheError`→ код 2 без сети (подставной `git`, падающий на `fetch`); worktree на историческом SHA (стаб читает файл, существующий только в первом коммите). Commit `feat(review-eval): раннер — изоляция, sidecar, исходы, run.json`.
+Тесты: подставной `local.sh` в временном kit_dir (записывает `REVIEW_*` в файл, пишет `verdict.json`/`usage.json` по путям из env, выходит заданным кодом; вариант со stderr «диф больше поддерживаемого» и кодом 2) + фикстурный репо → проверки: env без `REVIEW_CMD`; артефакты на местах; классификация каждого исхода, включая «код 2 + sidecar» → `invalid_verdict` и «код 2 без sidecar» → `config_failure`, «код 0 без sidecar» → `mechanical_failure`; `wall_clock_s > 0`; `cost_status unavailable` без usage; `requested_effort` записан; повторный `run_all` пропускает готовые; объект вне кэша → `CacheError`→ код 2 без сети (подставной `git`, падающий на `fetch`); worktree на историческом SHA (стаб читает файл, существующий только в первом коммите). Commit `feat(review-eval): раннер — изоляция, sidecar, исходы, run.json`.
 
 ---
 
@@ -513,7 +521,7 @@ def bootstrap_ci(values_by_case: Sequence[tuple[int, int]], *, n: int = 1000, se
 def compare(metrics_a: dict, metrics_b: dict, paired: Sequence[tuple[CaseEval, CaseEval]], *, seed: int = 0) -> dict
 ```
 
-Определения — по спеке §9 буквально; блокирующее предсказание — `is_blocking`; TP только если назначенный defect имеет severity ∈ {blocker, major}; `precision` отсутствует (не `None` — ключа нет) при непустой очереди, `status: pending_adjudication`; recall/false-block — только `blocking_complete`; `resolvable_evidence_rate` через `worktree_files`; эксплуатационные по всем adjudicated; стоимость по всем прогонам с `available`, `cost_unavailable_cases` отдельно; `cost_usd_mean_per_case` помечается `partial: true` при хотя бы одном unavailable. Тесты — рукотворные наборы с известными числами для каждой формулы; bootstrap детерминирован по seed и лежит в [0,1]. Commit `feat(review-eval): метрики с знаменателями, статусы, bootstrap, compare`.
+Определения — по спеке §9 буквально (`valid_verdict_rate` = исходы `verdict` / прогоны с `reviewer_ran: true`, т. е. по всем прогонам, где ревьюер отдал вердикт, включая `invalid_verdict` с кодом 2); блокирующее предсказание — `is_blocking`; TP только если назначенный defect имеет severity ∈ {blocker, major}; `precision` отсутствует (не `None` — ключа нет) при непустой очереди, `status: pending_adjudication`; recall/false-block — только `blocking_complete`; `resolvable_evidence_rate` через `worktree_files`; эксплуатационные по всем adjudicated; стоимость по всем прогонам с `available`, `cost_unavailable_cases` отдельно; `cost_usd_mean_per_case` помечается `partial: true` при хотя бы одном unavailable. Тесты — рукотворные наборы с известными числами для каждой формулы; bootstrap детерминирован по seed и лежит в [0,1]. Commit `feat(review-eval): метрики с знаменателями, статусы, bootstrap, compare`.
 
 ---
 

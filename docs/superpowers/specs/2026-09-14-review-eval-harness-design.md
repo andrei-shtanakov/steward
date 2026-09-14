@@ -222,12 +222,18 @@ GitHub URL. Это единственный сетевой шаг во всём 
    --format text [local_args…]` с cwd = worktree; stdout/stderr — в
    `stdout.txt`/`stderr.txt`; код выхода и wall-clock (`time.monotonic()`
    вокруг `subprocess.run`, D5) — в `result.json`.
-6. **Классификация исхода:** `verdict` (код 0/1 и `verdict.json` валиден по
-   схеме), `guardrail_rejection` (код 2 с текстом потолка дифа — ожидаемо для
-   `large` без `local_args`), `config_failure` (прочий код 2),
-   `mechanical_failure` (код 3), `invalid_verdict` (код 0/1, но `verdict.json`
-   нет или не проходит схему). Ожидаемый исход из кейса сверяется; несовпадение
-   — `unexpected_outcome`, метрики качества по такому прогону не считаются.
+6. **Классификация исхода** — по коду выхода **и** по наличию sidecar
+   `REVIEW_VERDICT_OUT` (он пишется до порога, поэтому «sidecar есть» =
+   «ревьюер отработал», `reviewer_ran: true`): `verdict` (код 0/1, sidecar
+   есть и валиден по схеме); `guardrail_rejection` (код 2 с текстом потолка
+   дифа — ожидаемо для `large` без `local_args`); `invalid_verdict` (sidecar
+   есть, но вердикт отвергнут: код 2 от `apply-threshold.sh`, чьи правила
+   строже схемы — например `kind: file-missing` с `line > 0`, — либо код 0/1
+   при вердикте, не проходящем схему) — это ошибка **модели**, не
+   конфигурации; `config_failure` (код 2 без sidecar); `mechanical_failure`
+   (код 3, а также код 0/1 без sidecar — нарушение контракта кита). Ожидаемый
+   исход из кейса сверяется; несовпадение — `unexpected_outcome`, метрики
+   качества по такому прогону не считаются, эксплуатационные — считаются.
 7. **Стоимость:** из `usage.json` (D12 — файл есть и при неуспехе); для
    харнессов без sidecar — `cost_status: unavailable` (D6); значения никогда не
    подставляются нулём.
@@ -369,8 +375,11 @@ M --effort E"`; адаптер принимает `--effort <e>` и переда
 Эксплуатационные (по всем adjudicated-кейсам, независимо от исхода):
 
 - `completion_rate` — исходы `verdict` (или ожидаемый `guardrail_rejection`) /
-  все прогоны; `valid_verdict_rate` — валидные `verdict.json` / прогоны с
-  кодом 0/1; `config_failure_rate`, `mechanical_failure_rate`,
+  все прогоны; `valid_verdict_rate` — исходы `verdict` / прогоны с
+  `reviewer_ran: true` (ревьюер отдал вердикт — включая `invalid_verdict` с
+  кодом 2 от порога; иначе вариант, регулярно выдающий негодные вердикты,
+  выглядел бы как вариант с проблемной конфигурацией и `valid_verdict_rate =
+  1.0`); `config_failure_rate`, `mechanical_failure_rate`,
   `unexpected_outcome_count` — раздельно; `duplicate_rate` — duplicate /
   все предсказания.
 - Стоимость: `cost_usd_total`, `cost_usd_mean_per_case`, `cost_unavailable_cases`
