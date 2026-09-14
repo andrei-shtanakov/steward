@@ -142,8 +142,15 @@ class Stand:
         env["CLAUDE_STUB_ENVELOPE"] = str(self.env_file)
         if claude_exit is not None:
             env["CLAUDE_STUB_EXIT"] = claude_exit
+        # Интерпретатор — АБСОЛЮТНЫМ путём, найденным по PATH теста ДО сужения:
+        # CPython резолвит executable по env["PATH"] переданного окружения, и
+        # при PATH из одного каталога голое `sh` дало бы FileNotFoundError
+        # стенда вместо проверки префлайта (прецедент —
+        # tests/review/test_apply_threshold.py: `/bin/sh` при пустом PATH).
+        interp_abs = shutil.which(interp)
+        assert interp_abs, f"{interp} не найден в PATH теста"
         return subprocess.run(
-            [interp, str(ADAPTER), *args],
+            [interp_abs, str(ADAPTER), *args],
             input=stdin,
             capture_output=True,
             text=True,
@@ -585,7 +592,11 @@ def run_local_env(
     )
 
 
-def fingerprint(repo: Path, env: dict[str, str] | None = None, **kw: object) -> str:
+def harness_fp(repo: Path, env: dict[str, str] | None = None, **kw: object) -> str:
+    """Отпечаток для тестов харнесса. НЕ `fingerprint`: такой хелпер в модуле
+    уже есть (возвращает CompletedProcess, ставит REVIEW_CMD=false, принимает
+    позиционные флаги) и им пользуются 13 живых тестов — позднее определение
+    на уровне модуля затенило бы его и сломало их."""
     res = run_local_env(repo, "--fingerprint-only", env=env, **kw)  # type: ignore[arg-type]
     assert res.returncode == 0, res.stdout + res.stderr
     return res.stdout.strip()
@@ -597,14 +608,14 @@ def test_default_fingerprint_equals_explicit_codex_exec_and_is_unchanged(tmp_pat
     означает, что строка умолчания не изменилась — опубликованные
     наследования остаются валидными."""
     repo = make_repo_with_diff(tmp_path)
-    assert fingerprint(repo) == fingerprint(repo, {"REVIEW_CMD": "codex exec"})
-    assert fingerprint(repo) == fingerprint(repo, {"REVIEW_HARNESS": "codex"})
+    assert harness_fp(repo) == harness_fp(repo, {"REVIEW_CMD": "codex exec"})
+    assert harness_fp(repo) == harness_fp(repo, {"REVIEW_HARNESS": "codex"})
 
 
 def test_empty_review_cmd_behaves_as_unset(tmp_path: Path) -> None:
     """D5: `REVIEW_CMD=""` — как unset (`${REVIEW_CMD:-…}` до патча)."""
     repo = make_repo_with_diff(tmp_path)
-    assert fingerprint(repo, {"REVIEW_CMD": ""}) == fingerprint(repo)
+    assert harness_fp(repo, {"REVIEW_CMD": ""}) == harness_fp(repo)
 
 
 @pytest.mark.parametrize(
@@ -622,14 +633,14 @@ def test_resolution_table_via_fingerprint(tmp_path: Path, env: dict[str, str], e
     отпечатку с эквивалентным явным REVIEW_CMD — значит review_cmd
     резолвится ровно в эту строку."""
     repo = make_repo_with_diff(tmp_path)
-    assert fingerprint(repo, env) == fingerprint(repo, {"REVIEW_CMD": equivalent_cmd})
-    assert fingerprint(repo, env) != fingerprint(repo)
+    assert harness_fp(repo, env) == harness_fp(repo, {"REVIEW_CMD": equivalent_cmd})
+    assert harness_fp(repo, env) != harness_fp(repo)
 
 
 def test_review_cmd_wins_over_harness(tmp_path: Path) -> None:
     repo = make_repo_with_diff(tmp_path)
     both = {"REVIEW_CMD": "codex exec", "REVIEW_HARNESS": "claude", "REVIEW_MODEL": "x"}
-    assert fingerprint(repo, both) == fingerprint(repo)
+    assert harness_fp(repo, both) == harness_fp(repo)
 
 
 @pytest.mark.parametrize(
@@ -779,7 +790,10 @@ if ! PATH="$kit_dir:$PATH" $review_cmd --sandbox read-only \
 - [ ] **Step 5: Прогнать тесты Task 3 и весь `test_local.py`**
 
 Run: `uv run pytest tests/review/test_local.py -q`
-Expected: PASS все (старые тесты задают `REVIEW_CMD` и не затронуты).
+Expected: PASS все. Старые тесты задают `REVIEW_CMD` через `run_local` и резолв
+харнесса не запускают; 13 существующих fingerprint-тестов продолжают звать
+свой `fingerprint(...)` — новый хелпер назван `harness_fp` именно чтобы его не
+затенять. Если в модуле два `def fingerprint` — это ошибка исполнения плана.
 
 - [ ] **Step 6: Коммит**
 
