@@ -851,13 +851,23 @@ PR и осознанно не закрыто; список полон, друг�
   ре-вендора по флоту — по образцу `review-kit-fp-wave`; PIN у потребителей —
   `checksum.sh`.
 
-  - [ ] Волна ре-вендора кита с харнесс-слоем по флоту + миграция `review-pr.sh` на `REVIEW_HARNESS` @owner:github:andrei-shtanakov @id:review-kit-harness-fleet-wave @blocked_by:todo://devtools/review-pr-harness-env @epic:eco.codex-review-rollout
+  - [ ] Волна ре-вендора кита с харнесс-слоем по флоту (23 копии, двухшаговая) @owner:github:andrei-shtanakov @id:review-kit-harness-fleet-wave @blocked_by:todo://devtools/review-kit-harness-wave @epic:eco.codex-review-rollout
 
-    Ждёт devtools: `review-pr.sh` переходит с `REVIEW_CMD`/`PATH`-подмешивания
-    `scripts/harness` на `REVIEW_HARNESS`/`REVIEW_MODEL` и
-    `local.sh --print-review-cmd`, переходник `scripts/harness/claude-review`
-    удаляется. После этого — волна ре-вендора по флоту (24 репо) по образцу
-    `review-kit-fp-wave`; PIN у потребителей проверяет `checksum.sh`.
+    Шаг 1 devtools#222 ДОСТАВЛЕН (devtools#227, 2026-09-14): `review-pr.sh`
+    выставляет `REVIEW_HARNESS`/`REVIEW_MODEL` и берёт reviewer_label из
+    `local.sh --print-review-cmd`; боевой зонд — steward → `harness-claude
+    --model claude-opus-5`, dispatcher (старая копия) → `claude-review` прежней
+    веткой. Удаление переходника (их `review-harness-shim-removal`) ждёт этой
+    волны. Волна заведена в devtools как флотскому оператору (прецедент
+    devtools#79): devtools#228, slug `review-kit-harness-wave` — двухшаговый
+    ре-вендор на потребителя (PR-1: 6 прежних файлов @ `a2d7e71`, новый
+    `checksum.sh` с `?harness-claude`; PR-2: сам адаптер `100755` + 7-я строка
+    PIN — иначе старый base-чекер даёт код 2 на «non-kit entry»), целевые
+    sha256 и проверка на месте — в теле issue. Состав на 2026-09-14: 19 копий
+    @ `e4c43cc`, kapelle `9916787`, maestro `1634af7`, devtools `2c71ed7`,
+    spec-runner `9d5f8e7`. Сделано = все 23 `# SOURCE: steward @ a2d7e71`
+    (или новее) с 7 строками PIN, и `review-pr.sh … --harness claude` печатает
+    `harness-claude` в теле ревью.
 
   - [ ] Перевести `?scripts/review/harness-claude` из переходного в обязательный член инвентаря `checksum.sh` @owner:github:andrei-shtanakov @id:review-kit-harness-member-promotion @blocked_by:todo://steward/review-kit-harness-fleet-wave @epic:eco.codex-review-rollout
 
