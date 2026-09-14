@@ -564,3 +564,41 @@ def test_manifest_path_must_be_a_tree_path(repo: Path, shape: str) -> None:
 
     assert res.returncode == 2, res.stdout + res.stderr
     assert "не путь в дереве" in res.stderr
+
+
+# --- Путь обязан разрешаться ровно в себя (steward#154) ---------------------
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+@pytest.mark.parametrize("bad", ["src/", "docs/", ":/src/producer.py", ":(top)docs/contract.md"])
+def test_trailing_slash_and_pathspec_magic_entries_are_refused(
+    repo: Path, bad: str, interp: str
+) -> None:
+    """Запись `dir/` проходила как файл: `git ls-tree --full-tree <base> -- dir/`
+    печатает СОДЕРЖИМОЕ каталога, проверка режима брала первую внутреннюю
+    запись (100644), а `git show <base>:dir/` на tree-объекте выходил с 0 и
+    печатал листинг — пакет собирался с кодом 0, «файл» был листингом
+    каталога (spec-runner#491 → steward#154). Pathspec-магия `:…` — тот же
+    класс: путь разрешается не в себя. Обе формы отвергаются сторожем
+    формы пути, а не полагаются на git.
+    """
+    write(repo, MANIFEST, f"{bad}\n")
+    base = commit(repo, "запись не разрешается в себя")
+
+    res = run(repo, base, interp=interp)
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "недопустимый путь" in res.stderr
+    assert "--- ФАЙЛ" not in res.stdout
+
+
+@pytest.mark.parametrize("bad", [".github/codex/", ":/.github/codex/review-context.txt"])
+def test_manifest_path_with_trailing_slash_or_magic_is_refused(repo: Path, bad: str) -> None:
+    """Тот же сторож у `--manifest`: каталог с хвостовым слэшем и pathspec-магия
+    — не путь файла в дереве base."""
+    base = git(repo, "rev-parse", "HEAD").strip()
+
+    res = run(repo, base, manifest=bad)
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "не путь в дереве" in res.stderr

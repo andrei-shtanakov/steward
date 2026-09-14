@@ -910,6 +910,23 @@ PR и осознанно не закрыто; список полон, друг�
   `test_declared_generated_is_filtered_from_subdir` зелёный только потому, что
   неанкорный `uv.lock` совпадает и с `src/uv.lock`).
 
+- [x] Запись манифеста `dir/` проходила как файл — в пакет попадал листинг каталога @owner:github:andrei-shtanakov @id:review-context-trailing-slash-entry @epic:eco.codex-review-rollout
+
+  Приём входящего steward#154 (from spec-runner#491, терминальное ревью их
+  ре-вендора @ `9d5f8e7`; minor, пре-существующее). Сторож формы пути не
+  отвергал хвостовой `/`: `git ls-tree --full-tree <base> -- dir/` печатает
+  содержимое каталога, проверка режима брала первую внутреннюю запись
+  (100644), а `git show <base>:dir/` на tree-объекте выходил с 0 и печатал
+  листинг — пакет собирался с кодом 0, «файл» был листингом. PR этой ветки:
+  сторож (у `--manifest` и у записей) отвергает `*/` и pathspec-магию `:*`
+  (тот же класс: путь разрешается не в себя), плюс структурная проверка
+  поверх сторожа — `ls-tree` обязан вернуть ровно одну запись с путём,
+  буквально равным запрошенному (defense-in-depth против любой формы
+  pathspec, не только хвостового слэша). Регресс-тесты: `src/`, `docs/`,
+  `:/src/producer.py`, `:(top)docs/contract.md` в манифесте и `.github/codex/`,
+  `:/…` в `--manifest` → код 2, без `--- ФАЙЛ` в выводе; sh + dash. Доедет до
+  флота волной devtools#228, если та берёт кит с master после этого мержа.
+
 - [x] Base-контекст терялся при `local.sh` из подкаталога (fail-open) @owner:github:andrei-shtanakov @id:review-context-root-relative-manifest @epic:eco.codex-review-rollout
       —
       приём входящего steward#150 (from spec-runner#474, терминальное ревью их
