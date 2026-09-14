@@ -275,13 +275,20 @@ def test_manifest_without_files_is_a_refusal(repo: Path) -> None:
         " lead.py",
         "src/with space.py",
         "src/with\ttab.py",
+        "./src/producer.py",
+        "src/./producer.py",
+        "src/.",
     ],
 )
 def test_path_shapes_refused(repo: Path, bad: str) -> None:
-    """Абсолютные пути, обход вверх и glob'ы отвергаются, а не разворачиваются.
+    """Абсолютные пути, обход вверх, glob'ы и `.`-сегменты отвергаются, а не
+    разворачиваются.
 
     Glob важен отдельно от безопасности: шаблон означал бы, что новый файл
-    попадает в пакет молча, без ревью правки манифеста.
+    попадает в пакет молча, без ревью правки манифеста. `./`-префикс — своя
+    дыра: `git ls-tree --full-tree` нормализует его от корня, а
+    `git show <base>:./path` по gitrevisions относителен cwd — режим
+    проверялся бы у одного объекта, содержимое бралось бы у другого.
     """
     write(repo, MANIFEST, f"{bad}\n")
     base = commit(repo, "плохой путь")
@@ -537,7 +544,7 @@ def test_absent_manifest_from_subdirectory_is_still_code_3(repo: Path) -> None:
     assert "не настроен" in res.stderr
 
 
-@pytest.mark.parametrize("shape", ["absolute", "parent"])
+@pytest.mark.parametrize("shape", ["absolute", "parent", "dot-prefix", "dot-segment"])
 def test_manifest_path_must_be_a_tree_path(repo: Path, shape: str) -> None:
     """Абсолютный путь ФС и обход вверх — не путь в дереве: отказ, не угадывание.
 
@@ -546,7 +553,12 @@ def test_manifest_path_must_be_a_tree_path(repo: Path, shape: str) -> None:
     «работает наполовину» хуже честного кода 2.
     """
     base = git(repo, "rev-parse", "HEAD").strip()
-    bad = str(repo / MANIFEST) if shape == "absolute" else f"../repo/{MANIFEST}"
+    bad = {
+        "absolute": str(repo / MANIFEST),
+        "parent": f"../repo/{MANIFEST}",
+        "dot-prefix": f"./{MANIFEST}",
+        "dot-segment": ".github/./codex/review-context.txt",
+    }[shape]
 
     res = run(repo, base, manifest=bad, cwd=repo / "src")
 
