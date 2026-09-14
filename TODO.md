@@ -851,7 +851,7 @@ PR и осознанно не закрыто; список полон, друг�
   ре-вендора по флоту — по образцу `review-kit-fp-wave`; PIN у потребителей —
   `checksum.sh`.
 
-  - [ ] Волна ре-вендора кита с харнесс-слоем по флоту (23 копии, двухшаговая) @owner:github:andrei-shtanakov @id:review-kit-harness-fleet-wave @blocked_by:todo://devtools/review-kit-harness-wave @epic:eco.codex-review-rollout
+  - [x] Волна ре-вендора кита с харнесс-слоем по флоту (22 копии, двухшаговая) @owner:github:andrei-shtanakov @id:review-kit-harness-fleet-wave @epic:eco.codex-review-rollout
 
     Шаг 1 devtools#222 ДОСТАВЛЕН (devtools#227, 2026-09-14): `review-pr.sh`
     выставляет `REVIEW_HARNESS`/`REVIEW_MODEL` и берёт reviewer_label из
@@ -878,8 +878,18 @@ PR и осознанно не закрыто; список полон, друг�
     7-я строка PIN; волна взяла `a2d7e71`, а `collect-context.sh` с тех пор
     изменён (#157, steward#154) — предложено поднять его тем же PR-2, чтобы
     флот стал `57170da` целиком.
+    **ЗАКРЫТ 2026-09-14 — PR-2 волны завершён.** Сверено продюсером по
+    default-веткам через API и живыми shallow-клонами dispatcher и
+    spec-runner: все 22 копии — 7 строк PIN, `harness-claude` байт-в-байт с
+    master и `100755`, `checksum.sh --pin` → 0, `REVIEW_HARNESS=claude sh
+    scripts/review/local.sh --print-review-cmd` → `harness-claude --model
+    claude-opus-5`. Признак «сделано» выполнен. Остаток: `collect-context.sh`
+    у 21 копии @ `a2d7e71` (фикс #154 не разъехался; spec-runner взял
+    свежий) — уходит следующей волной (`review-kit-next-wave`). Удаление
+    переходника в devtools (`review-harness-shim-removal`) разблокировано,
+    уведомлено в devtools#222/#228.
 
-  - [ ] Перевести `?scripts/review/harness-claude` из переходного в обязательный член инвентаря `checksum.sh` @owner:github:andrei-shtanakov @id:review-kit-harness-member-promotion @blocked_by:todo://steward/review-kit-harness-fleet-wave @epic:eco.codex-review-rollout
+  - [x] Перевести `?scripts/review/harness-claude` из переходного в обязательный член инвентаря `checksum.sh` @owner:github:andrei-shtanakov @id:review-kit-harness-member-promotion @epic:eco.codex-review-rollout
 
     Находка терминального ревью ветки `review-kit-harness-layer` (#2, затем
     ужесточена заходом #3): пока член `?path` (переходный), незапинованный,
@@ -891,6 +901,23 @@ PR и осознанно не закрыто; список полон, друг�
     и это легально. Этот пункт переводит требование с «сверяется, если есть»
     на «обязан существовать» — промоция члена в обязательные на следующем
     релизе кита.
+    **Закрыт PR этой ветки** (сразу после закрытия волны): `?` снят в
+    `required_kit_default`, отсутствие адаптера — код 2 «PIN не покрывает
+    состав»; тесты стенда потребителя несут 7 файлов; glob-свойство `?path`
+    закреплено на generic-члене через `CHECKSUM_KIT_EXTRA`. Разъезжается по
+    флоту следующей волной (`review-kit-next-wave`); до неё копии
+    `checksum.sh` @ `a2d7e71` дают при 7 строках PIN тот же результат.
+
+  - [ ] Следующая волна кита: `collect-context.sh` #154 (21 копия) + промоция члена + spec-runner-lint @owner:github:andrei-shtanakov @id:review-kit-next-wave @epic:eco.codex-review-rollout
+
+    Накопленная дельта после волны devtools#228 (взяла `a2d7e71`):
+    `collect-context.sh` @ `57170da` (отказ на `dir/` и pathspec-магию,
+    `ls-tree -z` — steward#154) у 21 копии не разъехался; `checksum.sh` с
+    промоцией адаптера в обязательные (этот PR). Одношаговая волна (состав
+    кита не меняется — оба члена уже у всех): заводится как inbox-issue в
+    devtools с sha256-таблицей, когда владелец решит открыть окно; триггер —
+    любой следующий фикс кита или запрос потребителя (spec-runner#491
+    ждёт #154).
 
 - [ ] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
 
