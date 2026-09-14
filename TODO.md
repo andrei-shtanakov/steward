@@ -821,6 +821,41 @@ PR и осознанно не закрыто; список полон, друг�
       разбор записи не space-safe и опорой быть не может). Пункт про `mktemp` без
       шаблона отклонён доказательством в самом issue — не заводится
 
+- [ ] generated-фильтр `local.sh` из подкаталога: `check-attr` приклеивает cwd-префикс @owner:github:andrei-shtanakov @id:review-kit-generated-filter-cwd @epic:eco.codex-review-rollout
+
+  Найдено приёмочным ревью #151 (дважды, вне рамки патча). `collect_declared`
+  кормит `git check-attr --stdin --source=<tree>` root-относительными путями из
+  `git diff --name-only`, а `check-attr` трактует их относительно cwd — из `src/`
+  атрибут ищется у `src/<путь>`. Тот же класс, что закрытый
+  `review-context-root-relative-manifest`, но направление деградации другое: файл
+  остаётся в дифе (в сторону ревью, не fail-open) — поэтому не закрыто тем же PR.
+  Форма: `git -C "$repo_root"` для вызова check-attr либо `--full-tree`-аналог;
+  регресс-тест — объявленный generated-файл фильтруется из подкаталога с
+  АНКОРНЫМ паттерном в `.gitattributes` (существующий
+  `test_declared_generated_is_filtered_from_subdir` зелёный только потому, что
+  неанкорный `uv.lock` совпадает и с `src/uv.lock`).
+
+- [x] Base-контекст терялся при `local.sh` из подкаталога (fail-open) @owner:github:andrei-shtanakov @id:review-context-root-relative-manifest @epic:eco.codex-review-rollout
+      —
+      приём входящего steward#150 (from spec-runner#474, терминальное ревью их
+      PR нашло fail-open у продюсера). `local.sh` резолвил промпт/схему от корня
+      репо, а манифест оставался строкой `.github/codex/review-context.txt`;
+      `collect-context.sh` отдавал её в `git ls-tree`, который трактует путь
+      относительно cwd-префикса (из `src/` искал `src/.github/…`) — в отличие от
+      `git show <base>:<путь>`, который всегда от корня. Манифест «не находился»,
+      пусто читалось как штатный код 3, и настроенный обязательный контекст молча
+      выпадал из промпта при зелёном прогоне. PR этой ветки: фикс в САМОМ сборщике,
+      не в `local.sh` (вариант формы из issue) — `git ls-tree --full-tree` и для
+      манифеста, и для перечисленных в нём путей, так что чинится и CI, и
+      вендор-копии без правки вызывающего; абсолютный путь ФС и `..` в
+      `--manifest` отвергаются кодом 2 (`--full-tree` принял бы абсолютный путь
+      внутри рабочего дерева и молча превратил его в tree-путь, а `git show` на
+      том же значении отказал бы). Реально отсутствующий манифест остаётся
+      кодом 3 и из подкаталога. Регресс-тесты доказывают не код 0, а
+      содержимое: пакет из подкаталога байт-в-байт равен пакету из корня, и
+      файл контекста присутствует в промпте, реально полученном ревьюером.
+      Потребители кита (spec-runner) ре-вендорят после мержа — их сторона.
+
 - [x] Freshness-проверка SHA и в обычной ветке публикации codex-review
       workflow @owner:github:andrei-shtanakov @id:review-workflow-stale-verdict —
       приём входящего steward#103 (from spec-runner#313, minor их гейта по

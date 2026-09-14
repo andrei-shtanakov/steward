@@ -1563,3 +1563,80 @@ def test_fingerprint_rejects_corrupt_hasher_output(tmp_path: Path) -> None:
     result = fingerprint(local, env_overrides={"PATH": f"{shim_dir}:{os.environ['PATH']}"})
     assert result.returncode == 2, result.stdout + result.stderr
     assert not any(is_hex64(line) for line in result.stdout.splitlines())
+
+
+STUB_CAPTURE_PROMPT = """#!/bin/sh
+# Подставной ревьюер: сохраняет ПРОМПТ (stdin) в $PROMPT_CAPTURE и пишет чистый
+# вердикт — единственный способ доказать, что контекст реально доехал до
+# ревьюера, а не только что local.sh отчитался кодом 0.
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output-last-message) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+cat > "$PROMPT_CAPTURE"
+printf '{"findings":[],"note":"stub"}' > "$out"
+"""
+
+
+def test_context_from_subdirectory_reaches_the_prompt(tmp_path: Path) -> None:
+    """Прогон из подкаталога прикладывает тот же base-контекст, что и из корня.
+
+    Манифест — путь в дереве base, а `collect-context.sh` резолвил его через
+    `git ls-tree` относительно cwd: из `src/` манифест «не находился», код 3
+    читался как штатное «не настроен», и обязательный контекст молча выпадал
+    из промпта при зелёном прогоне (steward#150 ← spec-runner#474). Проверяется
+    не код выхода, а содержимое промпта, полученного ревьюером.
+    """
+    remote, local = make_repo(tmp_path)
+    git(remote, "config", "receive.denyCurrentBranch", "ignore")
+    (local / ".github" / "codex").mkdir(parents=True)
+    (local / "src").mkdir()
+    (local / "src" / "ctx.py").write_text("CONTEXT_MARKER_FROM_BASE = 1\n", encoding="utf-8")
+    (local / ".github" / "codex" / "review-context.txt").write_text(
+        "src/ctx.py\n", encoding="utf-8"
+    )
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "манифест и контекст в базе")
+    git(local, "push", "-q", "origin", "master")
+    git(local, "remote", "set-head", "origin", "-a")
+
+    (local / "changed.txt").write_text("правка\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка ветки")
+
+    stub = make_stub(tmp_path, STUB_CAPTURE_PROMPT)
+    prompts: dict[str, str] = {}
+    for label, cwd in (("root", local), ("subdir", local / "src")):
+        capture = tmp_path / f"prompt-{label}.txt"
+        result = run_local(local, stub, cwd=cwd, env_overrides={"PROMPT_CAPTURE": str(capture)})
+        assert result.returncode == 0, label + ": " + result.stdout + result.stderr
+        assert "контекст: 1 файл(ов)" in result.stdout, label + ": " + result.stdout
+        prompts[label] = capture.read_text(encoding="utf-8")
+
+    assert "CONTEXT_MARKER_FROM_BASE = 1" in prompts["subdir"]
+    assert "--- ФАЙЛ src/ctx.py sha256:" in prompts["subdir"]
+    assert prompts["subdir"] == prompts["root"]
+
+
+def test_non_tree_manifest_override_is_a_named_config_refusal(tmp_path: Path) -> None:
+    """`REVIEW_CONTEXT_MANIFEST=/abs/…` — код 2 с причиной сборщика, без ложного
+    «манифест контекста есть»: отказ по форме пути случается ДО проверки его
+    наличия в base, и вызывающий не вправе утверждать то, чего не проверял
+    (minor приёмочного ревью #151)."""
+    _, local = make_repo(tmp_path)
+    (local / "changed.txt").write_text("правка\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "правка ветки")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        env_overrides={"REVIEW_CONTEXT_MANIFEST": str(local / ".github/codex/review-context.txt")},
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "не путь в дереве" in result.stderr
+    assert "манифест контекста есть" not in result.stderr

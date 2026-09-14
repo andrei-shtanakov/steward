@@ -79,12 +79,19 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def run(repo: Path, base: str, *extra: str, interp: str = "sh") -> subprocess.CompletedProcess[str]:
+def run(
+    repo: Path,
+    base: str,
+    *extra: str,
+    interp: str = "sh",
+    manifest: str = MANIFEST,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [interp, str(SCRIPT), "--base", base, "--manifest", MANIFEST, *extra],
+        [interp, str(SCRIPT), "--base", base, "--manifest", manifest, *extra],
         capture_output=True,
         text=True,
-        cwd=repo,
+        cwd=cwd or repo,
     )
 
 
@@ -268,13 +275,20 @@ def test_manifest_without_files_is_a_refusal(repo: Path) -> None:
         " lead.py",
         "src/with space.py",
         "src/with\ttab.py",
+        "./src/producer.py",
+        "src/./producer.py",
+        "src/.",
     ],
 )
 def test_path_shapes_refused(repo: Path, bad: str) -> None:
-    """Абсолютные пути, обход вверх и glob'ы отвергаются, а не разворачиваются.
+    """Абсолютные пути, обход вверх, glob'ы и `.`-сегменты отвергаются, а не
+    разворачиваются.
 
     Glob важен отдельно от безопасности: шаблон означал бы, что новый файл
-    попадает в пакет молча, без ревью правки манифеста.
+    попадает в пакет молча, без ревью правки манифеста. `./`-префикс — своя
+    дыра: `git ls-tree --full-tree` нормализует его от корня, а
+    `git show <base>:./path` по gitrevisions относителен cwd — режим
+    проверялся бы у одного объекта, содержимое бралось бы у другого.
     """
     write(repo, MANIFEST, f"{bad}\n")
     base = commit(repo, "плохой путь")
@@ -494,3 +508,59 @@ def test_symlink_manifest_is_a_refusal(repo: Path) -> None:
 
     assert res.returncode == 2, res.stdout
     assert "не обычный файл" in res.stderr
+
+
+# --- Пути — в дереве base, не относительно cwd (steward#150) -----------------
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+def test_subdirectory_cwd_collects_the_same_pack_as_root(repo: Path, interp: str) -> None:
+    """Прогон из подкаталога собирает тот же пакет, что и из корня.
+
+    `git ls-tree <base> -- <путь>` трактует путь относительно cwd-префикса, а
+    `git show <base>:<путь>` — относительно корня дерева. Из `src/` первый
+    молча давал пусто, и настроенный обязательный контекст исчезал из промпта
+    под видом штатного «не настроен» (fail-open, spec-runner#474).
+    """
+    base = git(repo, "rev-parse", "HEAD").strip()
+
+    from_root = run(repo, base, interp=interp)
+    from_subdir = run(repo, base, interp=interp, cwd=repo / "src")
+
+    assert from_root.returncode == 0, from_root.stderr
+    assert from_subdir.returncode == 0, from_subdir.stderr
+    assert attached_paths(from_subdir.stdout) == ["src/producer.py", "docs/contract.md"]
+    assert from_subdir.stdout == from_root.stdout
+
+
+def test_absent_manifest_from_subdirectory_is_still_code_3(repo: Path) -> None:
+    """Реально отсутствующий манифест остаётся отдельным кодом 3 и из подкаталога."""
+    (repo / MANIFEST).unlink()
+    base = commit(repo, "манифеста нет")
+
+    res = run(repo, base, cwd=repo / "src")
+
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert "не настроен" in res.stderr
+
+
+@pytest.mark.parametrize("shape", ["absolute", "parent", "dot-prefix", "dot-segment"])
+def test_manifest_path_must_be_a_tree_path(repo: Path, shape: str) -> None:
+    """Абсолютный путь ФС и обход вверх — не путь в дереве: отказ, не угадывание.
+
+    `git ls-tree --full-tree` принял бы абсолютный путь внутри рабочего дерева
+    и молча превратил его в tree-путь, а `git show <base>:/abs` — нет; такое
+    «работает наполовину» хуже честного кода 2.
+    """
+    base = git(repo, "rev-parse", "HEAD").strip()
+    bad = {
+        "absolute": str(repo / MANIFEST),
+        "parent": f"../repo/{MANIFEST}",
+        "dot-prefix": f"./{MANIFEST}",
+        "dot-segment": ".github/./codex/review-context.txt",
+    }[shape]
+
+    res = run(repo, base, manifest=bad, cwd=repo / "src")
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "не путь в дереве" in res.stderr
