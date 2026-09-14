@@ -382,7 +382,7 @@ scripts/review/collect-context.sh
 scripts/review/apply-threshold.sh
 scripts/review/local.sh
 scripts/review/checksum.sh          # переносимая сверка копии с PIN
-scripts/review/harness-claude       # адаптер claude (переходный член релиза 2026-09; 100755, абсолютный путь)
+scripts/review/harness-claude       # адаптер claude (обязательный с промоции после волны devtools#228; 100755, абсолютный путь)
 .github/codex/review-schema.json
 ```
 
