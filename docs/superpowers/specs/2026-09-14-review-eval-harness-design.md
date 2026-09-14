@@ -84,9 +84,20 @@ markdown-тела PR-ревью ai-prosto (30 на steward, десятки по 
   `N=1` как дорогой smoke.
 - Детали раннера: `class: large` обязан либо нести явные `local_args` с
   потолками, либо ожидаемый исход `guardrail_rejection` — иначе кейс завершится
-  кодом 2 и ничего не измерит. «Оффлайн» разделён на `corpus materialize`
-  (сетевая материализация, в т.ч. fallback на GitHub) и `run --offline`. В
-  метаданных прогона — commit/дайджесты кита, версии `claude`, `codex`, `git`.
+  кодом 2 и ничего не измерит. Сетевой контракт: `corpus materialize` —
+  единственная сетевая команда (в т.ч. fallback на GitHub); `run` **всегда
+  офлайн** и работает только с готовым кэшем (объекта нет → код 2), флага
+  `--offline` нет. В метаданных прогона — commit/дайджесты кита, версии
+  `claude`, `codex`, `git`.
+- **D13. Reasoning-уровень — отдельная переменная `REVIEW_EFFORT`**, не часть
+  `REVIEW_MODEL`: unset → флаг не добавляется; `""` → код 2; непустой
+  `REVIEW_CMD` побеждает и игнорирует её вместе с harness/model; claude —
+  `harness-claude --effort X` → внутри `claude -p --effort "$effort"`; codex —
+  `codex exec … -c model_reasoning_effort=X`; эффективная строка с effort
+  входит в `review_cmd`, поэтому отпечаток меняется; usage/run metadata
+  сохраняют запрошенный effort. (Claude CLI 2.1.270 поддерживает `--effort`;
+  для Codex официальный контракт — `model_reasoning_effort`, `codex exec`
+  принимает inline `-c key=value`.)
 
 ## 3. Подходы (рассмотрены, выбран A)
 
@@ -168,9 +179,10 @@ false-block, но не из precision.
 `--shared`/`--reference`: кэш не должен зависеть от `.git` соседнего чекаута,
 который может быть перепакован или удалён). Источник — локальный чекаут
 соседа `../<repo>` (быстро, без сети); если объекта там нет — `git fetch` из
-GitHub URL. Это единственный сетевой шаг; `run --offline` отказывает кодом 2,
-если объекта нет в кэше. Соседние чекауты не модифицируются никогда
-(полирепо-правило): клон и fetch читают их, worktree создаются от кэша.
+GitHub URL. Это единственный сетевой шаг во всём инструменте; `run` сети не
+касается никогда и отказывает кодом 2, если объекта нет в кэше. Соседние
+чекауты не модифицируются никогда (полирепо-правило): клон и fetch читают
+их, worktree создаются от кэша.
 
 **Кандидаты из истории** (`review-eval corpus candidates --repo R --pr N`):
 читает ревью ai-prosto на PR (тела + маркер `head=…`), парсит находки
@@ -184,8 +196,8 @@ GitHub URL. Это единственный сетевой шаг; `run --offlin
 ## 6. Раннер
 
 `review-eval run --corpus eval/corpus --variant claude:claude-opus-5
---variant codex:gpt-5.4 [--repetitions N] [--offline] [--cases id,…]
---out eval/runs/<run_id>`. `run_id` = `<UTC ts>-<short hash of variants+corpus digest>`.
+--variant codex:gpt-5.4:high [--repetitions N] [--cases id,…]
+--out eval/runs/<run_id>` — всегда офлайн (§5). `run_id` = `<UTC ts>-<short hash of variants+corpus digest>`.
 
 Для каждого кейса × варианта × повторения:
 
@@ -198,13 +210,12 @@ GitHub URL. Это единственный сетевой шаг; `run --offlin
    `REVIEW_SCHEMA=<steward>/.github/codex/review-schema.json` — из чекаута
    steward, где запущен раннер (его commit/дайджесты — в `run.json`).
    `REVIEW_CONTEXT_MANIFEST` не задаётся: берётся манифест репо кейса из base.
-3. **Вариант:** `REVIEW_HARNESS`, `REVIEW_MODEL` из `--variant
-   <harness>:<model>`; `REVIEW_CMD` не используется (D5 харнесс-слоя: оверрайд
-   целиком — не измеряемый путь). Reasoning-уровень — часть `model` строки
-   варианта там, где провайдер кодирует его в имени/флаге; иначе — второй
-   сегмент `<harness>:<model>:<effort>` (проброс через `REVIEW_MODEL`, если
-   кит его поддерживает; до поддержки — вариант отвергается кодом 2, а не
-   молча игнорируется).
+3. **Вариант:** `--variant <harness>:<model>[:<effort>]` → `REVIEW_HARNESS`,
+   `REVIEW_MODEL`, `REVIEW_EFFORT` (D13; без сегмента effort переменная не
+   задаётся). `REVIEW_CMD` не используется и не должен присутствовать в
+   окружении раннера (оверрайд целиком — не измеряемый путь; раннер вычищает
+   его из наследуемого env). Запрошенный effort пишется в `result.json` и
+   `run.json` как `requested_effort`.
 4. **Sidecar-артефакты (D4):** `REVIEW_VERDICT_OUT=<out>/cases/<case>/<rep>/verdict.json`,
    `REVIEW_USAGE_OUT=<out>/cases/<case>/<rep>/usage.json`.
 5. **Вызов:** `sh "$REVIEW_KIT_DIR/local.sh" --base <base_sha> --head <head_sha>
@@ -246,6 +257,7 @@ GitHub URL. Это единственный сетевой шаг; `run --offlin
 
 ```json
 {"schema": "review-usage/v1", "provider": "claude", "model": "claude-opus-5",
+ "requested_effort": null,
  "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
  "total_cost_usd": 0.0, "provider_duration_ms": 0,
  "outcome": "success" | "error"}
@@ -258,9 +270,21 @@ JSON, ненулевой код claude без JSON) — sidecar с `outcome: "er
 коды выхода адаптера — прежние. Codex: `codex exec` sidecar не пишет;
 раннер фиксирует `cost_status: unavailable` (D6).
 
-Обе правки — вендоримый кит: уезжают по флоту следующей волной
+**`local.sh` и `harness-claude` — `REVIEW_EFFORT` (D13).** В резолве
+харнесс-слоя (спека 2026-09-14 §4): `REVIEW_EFFORT` объявлена и пуста → код
+2 «задан пустым»; непустой `REVIEW_CMD` — оверрайд целиком, effort
+игнорируется вместе с harness/model; `codex` → `review_cmd="codex exec[ -m M]
+-c model_reasoning_effort=E"`; `claude` → `review_cmd="harness-claude --model
+M --effort E"`; адаптер принимает `--effort <e>` и передаёт `claude -p
+--effort "$effort"` (без флага — как сегодня). Строка с effort входит в
+`review_cmd`, значит и в отпечаток (другой reasoning — другой ревьюер,
+наследовать нельзя); `--print-review-cmd` печатает её же. Sidecar usage
+несёт `requested_effort` (`null`, если не задан). Значения effort кит не
+валидирует (провайдер отвергнет своё) — только непустоту.
+
+Все три правки — вендоримый кит: уезжают по флоту следующей волной
 (`review-kit-next-wave`) вместе с #154; для потребителей без переменных
-поведение побайтно прежнее.
+поведение и отпечаток побайтно прежние.
 
 ## 8. Матчер (D7, D10)
 
@@ -273,13 +297,20 @@ JSON, ненулевой код claude без JSON) — sidecar с `outcome: "er
    line_window`, и хотя бы одно из `keywords_any` встречается (регистронезависимо)
    в `title`/`scenario`/`expected_result`. Вес ребра = (число совпавших
    keywords, пересечение файлов evidence с `defect.evidence`, −|Δline|).
-2. **Назначение**: детерминированное взаимно-однозначное — по убыванию веса,
-   при равном весе по (`defect.id`, порядок prediction в вердикте); каждый
-   prediction и каждый defect участвуют не более одного раза.
-3. **Неоднозначность**: если у prediction ≥ 2 рёбер с одинаковым максимальным
-   весом или у defect ≥ 2 кандидатов с одинаковым весом — пара **не**
-   назначается автоматически, уходит в `adjudication-queue.md` с обеими
-   сторонами; в строгих метриках prediction считается неразмеченным (D9).
+2. **Назначение — консервативное взаимно-лучшее (mutual-best), без greedy и
+   без tie-break по порядку**: назначается только ребро, которое является
+   **уникальным** лучшим (строго максимальный вес) и для своего prediction, и
+   для своего defect; назначенная пара удаляется из графа, шаг повторяется до
+   неподвижной точки. Порядок предсказаний в вердикте используется только при
+   отображении, никогда в семантике — результат инвариантен к перестановке
+   входа (тест §12). Веса — целочисленные кортежи, без плавающей точки.
+3. **Неоднозначность**: всё, что осталось после неподвижной точки и имеет ≥ 1
+   ребро (компонента с несколькими допустимыми назначениями, равные веса с
+   обеих сторон), **не** назначается автоматически — уходит в
+   `adjudication-queue.md` целой компонентой (все prediction и defect с их
+   рёбрами); в строгих метриках такие prediction считаются неразмеченными
+   (D9), а defect — не найденными (что занижает recall до разбора очереди и
+   помечается в отчёте).
 4. **Дубликаты**: prediction с ребром к уже назначенному defect (после шага 2)
    — `duplicate`: не TP, FP в finding-level precision, учитывается в
    `duplicate_rate`.
@@ -294,9 +325,26 @@ JSON, ненулевой код claude без JSON) — sidecar с `outcome: "er
 ## 9. Метрики (D8, D9, D11)
 
 Считаются по варианту; каждый показатель публикуется с знаменателем
-(`n_cases`, `n_defects`, `n_predictions`). «Блокирующее предсказание» =
-`kind: defect`, `severity ∈ {blocker, major}`, `confidence: high` — то, что
-красит гейт по `apply-threshold.sh`.
+(`n_cases`, `n_defects`, `n_predictions`). «Блокирующее предсказание» —
+**ровно** предикат `blocking` из `apply-threshold.sh` (`BLOCKING_DEF`), не его
+пересказ: `severity ∈ {blocker, major}` **и** `confidence == "high"` **и**
+непустые после удаления всех пробельных символов `file`, `scenario`,
+`observed_result` **и** хотя бы один элемент `evidence` с непустыми (по тому
+же правилу) `file` и `reason`. `kind` в блокировку **не** входит
+(`file-missing` блокирует так же), `line` не проверяется (0 — легитимный
+указатель уровня файла). Python-предикат `is_blocking(finding)` живёт в
+`review_eval/threshold.py` и закреплён **контрактным тестом против настоящего
+`apply-threshold.sh`**: таблица вердиктов (каждое поле по отдельности пустое /
+пробельное / отсутствующее, `kind: file-missing`, `line: 0`, evidence с
+пустым `reason` или `file`, confidence medium) прогоняется через скрипт, и
+код выхода 0/1 обязан совпасть с предикатом на каждой строке таблицы.
+
+**TP для блокирующей precision** — блокирующее предсказание, назначенное
+матчером gold-дефекту с `severity ∈ {blocker, major}`. Предсказание,
+назначенное gold-`minor` (модель завысила класс), — **FP** на блокирующем
+пороге: оно красит гейт там, где gold красить не велит; `false_block_rate`
+фиксирует ту же ошибку на уровне кейса, precision — на уровне находки, и
+считать её TP значило бы завышать precision.
 
 Качество (только `annotation.status: adjudicated`):
 
@@ -362,15 +410,15 @@ eval/runs/<run_id>/
 review-eval corpus validate [--corpus DIR]            # схема, id, статусы; код 2 при нарушении
 review-eval corpus candidates --repo R --pr N [...]   # черновик кейса из истории (сеть)
 review-eval corpus materialize [--corpus DIR]         # bare-кэш объектов (сеть)
-review-eval run --corpus DIR --variant H:M [...] --out DIR [--repetitions N] [--offline] [--jobs N] [--cases …] [--keep-worktrees] [--rerun]
+review-eval run --corpus DIR --variant H:M[:E] [...] --out DIR [--repetitions N] [--jobs N] [--cases …] [--keep-worktrees] [--rerun]   # всегда офлайн
 review-eval metrics <run_dir>                          # пересчёт metrics.json/report.md (после разметки очереди)
 review-eval compare <run_a> <run_b>                    # парное сравнение
 ```
 
 Коды выхода: 0 — успех; 1 — прогон завершён, но есть `unexpected_outcome`
 или `pending_adjudication` (информационно для CI-подобных вызовов); 2 —
-конфигурация (корпус невалиден, объект не материализован в `--offline`,
-вариант не поддержан китом); 3 — механический сбой самого раннера.
+конфигурация (корпус невалиден, объект не материализован в кэше, вариант не
+поддержан китом); 3 — механический сбой самого раннера.
 
 ## 12. Тесты (`tests/review_eval/`, без вызова модели)
 
@@ -380,21 +428,32 @@ review-eval compare <run_a> <run_b>                    # парное сравн
   `large` без `local_args` и без `expected_outcome: guardrail_rejection` → 2.
 - Матчер (таблица): перефразированная находка → тот же дефект (TP);
   другой файл → нет; две находки на один дефект → 1 TP + 1 duplicate; равные
-  веса → adjudication, не назначение; non_defect → known_fp;
-  детерминированность (перестановка входа не меняет результата);
+  веса → adjudication, не назначение; цепочка «A лучший для d1, но d1 лучший
+  для B» → ни одной автоматической пары, компонента в очередь;
+  инвариантность к перестановке предсказаний и дефектов (property-тест на
+  всех перестановках малых входов); non_defect → known_fp;
   `matcher_rules_digest` меняется при смене параметров.
+- Порог: контрактный тест `is_blocking` против настоящего
+  `scripts/review/apply-threshold.sh` на таблице вердиктов (§9); TP только с
+  gold major/blocker — предсказание на gold-minor даёт FP.
 - Метрики: рукотворные наборы с известными значениями для каждой формулы и
   знаменателя; `pending_adjudication` скрывает `precision`; `cost_unavailable`
   не даёт 0; bootstrap на детерминированном seed.
 - Раннер: подставной `local.sh` в `REVIEW_KIT_DIR`, пишущий заданный
   `verdict.json`/`usage.json` по путям из env и завершающийся заданным кодом →
   сбор артефактов, классификация исходов, wall-clock > 0, `unavailable` при
-  отсутствии sidecar, идемпотентность повторного запуска, `--offline` без
-  кэша → 2, изоляция (кейс на историческом SHA видит исторический файл:
+  отсутствии sidecar, идемпотентность повторного запуска, объект вне кэша →
+  2 без обращения к сети (подставной `git`, падающий на `fetch`), `REVIEW_CMD`
+  из окружения вычищен, `requested_effort` записан, изоляция (кейс на
+  историческом SHA видит исторический файл:
   фикстурный репо с двумя коммитами, стаб проверяет содержимое worktree).
 - Кит: `REVIEW_VERDICT_OUT` — сохранён при коде 1 и при отказе порога; пустой
   → 2; fingerprint равен с переменной и без; `REVIEW_USAGE_OUT` — записан при
-  успехе и при `is_error`/битом конверте (D12); пустой → 2; поля `null`, не 0.
+  успехе и при `is_error`/битом конверте (D12); пустой → 2; поля `null`, не 0;
+  `REVIEW_EFFORT` — таблица резолва через `--print-review-cmd` и равенство
+  отпечатков с явным `REVIEW_CMD` (`codex exec -c model_reasoning_effort=high`,
+  `harness-claude --model M --effort high`), пустой → 2, `REVIEW_CMD` побеждает,
+  адаптер передаёт `--effort` в argv `claude` (подставной `claude`).
 
 ## 13. Стартовый корпус (кандидаты; gold — разметка владельца)
 
@@ -413,9 +472,10 @@ kapelle (spec-runner#491 — известный `[minor]`, ставший stewar
 - `src/steward/review_eval/` (corpus, cache, runner, matcher, metrics, report,
   cli) + `review-eval` в `[project.scripts]`; `eval/corpus/`, `eval/corpus/_ids.txt`,
   `.gitignore`: `eval/runs/`, `eval/cache/`.
-- Правки кита: `local.sh` (`REVIEW_VERDICT_OUT`), `harness-claude`
-  (`REVIEW_USAGE_OUT`); README «Харнесс ревьюера» — обе переменные;
-  спека харнесс-слоя §5 — sidecar usage.
+- Правки кита: `local.sh` (`REVIEW_VERDICT_OUT`, `REVIEW_EFFORT`),
+  `harness-claude` (`REVIEW_USAGE_OUT`, `--effort`); README «Харнесс
+  ревьюера» — три переменные; спека харнесс-слоя §4/§5/§6 — effort в резолве
+  и в таблице отпечатка, sidecar usage.
 - Тесты §12. Черновики кейсов §13 (`draft`).
 - `docs/review-eval.md` — как размечать кейс, как читать отчёт, как
   проводить P3-сравнение.
