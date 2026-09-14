@@ -723,6 +723,19 @@ product decision record (и наоборот). Как approved proposal стан
 - [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики @owner:github:andrei-shtanakov @id:review-kit-eval-harness
       precision блокирующих/recall major+blocker/ложные блокировки/доля без
       evidence/стоимость; для гейта precision важнее полноты
+
+  Дизайн согласован владельцем 2026-09-14 —
+  `docs/superpowers/specs/2026-09-14-review-eval-harness-design.md` (D1–D12):
+  gold-набор поверх прокси из истории, детерминированный 1:1 матчер с
+  adjudication-очередью, `precision_lower_bound` до разбора очереди,
+  `blocking_recall` vs `detection_recall_any_severity`, эксплуатационные
+  метрики, стоимость и для неуспешных прогонов, повторения + paired
+  bootstrap; каждый кейс — detached worktree на историческом `head_sha`, объект
+  измерения — текущий кит steward; sidecar-артефакты через `REVIEW_VERDICT_OUT`
+  (local.sh) и `REVIEW_USAGE_OUT` (harness-claude). Код —
+  `src/steward/review_eval/` + `review-eval` (отклонение от `tools/`: hatchling
+  и pyrefly видят только `src/`). Закрывается по живому первому прогону на gold
+  ≥ 10 кейсов, не по тестам.
 - [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
       модели × два уровня), не по рассуждению в комментарии workflow
 - [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
