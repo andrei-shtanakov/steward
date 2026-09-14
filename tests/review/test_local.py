@@ -1,13 +1,12 @@
 """Тесты scripts/review/local.sh — диапазон, свежесть базы, пустой диф."""
 
+import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-
-from tests.review.test_harness_claude import CLAUDE_STUB, envelope
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "review" / "local.sh"
@@ -1842,6 +1841,34 @@ def test_print_review_cmd_is_exclusive(tmp_path: Path, other: str) -> None:
 
 
 # --- Сквозной путь claude: вердикт доезжает до apply-threshold.sh -------------
+
+# Копия из test_harness_claude.py: pyrefly резолвит импорты только от src/ и не
+# видит пакет tests.* (ни абсолютно, ни относительно), а suppression-комментариев
+# в репо нет. Держать байт-в-байт равными.
+CLAUDE_STUB = """#!/bin/sh
+# Подставной claude: argv — в $CLAUDE_STUB_ARGV (по слову на строку), промпт
+# (stdin) — в $CLAUDE_STUB_PROMPT, ответ — содержимое $CLAUDE_STUB_ENVELOPE;
+# $CLAUDE_STUB_EXIT — завершиться этим кодом вместо ответа.
+printf '%s\\n' "$@" > "$CLAUDE_STUB_ARGV"
+cat > "$CLAUDE_STUB_PROMPT"
+if [ -n "${CLAUDE_STUB_EXIT:-}" ]; then
+    echo "claude stub: падаю по просьбе" >&2
+    exit "$CLAUDE_STUB_EXIT"
+fi
+cat "$CLAUDE_STUB_ENVELOPE"
+"""
+
+
+def envelope(structured: object, *, subtype: str = "success", is_error: bool = False) -> str:
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": subtype,
+            "is_error": is_error,
+            "structured_output": structured,
+        }
+    )
+
 
 MAJOR_FINDING = {
     "findings": [
