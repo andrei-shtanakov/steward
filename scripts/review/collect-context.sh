@@ -92,12 +92,15 @@ git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
 # пусто читалось как штатный код 3, и настроенный обязательный контекст молча
 # выпадал из промпта при зелёном прогоне (steward#150 ← spec-runner#474).
 # С флагом путь означает одно и то же из любого cwd.
-# `core.quotePath=false` — сырые пути: при умолчании git C-квотирует не-ASCII
-# имена (`"docs/\320\272…"`), и структурная проверка «путь равен запрошенному»
-# ниже отвергла бы легитимный `docs/контракт.md` (тот же довод, что у
-# `diff --name-only` в local.sh).
-manifest_entry=$(git -c core.quotePath=false ls-tree --full-tree "$base" \
-    -- "$manifest" 2>/dev/null) || manifest_entry=""
+# `-z` — СЫРЫЕ пути: человекочитаемый вывод ls-tree C-квотирует не-ASCII
+# имена (`"docs/\320\272…"`), а `"` и `\` — всегда, даже при
+# `core.quotePath=false`; структурная проверка «путь равен запрошенному» ниже
+# отвергла бы легитимные `docs/контракт.md` и `docs/contract"v2.md` (два
+# major терминального ревью ветки steward#154). NUL превращается в перевод
+# строки ДО подстановки: bash 3.2 и dash не хранят NUL в переменных. Перевод
+# строки в имени сюда не доходит — манифест построчный.
+manifest_entry=$(git ls-tree -z --full-tree "$base" -- "$manifest" 2>/dev/null \
+    | tr '\0' '\n') || manifest_entry=""
 if [ -z "$manifest_entry" ]; then
     echo "манифест контекста отсутствует в base ($base:$manifest)" >&2
     echo "курируемый контекст в этом репозитории не настроен." >&2
@@ -109,7 +112,8 @@ fi
 # (содержимое), pathspec-магия — другой путь; и то и другое проходило бы
 # проверку режима по первой строке.
 resolves_to_itself() {
-    # $1 — запрошенный путь, $2 — вывод ls-tree.
+    # $1 — запрошенный путь, $2 — вывод `ls-tree -z | tr` ($(...) уже снял
+    # хвостовой перевод строки последней записи).
     case "$2" in
         *"$NL"*) return 1 ;;
     esac
@@ -204,9 +208,9 @@ while IFS= read -r line; do
     #
     # `--full-tree` — по той же причине, что у манифеста выше: пути в списке
     # тоже от корня дерева и не должны зависеть от cwd вызывающего.
-    # `core.quotePath=false` — по той же причине, что у манифеста выше.
-    entry=$(git -c core.quotePath=false ls-tree --full-tree "$base" \
-        -- "$path" 2>/dev/null) || entry=""
+    # `-z` + `tr` — по той же причине, что у манифеста выше (сырые пути).
+    entry=$(git ls-tree -z --full-tree "$base" -- "$path" 2>/dev/null \
+        | tr '\0' '\n') || entry=""
     [ -n "$entry" ] || {
         echo "файл контекста не читается из base: $base:$path" >&2
         exit 2

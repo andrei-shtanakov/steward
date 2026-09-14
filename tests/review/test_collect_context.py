@@ -621,3 +621,22 @@ def test_non_ascii_path_resolves_to_itself(repo: Path, interp: str) -> None:
     assert res.returncode == 0, res.stdout + res.stderr
     assert attached_paths(res.stdout) == ["docs/контракт.md"]
     assert "не-ASCII имя файла" in res.stdout
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+@pytest.mark.parametrize("name", ['docs/contract"v2.md', "docs/back\\slash.md"])
+def test_c_quoted_ascii_names_resolve_to_themselves(repo: Path, name: str, interp: str) -> None:
+    """`"` и `\\` git C-квотирует ВСЕГДА — `core.quotePath=false` снимает только
+    экранирование не-ASCII (второй major терминального ревью ветки
+    steward#154). Сырое имя даёт только `ls-tree -z` (NUL-разделитель, без
+    квотирования); NUL превращается в перевод строки ДО подстановки в shell —
+    bash 3.2 и dash не хранят NUL в переменных."""
+    write(repo, name, "CONTENT_OK\n")
+    write(repo, MANIFEST, f"{name}\n")
+    base = commit(repo, "имя, которое git C-квотирует")
+
+    res = run(repo, base, interp=interp)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert attached_paths(res.stdout) == [name]
+    assert "CONTENT_OK" in res.stdout
