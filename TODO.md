@@ -821,6 +821,39 @@ PR и осознанно не закрыто; список полон, друг�
       разбор записи не space-safe и опорой быть не может). Пункт про `mktemp` без
       шаблона отклонён доказательством в самом issue — не заводится
 
+- [ ] Харнесс-слой ревьюера (claude|codex) в самом ките @owner:github:andrei-shtanakov @id:review-kit-harness-layer @epic:eco.codex-review-rollout
+
+  Приём входящего steward#147 (from devtools `review-harness-claude`, 2026-09-03).
+  Лимиты codex перевели ai-prosto на claude через переходник devtools
+  `scripts/harness/claude-review` (codex-диалект снаружи, claude внутри) — он
+  покрывает `review-pr.sh`, но не pre-push хук и не ручной `local.sh`.
+  Дизайн согласован владельцем 2026-09-14 —
+  `docs/superpowers/specs/2026-09-14-review-kit-harness-layer-design.md`:
+  адаптер `scripts/review/harness-claude` как член кита (переходный `?path` в
+  `checksum.sh`), `local.sh` резолвит `REVIEW_HARNESS`/`REVIEW_MODEL` только из
+  окружения; умолчание `codex` (строка `codex exec` в отпечатке не меняется,
+  наследования валидны); `REVIEW_CMD` побеждает; `REVIEW_MODEL=""` — отказ
+  (`${REVIEW_MODEL+x}`); в `PATH` — `$kit_dir`, в `review_cmd` — голое имя;
+  протокол `codex-terminal-review` не переименовывается; конверт claude
+  разбирает `jq`, не `python3`. Наблюдаемый признак «сделано» (из issue):
+  свежевендоренный кит ревьюит claude по одному env, включая хук, без внешних
+  переходников. После мержа — handoff в devtools: `review-pr.sh` переходит на
+  `REVIEW_HARNESS`, переходник удаляется (их `review-harness-shim-removal`).
+
+- [ ] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
+
+  Найдено 2026-09-14 при закрытии steward#149: `gate-check --profile team-exp
+  --stage release workstreams/WS-005-gate-verdicts/spec/` даёт
+  `GC-APPROVAL-MISSING` на всех артефактах — `policy_digest` материализованных
+  observation'ов (`7ad8ec72…`) не совпадает с текущими байтами
+  `profiles/approval-policy.yaml` (`4b6d4087…`), изменённого 2026-08-31 при
+  включении агентского мержа (ADR-ECO-011, §6). Стадия `release` в CI не
+  используется, authoring зелёный — никого не ломает, но это датированный хвост
+  ADR-ECO-011 рядом с §6: наблюдения надо перематериализовать под текущей
+  политикой (`steward approval-facts`, см. evidence
+  `docs/evidence/2026-08-21-approval-facts-v2-migration/`), либо зафиксировать,
+  что release-стадия для бандла WS-005 не претендует на зелёный до этого.
+
 - [ ] generated-фильтр `local.sh` из подкаталога: `check-attr` приклеивает cwd-префикс @owner:github:andrei-shtanakov @id:review-kit-generated-filter-cwd @epic:eco.codex-review-rollout
 
   Найдено приёмочным ревью #151 (дважды, вне рамки патча). `collect_declared`
