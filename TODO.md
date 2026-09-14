@@ -840,14 +840,33 @@ PR и осознанно не закрыто; список полон, друг�
   переходников. После мержа — handoff в devtools: `review-pr.sh` переходит на
   `REVIEW_HARNESS`, переходник удаляется (их `review-harness-shim-removal`).
 
-  Закрыт PR этой ветки: `scripts/review/harness-claude` (100755, по PATH),
-  резолв в `local.sh` + `--print-review-cmd`, переходный член в
-  `checksum.sh`, README/спека. Handoff в devtools — issue
-  `review-pr-harness-env` (inbox): `review-pr.sh` переходит на
-  `REVIEW_HARNESS`/`REVIEW_MODEL`, `reviewer_label` — из
-  `local.sh --print-review-cmd` (feature-detect по литералу), переходник
-  `scripts/harness/claude-review` удаляется. Волна ре-вендора по флоту — по
-  образцу `review-kit-fp-wave`; PIN у потребителей — `checksum.sh`.
+  Закрыт PR этой ветки: `scripts/review/harness-claude` (100755, вызывается
+  `local.sh` по абсолютному пути — PATH у вызова ревьюера не трогается,
+  находка терминального ревью ветки), резолв в `local.sh` +
+  `--print-review-cmd`, переходный член в `checksum.sh`, README/спека.
+  Handoff в devtools заводится issue-ом `review-pr-harness-env` (inbox)
+  после мержа: `review-pr.sh` переходит на `REVIEW_HARNESS`/`REVIEW_MODEL`,
+  `reviewer_label` — из `local.sh --print-review-cmd` (feature-detect по
+  литералу), переходник `scripts/harness/claude-review` удаляется. Волна
+  ре-вендора по флоту — по образцу `review-kit-fp-wave`; PIN у потребителей —
+  `checksum.sh`.
+
+  - [ ] Волна ре-вендора кита с харнесс-слоем по флоту + миграция `review-pr.sh` на `REVIEW_HARNESS` @owner:github:andrei-shtanakov @id:review-kit-harness-fleet-wave @blocked_by:todo://devtools/review-pr-harness-env @epic:eco.codex-review-rollout
+
+    Ждёт devtools: `review-pr.sh` переходит с `REVIEW_CMD`/`PATH`-подмешивания
+    `scripts/harness` на `REVIEW_HARNESS`/`REVIEW_MODEL` и
+    `local.sh --print-review-cmd`, переходник `scripts/harness/claude-review`
+    удаляется. После этого — волна ре-вендора по флоту (24 репо) по образцу
+    `review-kit-fp-wave`; PIN у потребителей проверяет `checksum.sh`.
+
+  - [ ] Перевести `?scripts/review/harness-claude` из переходного в обязательный член инвентаря `checksum.sh` @owner:github:andrei-shtanakov @id:review-kit-harness-member-promotion @blocked_by:todo://steward/review-kit-harness-fleet-wave @epic:eco.codex-review-rollout
+
+    Пока член `?path` (переходный), незапинованный `harness-claude` в
+    `scripts/review/` потребителя проходит copy-integrity и затем реально
+    выполняется при `REVIEW_HARNESS=claude` (находка терминального ревью
+    ветки `review-kit-harness-layer`, #2) — окно уже приценено в двухшаговом
+    ре-вендоре базовой спеки §5, закрыть его обязана промоция члена в
+    обязательные на следующем релизе кита, а не оставлять implicit.
 
 - [ ] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
 
