@@ -421,3 +421,32 @@ def test_env_cannot_shrink_mandatory_inventory(tmp_path: Path) -> None:
     result = run_env(root, pin, "CHECKSUM_KIT_INVENTORY", "scripts/review/build-prompt.sh")
 
     assert result.returncode == 2, result.stderr
+
+
+# --- harness-claude: переходный член инвентаря по умолчанию (спека 2026-09-14 §7)
+
+ADAPTER = "scripts/review/harness-claude"
+
+
+def test_default_inventory_has_adapter_as_optional_and_absent_is_green(
+    tmp_path: Path,
+) -> None:
+    """Двухшаговый ре-вендор (§5 базовой спеки): в этом релизе адаптер — `?path`.
+    Потребитель без файла остаётся на codex и ничего не теряет. Зелёный без
+    CHECKSUM_KIT_EXTRA — член в ЗАШИТОМ инвентаре, не в env."""
+    root = make_kit(tmp_path)
+    assert ADAPTER not in KIT_FILES  # стенд без адаптера — ровно старый потребитель
+    result = run(root, full_pin(root))
+    assert result.returncode == 0, result.stderr
+    assert "?" + ADAPTER in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_adapter_present_is_verified_like_a_mandatory_member(tmp_path: Path) -> None:
+    root = make_kit(tmp_path)
+    (root / ADAPTER).write_text("adapter\n", encoding="utf-8")
+    pin = full_pin(root, extra=[pin_line(root, ADAPTER)])
+    assert run(root, pin).returncode == 0
+    (root / ADAPTER).write_text("drift\n", encoding="utf-8")
+    result = run(root, pin)
+    assert result.returncode == 1, result.stderr
+    assert ADAPTER in result.stderr

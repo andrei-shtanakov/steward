@@ -78,7 +78,9 @@ hash_file() {
 # до одного файла и озеленял неполный кит (major десятого захода гейта на
 # #101). Сужение невозможно по построению: обязательные члены зашиты
 # всегда, env их не видит и не трогает.
-required_kit_default="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json"
+# `?scripts/review/harness-claude` — переходный член релиза 2026-09
+# (спека харнесс-слоя §7): обязательным становится следующим релизом кита.
+required_kit_default="scripts/review/build-prompt.sh scripts/review/collect-context.sh scripts/review/apply-threshold.sh scripts/review/local.sh scripts/review/checksum.sh .github/codex/review-schema.json ?scripts/review/harness-claude"
 required_kit="$required_kit_default${CHECKSUM_KIT_EXTRA:+ $CHECKSUM_KIT_EXTRA}"
 
 pin=""
