@@ -101,6 +101,7 @@ write_usage() {
     mkdir -p "$usage_dir" || fail 2 "REVIEW_USAGE_OUT: не создать каталог $usage_dir"
     usage_tmp=$(mktemp "$usage_dir/.usage.XXXXXX") \
         || fail 2 "REVIEW_USAGE_OUT: не создать временный файл"
+    trap 'rm -f "$tmp" "$envelope" "$usage_tmp"' EXIT
     if jq -e 'type == "object"' "$envelope" >/dev/null 2>&1; then
         jq -c --arg model "$model" --arg effort "$effort" --arg outcome "$1" '{
             schema: "review-usage/v1", provider: "claude", model: $model,
@@ -113,13 +114,15 @@ write_usage() {
             } else null end),
             total_cost_usd: (.total_cost_usd // null),
             provider_duration_ms: (.duration_ms // null),
-            outcome: $outcome }' "$envelope" > "$usage_tmp"
+            outcome: $outcome }' "$envelope" > "$usage_tmp" \
+            || fail 2 "REVIEW_USAGE_OUT: не собрать sidecar"
     else
         jq -nc --arg model "$model" --arg effort "$effort" --arg outcome "$1" '{
             schema: "review-usage/v1", provider: "claude", model: $model,
             requested_effort: (if $effort == "" then null else $effort end),
             usage: null, total_cost_usd: null, provider_duration_ms: null,
-            outcome: $outcome }' > "$usage_tmp"
+            outcome: $outcome }' > "$usage_tmp" \
+            || fail 2 "REVIEW_USAGE_OUT: не собрать sidecar"
     fi
     mv "$usage_tmp" "$REVIEW_USAGE_OUT" \
         || fail 2 "REVIEW_USAGE_OUT: не сохранить $REVIEW_USAGE_OUT"
