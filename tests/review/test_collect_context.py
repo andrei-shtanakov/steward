@@ -640,3 +640,15 @@ def test_c_quoted_ascii_names_resolve_to_themselves(repo: Path, name: str, inter
     assert res.returncode == 0, res.stdout + res.stderr
     assert attached_paths(res.stdout) == [name]
     assert "CONTENT_OK" in res.stdout
+
+
+def test_manifest_path_with_newline_is_named_refusal(repo: Path) -> None:
+    """LF в имени манифеста не поддерживается: `ls-tree -z | tr` не отличил бы
+    его от разделителя записей. Отказ называет причину (minor терминального
+    ревью ветки steward#154), а не выдаёт «разрешился не в себя»."""
+    base = git(repo, "rev-parse", "HEAD").strip()
+
+    res = run(repo, base, manifest=".github/codex/review\ncontext.txt")
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "перевод строки" in res.stderr

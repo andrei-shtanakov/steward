@@ -52,6 +52,14 @@ done
 # `/` (`dir/`) и pathspec-магия (`:/x`, `:(top)x`) — путь, который разрешается
 # НЕ В СЕБЯ: `ls-tree -- dir/` печатает содержимое каталога, `show <base>:dir/`
 # — его листинг с кодом 0 (steward#154).
+NL=$(printf '\n_'); NL=${NL%_}
+case "$manifest" in
+    *"$NL"*)
+        echo "путь манифеста содержит перевод строки — не поддерживается:" \
+            "$manifest" >&2
+        exit 2
+        ;;
+esac
 case "$manifest" in
     /*|*..*|./*|*/./*|*/.|*/|:*)
         echo "путь манифеста — не путь в дереве base (абсолютный, с '..'," \
@@ -119,7 +127,6 @@ resolves_to_itself() {
     esac
     [ "${2#*"$TAB"}" = "$1" ]
 }
-NL=$(printf '\n_'); NL=${NL%_}
 TAB=$(printf '\t')
 if ! resolves_to_itself "$manifest" "$manifest_entry"; then
     echo "путь манифеста разрешился не в себя (каталог или pathspec-магия):" \
