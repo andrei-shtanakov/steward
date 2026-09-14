@@ -304,8 +304,9 @@ def test_temp_file_lives_next_to_verdict(tmp_path: Path) -> None:
 
 def test_adapter_is_executable_in_git_tree() -> None:
     """Бит исполнения зафиксирован в ДЕРЕВЕ (100755), не в чекауте: адаптер
-    запускается по PATH голым именем (D7), и потерянный при вендоринге бит
-    ловит префлайт local.sh, а не copy-integrity (checksum сверяет байты)."""
+    запускается local.sh по абсолютному пути (D7), и потерянный при
+    вендоринге бит ловит префлайт local.sh, а не copy-integrity (checksum
+    сверяет байты)."""
     out = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "-s", "scripts/review/harness-claude"],
         capture_output=True,

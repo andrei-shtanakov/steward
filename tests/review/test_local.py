@@ -1925,10 +1925,79 @@ def test_claude_harness_end_to_end_reaches_threshold(
     assert "new.txt" in prompt  # диф реально дошёл до claude
 
 
+def _path_without_executable(name: str) -> str:
+    """PATH теста без единого каталога, где реально лежит исполняемый `name`
+    — precondition для находки терминального ревью этой ветки: PATH больше
+    не расширяется каталогом кита, значит посторонний исполняемый файл в
+    копии кита не должен подхватываться НИКАК, даже если настоящего `name`
+    и так нет в окружении."""
+    kept = []
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(d) / name if d else None
+        if candidate is not None and candidate.is_file() and os.access(candidate, os.X_OK):
+            continue
+        kept.append(d)
+    return os.pathsep.join(kept)
+
+
+def test_stray_codex_in_kit_dir_is_not_executed_by_default_harness(tmp_path: Path) -> None:
+    """Находка терминального ревью этой ветки: раньше `PATH="$kit_dir:$PATH"`
+    у вызова ревьюера действовал и для codex-умолчания, и посторонний файл
+    `scripts/review/codex` у потребителя (не член PIN — checksum лишние
+    файлы игнорирует по контракту) подменил бы ревьюера при зелёном
+    copy-integrity. Теперь PATH не трогается вовсе — подставной `codex` в
+    копии кита не должен запускаться, даже без единой REVIEW_*-переменной."""
+    repo = make_repo_with_diff(tmp_path)
+    kit = _kit_copy(tmp_path, with_adapter=False)
+    stray = kit / "codex"
+    stray.write_text(
+        "#!/bin/sh\n"
+        'out=""\n'
+        "while [ $# -gt 0 ]; do\n"
+        '    case "$1" in\n'
+        '        --output-last-message) out="$2"; shift 2 ;;\n'
+        "        *) shift ;;\n"
+        "    esac\n"
+        "done\n"
+        'echo \'{"findings":[],"note":"stray"}\' > "$out"\n',
+        encoding="utf-8",
+    )
+    stray.chmod(0o755)
+    path = _path_without_executable("codex")
+    assert shutil.which("codex", path=path) is None, "precondition: codex не должен резолвиться"
+    res = run_local_env(repo, env={"PATH": path}, kit_dir=kit)
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert "ревьюер не отработал" in res.stderr
+
+
+def test_stray_claude_in_kit_dir_is_not_executed_by_claude_harness(tmp_path: Path) -> None:
+    """То же самое для REVIEW_HARNESS=claude: адаптер зовётся по абсолютному
+    пути и наследует то же нетронутое PATH, что и local.sh — посторонний
+    `claude` рядом с адаптером в копии кита не подхватывается ни местом
+    вызова адаптера, ни префлайтом `command -v claude` внутри него."""
+    repo = make_repo_with_diff(tmp_path)
+    kit = _kit_copy(tmp_path, with_adapter=True)
+    stray = kit / "claude"
+    stray.write_text(
+        "#!/bin/sh\n"
+        "echo 'посторонний claude подхвачен' >&2\n"
+        'echo \'{"type":"result","subtype":"success","is_error":false,'
+        '"structured_output":{"findings":[],"note":"stray"}}\'\n',
+        encoding="utf-8",
+    )
+    stray.chmod(0o755)
+    path = _path_without_executable("claude")
+    assert shutil.which("claude", path=path) is None, "precondition: claude не должен резолвиться"
+    res = run_local_env(repo, env={"PATH": path, "REVIEW_HARNESS": "claude"}, kit_dir=kit)
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert "ревьюер не отработал" in res.stderr
+
+
 def test_kit_dir_path_prefix_does_not_leak_into_preparation(tmp_path: Path) -> None:
-    """D7: $kit_dir подмешан в PATH только у вызова ревьюера. Подставной `git`
-    в копии кита, падающий кодом 99, НЕ должен подхватываться подготовкой
-    дифа/отпечатка — при `export PATH` на весь local.sh прогон умер бы."""
+    """D7 (пересмотрено терминальным ревью этой ветки): PATH вообще не
+    трогается — ни при подготовке дифа/отпечатка, ни у самого вызова
+    ревьюера (адаптер зовётся по абсолютному пути). Подставной `git` в копии
+    кита, падающий кодом 99, НЕ должен подхватываться нигде в прогоне."""
     repo = make_repo_with_diff(tmp_path)
     kit = _kit_copy(tmp_path, with_adapter=True)
     fake_git = kit / "git"

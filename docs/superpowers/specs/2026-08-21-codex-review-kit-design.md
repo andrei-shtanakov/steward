@@ -382,14 +382,17 @@ scripts/review/collect-context.sh
 scripts/review/apply-threshold.sh
 scripts/review/local.sh
 scripts/review/checksum.sh          # переносимая сверка копии с PIN
-scripts/review/harness-claude       # адаптер claude (переходный член релиза 2026-09; 100755, по PATH)
+scripts/review/harness-claude       # адаптер claude (переходный член релиза 2026-09; 100755, абсолютный путь)
 .github/codex/review-schema.json
 ```
 
-`harness-claude` — единственный член без расширения и с битом исполнения: он
-запускается по `PATH` голым именем, чтобы строка команды в отпечатке была
-машинно-независимой и при этом тем, что реально запускается (спека
-харнесс-слоя 2026-09-14, D7). Зависимость `claude` — только при
+`harness-claude` — единственный член без расширения и с битом исполнения:
+`local.sh` запускает его по абсолютному пути (в отпечаток и
+`--print-review-cmd` идёт голое имя `harness-claude`, чтобы строка команды
+оставалась машинно-независимой — спека харнесс-слоя 2026-09-14, D7). Бит
+исполнения обязателен (`100755` в git); потерянный при ре-вендоре бит ловит
+префлайт `local.sh` с рецептом `chmod +x`, не copy-integrity (`checksum.sh`
+сверяет байты, не режим). Зависимость `claude` — только при
 `REVIEW_HARNESS=claude`.
 
 Только shell и стандартные утилиты. Ни одного файла, требующего Python.
