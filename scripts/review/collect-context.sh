@@ -40,6 +40,20 @@ done
 [ -n "$base" ] || { usage; exit 2; }
 [ -n "$manifest" ] || { usage; exit 2; }
 
+# Манифест — путь В ДЕРЕВЕ base от корня репозитория, не путь в файловой
+# системе и не путь относительно cwd. Абсолютный путь и обход вверх отвергаются
+# здесь, а не отдаются git'у: `git ls-tree --full-tree` принял бы абсолютный
+# путь внутри рабочего дерева и молча превратил его в tree-путь, а
+# `git show <base>:/abs` на том же значении отказал бы — «работает наполовину»
+# хуже честного отказа с названной причиной.
+case "$manifest" in
+    /*|*..*)
+        echo "путь манифеста — не путь в дереве base (абсолютный или с '..'):" \
+            "$manifest" >&2
+        exit 2
+        ;;
+esac
+
 digest() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum | cut -d' ' -f1
@@ -65,7 +79,15 @@ git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
     echo "base-ревизия не разрешается: $base" >&2
     exit 2
 }
-manifest_entry=$(git ls-tree "$base" -- "$manifest" 2>/dev/null) || manifest_entry=""
+#
+# `--full-tree` обязателен: без него `git ls-tree` трактует путь относительно
+# cwd-префикса (из `src/` ищет `src/.github/codex/…`), тогда как `git show
+# <base>:<путь>` — от корня дерева. Из подкаталога манифест «не находился»,
+# пусто читалось как штатный код 3, и настроенный обязательный контекст молча
+# выпадал из промпта при зелёном прогоне (steward#150 ← spec-runner#474).
+# С флагом путь означает одно и то же из любого cwd.
+manifest_entry=$(git ls-tree --full-tree "$base" -- "$manifest" 2>/dev/null) \
+    || manifest_entry=""
 if [ -z "$manifest_entry" ]; then
     echo "манифест контекста отсутствует в base ($base:$manifest)" >&2
     echo "курируемый контекст в этом репозитории не настроен." >&2
@@ -146,7 +168,10 @@ while IFS= read -r line; do
     #
     # Обычный файл — 100644 или 100755. Симлинк 120000, подмодуль 160000,
     # каталог 040000: отвергаются все три, каждый со своим именем в сообщении.
-    entry=$(git ls-tree "$base" -- "$path" 2>/dev/null) || entry=""
+    #
+    # `--full-tree` — по той же причине, что у манифеста выше: пути в списке
+    # тоже от корня дерева и не должны зависеть от cwd вызывающего.
+    entry=$(git ls-tree --full-tree "$base" -- "$path" 2>/dev/null) || entry=""
     [ -n "$entry" ] || {
         echo "файл контекста не читается из base: $base:$path" >&2
         exit 2
