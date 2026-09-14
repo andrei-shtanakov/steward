@@ -948,7 +948,7 @@ PR и осознанно не закрыто; список полон, друг�
     «чекер из base» — или это репо без PR-гейта, где copy-integrity держится
     только на ревью ре-вендор-PR.
 
-- [ ] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
+- [x] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
 
   Найдено 2026-09-14 при закрытии steward#149: `gate-check --profile team-exp
   --stage release workstreams/WS-005-gate-verdicts/spec/` даёт
@@ -961,6 +961,17 @@ PR и осознанно не закрыто; список полон, друг�
   политикой (`steward approval-facts`, см. evidence
   `docs/evidence/2026-08-21-approval-facts-v2-migration/`), либо зафиксировать,
   что release-стадия для бандла WS-005 не претендует на зелёный до этого.
+  Закрыт 2026-09-14 на живом состоянии, evidence —
+  `docs/evidence/2026-09-14-approval-facts-policy-refresh/`. Диагноз в два шага:
+  перематериализация под текущей политикой (`collect_approval_facts.py`,
+  дайджест `4b6d4087…`) сменила причину красного на «merge 02840df…/cde0a007…
+  is outside the declared observation scope» — это аппрув-мержи PR #55/#60
+  артефактов бандла, которых в охвате A0 не было. Правка
+  `profiles/approval-facts-scope.yaml`: `prs: [55, 60, …]` с доводом
+  (release-стадия догфуда бессмысленна, если охват не покрывает сам догфуд).
+  Итог: `gate-check --stage release` над WS-005 — 0 err / 0 warn, authoring —
+  0/0. Оговорка: файл фактов локальный с lease 24 ч, зелёный держится, пока
+  host-local расписание A0 собирает факты — свойство Stage A0 по построению.
 
 - [ ] generated-фильтр `local.sh` из подкаталога: `check-attr` приклеивает cwd-префикс @owner:github:andrei-shtanakov @id:review-kit-generated-filter-cwd @epic:eco.codex-review-rollout
 
