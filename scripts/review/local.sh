@@ -106,7 +106,8 @@ remote_explicit=0
 usage() {
     echo "usage: local.sh [--base <ref>] [--head <ref>] [--remote <name>]" \
         "[--fetch] [--format markdown|text]" \
-        "[--max-diff-bytes N] [--max-diff-files N] [--fingerprint-only]" >&2
+        "[--max-diff-bytes N] [--max-diff-files N] [--fingerprint-only]" \
+        "[--print-review-cmd]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -142,6 +143,9 @@ while [ $# -gt 0 ]; do
         # компонент входа. Режим обязан быть ОФФЛАЙН-вычислимым: одинаковый
         # вход должен давать одинаковый отпечаток независимо от доступности
         # remote, иначе наследование вердикта зависит от сети.
+        # Печать эффективной команды ревьюера (D9): единственный источник
+        # таблицы резолва — кит; review-pr.sh берёт отсюда reviewer_label.
+        --print-review-cmd) print_cmd=1; shift ;;
         --fingerprint-only) fp_only=1; shift ;;
         *) usage; exit 2 ;;
     esac
@@ -153,6 +157,17 @@ if [ "${fp_only:-0}" -eq 1 ] && [ "$do_fetch" -eq 1 ]; then
     exit 2
 fi
 fp_only="${fp_only:-0}"
+
+print_cmd="${print_cmd:-0}"
+if [ "$print_cmd" -eq 1 ]; then
+    if [ "$do_fetch" -eq 1 ] || [ "$fp_only" -eq 1 ]; then
+        echo "--print-review-cmd несовместим с --fetch и --fingerprint-only:" \
+            "он печатает команду и выходит, не трогая диапазон." >&2
+        exit 2
+    fi
+    printf '%s\n' "$review_cmd"
+    exit 0
+fi
 
 # Информационные строки прогона (диапазон, контекст, пустой диф) в fp-режиме
 # уходят в stderr: контракт stdout для --fingerprint-only — ровно одна строка

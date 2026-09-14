@@ -1786,3 +1786,54 @@ def test_claude_with_non_executable_adapter_names_chmod(tmp_path: Path) -> None:
     res = run_local_env(repo, "--fingerprint-only", env={"REVIEW_HARNESS": "claude"}, kit_dir=kit)
     assert res.returncode == 2, res.stdout + res.stderr
     assert "chmod +x" in res.stderr
+
+
+# --- --print-review-cmd (D9): единственный источник таблицы резолва ----------
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({}, "codex exec"),
+        ({"REVIEW_CMD": ""}, "codex exec"),
+        ({"REVIEW_MODEL": "gpt-5.4"}, "codex exec -m gpt-5.4"),
+        ({"REVIEW_HARNESS": "claude"}, "harness-claude --model claude-opus-5"),
+        (
+            {"REVIEW_HARNESS": "claude", "REVIEW_MODEL": "claude-sonnet-5"},
+            "harness-claude --model claude-sonnet-5",
+        ),
+        ({"REVIEW_CMD": "my-reviewer --flag"}, "my-reviewer --flag"),
+    ],
+)
+def test_print_review_cmd_prints_resolved_command(
+    tmp_path: Path, env: dict[str, str], expected: str
+) -> None:
+    """review-pr.sh берёт reviewer_label отсюда, а не дублирует таблицу."""
+    _, local = make_repo(tmp_path)  # пустой диф: команда печатается ДО работы с диапазоном
+    res = run_local_env(local, "--print-review-cmd", env=env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert res.stdout == expected + "\n"
+
+
+def test_print_review_cmd_needs_no_remote(tmp_path: Path) -> None:
+    """Без единого remote и без --base: резолв не трогает диапазон."""
+    _, local = make_repo(tmp_path)
+    git(local, "remote", "remove", "origin")
+    res = run_local_env(local, "--print-review-cmd")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert res.stdout == "codex exec\n"
+
+
+def test_print_review_cmd_reports_config_errors_with_code_2(tmp_path: Path) -> None:
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env={"REVIEW_HARNESS": "gemini"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert res.stdout == ""
+
+
+@pytest.mark.parametrize("other", ["--fetch", "--fingerprint-only"])
+def test_print_review_cmd_is_exclusive(tmp_path: Path, other: str) -> None:
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", other)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "--print-review-cmd" in res.stderr
