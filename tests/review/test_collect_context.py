@@ -564,3 +564,91 @@ def test_manifest_path_must_be_a_tree_path(repo: Path, shape: str) -> None:
 
     assert res.returncode == 2, res.stdout + res.stderr
     assert "не путь в дереве" in res.stderr
+
+
+# --- Путь обязан разрешаться ровно в себя (steward#154) ---------------------
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+@pytest.mark.parametrize("bad", ["src/", "docs/", ":/src/producer.py", ":(top)docs/contract.md"])
+def test_trailing_slash_and_pathspec_magic_entries_are_refused(
+    repo: Path, bad: str, interp: str
+) -> None:
+    """Запись `dir/` проходила как файл: `git ls-tree --full-tree <base> -- dir/`
+    печатает СОДЕРЖИМОЕ каталога, проверка режима брала первую внутреннюю
+    запись (100644), а `git show <base>:dir/` на tree-объекте выходил с 0 и
+    печатал листинг — пакет собирался с кодом 0, «файл» был листингом
+    каталога (spec-runner#491 → steward#154). Pathspec-магия `:…` — тот же
+    класс: путь разрешается не в себя. Обе формы отвергаются сторожем
+    формы пути, а не полагаются на git.
+    """
+    write(repo, MANIFEST, f"{bad}\n")
+    base = commit(repo, "запись не разрешается в себя")
+
+    res = run(repo, base, interp=interp)
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "недопустимый путь" in res.stderr
+    assert "--- ФАЙЛ" not in res.stdout
+
+
+@pytest.mark.parametrize("bad", [".github/codex/", ":/.github/codex/review-context.txt"])
+def test_manifest_path_with_trailing_slash_or_magic_is_refused(repo: Path, bad: str) -> None:
+    """Тот же сторож у `--manifest`: каталог с хвостовым слэшем и pathspec-магия
+    — не путь файла в дереве base."""
+    base = git(repo, "rev-parse", "HEAD").strip()
+
+    res = run(repo, base, manifest=bad)
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "не путь в дереве" in res.stderr
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+def test_non_ascii_path_resolves_to_itself(repo: Path, interp: str) -> None:
+    """Структурная проверка «путь равен запрошенному» обязана сравнивать СЫРОЕ
+    имя: при умолчании `core.quotePath=true` `git ls-tree` печатает не-ASCII
+    путь C-квотированным (`"docs/\\320\\272…"`), и легитимный `docs/контракт.md`
+    считался бы разрешившимся «не в себя» (major терминального ревью ветки
+    steward#154). Оба вызова ls-tree идут с `-c core.quotePath=false`, как
+    уже делает local.sh для путей дифа."""
+    write(repo, "docs/контракт.md", "# Контракт\n\nне-ASCII имя файла\n")
+    write(repo, MANIFEST, "docs/контракт.md\n")
+    base = commit(repo, "не-ASCII путь в манифесте")
+
+    res = run(repo, base, interp=interp)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert attached_paths(res.stdout) == ["docs/контракт.md"]
+    assert "не-ASCII имя файла" in res.stdout
+
+
+@pytest.mark.parametrize("interp", INTERPRETERS)
+@pytest.mark.parametrize("name", ['docs/contract"v2.md', "docs/back\\slash.md"])
+def test_c_quoted_ascii_names_resolve_to_themselves(repo: Path, name: str, interp: str) -> None:
+    """`"` и `\\` git C-квотирует ВСЕГДА — `core.quotePath=false` снимает только
+    экранирование не-ASCII (второй major терминального ревью ветки
+    steward#154). Сырое имя даёт только `ls-tree -z` (NUL-разделитель, без
+    квотирования); NUL превращается в перевод строки ДО подстановки в shell —
+    bash 3.2 и dash не хранят NUL в переменных."""
+    write(repo, name, "CONTENT_OK\n")
+    write(repo, MANIFEST, f"{name}\n")
+    base = commit(repo, "имя, которое git C-квотирует")
+
+    res = run(repo, base, interp=interp)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert attached_paths(res.stdout) == [name]
+    assert "CONTENT_OK" in res.stdout
+
+
+def test_manifest_path_with_newline_is_named_refusal(repo: Path) -> None:
+    """LF в имени манифеста не поддерживается: `ls-tree -z | tr` не отличил бы
+    его от разделителя записей. Отказ называет причину (minor терминального
+    ревью ветки steward#154), а не выдаёт «разрешился не в себя»."""
+    base = git(repo, "rev-parse", "HEAD").strip()
+
+    res = run(repo, base, manifest=".github/codex/review\ncontext.txt")
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "перевод строки" in res.stderr
