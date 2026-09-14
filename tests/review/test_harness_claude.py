@@ -176,6 +176,27 @@ def test_unreadable_schema_is_config_error(tmp_path: Path) -> None:
     assert "схема" in res.stderr
 
 
+def test_directory_as_verdict_path_is_config_error(tmp_path: Path) -> None:
+    """`--output-last-message`, указывающий на КАТАЛОГ (а не файл), должен
+    отказать конфигурационным кодом 2 до вызова claude, а не молча вернуть 0
+    без записанного вердикта — иначе `mv "$tmp" "$verdict"` переносит
+    временный файл ВНУТРЬ каталога и оставляет цель кита без вердикта при
+    зелёном коде выхода."""
+    s = Stand(tmp_path)
+    res = s.run(
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        str(s.schema),
+        "--output-last-message",
+        str(s.out),
+        "-",
+    )
+    assert res.returncode == 2, res.stderr
+    assert "каталог" in res.stderr
+    assert list(s.out.glob(".verdict.*")) == [], "осиротевший временный файл"
+
+
 def test_missing_claude_in_path_is_config_error(tmp_path: Path) -> None:
     """Нет бинаря — конфигурация (код 2), не «ревьюер не отработал»."""
     s = Stand(tmp_path)
