@@ -459,6 +459,23 @@ def test_default_inventory_has_adapter_as_optional_and_absent_is_green(
     assert "?" + ADAPTER in SCRIPT.read_text(encoding="utf-8")
 
 
+def test_optional_marker_is_not_glob_expanded(tmp_path: Path) -> None:
+    """`?path` в инвентаре некавыченно раскрывается словорасщеплением — `?`
+    заодно glob-метасимвол. Посторонний путь вида `ascripts/review/…` в cwd
+    (той же длины/формы, что `?scripts/review/…`) не должен подменить собой
+    маркер и превратить переходный член в обязательный (minor терминального
+    ревью ветки, четвёртый заход)."""
+    root = make_kit(tmp_path)
+    decoy = root / "ascripts" / "review" / "harness-claude"
+    decoy.parent.mkdir(parents=True, exist_ok=True)
+    decoy.write_text("decoy\n", encoding="utf-8")
+    pin = full_pin(root)  # без адаптера — старый потребитель без него
+
+    result = run(root, pin)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_adapter_present_is_verified_like_a_mandatory_member(tmp_path: Path) -> None:
     root = make_kit(tmp_path)
     (root / ADAPTER).write_text("adapter\n", encoding="utf-8")
