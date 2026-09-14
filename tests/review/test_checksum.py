@@ -407,6 +407,24 @@ def test_optional_member_present_is_verified(tmp_path: Path) -> None:
     assert "scripts/review/new-helper.sh" in result.stderr
 
 
+def test_optional_member_present_without_pin_line_is_integrity_failure(tmp_path: Path) -> None:
+    """Optional-член, присутствующий у потребителя БЕЗ строки PIN, — отказ
+    copy-integrity (код 1), не пропуск: `?path` без PIN-строки легален только
+    когда файла НЕТ в копии. Иначе REVIEW_HARNESS=claude выполнил бы
+    незапинованный (ни с чем не сверенный) файл при зелёном copy-integrity —
+    терминальное ревью ветки, третий заход."""
+    root = make_kit(tmp_path)
+    helper = root / "scripts" / "review" / "new-helper.sh"
+    helper.write_text("helper\n", encoding="utf-8")
+    pin = full_pin(root)  # без строки для new-helper.sh
+
+    result = run_env(root, pin, "CHECKSUM_KIT_EXTRA", OPTIONAL_EXTRA)
+
+    assert result.returncode == 1, result.stderr
+    assert "scripts/review/new-helper.sh" in result.stderr
+    assert "не запинован" in result.stderr
+
+
 def test_env_cannot_shrink_mandatory_inventory(tmp_path: Path) -> None:
     """Env-хук не сужает обязательный инвентарь — только добавляет.
 
@@ -449,4 +467,20 @@ def test_adapter_present_is_verified_like_a_mandatory_member(tmp_path: Path) -> 
     (root / ADAPTER).write_text("drift\n", encoding="utf-8")
     result = run(root, pin)
     assert result.returncode == 1, result.stderr
+
+
+def test_adapter_present_without_pin_line_is_integrity_failure(tmp_path: Path) -> None:
+    """Незапинованный `harness-claude` у потребителя (в умолчательном
+    инвентаре, не через CHECKSUM_KIT_EXTRA) — отказ, а не тихий пропуск:
+    иначе присутствующий, но ни с чем не сверенный адаптер исполнялся бы при
+    зелёном copy-integrity."""
+    root = make_kit(tmp_path)
+    (root / ADAPTER).write_text("adapter\n", encoding="utf-8")
+    pin = full_pin(root)  # без строки для ADAPTER
+
+    result = run(root, pin)
+
+    assert result.returncode == 1, result.stderr
+    assert ADAPTER in result.stderr
+    assert "не запинован" in result.stderr
     assert ADAPTER in result.stderr

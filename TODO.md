@@ -861,12 +861,16 @@ PR и осознанно не закрыто; список полон, друг�
 
   - [ ] Перевести `?scripts/review/harness-claude` из переходного в обязательный член инвентаря `checksum.sh` @owner:github:andrei-shtanakov @id:review-kit-harness-member-promotion @blocked_by:todo://steward/review-kit-harness-fleet-wave @epic:eco.codex-review-rollout
 
-    Пока член `?path` (переходный), незапинованный `harness-claude` в
-    `scripts/review/` потребителя проходит copy-integrity и затем реально
-    выполняется при `REVIEW_HARNESS=claude` (находка терминального ревью
-    ветки `review-kit-harness-layer`, #2) — окно уже приценено в двухшаговом
-    ре-вендоре базовой спеки §5, закрыть его обязана промоция члена в
-    обязательные на следующем релизе кита, а не оставлять implicit.
+    Находка терминального ревью ветки `review-kit-harness-layer` (#2, затем
+    ужесточена заходом #3): пока член `?path` (переходный), незапинованный,
+    но ПРИСУТСТВУЮЩИЙ `harness-claude` у потребителя раньше проходил
+    copy-integrity и затем реально выполнялся при `REVIEW_HARNESS=claude` —
+    закрыто заходом #3 (`checksum.sh` теперь отказывает кодом 1: «переходный
+    член присутствует, но не запинован»). Остаточное свойство переходности —
+    только про ОТСУТСТВИЕ: адаптер может не существовать у потребителя вовсе,
+    и это легально. Этот пункт переводит требование с «сверяется, если есть»
+    на «обязан существовать» — промоция члена в обязательные на следующем
+    релизе кита.
 
 - [ ] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
 
