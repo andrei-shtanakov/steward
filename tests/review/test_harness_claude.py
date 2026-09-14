@@ -82,15 +82,20 @@ class Stand:
         stdin: str = "ПРОМПТ\n",
         path: str | None = None,
         claude_exit: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self.env_file.write_text(envelope_text, encoding="utf-8")
-        env = dict(os.environ)
+        env = {
+            k: v for k, v in os.environ.items() if k not in ("REVIEW_USAGE_OUT", "REVIEW_EFFORT")
+        }
         env["PATH"] = path if path is not None else f"{self.bin}{os.pathsep}{os.environ['PATH']}"
         env["CLAUDE_STUB_ARGV"] = str(self.argv)
         env["CLAUDE_STUB_PROMPT"] = str(self.prompt)
         env["CLAUDE_STUB_ENVELOPE"] = str(self.env_file)
         if claude_exit is not None:
             env["CLAUDE_STUB_EXIT"] = claude_exit
+        if extra_env:
+            env.update(extra_env)
         # Интерпретатор — АБСОЛЮТНЫМ путём, найденным по PATH теста ДО сужения:
         # CPython резолвит executable по env["PATH"] переданного окружения, и
         # при PATH из одного каталога голое `sh` дало бы FileNotFoundError

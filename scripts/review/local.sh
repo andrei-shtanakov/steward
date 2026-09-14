@@ -49,6 +49,12 @@ prompt="${REVIEW_PROMPT:-$repo_root/.github/codex/review-prompt.md}"
 # только в ветке claude: под `set -u` переменная обязана существовать при
 # любом исходе резолва (REVIEW_CMD-оверрайд её не выставляет вовсе).
 reviewer_exec=""
+# Sidecar-артефакты eval (спека review-eval §7): пути задаются окружением,
+# пустое значение — отказ (прецедент REVIEW_MODEL), в отпечаток не входят.
+if [ -n "${REVIEW_VERDICT_OUT+x}" ] && [ -z "$REVIEW_VERDICT_OUT" ]; then
+    echo "REVIEW_VERDICT_OUT задан пустым — уберите переменную или назовите путь." >&2
+    exit 2
+fi
 if [ -n "${REVIEW_CMD:-}" ]; then
     review_cmd="$REVIEW_CMD"
 else
@@ -754,6 +760,21 @@ fi
 if [ ! -s "$work/verdict.json" ]; then
     echo "ревьюер завершился успешно, но вердикта не оставил" >&2
     exit 3
+fi
+
+# Копия вердикта ДО порога (спека review-eval §7, D4): eval обязан видеть
+# находки и при коде 1, и при отказе валидации порога. Атомарно: tmp в
+# каталоге цели + mv; потерять запрошенный артефакт молча нельзя — код 2.
+if [ -n "${REVIEW_VERDICT_OUT:-}" ]; then
+    verdict_out_dir=$(dirname "$REVIEW_VERDICT_OUT")
+    mkdir -p "$verdict_out_dir" || { echo "REVIEW_VERDICT_OUT: не создать каталог $verdict_out_dir" >&2; exit 2; }
+    verdict_tmp=$(mktemp "$verdict_out_dir/.verdict.XXXXXX") \
+        || { echo "REVIEW_VERDICT_OUT: не создать временный файл в $verdict_out_dir" >&2; exit 2; }
+    if ! cp "$work/verdict.json" "$verdict_tmp" || ! mv "$verdict_tmp" "$REVIEW_VERDICT_OUT"; then
+        rm -f "$verdict_tmp"
+        echo "REVIEW_VERDICT_OUT: не удалось сохранить вердикт в $REVIEW_VERDICT_OUT" >&2
+        exit 2
+    fi
 fi
 
 sh "$kit_dir/apply-threshold.sh" --verdict "$work/verdict.json" --format "$format"

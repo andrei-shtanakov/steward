@@ -1667,7 +1667,15 @@ def run_local_env(
     base = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("REVIEW_CMD", "REVIEW_HARNESS", "REVIEW_MODEL")
+        if k
+        not in (
+            "REVIEW_CMD",
+            "REVIEW_HARNESS",
+            "REVIEW_MODEL",
+            "REVIEW_EFFORT",
+            "REVIEW_VERDICT_OUT",
+            "REVIEW_USAGE_OUT",
+        )
     }
     base["REVIEW_KIT_DIR"] = str(kit_dir or ROOT / "scripts" / "review")
     base["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
@@ -2009,3 +2017,40 @@ def test_kit_dir_path_prefix_does_not_leak_into_preparation(tmp_path: Path) -> N
     res = run_local_env(repo, env=env, kit_dir=kit)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "подставной git" not in res.stderr
+
+
+# --- REVIEW_VERDICT_OUT (спека review-eval §7) -------------------------------
+
+
+def test_verdict_out_is_written_even_when_threshold_blocks(tmp_path: Path) -> None:
+    """Sidecar пишется ДО apply-threshold.sh: при коде 1 (major) вердикт доступен."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "artifacts" / "verdict.json"
+    env = _claude_stand(tmp_path, MAJOR_FINDING)
+    env["REVIEW_VERDICT_OUT"] = str(out)
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert json.loads(out.read_text(encoding="utf-8")) == MAJOR_FINDING
+
+
+def test_verdict_out_is_written_when_threshold_rejects_verdict(tmp_path: Path) -> None:
+    """Битый по схеме вердикт: apply-threshold.sh даёт 2, но sidecar уже сохранён."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "verdict.json"
+    env = _claude_stand(tmp_path, {"findings": [{"severity": "major"}], "note": "x"})
+    env["REVIEW_VERDICT_OUT"] = str(out)
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert out.exists()
+
+
+def test_verdict_out_empty_is_config_error(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, "--print-review-cmd", env={"REVIEW_VERDICT_OUT": ""})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_VERDICT_OUT" in res.stderr
+
+
+def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})
