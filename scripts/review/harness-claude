@@ -44,12 +44,16 @@ model="claude-opus-5"
 sandbox=""
 schema=""
 verdict=""
+effort=""
 stdin_marker=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)
             [ $# -ge 2 ] || fail 2 "--model требует значение"
             model="$2"; shift 2 ;;
+        --effort)
+            [ $# -ge 2 ] || fail 2 "--effort требует значение"
+            effort="$2"; shift 2 ;;
         --sandbox)
             [ $# -ge 2 ] || fail 2 "--sandbox требует значение"
             sandbox="$2"; shift 2 ;;
@@ -84,6 +88,43 @@ command -v claude >/dev/null 2>&1 || fail 2 "claude не найден в PATH"
 command -v jq >/dev/null 2>&1 \
     || fail 2 "jq не найден в PATH — нужен для разбора ответа claude"
 
+# Sidecar usage (спека review-eval §7, D12): пустое значение — отказ; пишется
+# сразу после того, как конверт разобран как JSON, ДО проверок subtype /
+# structured_output — ошибочный ответ тоже стоил денег.
+if [ -n "${REVIEW_USAGE_OUT+x}" ] && [ -z "$REVIEW_USAGE_OUT" ]; then
+    fail 2 "REVIEW_USAGE_OUT задан пустым — уберите переменную или назовите путь"
+fi
+write_usage() {
+    # $1 — outcome (success|error); конверт — $envelope (может быть не-JSON).
+    [ -n "${REVIEW_USAGE_OUT:-}" ] || return 0
+    usage_dir=$(dirname "$REVIEW_USAGE_OUT")
+    mkdir -p "$usage_dir" || fail 2 "REVIEW_USAGE_OUT: не создать каталог $usage_dir"
+    usage_tmp=$(mktemp "$usage_dir/.usage.XXXXXX") \
+        || fail 2 "REVIEW_USAGE_OUT: не создать временный файл"
+    if jq -e 'type == "object"' "$envelope" >/dev/null 2>&1; then
+        jq -c --arg model "$model" --arg effort "$effort" --arg outcome "$1" '{
+            schema: "review-usage/v1", provider: "claude", model: $model,
+            requested_effort: (if $effort == "" then null else $effort end),
+            usage: (if (.usage|type) == "object" then {
+                input_tokens: (.usage.input_tokens // null),
+                output_tokens: (.usage.output_tokens // null),
+                cache_creation_input_tokens: (.usage.cache_creation_input_tokens // null),
+                cache_read_input_tokens: (.usage.cache_read_input_tokens // null)
+            } else null end),
+            total_cost_usd: (.total_cost_usd // null),
+            provider_duration_ms: (.duration_ms // null),
+            outcome: $outcome }' "$envelope" > "$usage_tmp"
+    else
+        jq -nc --arg model "$model" --arg effort "$effort" --arg outcome "$1" '{
+            schema: "review-usage/v1", provider: "claude", model: $model,
+            requested_effort: (if $effort == "" then null else $effort end),
+            usage: null, total_cost_usd: null, provider_duration_ms: null,
+            outcome: $outcome }' > "$usage_tmp"
+    fi
+    mv "$usage_tmp" "$REVIEW_USAGE_OUT" \
+        || fail 2 "REVIEW_USAGE_OUT: не сохранить $REVIEW_USAGE_OUT"
+}
+
 # Временный файл вердикта — В КАТАЛОГЕ целевого файла: `mv` через границу
 # файловой системы перестаёт быть rename, и атомарность теряется. Конверт
 # claude — тоже в файл, не в переменную: `$(...)` съедает хвостовые переводы
@@ -98,8 +139,10 @@ trap 'rm -f "$tmp" "$envelope"' EXIT
 
 # Промпт идёт со stdin (как и у codex) — диф не попадает в argv.
 # stderr claude проходит насквозь в reviewer.err кита.
+set -- -p --model "$model"
+[ -n "$effort" ] && set -- "$@" --effort "$effort"
 set +e
-claude -p --model "$model" \
+claude "$@" \
     --json-schema "$(cat "$schema")" \
     --output-format json \
     --restricted --strict-mcp-config --no-session-persistence \
@@ -107,6 +150,19 @@ claude -p --model "$model" \
     --tools Read Glob Grep > "$envelope"
 claude_code=$?
 set -e
+
+# Sidecar usage — сразу после разбора конверта как JSON, ДО того как код
+# выхода/subtype/structured_output решают код выхода адаптера (D12):
+# ошибочный ответ тоже стоил денег. `write_usage` не меняет коды выхода.
+if [ "$claude_code" -eq 0 ] && jq -e '
+        type == "object" and (.is_error == false) and .subtype == "success"
+        and (.structured_output | type == "object")
+        and (.structured_output | length > 0)' "$envelope" >/dev/null 2>&1; then
+    write_usage success
+else
+    write_usage error
+fi
+
 [ "$claude_code" -eq 0 ] || fail 3 "claude завершился кодом $claude_code"
 
 # Разбор конверта: только успешный ответ с непустым объектом

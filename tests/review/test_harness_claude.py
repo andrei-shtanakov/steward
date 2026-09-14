@@ -333,6 +333,90 @@ def test_temp_file_lives_next_to_verdict(tmp_path: Path) -> None:
     assert list(s.out.glob(".verdict.*")) == []
 
 
+# --- REVIEW_USAGE_OUT и --effort (спека review-eval §7, D12/D13) ----------------
+
+FULL_ENVELOPE = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "structured_output": VERDICT_OK,
+        "duration_ms": 12345,
+        "total_cost_usd": 0.42,
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 900,
+        },
+    }
+)
+
+
+def _usage_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    out = tmp_path / "side" / "usage.json"
+    return {"REVIEW_USAGE_OUT": str(out)}, out
+
+
+def test_usage_sidecar_written_on_success(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    res = s.run(
+        *s.codex_args("--model", "claude-opus-5", "--effort", "high"),
+        envelope_text=FULL_ENVELOPE,
+        extra_env=env,
+    )
+    assert res.returncode == 0, res.stderr
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["schema"] == "review-usage/v1" and u["provider"] == "claude"
+    assert u["model"] == "claude-opus-5" and u["requested_effort"] == "high"
+    assert u["usage"]["input_tokens"] == 1000 and u["total_cost_usd"] == 0.42
+    assert u["provider_duration_ms"] == 12345 and u["outcome"] == "success"
+    argv = s.argv.read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--effort") + 1] == "high"
+
+
+def test_usage_sidecar_written_on_error_envelope(tmp_path: Path) -> None:
+    """Ошибочный ответ тоже стоил денег (D12): sidecar есть, outcome=error, код адаптера 3."""
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    bad = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "is_error": True,
+            "total_cost_usd": 0.05,
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+        }
+    )
+    res = s.run(*s.codex_args(), envelope_text=bad, extra_env=env)
+    assert res.returncode == 3
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["outcome"] == "error" and u["total_cost_usd"] == 0.05
+    assert u["provider_duration_ms"] is None  # отсутствует → null, не 0
+
+
+def test_usage_sidecar_on_unparseable_envelope(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    res = s.run(*s.codex_args(), envelope_text="not json {", extra_env=env)
+    assert res.returncode == 3
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["outcome"] == "error" and u["usage"] is None
+
+
+def test_usage_out_empty_is_config_error(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": ""})
+    assert res.returncode == 2 and "REVIEW_USAGE_OUT" in res.stderr
+
+
+def test_no_effort_flag_without_effort_arg(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    assert s.run(*s.codex_args()).returncode == 0
+    assert "--effort" not in s.argv.read_text(encoding="utf-8").splitlines()
+
+
 def test_adapter_is_executable_in_git_tree() -> None:
     """Бит исполнения зафиксирован в ДЕРЕВЕ (100755), не в чекауте: адаптер
     запускается local.sh по абсолютному пути (D7), и потерянный при
