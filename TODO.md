@@ -821,7 +821,7 @@ PR и осознанно не закрыто; список полон, друг�
       разбор записи не space-safe и опорой быть не может). Пункт про `mktemp` без
       шаблона отклонён доказательством в самом issue — не заводится
 
-- [ ] Харнесс-слой ревьюера (claude|codex) в самом ките @owner:github:andrei-shtanakov @id:review-kit-harness-layer @epic:eco.codex-review-rollout
+- [x] Харнесс-слой ревьюера (claude|codex) в самом ките @owner:github:andrei-shtanakov @id:review-kit-harness-layer @epic:eco.codex-review-rollout
 
   Приём входящего steward#147 (from devtools `review-harness-claude`, 2026-09-03).
   Лимиты codex перевели ai-prosto на claude через переходник devtools
@@ -839,6 +839,15 @@ PR и осознанно не закрыто; список полон, друг�
   свежевендоренный кит ревьюит claude по одному env, включая хук, без внешних
   переходников. После мержа — handoff в devtools: `review-pr.sh` переходит на
   `REVIEW_HARNESS`, переходник удаляется (их `review-harness-shim-removal`).
+
+  Закрыт PR этой ветки: `scripts/review/harness-claude` (100755, по PATH),
+  резолв в `local.sh` + `--print-review-cmd`, переходный член в
+  `checksum.sh`, README/спека. Handoff в devtools — issue
+  `review-pr-harness-env` (inbox): `review-pr.sh` переходит на
+  `REVIEW_HARNESS`/`REVIEW_MODEL`, `reviewer_label` — из
+  `local.sh --print-review-cmd` (feature-detect по литералу), переходник
+  `scripts/harness/claude-review` удаляется. Волна ре-вендора по флоту — по
+  образцу `review-kit-fp-wave`; PIN у потребителей — `checksum.sh`.
 
 - [ ] Догфуд WS-005 в `--stage release` красный по `GC-APPROVAL-MISSING`: наблюдения аппрувов под прежним дайджестом `approval-policy.yaml` @owner:github:andrei-shtanakov @id:approval-facts-policy-digest-refresh
 

@@ -382,8 +382,15 @@ scripts/review/collect-context.sh
 scripts/review/apply-threshold.sh
 scripts/review/local.sh
 scripts/review/checksum.sh          # переносимая сверка копии с PIN
+scripts/review/harness-claude       # адаптер claude (переходный член релиза 2026-09; 100755, по PATH)
 .github/codex/review-schema.json
 ```
+
+`harness-claude` — единственный член без расширения и с битом исполнения: он
+запускается по `PATH` голым именем, чтобы строка команды в отпечатке была
+машинно-независимой и при этом тем, что реально запускается (спека
+харнесс-слоя 2026-09-14, D7). Зависимость `claude` — только при
+`REVIEW_HARNESS=claude`.
 
 Только shell и стандартные утилиты. Ни одного файла, требующего Python.
 
@@ -429,8 +436,9 @@ base-чекер (восьмой заход гейта на №101) благод�
 
 **Язык — POSIX shell**, не подкоманда `steward`. Цель — все репозитории, а
 steward написан на Python: подкоманда не помогла бы ни arbiter (Rust), ни
-kapelle (Elixir). Зависимости кита — `git`, `jq`, `codex`, и `gh` только у
-вызывающего в CI. Ровно то, что workflow уже требует.
+kapelle (Elixir). Зависимости кита — `git`, `jq`, `codex` **или** `claude`
+(по `REVIEW_HARNESS`), и `gh` только у вызывающего в CI. Ровно то, что
+workflow уже требует.
 
 ## 6. Контракт диапазона: база и голова
 
@@ -532,6 +540,10 @@ local.sh [--base <ref|sha>] [--head <ref|sha>] [--fetch] [--format …]
     флаг. Он же делает исполнимой подсказку хука (§8.1): заблокировав пуш чужой
     ветки, хук обязан назвать команду, которой её всё-таки можно отревьюить.
     exit: как у apply-threshold.sh, плюс 3 — codex не отработал
+    Ревьюер: REVIEW_CMD (непустой — целиком) > REVIEW_HARNESS=codex|claude
+    (+ REVIEW_MODEL); только окружение процесса. `--print-review-cmd`
+    печатает эффективную команду и выходит кодом 0. Подробно —
+    2026-09-14-review-kit-harness-layer-design.md.
 ```
 
 Коды выхода повторяют конвенцию репо (`gate-check`, `approval-facts`):
