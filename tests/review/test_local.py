@@ -2091,6 +2091,17 @@ def test_verdict_out_empty_is_config_error(tmp_path: Path) -> None:
     assert "REVIEW_VERDICT_OUT" in res.stderr
 
 
+def test_verdict_out_directory_is_config_error(tmp_path: Path) -> None:
+    """Каталог вместо файла: `mv` унёс бы временный файл ВНУТРЬ каталога, и
+    прогон вышел бы кодом 0 без вердикта по заявленному пути, оставив внутри
+    осиротевший `.verdict.*` — находка финального ревью этой ветки."""
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, env={"REVIEW_VERDICT_OUT": str(tmp_path)})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "каталог" in res.stderr
+    assert list(tmp_path.glob(".verdict.*")) == []
+
+
 def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
     repo = make_repo_with_diff(tmp_path)
     assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})

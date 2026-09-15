@@ -55,6 +55,14 @@ if [ -n "${REVIEW_VERDICT_OUT+x}" ] && [ -z "$REVIEW_VERDICT_OUT" ]; then
     echo "REVIEW_VERDICT_OUT задан пустым — уберите переменную или назовите путь." >&2
     exit 2
 fi
+# Каталог вместо файла: без этой проверки `mv "$tmp" "$REVIEW_VERDICT_OUT"`
+# переносит временный файл ВНУТРЬ каталога (POSIX-семантика mv), прогон
+# завершается кодом 0 без вердикта по заявленному пути, а внутри каталога
+# остаётся осиротевший `.verdict.*` — находка финального ревью этой ветки.
+[ ! -d "${REVIEW_VERDICT_OUT:-}" ] || {
+    echo "REVIEW_VERDICT_OUT: путь — каталог, а не файл: $REVIEW_VERDICT_OUT" >&2
+    exit 2
+}
 if [ -n "${REVIEW_CMD:-}" ]; then
     review_cmd="$REVIEW_CMD"
 else
@@ -780,6 +788,8 @@ if [ -n "${REVIEW_VERDICT_OUT:-}" ]; then
     mkdir -p "$verdict_out_dir" || { echo "REVIEW_VERDICT_OUT: не создать каталог $verdict_out_dir" >&2; exit 2; }
     verdict_tmp=$(mktemp "$verdict_out_dir/.verdict.XXXXXX") \
         || { echo "REVIEW_VERDICT_OUT: не создать временный файл в $verdict_out_dir" >&2; exit 2; }
+    # shellcheck disable=SC2064
+    trap "rm -rf '$work'; rm -f '$verdict_tmp'" EXIT
     if ! cp "$work/verdict.json" "$verdict_tmp" || ! mv "$verdict_tmp" "$REVIEW_VERDICT_OUT"; then
         rm -f "$verdict_tmp"
         echo "REVIEW_VERDICT_OUT: не удалось сохранить вердикт в $REVIEW_VERDICT_OUT" >&2
