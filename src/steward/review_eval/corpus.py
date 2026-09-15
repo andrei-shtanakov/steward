@@ -72,6 +72,7 @@ __all__ = [
     "Match",
     "NonDefect",
     "append_registry",
+    "case_material_digest",
     "load_cases",
     "check_registry",
     "corpus_digest",
@@ -449,6 +450,25 @@ def corpus_digest(cases: Sequence[Case]) -> str:
     """``sha256:<hex>`` канонического JSON корпуса (порядок кейсов не важен)."""
     payload = [dataclasses.asdict(c) for c in sorted(cases, key=lambda c: c.case_id)]
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def case_material_digest(case: Case) -> str:
+    """``sha256:<hex>`` **неизменяемого материала** кейса: репо, PR, диапазон,
+    класс, `local_args`, ожидаемый исход. Разметка (defects/non_defects,
+    annotation, notes) сюда не входит: её менять после прогона можно и нужно,
+    а вот вердикт, полученный на `head_sha=H1`, нельзя пересчитывать по H2.
+    """
+    material = {
+        "repo": case.repo,
+        "pr": case.pr,
+        "base_sha": case.base_sha,
+        "head_sha": case.head_sha,
+        "cls": case.cls,
+        "local_args": list(case.local_args),
+        "expected_outcome": case.expected_outcome,
+    }
+    canonical = json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

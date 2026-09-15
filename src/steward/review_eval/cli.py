@@ -45,6 +45,7 @@ from steward.review_eval.corpus import (
     Case,
     CorpusError,
     append_registry,
+    case_material_digest,
     corpus_digest,
     is_gold,
     load_cases,
@@ -55,7 +56,9 @@ from steward.review_eval.matcher import MATCHER_VERSION, normalize_path, rules_d
 from steward.review_eval.metrics import CaseEval, MetricsError, compare, evaluate_case
 from steward.review_eval.metrics import metrics_for_variant as summarize_variant
 from steward.review_eval.report import (
+    ReportError,
     render_compare,
+    write_inside,
     write_metrics_json,
     write_queue,
     write_report,
@@ -125,6 +128,35 @@ def _require_git(git: str) -> None:
 
 #: Подсказка в отказе по дрейфу матчера — флаг, которым пересчёт разрешают явно.
 _DRIFT_FLAG = "--allow-matcher-drift"
+
+
+def _require_same_case_material(
+    manifest: Mapping[str, object], cases: Sequence[Case], *, where: str
+) -> None:
+    """Код 2, если у кейса прогона изменился неизменяемый материал.
+
+    Вердикт получен на `head_sha` времени прогона; пересчитывать его по другому
+    дереву (файлы, номера строк) значило бы публиковать TP/FP по чужому
+    материалу. Разметка (`defects`, `non_defects`, `annotation`) в дайджест не
+    входит — её менять после прогона и есть смысл пересчёта.
+    """
+    stored = manifest.get("case_digests")
+    if not isinstance(stored, Mapping):
+        return
+    current = {case.case_id: case_material_digest(case) for case in cases}
+    changed = sorted(
+        case_id
+        for case_id, digest in stored.items()
+        if case_id in current and current[case_id] != digest
+    )
+    if changed:
+        typer.echo(
+            f"config error: {where} — материал кейса изменился с момента прогона "
+            f"({', '.join(changed)}): repo/base_sha/head_sha/class/local_args пинуются "
+            "прогоном; перемерьте кейс (--rerun) или пересчитывайте прежнюю версию корпуса",
+            err=True,
+        )
+        raise typer.Exit(_EXIT_CONFIG)
 
 
 def _matcher_drift(manifest: Mapping[str, object]) -> list[str]:
@@ -312,7 +344,13 @@ def corpus_candidates(
 
     destination = out if out is not None else corpus / f"{case['case_id']}.yaml"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(render_case(case), encoding="utf-8")
+    try:
+        # Без `write_text` по возможной ссылке: симлинк на месте черновика
+        # писал бы YAML в чужой файл вне корпуса.
+        write_inside(destination.parent, destination.name, render_case(case))
+    except ReportError as error:
+        typer.echo(f"config error: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
     typer.echo(f"черновик записан: {destination}")
     typer.echo(
         "дальше: 'review-eval corpus validate --register' зарегистрирует id дефектов, "
@@ -466,6 +504,7 @@ def metrics(
         typer.echo(f"corpus invalid: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
     manifest = _load_manifest(run_dir)
+    _require_same_case_material(manifest, cases, where=str(run_dir / "run.json"))
     recomputed = _recompute_provenance(
         manifest, allow_drift=allow_matcher_drift, where=str(run_dir / "run.json")
     )
@@ -505,6 +544,9 @@ def compare_runs(
     # Сравнение — такой же пересчёт, как `metrics`, только по двум прогонам:
     # дрейф матчера на любой стороне делает числа несравнимыми с их шапками.
     for label, run_dir in (("A", run_a), ("B", run_b)):
+        _require_same_case_material(
+            _load_manifest(run_dir), cases, where=f"прогон {label} ({run_dir / 'run.json'})"
+        )
         _recompute_provenance(
             _load_manifest(run_dir),
             allow_drift=allow_matcher_drift,
@@ -716,10 +758,18 @@ def _file_lines_at(
             raise CacheError(f"--git '{git}' не запускается: {error}") from error
 
     def file_lines(raw_path: str) -> int | None:
-        # Путь нормализуется правилом матчера: `./app/a.py` и `app//a.py` — тот
-        # же файл, и в дереве он лежит под нормализованным именем.
-        path = normalize_path(raw_path)
+        # Сначала **сырой** путь: литеральный backslash в имени — настоящий
+        # git-путь, и нормализация матчера (`\\` → `/`) уничтожила бы его.
+        # Нормализованный (`./app/a.py` → `app/a.py`) — запасной вариант.
+        normalized = normalize_path(raw_path)
+        # `./x` и `a//b` git-путями не бывают (`relative path syntax` вне worktree),
+        # так что для них сырой запрос бессмыслен; backslash — бывает.
+        raw_is_plausible = not raw_path.startswith(("./", "../")) and "//" not in raw_path
+        path = raw_path if raw_is_plausible else normalized
         kind = run_git(["cat-file", "-t", f"{sha}:{path}"])
+        if kind.returncode != 0 and _is_missing_object(kind) and path != normalized:
+            path = normalized
+            kind = run_git(["cat-file", "-t", f"{sha}:{path}"])
         if kind.returncode != 0:
             if _is_missing_object(kind):
                 return None

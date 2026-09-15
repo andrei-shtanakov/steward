@@ -1760,6 +1760,25 @@ def test_run_all_allows_growing_repetitions_on_resume(tmp_path: Path) -> None:
     assert resume.calls() == 3  # повторение 1 уже было
 
 
+def _rekeyed(payload: dict[str, object]) -> dict[str, object]:
+    """Пути артефактов result.json под его же case_id/variant/repetition_id.
+
+    Загрузчик требует канонические sidecar-пути **своей** тройки; тесты, которые
+    переносят результат в чужую тройку, должны переносить и пути — иначе первым
+    сработает отказ про sidecar, а не то, что проверяет тест.
+    """
+    prefix = f"cases/{payload['case_id']}/{payload['variant']}/{payload['repetition_id']}"
+    for name, leaf in (
+        ("verdict_path", "verdict.json"),
+        ("usage_path", "usage.json"),
+        ("stdout_path", "stdout.txt"),
+        ("stderr_path", "stderr.txt"),
+    ):
+        if payload.get(name) is not None:
+            payload[name] = f"{prefix}/{leaf}"
+    return payload
+
+
 def test_load_results_refuses_a_result_outside_the_manifest(tmp_path: Path) -> None:
     """Результат повторения, которого манифест не объявляет, — отказ, а не «лишний».
 
@@ -1774,7 +1793,7 @@ def test_load_results_refuses_a_result_outside_the_manifest(tmp_path: Path) -> N
     stray.mkdir()
     payload = json.loads((rep1 / "result.json").read_text(encoding="utf-8"))
     payload["repetition_id"] = 3
-    (stray / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (stray / "result.json").write_text(json.dumps(_rekeyed(payload)), encoding="utf-8")
 
     with pytest.raises(RunnerError, match="манифест") as excinfo:
         load_results(resume.out_dir)
@@ -1812,7 +1831,7 @@ def test_load_results_refuses_a_result_of_an_unknown_case(tmp_path: Path) -> Non
     stray.mkdir(parents=True)
     payload = json.loads((rep1 / "result.json").read_text(encoding="utf-8"))
     payload["case_id"] = "steward-999"
-    (stray / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (stray / "result.json").write_text(json.dumps(_rekeyed(payload)), encoding="utf-8")
 
     with pytest.raises(RunnerError, match="манифест") as excinfo:
         load_results(resume.out_dir)
@@ -2052,7 +2071,7 @@ def test_load_results_refuses_a_result_of_an_unknown_variant(tmp_path: Path) -> 
     stray.mkdir(parents=True)
     payload = json.loads((rep1 / "result.json").read_text(encoding="utf-8"))
     payload["variant"] = "codex:gpt-5.4:high"
-    (stray / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (stray / "result.json").write_text(json.dumps(_rekeyed(payload)), encoding="utf-8")
 
     with pytest.raises(RunnerError, match="манифест"):
         load_results(resume.out_dir)
@@ -3046,6 +3065,57 @@ def test_load_results_refuses_a_manifest_with_a_corrupt_variant(
 
     with pytest.raises(RunnerError, match="манифест.*variants"):
         load_results(out_dir)
+
+
+@pytest.mark.parametrize(
+    "verdict_path",
+    [
+        "cases/steward-155/claude:claude-opus-5/1/verdict.json",  # чужая тройка
+        "/etc/passwd",  # абсолютный
+        "cases/steward-157/claude:claude-opus-5/1/../1/verdict.json",  # `..`
+    ],
+    ids=["other-triple", "absolute", "dotdot"],
+)
+def test_load_results_refuses_a_non_canonical_sidecar_path(
+    tmp_path: Path, verdict_path: str
+) -> None:
+    """`verdict_path`/`usage_path` — только `cases/<case>/<variant>/<rep>/<name>.json`
+    своей тройки: чужой или внешний sidecar иначе попадал бы в метрики как свой.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    result = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    payload["verdict_path"] = verdict_path
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="verdict_path"):
+        load_results(out_dir)
+
+
+def test_load_results_refuses_a_symlinked_sidecar(tmp_path: Path) -> None:
+    """Симлинк на месте `verdict.json` готовой тройки — отказ при чтении."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    verdict = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "verdict.json"
+    external = out_dir.parent / "outside-verdict.json"
+    external.write_text(verdict.read_text(encoding="utf-8"), encoding="utf-8")
+    verdict.unlink()
+    verdict.symlink_to(external)
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        load_results(out_dir)
+
+
+def test_run_all_refuses_resume_when_case_material_changed(tmp_path: Path) -> None:
+    """Тот же case_id с другим материалом (здесь — `expected_outcome`; `head_sha`
+    остановил бы уже оффлайн-проверка объектов) — доливка отвергается."""
+    resume = _resume_fixture(tmp_path)
+    changed = dataclasses.replace(resume.cases[0], expected_outcome="guardrail_rejection")
+    before = (resume.out_dir / "run.json").read_bytes()
+
+    with pytest.raises(RunnerError, match="case_digests"):
+        resume.again(cases=[changed], corpus_digest_override=corpus_digest([changed]))
+
+    assert (resume.out_dir / "run.json").read_bytes() == before
 
 
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:

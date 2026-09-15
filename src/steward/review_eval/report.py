@@ -47,7 +47,7 @@ class ReportError(RuntimeError):
     """Отчёт не может быть записан: путь выводит запись за пределы каталога прогона."""
 
 
-def _write_inside(run_dir: Path, name: str, text: str) -> Path:
+def write_inside(run_dir: Path, name: str, text: str) -> Path:
     """Записать `run_dir/name` так, чтобы запись не покинула `run_dir`.
 
     Ни один компонент от `run_dir` (включая его самого) до цели не симлинк, и
@@ -179,7 +179,7 @@ def write_metrics_json(
         "recomputed_with": dict(recomputed_with) if recomputed_with is not None else None,
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
-    return _write_inside(run_dir, "metrics.json", text)
+    return write_inside(run_dir, "metrics.json", text)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ def write_report(
     recomputed_with: Mapping[str, object] | None = None,
 ) -> Path:
     """Рендерит и пишет ``report.md``."""
-    return _write_inside(
+    return write_inside(
         run_dir,
         "report.md",
         render_report(
@@ -579,7 +579,7 @@ def render_queue(evals_by_variant: Mapping[str, Sequence[CaseEval]]) -> str:
 
 def write_queue(run_dir: Path, evals_by_variant: Mapping[str, Sequence[CaseEval]]) -> Path:
     """Рендерит и пишет ``adjudication-queue.md``."""
-    return _write_inside(run_dir, "adjudication-queue.md", render_queue(evals_by_variant))
+    return write_inside(run_dir, "adjudication-queue.md", render_queue(evals_by_variant))
 
 
 def _variant_queue_lines(evs: Sequence[CaseEval]) -> list[str]:

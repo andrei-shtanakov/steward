@@ -51,7 +51,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from steward.review_eval.cache import CacheError, has_object, repo_cache_dir, worktree
-from steward.review_eval.corpus import Case, corpus_digest
+from steward.review_eval.corpus import Case, case_material_digest, corpus_digest
 from steward.review_eval.matcher import MATCHER_VERSION, rules_digest
 from steward.review_eval.threshold import is_schema_valid_verdict
 
@@ -702,6 +702,11 @@ class RunManifest:
     #: одно значение: частичный `--rerun` видит только репо своей выборки и
     #: сверяет их, не объявляя дрейфом отсутствие остальных.
     git_config_digests: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: Дайджест **неизменяемого материала** каждого запущенного кейса
+    #: (`corpus.case_material_digest`): репо, диапазон, класс, `local_args`.
+    #: Пересчёт метрик и доливка сверяют его: вердикт, полученный на одном
+    #: дереве, нельзя переоценивать по другому — а разметку менять можно.
+    case_digests: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def provider_env_names(env: Mapping[str, str]) -> list[str]:
@@ -885,6 +890,7 @@ def run_all(
         )
     tools = _tool_versions(git_env, git=git)
     config_digests = _git_config_digests(cache_root, [case.repo for case in cases])
+    case_digests_now = {case.case_id: case_material_digest(case) for case in cases}
     env_names = provider_env_names(environment)
     env_fingerprint = provider_env_fingerprint(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -927,6 +933,7 @@ def run_all(
         tools,
         env_fingerprint,
         config_digests,
+        case_digests_now,
     )
     if drift and not rerun:
         raise RunnerError(
@@ -984,6 +991,13 @@ def run_all(
         **(dict(stored_configs) if isinstance(stored_configs, Mapping) else {}),
         **config_digests,
     }
+    stored_material = previous.get("case_digests") if previous else None
+    merged_cases = {
+        **(dict(stored_material) if isinstance(stored_material, Mapping) else {}),
+        **case_digests_now,
+    }
+    if fresh_start:
+        merged_cases = dict(case_digests_now)
     payload: dict[str, object] = {
         "run_id": run_id,
         "kit": kit_payload,
@@ -1000,6 +1014,7 @@ def run_all(
         "provider_env_names": env_names,
         "provider_env_fingerprint": env_fingerprint,
         "git_config_digests": merged_configs,
+        "case_digests": merged_cases,
     }
     _write_json(out_dir / "run.json", payload)
 
@@ -1072,6 +1087,7 @@ def run_all(
         provider_env_fingerprint=env_fingerprint,
         cases=manifest_cases,
         git_config_digests=merged_configs,
+        case_digests=merged_cases,
     )
     _write_json(out_dir / "run.json", dataclasses.asdict(manifest))
     return manifest
@@ -1144,6 +1160,9 @@ def load_results(out_dir: Path) -> list[RunResult]:
         _require_result_file(out_dir, path)
         result = _result_from_file(path)
         _require_path_matches_payload(result, path, cases_dir=cases_dir)
+        for relative in (result.verdict_path, result.usage_path):
+            if relative is not None:
+                _require_result_file(out_dir, out_dir / relative)
         _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
         results.append(result)
@@ -1305,6 +1324,7 @@ def _provenance_drift(
     tools: Mapping[str, str],
     env_fingerprint: str,
     config_digests: Mapping[str, str] | None = None,
+    case_digests: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Поля, в которых прежний `run.json` расходится с текущим прогоном.
 
@@ -1378,6 +1398,16 @@ def _provenance_drift(
         # обязан — их дайджесты остаются в манифесте как были.
         if stored_configs.get(repo) != now:
             drift.append(f"git_config_digests.{repo}")
+    stored_cases_material = previous.get("case_digests")
+    stored_cases_material = (
+        stored_cases_material if isinstance(stored_cases_material, Mapping) else {}
+    )
+    for case_id, now in sorted((case_digests or {}).items()):
+        # Сверяются только кейсы текущей выборки, и только те, что прогон уже
+        # видел: новый кейс — вопрос списка `cases`, а не материала.
+        was = stored_cases_material.get(case_id)
+        if was is not None and was != now:
+            drift.append(f"case_digests.{case_id} (материал кейса изменился)")
     if previous.get("corpus_digest") != digest:
         drift.append("corpus_digest")
     if previous.get("matcher_version") != MATCHER_VERSION:
@@ -1623,6 +1653,21 @@ def _result_from_file(path: Path) -> RunResult:
     wrong += [name for name in flags if not isinstance(known.get(name), bool)]
     if wrong:
         raise RunnerError(f"{path}: result.json field(s) of the wrong type: {', '.join(wrong)}")
+    # Пути артефактов — только канонические, **своей** тройки: чужой, абсолютный
+    # или с `..` sidecar иначе читался бы как свой вердикт/usage.
+    prefix = f"cases/{known['case_id']}/{known['variant']}/{known['repetition_id']}"
+    for name, leaf in (
+        ("verdict_path", "verdict.json"),
+        ("usage_path", "usage.json"),
+        ("stdout_path", "stdout.txt"),
+        ("stderr_path", "stderr.txt"),
+    ):
+        value = known.get(name)
+        if value is not None and value != f"{prefix}/{leaf}":
+            raise RunnerError(
+                f"{path}: {name} '{value}' вне канонического пути {prefix}/{leaf} — "
+                "артефакт чужой тройки или внешний файл"
+            )
     if known["outcome"] not in OUTCOMES:
         raise RunnerError(
             f"{path}: result.json outcome '{known['outcome']}' вне известных исходов "
@@ -1999,6 +2044,7 @@ _MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("matcher_rules_digest", str),
     ("git_config_digests", dict),
     ("jobs", int),
+    ("case_digests", dict),
 )
 
 #: Обязательное содержимое блока `tools` манифеста.

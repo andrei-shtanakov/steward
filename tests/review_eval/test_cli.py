@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import tempfile
 import shutil
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,13 @@ import yaml
 from typer.testing import CliRunner
 
 from steward.review_eval import cli
-from steward.review_eval.corpus import append_registry, corpus_digest, load_case, load_corpus
+from steward.review_eval.corpus import (
+    append_registry,
+    case_material_digest,
+    corpus_digest,
+    load_case,
+    load_corpus,
+)
 from steward.review_eval.matcher import MATCHER_VERSION, rules_digest
 from steward.review_eval.runner import (
     KitUnderTest,
@@ -115,6 +122,15 @@ def _finding(*, severity: str = "major", line: int = 644) -> dict[str, Any]:
     }
 
 
+def _case_for(case_id: str) -> Any:
+    """`Case` по case_id тестового корпуса (материал совпадает с `_case_payload`)."""
+    pr = int(case_id.rsplit("-", 1)[1])
+    payload = _case_payload(pr)
+    path = Path(tempfile.mkdtemp()) / f"{case_id}.yaml"
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8")
+    return load_case(path)
+
+
 def _write_run(
     out: Path,
     case_ids: list[str],
@@ -176,6 +192,7 @@ def _write_run(
         kit={"commit": "c" * 40, "local_sh_sha256": "a" * 64},
         tools={"git": "git version 2.0", "claude": "claude 1.0", "codex": "unavailable"},
         git_config_digests={"andrei-shtanakov/steward": "sha256:" + "b" * 64},
+        case_digests={case_id: case_material_digest(_case_for(case_id)) for case_id in case_ids},
         variants=[
             {
                 "label": label,
@@ -578,6 +595,72 @@ def test_repo_corpus_is_valid_and_registered() -> None:
 # ---------------------------------------------------------------------------
 # corpus candidates
 # ---------------------------------------------------------------------------
+
+
+def _patch_candidate_sources(monkeypatch: pytest.MonkeyPatch, resolved: dict[str, Any]) -> None:
+    """Подменить сетевые источники `corpus candidates` одним валидным ревью."""
+    body = (
+        f"{KIT_HEADER}\n\n"
+        "### [major] PATH расширяется — `scripts/review/local.sh:644`\n"
+        "- Сценарий: s\n- Наблюдаемое: o\n- Ожидаемое: e\n"
+        "- Evidence: `scripts/review/local.sh:644` — r\n"
+        "- confidence: high → БЛОКИРУЕТ\n"
+        f"\n<!-- codex-terminal-review head={HEAD} -->\n"
+    )
+
+    def fake_resolve(repo: str, pr_meta: Any, head_sha: str, *_a: Any, **_k: Any) -> str:
+        resolved.update(repo=repo, head_sha=head_sha, pr_meta=pr_meta)
+        return MERGE_BASE
+
+    monkeypatch.setattr(cli, "resolve_review_base", fake_resolve)
+    monkeypatch.setattr(
+        cli, "fetch_pr", lambda *_a, **_k: {"base": {"sha": BASE}, "head": {"sha": HEAD}}
+    )
+    monkeypatch.setattr(
+        cli,
+        "fetch_reviews",
+        lambda *_a, **_k: [
+            {
+                "id": 1,
+                "user": {"login": "ai-prosto"},
+                "submitted_at": "2026-09-14T08:00:00Z",
+                "body": body,
+            }
+        ],
+    )
+    monkeypatch.setattr(cli, "fetch_commits", lambda *_a, **_k: [])
+
+
+def test_corpus_candidates_refuses_a_symlinked_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Симлинк на месте `eval/corpus/<case_id>.yaml` — отказ (код 2), внешняя
+    цель не тронута: `write_text` по ссылке писал бы черновик в чужой файл.
+    """
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("important", encoding="utf-8")
+    (corpus / "andrei-shtanakov.steward-155.yaml").symlink_to(victim)
+    _patch_candidate_sources(monkeypatch, {})
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "corpus",
+            "candidates",
+            "--repo",
+            "andrei-shtanakov/steward",
+            "--pr",
+            "155",
+            "--corpus",
+            str(corpus),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "символическая ссылка" in result.output
+    assert victim.read_text(encoding="utf-8") == "important"
 
 
 def test_corpus_candidates_writes_a_draft_into_the_corpus(
@@ -1451,6 +1534,29 @@ def test_metrics_exits_2_on_matcher_version_drift(tmp_path: Path) -> None:
     assert "matcher_version" in result.output
 
 
+def test_metrics_refuses_when_the_case_material_changed_since_the_run(tmp_path: Path) -> None:
+    """`head_sha` кейса изменился после прогона — вердикт получен на другом дереве:
+    пересчёт по новому материалу отвергается (код 2), разметку менять можно.
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert "andrei-shtanakov.steward-155" in manifest["case_digests"]
+
+    payload = _case_payload(155)
+    payload["head_sha"] = "f" * 40
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
+    )
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "материал кейса" in result.output
+    assert "andrei-shtanakov.steward-155" in result.output
+
+
 def test_metrics_allow_matcher_drift_records_the_recompute(tmp_path: Path) -> None:
     """С флагом пересчёт разрешён, но **назван**: оба провенанса рядом.
 
@@ -1690,7 +1796,11 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
     (checkout / "a.txt").write_text("one\ntwo\nthree", encoding="utf-8")
     (checkout / "nested").mkdir()
     (checkout / "nested" / "b.txt").write_text("one\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(checkout), "add", "a.txt", "nested/b.txt"], check=True)
+    (checkout / "back\\slash.md").write_text("x\ny\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(checkout), "add", "a.txt", "nested/b.txt", "back\\slash.md"],
+        check=True,
+    )
     subprocess.run(
         [
             "git",
@@ -1722,6 +1832,10 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
     lines = cli._file_lines_at(cache_root, "org/repo", sha)
     assert lines("a.txt") == 3
     assert lines("missing.txt") is None
+    # Литеральный backslash в имени — настоящий git-путь: сперва ищется сырой
+    # путь, и только потом Windows-нормализация как запасной вариант.
+    assert lines("back\\slash.md") == 2
+    assert lines("./a.txt") == 3
     # Каталог — не адрес строки: `git show <sha>:dir` печатает листинг дерева,
     # и evidence на каталог иначе считалась бы разрешимой (§9, D11).
     assert lines("nested") is None
