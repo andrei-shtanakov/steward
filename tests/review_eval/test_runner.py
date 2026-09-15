@@ -1766,6 +1766,23 @@ def test_load_results_refuses_a_result_outside_the_manifest(tmp_path: Path) -> N
     assert "repetition" in str(excinfo.value) or "повторение" in str(excinfo.value)
 
 
+def test_load_results_refuses_a_nested_result_file(tmp_path: Path) -> None:
+    """`result.json` глубже канонических трёх уровней — необъявленный исход.
+
+    Шаблон `*/*/*/result.json` такую копию не видел вовсе: проверки пути,
+    уникальности и манифеста до неё не доходили, и оплаченный результат
+    молча выпадал из метрик.
+    """
+    resume = _resume_fixture(tmp_path)
+    rep1 = resume.out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1"
+    nested = rep1 / "backup"
+    nested.mkdir()
+    (nested / "result.json").write_bytes((rep1 / "result.json").read_bytes())
+
+    with pytest.raises(RunnerError, match="backup"):
+        load_results(resume.out_dir)
+
+
 def test_load_results_refuses_a_result_of_an_unknown_case(tmp_path: Path) -> None:
     """Кейс, которого манифест не называет, — результат необъявленного прогона.
 
@@ -1857,6 +1874,7 @@ def test_run_all_rerun_of_a_subset_keeps_the_other_cases(tmp_path: Path) -> None
     cases, out_dir, cache_root, kit, counter, digest, env_base = _two_case_run(tmp_path)
     kept = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
     before = kept.read_bytes()
+    started_before = json.loads((out_dir / "run.json").read_text(encoding="utf-8"))["started"]
     assert _calls(counter) == 2
 
     manifest = run_all(
@@ -1876,6 +1894,9 @@ def test_run_all_rerun_of_a_subset_keeps_the_other_cases(tmp_path: Path) -> None
     assert manifest.cases == ["steward-155", "steward-157"]
     stored = json.loads((out_dir / "run.json").read_text(encoding="utf-8"))
     assert stored["cases"] == ["steward-155", "steward-157"]
+    # Остался результат прежнего прогона — прогон тот же, `started` прежний:
+    # иначе run.json датировал бы сохранённый результат позже его измерения.
+    assert stored["started"] == started_before
 
 
 def test_run_all_resume_of_a_subset_runs_only_its_missing_reps(tmp_path: Path) -> None:
@@ -2595,6 +2616,51 @@ def test_rerun_after_kept_worktrees_survives_a_process_git_dir(
         cache_root=cache_root,
         env_base=env,
         rerun=True,
+    )
+
+    assert manifest.finished
+    assert [item.outcome for item in load_results(out_dir)] == ["verdict"]
+
+
+def test_resume_after_an_interrupted_worktree_survives_a_process_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Обычное возобновление после обрыва: остался scratch и регистрация worktree.
+
+    `_clear_scratch` запускал prune с унаследованным `GIT_DIR` и не проверял
+    код выхода; следующий `worktree add` упирался в старую регистрацию.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    env = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    case = _make_case(base_sha=first, head_sha=second)
+    variants = [Variant("claude", "claude-opus-5", None)]
+
+    run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        keep_worktrees=True,
+    )
+    # «Обрыв до result.json»: результат стёрт, worktree и регистрация остались.
+    result = out_dir / "cases" / case.case_id / "claude:claude-opus-5" / "1" / "result.json"
+    result.unlink()
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere.git"))
+
+    manifest = run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
     )
 
     assert manifest.finished

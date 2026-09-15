@@ -523,7 +523,7 @@ def run_case(
         out_dir / "scratch" / case.case_id / label / str(rep),
         what=f"scratch {case.case_id}/{label}/{rep}",
     )
-    _clear_scratch(cache_root, case.repo, dest, git=git)
+    _clear_scratch(cache_root, case.repo, dest, git=git, env=git_env)
 
     result: RunResult | None = None
     teardown_error: str | None = None
@@ -904,7 +904,11 @@ def run_all(
             git=git,
             env=git_env,
         )
-    started = utc_now() if rerun else (_previous_string(previous, "started") or utc_now())
+    # `started` сбрасывается только когда переизмеряется **всё**: при частичном
+    # `--rerun` остаются результаты прежнего прогона, и новая дата
+    # датировала бы их позже измерения.
+    fresh_start = rerun and not leftover
+    started = utc_now() if fresh_start else (_previous_string(previous, "started") or utc_now())
 
     payload: dict[str, object] = {
         "run_id": run_id,
@@ -1033,7 +1037,15 @@ def load_results(out_dir: Path) -> list[RunResult]:
     manifest = _previous_manifest(out_dir)
     results: list[RunResult] = []
     seen: dict[tuple[str, str, int], Path] = {}
-    for path in sorted(cases_dir.glob("*/*/*/result.json")):
+    for path in sorted(cases_dir.rglob("result.json")) if cases_dir.exists() else []:
+        # Только каноническая глубина `cases/<case>/<variant>/<rep>/result.json`:
+        # вложенная копия (`…/<rep>/backup/result.json`) — необъявленный
+        # оплаченный исход, и молча пропустить его шаблон `*/*/*` как раз и позволял.
+        if len(path.relative_to(cases_dir).parts) != 4:
+            raise RunnerError(
+                f"{path}: result.json вне канонического пути "
+                f"cases/<case>/<variant>/<rep>/result.json — необъявленный результат"
+            )
         _require_result_file(out_dir, path)
         result = _result_from_file(path)
         _require_path_matches_payload(result, path, cases_dir=cases_dir)
@@ -1614,23 +1626,32 @@ def _git_stdout(
     return text or None
 
 
-def _clear_scratch(cache_root: Path, repo: str, dest: Path, *, git: str) -> None:
+def _clear_scratch(
+    cache_root: Path, repo: str, dest: Path, *, git: str, env: Mapping[str, str]
+) -> None:
     """Убрать остаток worktree по пути `dest` (после `--keep-worktrees` или обрыва).
 
     Только каталог внутри `out_dir/scratch`, который раннер сам и создаёт;
-    после удаления обязателен `worktree prune`, иначе `worktree add` упрётся в
-    прежнюю регистрацию.
+    после удаления обязателен `worktree prune` — с вычищенным окружением и с
+    проверкой кода: с унаследованным `GIT_DIR` он молча падал, регистрация
+    оставалась, и следующий `worktree add` отказывал.
     """
     if not dest.exists():
         return
     shutil.rmtree(dest)
     cache = repo_cache_dir(cache_root, repo)
-    if cache.exists():
-        subprocess.run(
-            [git, "-C", str(cache), "worktree", "prune"],
-            capture_output=True,
-            text=True,
-            check=False,
+    if not cache.exists():
+        return
+    pruned = subprocess.run(
+        [git, "-C", str(cache), "worktree", "prune"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(env),
+    )
+    if pruned.returncode != 0:
+        raise RunnerError(
+            f"{cache}: worktree prune не удался (код {pruned.returncode}): {pruned.stderr.strip()}"
         )
 
 
