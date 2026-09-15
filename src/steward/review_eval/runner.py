@@ -714,6 +714,8 @@ def run_all(
     с `finished: null`, в конце целиком: прогон, оборвавшийся на середине,
     оставляет честный манифест, а не пустой каталог.
     """
+    if not variants:
+        raise RunnerError("variants must not be empty: без варианта измерять нечего")
     if repetitions < 1:
         raise RunnerError(f"repetitions must be >= 1, got {repetitions}")
     if jobs < 1:
@@ -1200,7 +1202,11 @@ def _provenance_drift(
             f"стало: {', '.join(env_names) or '—'})"
         )
     stored_fingerprint = previous.get("provider_env_fingerprint")
-    if isinstance(stored_fingerprint, str) and stored_fingerprint != env_fingerprint:
+    if not isinstance(stored_fingerprint, str):
+        # Поля нет или оно не строка — провенанс окружения неизвестен, и
+        # «совпало» сказать нельзя: смена значения прокси прошла бы незамеченной.
+        drift.append("provider_env_fingerprint (в манифесте отсутствует — окружение неизвестно)")
+    elif stored_fingerprint != env_fingerprint:
         # Имена совпали, значения — нет: смена прокси или аккаунта, выбранного
         # несекретной переменной. Сами значения в сообщении не показываются —
         # в манифесте их нет и быть не должно.
@@ -1523,11 +1529,23 @@ def _has_cost(path: Path) -> bool:
     return isinstance(cost, (int, float)) and not isinstance(cost, bool)
 
 
+def _reject_non_json_constant(token: str) -> object:
+    """`Infinity`/`NaN` — расширение Python, не JSON: jq порога их не разбирает."""
+    raise ValueError(f"не-JSON константа {token}")
+
+
 def _read_json(path: Path) -> object:
-    """JSON из файла или ``None``, если файла нет / он не разбирается."""
+    """JSON из файла или ``None``, если файла нет / он не разбирается.
+
+    Строго JSON: литералы ``Infinity``/``NaN`` отвергаются, как их отвергает
+    jq в `apply-threshold.sh` — иначе sidecar с ``line: Infinity`` считался
+    бы схемно годным, а код 2 порога приписывался бы конфигурации.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return json.loads(
+            path.read_text(encoding="utf-8"), parse_constant=_reject_non_json_constant
+        )
+    except (OSError, ValueError, UnicodeDecodeError):
         return None
 
 

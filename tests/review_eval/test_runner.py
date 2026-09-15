@@ -43,6 +43,14 @@ REMOTE_URL = "https://example.invalid/andrei-shtanakov/steward.git"
 MISSING_SHA = "f" * 40
 
 VALID_VERDICT = json.dumps({"findings": [], "note": "ok"}, ensure_ascii=False)
+#: Sidecar с литералом `Infinity`: Python-декодер принял бы его как float('inf'),
+#: jq порога — нет (код 2). Собирается текстом: `json.dumps` такой JSON не пишет.
+INFINITY_VERDICT = (
+    '{"findings": [{"kind": "defect", "severity": "major", "confidence": "high", '
+    '"title": "t", "file": "a.py", "line": Infinity, "scenario": "s", '
+    '"observed_result": "o", "expected_result": "e", '
+    '"evidence": [{"file": "a.py", "line": 1, "reason": "r"}]}], "note": "ok"}'
+)
 
 #: Вердикт, структурно годный (`findings` — список объектов, `note` — строка),
 #: но схемно негодный: у находки нет обязательного `title`. Настоящий кит на
@@ -399,6 +407,10 @@ def test_classify_guardrail_beats_config_failure() -> None:
         # Структурно годен, схемно нет (находка без `title`) — настоящий кит
         # отказал бы кодом 2, и это ошибка **модели**, а не инструмента.
         (0, SCHEMA_INVALID_VERDICT, "", "invalid_verdict", True),
+        # `Infinity` — не JSON: jq порога такой файл не разбирает и уходит в код 2.
+        # Python-декодер по умолчанию принял бы его как float('inf') и превратил
+        # «код 2 + якобы годный sidecar» в config_failure — ошибку не модели.
+        (2, INFINITY_VERDICT, "", "invalid_verdict", True),
         (2, "", "REVIEW_PROMPT не найден", "config_failure", False),
         (3, "", "harness-claude упал", "mechanical_failure", False),
         (0, "", "", "mechanical_failure", False),
@@ -1083,6 +1095,24 @@ def test_run_all_rejects_bad_counts(tmp_path: Path, repetitions: int, jobs: int)
             cache_root=tmp_path / "cache",
             jobs=jobs,
         )
+
+
+def test_run_all_rejects_an_empty_variant_list(tmp_path: Path) -> None:
+    """Без варианта измерять нечего: пустой список — отказ, а не «успешный» прогон
+    с завершённым run.json и без единого result.json.
+    """
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    with pytest.raises(RunnerError, match="variants"):
+        run_all(
+            [],
+            [],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=tmp_path / "cache",
+        )
+    assert not (out_dir / "run.json").exists()
 
 
 def test_run_case_keeps_artefacts_when_teardown_fails(tmp_path: Path) -> None:
@@ -2425,6 +2455,34 @@ def test_run_all_resume_ignores_a_secret_value_change(tmp_path: Path) -> None:
 
     assert resumed.provider_env_names == ["ANTHROPIC_API_KEY"]
     assert _calls(counter) == 1, "готовая тройка перезапуска не требует"
+
+
+def test_run_all_refuses_resume_when_the_stored_fingerprint_is_missing(tmp_path: Path) -> None:
+    """Манифест без `provider_env_fingerprint` — провенанс окружения неизвестен:
+    доливка запрещена, иначе смена значения прокси прошла бы через старый
+    манифест незамеченной.
+    """
+    case, out_dir, cache_root, kit, counter, env_base = _env_run(
+        tmp_path, HTTPS_PROXY="http://one.invalid"
+    )
+    run_json = out_dir / "run.json"
+    manifest = json.loads(run_json.read_text(encoding="utf-8"))
+    del manifest["provider_env_fingerprint"]
+    run_json.write_text(json.dumps(manifest), encoding="utf-8")
+    before = run_json.read_bytes()
+
+    with pytest.raises(RunnerError, match="provider_env_fingerprint"):
+        run_all(
+            [case],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=2,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+        )
+
+    assert run_json.read_bytes() == before
 
 
 def test_provider_env_fingerprint_ignores_secret_values_only() -> None:
