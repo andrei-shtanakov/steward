@@ -360,8 +360,12 @@ def kit_under_test(
 
 
 def _is_executable(path: Path) -> bool:
-    """Есть ли хоть один бит исполнения (`mode & 0o111`)."""
-    return bool(path.stat().st_mode & 0o111)
+    """Может ли **текущий** пользователь исполнить файл (`os.access(X_OK)`).
+
+    `local.sh` проверяет `-x` для пользователя прогона; битовая маска
+    `mode & 0o111` врала бы на файле с одним чужим execute-битом.
+    """
+    return os.access(path, os.X_OK)
 
 
 @dataclass(frozen=True)
@@ -1356,8 +1360,11 @@ def _reset_targets(
         for variant in variants:
             label = variant_label(variant)
             for rep in range(1, repetitions + 1):
+                # `_require_run_path`, не `_require_inside`: цель удаляется, и
+                # симлинк-префикс (`cases/A -> archive`) резолвился бы внутрь
+                # `--out`, а `rmtree` уносил бы чужой каталог.
                 targets.append(
-                    _require_inside(
+                    _require_run_path(
                         out_dir,
                         out_dir / "cases" / case.case_id / label / str(rep),
                         what=f"--rerun {case.case_id}/{label}/{rep}",
@@ -1762,10 +1769,41 @@ def _require_result_file(out_dir: Path, path: Path) -> Path:
     return path
 
 
+#: Обязательные поля `run.json` и их типы: разбираемый, но неполный манифест —
+#: не манифест. Иначе проверки состава и провенанса «отключались» бы на
+#: отсутствующем поле и результаты читались бы без объявления.
+_MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
+    ("run_id", str),
+    ("kit", dict),
+    ("tools", dict),
+    ("variants", list),
+    ("corpus_digest", str),
+    ("started", str),
+    ("repetitions", int),
+    ("provider_env_names", list),
+    ("cases", list),
+)
+
+
 def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
-    """Прежний `run.json` этого каталога, если он есть и разбирается."""
-    payload = _read_json(out_dir / "run.json")
-    return payload if isinstance(payload, dict) else None
+    """Прежний `run.json` этого каталога, если он есть и разбирается.
+
+    Разбираемый объект без обязательного поля (или с полем не того типа) —
+    `RunnerError`, а не «манифеста нет»: иначе `{"finished": …}` пропускал бы
+    результаты через все проверки.
+    """
+    path = out_dir / "run.json"
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return None
+    for field, kind in _MANIFEST_REQUIRED:
+        value = payload.get(field)
+        if not isinstance(value, kind) or isinstance(value, bool):
+            raise RunnerError(
+                f"{path}: манифест повреждён — нет поля '{field}' нужного типа; "
+                "результаты без объявления не читаются (новый --out или восстановите run.json)"
+            )
+    return payload
 
 
 def _manifest_cases(previous: dict[str, object] | None) -> list[str]:

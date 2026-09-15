@@ -2352,6 +2352,53 @@ def test_load_results_refuses_a_symlinked_result(tmp_path: Path) -> None:
         load_results(out_dir)
 
 
+def test_rerun_refuses_a_symlinked_case_directory(tmp_path: Path) -> None:
+    """Цель `--rerun`, у которой на пути симлинк, — отказ **до** удаления.
+
+    Цель резолвилась внутрь `--out`, `_require_inside` её принимал, и `rmtree`
+    уходил через симлинк-префикс в чужой каталог (`out/archive/...`).
+    """
+    cases, out_dir, cache_root, kit, _counter, digest, env_base = _two_case_run(tmp_path)
+    case_dir = out_dir / "cases" / "steward-155"
+    archive = out_dir / "archive"
+    shutil.move(str(case_dir), str(archive))
+    case_dir.symlink_to(archive, target_is_directory=True)
+    keep = archive / "claude:claude-opus-5" / "1" / "important.txt"
+    keep.write_text("не трогать", encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        run_all(
+            [cases[0]],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=digest,
+            rerun=True,
+        )
+
+    assert keep.exists()
+
+
+@pytest.mark.parametrize("field", ["cases", "variants", "repetitions", "kit", "corpus_digest"])
+def test_load_results_refuses_a_structurally_incomplete_manifest(
+    tmp_path: Path, field: str
+) -> None:
+    """Разбираемый, но неполный `run.json` — не манифест: проверки состава и
+    провенанса не «отключаются», а отказывают.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    del payload[field]
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match=f"манифест.*{field}"):
+        load_results(out_dir)
+
+
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
     """`finished: null` — прогон не завершён, даже если все `result.json` на месте.
 
@@ -2781,6 +2828,12 @@ def test_kit_under_test_refuses_a_non_executable_harness_for_claude(tmp_path: Pa
     root = _make_kit_tree(tmp_path)
     (root / "scripts" / "review" / "harness-claude").chmod(0o644)
 
+    with pytest.raises(RunnerError, match="harness-claude не исполняем"):
+        kit_under_test(root, harnesses=["claude"])
+
+    # Чужой execute-бит без своего: `local.sh` проверяет `-x` **для текущего
+    # пользователя**, и битовая маска здесь врала бы.
+    (root / "scripts" / "review" / "harness-claude").chmod(0o644 | 0o001)
     with pytest.raises(RunnerError, match="harness-claude не исполняем"):
         kit_under_test(root, harnesses=["claude"])
 
