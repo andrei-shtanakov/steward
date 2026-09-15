@@ -1009,11 +1009,22 @@ def _provenance_drift(
     имён provider-переменных и **версии инструментов** (`tools`). `jobs` и
     `repetitions` не сравниваются: это объём работы, а не её объект.
 
-    `tools` попали сюда не как «обстоятельство»: версия `claude`/`codex` — это
-    и есть измеряемый ревьюер снаружи кита, а версия `git` определяет диф.
-    Доливка после обновления CLI давала половину результатов от прежней версии
-    под манифестом от новой. Обновили инструмент — новый `--out` либо полный
-    `--rerun`.
+    Из `tools` сверяются **только клиенты, которыми пользуются варианты
+    прогона** (`_used_clients`): харнесс `codex` → версия `codex`, харнесс
+    `claude` → версия `claude`. Они и есть измеряемый ревьюер снаружи кита, и
+    доливка после их обновления давала половину результатов от прежней версии
+    под манифестом от новой. Обновили используемый клиент — новый `--out` либо
+    полный `--rerun`.
+
+    `git` и неиспользуемые клиенты пишутся в `run.json` для протокола, но в
+    сверку не входят: диапазон задаёт раннер по `base_sha`/`head_sha`, материал
+    берётся из bare-кэша, а появление на машине клиента, которым прогон не
+    пользуется, к измеренному отношения не имеет. Прежде сверялись все три, и
+    обновление системы стоило оператору всего прогона.
+
+    Переход используемого клиента между `unavailable` и настоящей версией —
+    дрейф наравне с обновлением: прогон, где ревьюер записан недоступным, и
+    прогон, где он есть, — разные измерения.
 
     Набор кейсов сравнивается на **вхождение**, а не на равенство: выборка
     внутри списка манифеста законна (`--cases <подмножество>` — штатный
@@ -1043,7 +1054,7 @@ def _provenance_drift(
             drift.append(f"kit.{key}")
     stored_tools = previous.get("tools")
     stored_tools = stored_tools if isinstance(stored_tools, Mapping) else {}
-    for name in sorted(set(tools) | set(stored_tools)):
+    for name in sorted(_used_clients(previous.get("variants"), variants)):
         was, now = stored_tools.get(name), tools.get(name)
         if was != now:
             drift.append(f"tools.{name} (было: {was}; стало: {now})")
@@ -1070,6 +1081,28 @@ def _provenance_drift(
             f"стало: {', '.join(env_names) or '—'})"
         )
     return drift
+
+
+def _used_clients(
+    stored_variants: object, variants: Sequence[Mapping[str, str | None]]
+) -> set[str]:
+    """Имена CLI, которыми пользуются варианты прогона (по их харнессам).
+
+    Берётся **объединение** записанных и запрошенных вариантов: если набор
+    вариантов сам разошёлся, это отдельный пункт дрейфа, и прятать за ним
+    смену версии клиента было бы неверно.
+    """
+    used: set[str] = set()
+    records: list[object] = list(variants)
+    if isinstance(stored_variants, list):
+        records.extend(stored_variants)
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        harness = record.get("harness")
+        if isinstance(harness, str) and harness in HARNESSES:
+            used.add(harness)
+    return used
 
 
 def _reset_targets(

@@ -2103,18 +2103,16 @@ def test_load_results_refuses_a_duplicate_of_a_result(tmp_path: Path) -> None:
 
 
 def test_run_all_refuses_resume_when_a_tool_version_changed(tmp_path: Path) -> None:
-    """Версия инструмента — часть провенанса: доливка после обновления запрещена.
+    """Версия **используемого** CLI — часть провенанса: доливка после обновления запрещена.
 
-    `run.json` называет версии `claude`/`codex`/`git` — одну на прогон. Прежде
-    они не сравнивались («обстоятельство прогона»), и половина результатов
-    оказывалась от прежней версии CLI, а манифест — от новой.
+    `run.json` называет версии `claude`/`codex`/`git`, но сверяются только те
+    клиенты, которыми пользуются варианты прогона: они и есть измеряемый
+    ревьюер снаружи кита. Прежде не сверялся никто, и половина результатов
+    оказывалась от прежней версии CLI под манифестом от новой.
     """
     resume = _resume_fixture(tmp_path)
     run_json = resume.out_dir / "run.json"
-    payload = json.loads(run_json.read_text(encoding="utf-8"))
-    payload["tools"]["claude"] = "claude 0.0.1-ancient"
-    run_json.write_text(json.dumps(payload), encoding="utf-8")
-    before = run_json.read_bytes()
+    before = _retool(resume.out_dir, "claude", "claude 0.0.1-ancient")
 
     with pytest.raises(RunnerError, match="tools.claude") as excinfo:
         resume.again()
@@ -2122,6 +2120,65 @@ def test_run_all_refuses_resume_when_a_tool_version_changed(tmp_path: Path) -> N
     assert "0.0.1-ancient" in str(excinfo.value)
     assert run_json.read_bytes() == before
     assert resume.calls() == 1
+
+
+def _retool(out_dir: Path, name: str, version: str) -> bytes:
+    """Подменить в `run.json` записанную версию инструмента; вернуть новые байты."""
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["tools"][name] = version
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+    return run_json.read_bytes()
+
+
+def test_run_all_resume_ignores_a_git_version_change(tmp_path: Path) -> None:
+    """Версия `git` записана для протокола, но доливку не ломает.
+
+    Ревьюера она не выбирает: диапазон задаёт раннер по `base_sha`/`head_sha`,
+    а материал берётся из bare-кэша. Обновление системы не должно стоить
+    оператору всего прогона.
+    """
+    resume = _resume_fixture(tmp_path)
+    _retool(resume.out_dir, "git", "git version 0.0.1-ancient")
+
+    resumed = resume.again()
+
+    assert resumed.run_id
+    assert resume.calls() == 1, "готовая тройка перезапуска не требует"
+
+
+def test_run_all_resume_ignores_an_unused_client(tmp_path: Path) -> None:
+    """Клиент, которым варианты прогона не пользуются, из сверки исключён.
+
+    Прогон идёт вариантом `claude:*`, поэтому появление или обновление `codex`
+    на машине к измеренному отношения не имеет.
+    """
+    resume = _resume_fixture(tmp_path)
+    assert [v.harness for v in resume.variants] == ["claude"]
+    _retool(resume.out_dir, "codex", "codex 9.9.9-installed-later")
+
+    resumed = resume.again()
+
+    assert resumed.run_id
+    assert resume.calls() == 1
+
+
+def test_run_all_refuses_resume_when_an_unavailable_used_client_appears(
+    tmp_path: Path,
+) -> None:
+    """`unavailable` → настоящая версия у **используемого** клиента — тоже дрейф.
+
+    Прогон, где ревьюер записан как недоступный, и прогон, где он есть, —
+    разные измерения, даже если запись выглядит «просто уточнением».
+    """
+    resume = _resume_fixture(tmp_path)
+    before = _retool(resume.out_dir, "claude", "unavailable")
+
+    with pytest.raises(RunnerError, match="tools.claude") as excinfo:
+        resume.again()
+
+    assert "unavailable" in str(excinfo.value)
+    assert (resume.out_dir / "run.json").read_bytes() == before
 
 
 def test_load_results_empty_run_dir(tmp_path: Path) -> None:
