@@ -411,7 +411,7 @@ Steps: тесты (валидный кейс из фикстуры YAML; каж�
 
 ```python
 class CacheError(Exception)
-def repo_cache_dir(cache_root: Path, repo: str) -> Path          # <root>/<owner>__<name>.git
+def repo_cache_dir(cache_root: Path, repo: str) -> Path          # <root>/<owner>/<name>.git
 def materialize(cache_root: Path, repo: str, shas: Iterable[str], *, local_checkout: Path | None, remote_url: str, git: str = "git") -> None
 def has_object(cache_root: Path, repo: str, sha: str, *, git: str = "git") -> bool
 @contextmanager
