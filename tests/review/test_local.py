@@ -2134,6 +2134,57 @@ def test_usage_out_directory_is_config_error_on_codex_path(tmp_path: Path) -> No
     assert "каталог" in res.stderr
 
 
+def test_usage_out_stale_file_removed_on_early_guardrail_exit(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): инвалидация адаптера
+    срабатывает, только если адаптер вообще запускается — build-prompt.sh
+    может завершить прогон раньше (здесь — потолок дифа, код 2), и без
+    собственной инвалидации local.sh прежний usage.json пережил бы этот ранний
+    отказ. eval приписал бы устаревшую стоимость сбою конфигурации, а не
+    реальному прогону."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "usage.json"
+    out.write_text('{"stale": true}', encoding="utf-8")
+    res = run_local_env(repo, "--max-diff-bytes", "1", env={"REVIEW_USAGE_OUT": str(out)})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "диф больше поддерживаемого" in res.stderr
+    assert not out.exists()
+
+
+def test_verdict_out_path_with_apostrophe_keeps_trap_working(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (minor): апостроф в пути
+    REVIEW_VERDICT_OUT ломал старую форму `trap "rm -rf '$work'; rm -f
+    '$verdict_tmp'" EXIT` — интерполяция текстом внутрь одинарных кавычек, и
+    апостроф из самого пути обрывал закрывающую кавычку раньше срока. Тело
+    trap'а теперь в одинарных кавычках целиком, переменные разворачиваются
+    при СРАБАТЫВАНИИ, не при регистрации — путь с апострофом больше не может
+    исказить сам текст команды."""
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp, "mktemp не найден — стенд не может подменить его осмысленно"
+
+    repo = make_repo_with_diff(tmp_path)
+    work_parent = tmp_path / "work-parent"
+    work_parent.mkdir()
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    shim = stub_bin / "mktemp"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "-d" ]; then exec {real_mktemp} -d "{work_parent}/tmp.XXXXXX"; fi\n'
+        f'exec {real_mktemp} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+
+    out = tmp_path / "O'Connor" / "verdict.json"
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    env["REVIEW_VERDICT_OUT"] = str(out)
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert json.loads(out.read_text(encoding="utf-8")) == {"findings": [], "note": "stub"}
+    assert list(work_parent.glob("tmp.*")) == []  # рабочий каталог убран trap'ом
+
+
 def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
     repo = make_repo_with_diff(tmp_path)
     assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})

@@ -72,8 +72,8 @@ fi
     echo "REVIEW_VERDICT_OUT: не удалить прежний файл $REVIEW_VERDICT_OUT" >&2
     exit 2
 }
-# REVIEW_USAGE_OUT сам по себе — вотчина адаптера harness-claude (он его
-# создаёт, инвалидирует и пишет), но местный прогон обязан отказывать на тех
+# REVIEW_USAGE_OUT содержательно пишет и заново инвалидирует при каждом своём
+# запуске адаптер harness-claude, но местный прогон обязан отказывать на тех
 # же условиях, что обещаны в README (пустое значение и каталог — код 2), а не
 # молча уходить в codex-путь, где переменная вообще не проверяется.
 if [ -n "${REVIEW_USAGE_OUT+x}" ] && [ -z "$REVIEW_USAGE_OUT" ]; then
@@ -82,6 +82,16 @@ if [ -n "${REVIEW_USAGE_OUT+x}" ] && [ -z "$REVIEW_USAGE_OUT" ]; then
 fi
 [ ! -d "${REVIEW_USAGE_OUT:-}" ] || {
     echo "REVIEW_USAGE_OUT: путь — каталог, а не файл: $REVIEW_USAGE_OUT" >&2
+    exit 2
+}
+# Инвалидация — ДО любой операции, способной завершить прогон раньше
+# адаптера (потолок дифа build-prompt.sh, отказ манифеста контекста и т.п.):
+# адаптер повторяет ту же инвалидацию для собственных прямых вызовов, но его
+# инвалидация не срабатывает, если он вообще не запускается. Без этой
+# страховки прежний usage.json пережил бы ранний отказ гардрейла, и eval
+# приписал бы устаревшую стоимость сбою конфигурации, а не реальному прогону.
+[ -z "${REVIEW_USAGE_OUT:-}" ] || rm -f "$REVIEW_USAGE_OUT" || {
+    echo "REVIEW_USAGE_OUT: не удалить прежний файл $REVIEW_USAGE_OUT" >&2
     exit 2
 }
 if [ -n "${REVIEW_CMD:-}" ]; then
@@ -479,8 +489,17 @@ info "голова:   $(git rev-parse --short "$head_sha")"
 info "диапазон: ${mb}..${head_sha}"
 
 work=$(mktemp -d)
-# shellcheck disable=SC2064
-trap "rm -rf '$work'" EXIT
+# verdict_tmp объявлен здесь и ПУСТ, пока REVIEW_VERDICT_OUT не запрошен
+# (заполняется ниже, в копирующем блоке) — единственная регистрация EXIT
+# trap'а живёт тут же, а не переопределяется там, где verdict_tmp
+# появляется. Тело trap'а — В ОДИНАРНЫХ кавычках: переменные разворачиваются
+# в момент СРАБАТЫВАНИЯ, а не в момент регистрации. Прежняя форма
+# (`trap "rm -rf '$work'; rm -f '$verdict_tmp'" EXIT`, интерполяция путей
+# внутрь одинарных кавычек текстом) ломалась на апостроф в самом пути —
+# закрывающая кавычка обрывалась раньше срока (находка гейта на этой ветке,
+# `REVIEW_VERDICT_OUT` под каталогом вида `O'Connor/`).
+verdict_tmp=""
+trap 'rm -rf "$work"; [ -z "$verdict_tmp" ] || rm -f "$verdict_tmp"' EXIT
 
 git diff "$mb..$head_sha" > "$work/diff.patch"
 if [ ! -s "$work/diff.patch" ]; then
@@ -809,8 +828,9 @@ if [ -n "${REVIEW_VERDICT_OUT:-}" ]; then
     mkdir -p "$verdict_out_dir" || { echo "REVIEW_VERDICT_OUT: не создать каталог $verdict_out_dir" >&2; exit 2; }
     verdict_tmp=$(mktemp "$verdict_out_dir/.verdict.XXXXXX") \
         || { echo "REVIEW_VERDICT_OUT: не создать временный файл в $verdict_out_dir" >&2; exit 2; }
-    # shellcheck disable=SC2064
-    trap "rm -rf '$work'; rm -f '$verdict_tmp'" EXIT
+    # Trap уже зарегистрирован (см. work=$(mktemp -d) выше) и читает
+    # verdict_tmp по имени при срабатывании — присваивание здесь достаточно,
+    # повторная регистрация не нужна и не переживает апостроф в пути.
     if ! cp "$work/verdict.json" "$verdict_tmp" || ! mv "$verdict_tmp" "$REVIEW_VERDICT_OUT"; then
         rm -f "$verdict_tmp"
         echo "REVIEW_VERDICT_OUT: не удалось сохранить вердикт в $REVIEW_VERDICT_OUT" >&2
