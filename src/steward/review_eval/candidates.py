@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +46,7 @@ __all__ = [
     "keywords_from_title",
     "parse_findings",
     "render_case",
+    "resolve_review_base",
     "review_head",
 ]
 
@@ -306,12 +307,93 @@ def review_head(body: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def resolve_review_base(
+    repo: str,
+    pr_meta: Mapping[str, Any],
+    head_sha: str,
+    api: Callable[[str], Any] | None = None,
+    *,
+    gh: str = "gh",
+) -> str:
+    """`base_sha` кейса — **merge-base диапазона ревью**, а не голова базы (§5).
+
+    Прежде черновик копировал `pr_meta.base.sha`, тогда как `head_sha` брался
+    из исторического маркера. После мержа PR это расходится необратимо: голова
+    базы C уже содержит сам PR, то есть может быть **потомком** H. `local.sh`
+    считает диапазон как merge-base(C, H) = H, и кейс получался с пустым
+    диапазоном — нечего измерять, а на вид кейс нормальный.
+
+    Как считается:
+
+    1. **кандидат** — первый родитель `merge_commit_sha`, если PR смержен
+       (``GET repos/{repo}/commits/{merge_commit_sha}`` → ``parents[0].sha``).
+       И у squash-, и у merge-коммита нулевой родитель — голова базы **на
+       момент мержа**, то есть то, от чего ревью и считалось. Без
+       `merge_commit_sha` (PR открыт) кандидат — `base.sha`;
+    2. **база** — ``GET repos/{repo}/compare/{кандидат}...{head_sha}`` →
+       ``merge_base_commit.sha``. Считает merge-base сам GitHub: локального
+       клона на этой фазе нет.
+
+    Пустой диапазон (`merge_base == head_sha`, либо compare говорит
+    ``identical``/``behind``) — `CandidatesError`: база не восстановлена, и
+    выдать вместо неё что-нибудь значило бы записать в корпус кейс, который
+    измеряет не то.
+
+    `api` — вызываемое «путь → разобранный JSON»; по умолчанию собирается из
+    `gh` (та же инъекция, что у `fetch_*`), в тестах подставляется фейк.
+    """
+    fetch = api if api is not None else _gh_api(gh, repo)
+    candidate = _base_candidate(repo, pr_meta, fetch)
+    path = f"repos/{repo}/compare/{candidate}...{head_sha}"
+    compare = fetch(path)
+    if not isinstance(compare, Mapping):
+        raise CandidatesError(f"{repo}: ответ {path} не объект JSON")
+    merge_base = _dig(compare, "merge_base_commit", "sha")
+    if not isinstance(merge_base, str) or not merge_base:
+        raise CandidatesError(f"{repo}: в ответе {path} нет merge_base_commit.sha")
+    status = compare.get("status")
+    if merge_base == head_sha or status in ("identical", "behind"):
+        raise CandidatesError(
+            f"диапазон ревью пуст: merge-base({candidate[:12]}, {head_sha[:12]}) == head "
+            f"— базу не восстановить, кейс не создаётся"
+        )
+    return _require_sha(merge_base, f"{repo}: merge_base_commit.sha")
+
+
+def _base_candidate(repo: str, pr_meta: Mapping[str, Any], fetch: Callable[[str], Any]) -> str:
+    """Голова базы на момент ревью: родитель 0 коммита мержа либо `base.sha`."""
+    merge_commit = pr_meta.get("merge_commit_sha")
+    if not isinstance(merge_commit, str) or not merge_commit:
+        return _require_sha(_dig(pr_meta, "base", "sha"), f"{repo}: base.sha")
+    path = f"repos/{repo}/commits/{merge_commit}"
+    commit = fetch(path)
+    parents = commit.get("parents") if isinstance(commit, Mapping) else None
+    if not isinstance(parents, list) or not parents:
+        raise CandidatesError(
+            f"{repo}: у коммита мержа {merge_commit[:12]} нет parents в ответе {path} "
+            f"— голову базы на момент мержа не восстановить"
+        )
+    first = parents[0]
+    sha = first.get("sha") if isinstance(first, Mapping) else None
+    return _require_sha(sha, f"{repo}: parents[0].sha коммита мержа {merge_commit[:12]}")
+
+
+def _gh_api(gh: str, repo: str) -> Callable[[str], Any]:
+    """Умолчательный `api` для `resolve_review_base`: тот же `gh api`, что у `fetch_*`."""
+
+    def api(path: str) -> Any:
+        return _gh_json(gh, path, what=f"{repo}: {path}")
+
+    return api
+
+
 def draft_case(
     repo: str,
     pr: int,
     pr_meta: Mapping[str, Any],
     reviews: Sequence[Mapping[str, Any]],
     *,
+    base_sha: str,
     commits_after: Sequence[str],
 ) -> dict[str, Any]:
     """Черновик кейса `review-eval-case/v1` из PR и его ревью (§5).
@@ -323,7 +405,16 @@ def draft_case(
 
     `head_sha` — из маркера последнего ревью (он называет ровно то дерево,
     которое ревьюер видел), с фолбэком на `head.sha` PR; `head.sha` требуется
-    только при отсутствии маркера, `base.sha` — всегда. `class` — `defective`,
+    только при отсутствии маркера.
+
+    `base_sha` **передаёт вызывающий** уже разрешённым — это merge-base
+    диапазона ревью (`resolve_review_base`), и считать его здесь нельзя:
+    нужен запрос к API, а `draft_case` — чистая функция. Читать
+    `pr_meta.base.sha` (как было) неверно после мержа: голова базы содержит сам
+    PR и может быть потомком `head_sha`, и диапазон кейса выходил пустым.
+    `pr_meta` остаётся ради фолбэка `head.sha` и `merge_commit_sha` в `notes`.
+
+    `class` — `defective`,
     если среди находок есть `blocker`/`major`, иначе `clean`; minor-находки всё
     равно попадают в `defects` со своей severity: предсказание на gold-minor —
     это FP, и без записи в кейсе оно выглядело бы неразмеченным.
@@ -351,7 +442,7 @@ def draft_case(
     _require_kit_format(body, parsed)
     skipped = [f for f in parsed if f.severity == SKIPPED_SEVERITY]
     findings = [f for f in parsed if f.severity != SKIPPED_SEVERITY]
-    base_sha = _require_sha(_dig(pr_meta, "base", "sha"), f"{repo}#{pr}: base.sha")
+    base_sha = _require_sha(base_sha, f"{repo}#{pr}: base_sha")
     # Маркер спрашивается раньше fallback: он называет ровно то дерево, которое
     # видел ревьюер, и `head.sha` PR нужен только там, где маркера нет. Иначе
     # PR без `head.sha` в ответе API отказывал бы даже при готовом ответе в теле.
@@ -649,6 +740,13 @@ def _parse_evidence(text: str) -> tuple[Evidence, ...]:
     записями или после последней), — `CandidatesError`: то же правило, что для
     заголовка находки (раунд 13). Молчаливая потеря доказательства дороже
     отказа: черновик выглядел бы полным.
+
+    **Принятый предел.** Текст, выглядящий как адрес, внутри одного `reason`
+    неотличим от двух записей: ``причина; `a.py:7` — ещё причина`` — это одна
+    запись с адресом в тексте или две записи, и разделить их нечем, потому что
+    разделитель записей и допустимый текст причины — одни и те же символы.
+    Закрывается на стороне кита (экранирование или структура вместо строки в
+    рендере `apply-threshold.sh`), не здесь.
     """
     stripped = text.strip()
     if not stripped or stripped == _EVIDENCE_NONE:

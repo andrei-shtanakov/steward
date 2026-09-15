@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -25,6 +27,7 @@ from steward.review_eval.candidates import (
     keywords_from_title,
     parse_findings,
     render_case,
+    resolve_review_base,
     review_head,
 )
 from steward.review_eval.corpus import append_registry, load_case
@@ -63,6 +66,24 @@ _Порог: красным делают только `blocker`/`major` с `conf
 
 <!-- codex-terminal-review head={HEAD} fp={FP} -->
 """
+
+#: Коммит мержа PR из `PR_META` и его первый родитель — голова базы **на
+#: момент мержа**. `merge-base` диапазона ревью — ещё раньше.
+MERGE_COMMIT = "a2d7e719564d414fbf04684f5bd7802013a4f681"
+BASE_TIP = "c" * 40
+MERGE_BASE = "f" * 40
+
+
+def _fake_api(responses: dict[str, Any]) -> Callable[[str], Any]:
+    """Фейковый `api`: путь → готовый ответ; неожидаемый путь — провал теста."""
+
+    def api(path: str) -> Any:
+        if path not in responses:
+            raise AssertionError(f"неожидаемый путь api: {path}")
+        return responses[path]
+
+    return api
+
 
 #: Шапка формата кита: подпись доверенного рендера (`apply-threshold.sh`).
 #: Без неё `draft_case` тело не признаёт, поэтому фикстуры её несут.
@@ -210,7 +231,9 @@ def test_draft_case_keeps_the_other_findings_when_a_title_is_empty() -> None:
     )
     reviews = [{**REVIEWS[0], "body": body}]
 
-    draft = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    draft = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
     assert [d["file"] for d in draft["defects"]] == ["b.py", "a.py"]
     assert draft["defects"][1]["match"]["keywords_any"]
 
@@ -224,7 +247,9 @@ def test_draft_case_refuses_a_body_with_an_unparsed_finding() -> None:
     reviews = [{**REVIEWS[0], "body": body}]
 
     with pytest.raises(CandidatesError, match="не разобран заголовок находки"):
-        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+        draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+        )
 
 
 @pytest.mark.parametrize("path_text", [" ", "  ", "\t"], ids=["space", "spaces", "tab"])
@@ -384,7 +409,9 @@ def test_draft_case_refuses_an_ambiguous_marker(tmp_path: Path) -> None:
     reviews = [{**REVIEWS[0], "body": body}]
 
     with pytest.raises(CandidatesError, match="несколько маркеров head"):
-        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+        draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -435,11 +462,21 @@ def test_keywords_fall_back_to_the_path_when_no_text_has_words() -> None:
 
 
 def test_draft_case_matches_the_expected_structure() -> None:
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+    """Структура черновика; `base_sha` — то, что передал вызывающий.
+
+    Прежде `draft_case` копировал `pr_meta.base.sha` — **текущую** голову базы,
+    а не базу диапазона ревью. Теперь база приходит уже разрешённой
+    (`resolve_review_base`), и тест это и закрепляет: в кейс попадает
+    переданный merge-base, а не голова базы из `pr_meta`.
+    """
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=MERGE_BASE, commits_after=[]
+    )
 
     assert case["schema"] == "review-eval-case/v1"
     assert case["case_id"] == "andrei-shtanakov.steward-155"
-    assert case["base_sha"] == BASE
+    assert case["base_sha"] == MERGE_BASE
+    assert case["base_sha"] != PR_META["base"]["sha"]
     assert case["head_sha"] == HEAD
     assert case["class"] == "defective"  # есть major
     assert case["expected_outcome"] == "verdict"
@@ -481,12 +518,16 @@ def test_draft_case_matches_the_expected_structure() -> None:
 
 
 def test_draft_case_records_candidate_status_in_notes_not_in_a_new_key() -> None:
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=["a" * 40])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=BASE, commits_after=["a" * 40]
+    )
     assert "candidate_status" not in case
     assert "likely_tp" in case["notes"]
     assert "a" * 12 in case["notes"]
 
-    quiet = draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+    quiet = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=BASE, commits_after=[]
+    )
     assert "unknown" in quiet["notes"]
     assert "likely_tp" not in quiet["notes"]
 
@@ -494,7 +535,9 @@ def test_draft_case_records_candidate_status_in_notes_not_in_a_new_key() -> None
 def test_draft_case_without_blocking_findings_is_clean() -> None:
     body = BODY.replace("### [major]", "### [minor]")
     reviews = [{**REVIEWS[0], "body": body}]
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
     assert case["class"] == "clean"
     assert [d["severity"] for d in case["defects"]] == ["minor", "minor"]
 
@@ -516,7 +559,9 @@ def test_draft_case_uses_the_last_ai_prosto_review_and_its_marker() -> None:
             ),
         },
     ]
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
     assert case["head_sha"] == later_head
     assert [d["id"] for d in case["defects"]] == ["D-andrei-shtanakov.steward-155-1"]
     assert "Ревью ai-prosto на PR: 2" in case["notes"]
@@ -525,7 +570,9 @@ def test_draft_case_uses_the_last_ai_prosto_review_and_its_marker() -> None:
 def test_draft_case_falls_back_to_pr_head_when_the_marker_is_absent() -> None:
     body = f"{KIT_HEADER}\n\n### [minor] t — `a.py:1`\n- Сценарий: s\n"
     reviews = [{**REVIEWS[0], "body": body}]
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
     assert case["head_sha"] == HEAD
     assert "из head.sha PR (маркера нет)" in case["notes"]
 
@@ -542,7 +589,9 @@ def test_draft_case_refuses_a_body_it_does_not_recognise() -> None:
     reviews = [{**REVIEWS[0], "body": "Проза ревьюера без находок и без шапки кита.\n"}]
 
     with pytest.raises(CandidatesError, match="тело ревью не распознано"):
-        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+        draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+        )
 
 
 def test_draft_case_accepts_an_empty_verdict_with_the_kit_header() -> None:
@@ -550,7 +599,9 @@ def test_draft_case_accepts_an_empty_verdict_with_the_kit_header() -> None:
     body = f"{KIT_HEADER}\n\nНаходок нет.\n\n<!-- codex-terminal-review head={HEAD} -->\n"
     reviews = [{**REVIEWS[0], "body": body}]
 
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
 
     assert case["class"] == "clean"
     assert case["defects"] == []
@@ -569,12 +620,16 @@ def test_draft_case_refuses_findings_without_the_kit_header() -> None:
     reviews = [{**REVIEWS[0], "body": body}]
 
     with pytest.raises(CandidatesError, match="тело ревью не распознано"):
-        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+        draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+        )
 
 
 def test_draft_case_refuses_a_pr_without_an_ai_prosto_review() -> None:
     with pytest.raises(CandidatesError, match="нет ревью"):
-        draft_case("andrei-shtanakov/steward", 155, PR_META, [REVIEWS[1]], commits_after=[])
+        draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, [REVIEWS[1]], base_sha=BASE, commits_after=[]
+        )
 
 
 def test_draft_case_skips_nit_findings_and_says_so_in_notes() -> None:
@@ -596,7 +651,9 @@ def test_draft_case_skips_nit_findings_and_says_so_in_notes() -> None:
     )
     reviews = [{**REVIEWS[0], "body": body}]
 
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
 
     assert [d["id"] for d in case["defects"]] == ["D-andrei-shtanakov.steward-155-1"]
     assert [d["severity"] for d in case["defects"]] == ["major"]
@@ -614,7 +671,9 @@ def test_draft_case_with_only_nit_findings_is_clean_and_empty() -> None:
     )
     reviews = [{**REVIEWS[0], "body": body}]
 
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
 
     assert case["defects"] == []
     assert case["class"] == "clean"
@@ -625,7 +684,9 @@ def test_draft_case_refuses_an_unknown_severity_instead_of_downgrading() -> None
     body = f"{KIT_HEADER}\n\n### [critical] t — `a.py:1`\n- Сценарий: s\n"
     reviews = [{**REVIEWS[0], "body": body}]
     with pytest.raises(CandidatesError, match="вне набора корпуса"):
-        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+        draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+        )
 
 
 def test_draft_case_uses_the_marker_when_pr_meta_has_no_head() -> None:
@@ -640,6 +701,7 @@ def test_draft_case_uses_the_marker_when_pr_meta_has_no_head() -> None:
         155,
         {"base": {"sha": BASE}, "merge_commit_sha": None},
         REVIEWS,
+        base_sha=BASE,
         commits_after=[],
     )
 
@@ -654,15 +716,119 @@ def test_draft_case_refuses_a_body_without_a_marker_and_without_head_sha() -> No
 
     with pytest.raises(CandidatesError, match="head.sha"):
         draft_case(
-            "andrei-shtanakov/steward", 155, {"base": {"sha": BASE}}, reviews, commits_after=[]
+            "andrei-shtanakov/steward",
+            155,
+            {"base": {"sha": BASE}},
+            reviews,
+            base_sha=BASE,
+            commits_after=[],
         )
 
 
-def test_draft_case_refuses_a_pr_meta_without_shas() -> None:
+# ---------------------------------------------------------------------------
+# resolve_review_base
+# ---------------------------------------------------------------------------
+
+REPO = "andrei-shtanakov/steward"
+
+
+def test_resolve_review_base_uses_the_merge_commit_first_parent() -> None:
+    """У смерженного PR база диапазона считается от первого родителя мержа.
+
+    После мержа `pr_meta.base.sha` — **текущая** голова базы, и она может быть
+    потомком `head_sha` ревью. Тогда `local.sh` посчитал бы
+    merge-base(C, H) == H и диапазон вышел бы пустым: кейс, который нечего
+    измерять. Первый родитель коммита мержа — голова базы **на момент мержа**
+    (и у squash, и у merge-коммита), от неё merge-base и осмысленна.
+    """
+    api = _fake_api(
+        {
+            f"repos/{REPO}/commits/{MERGE_COMMIT}": {"parents": [{"sha": BASE_TIP}, {"sha": HEAD}]},
+            f"repos/{REPO}/compare/{BASE_TIP}...{HEAD}": {
+                "status": "diverged",
+                "merge_base_commit": {"sha": MERGE_BASE},
+            },
+        }
+    )
+
+    assert resolve_review_base(REPO, PR_META, HEAD, api) == MERGE_BASE
+
+
+def test_resolve_review_base_falls_back_to_base_sha_when_not_merged() -> None:
+    """Открытый PR: `merge_commit_sha` нет, кандидат — `base.sha`."""
+    pr_meta = {"base": {"sha": BASE}, "head": {"sha": HEAD}, "merge_commit_sha": None}
+    api = _fake_api(
+        {
+            f"repos/{REPO}/compare/{BASE}...{HEAD}": {
+                "status": "ahead",
+                "merge_base_commit": {"sha": MERGE_BASE},
+            }
+        }
+    )
+
+    assert resolve_review_base(REPO, pr_meta, HEAD, api) == MERGE_BASE
+
+
+@pytest.mark.parametrize("status", ["identical", "behind"], ids=["identical", "behind"])
+def test_resolve_review_base_refuses_an_empty_range(status: str) -> None:
+    """merge-base == head — диапазон пуст, и восстанавливать нечего."""
+    pr_meta = {"base": {"sha": BASE}, "merge_commit_sha": None}
+    api = _fake_api(
+        {
+            f"repos/{REPO}/compare/{BASE}...{HEAD}": {
+                "status": status,
+                "merge_base_commit": {"sha": HEAD},
+            }
+        }
+    )
+
+    with pytest.raises(CandidatesError, match="диапазон ревью пуст"):
+        resolve_review_base(REPO, pr_meta, HEAD, api)
+
+
+def test_resolve_review_base_refuses_a_merge_commit_without_parents() -> None:
+    """Ответ без `parents` — базу не восстановить, и молчать об этом нельзя."""
+    api = _fake_api({f"repos/{REPO}/commits/{MERGE_COMMIT}": {"sha": MERGE_COMMIT}})
+
+    with pytest.raises(CandidatesError, match="parents"):
+        resolve_review_base(REPO, PR_META, HEAD, api)
+
+
+def test_resolve_review_base_refuses_a_compare_without_merge_base() -> None:
+    """Ответ compare без `merge_base_commit.sha` — тоже отказ, а не догадка."""
+    pr_meta = {"base": {"sha": BASE}, "merge_commit_sha": None}
+    api = _fake_api({f"repos/{REPO}/compare/{BASE}...{HEAD}": {"status": "diverged"}})
+
+    with pytest.raises(CandidatesError, match="merge_base_commit"):
+        resolve_review_base(REPO, pr_meta, HEAD, api)
+
+
+def test_resolve_review_base_refuses_a_pr_meta_without_a_base() -> None:
+    """Ни `merge_commit_sha`, ни `base.sha` — кандидата нет."""
+    api = _fake_api({})
+
     with pytest.raises(CandidatesError, match="base.sha"):
-        draft_case(
-            "andrei-shtanakov/steward", 155, {"head": {"sha": HEAD}}, REVIEWS, commits_after=[]
-        )
+        resolve_review_base(REPO, {"head": {"sha": HEAD}}, HEAD, api)
+
+
+def test_resolved_base_reaches_the_draft(tmp_path: Path) -> None:
+    """Сквозная связка: разрешённая база попадает в кейс и проходит валидацию."""
+    api = _fake_api(
+        {
+            f"repos/{REPO}/commits/{MERGE_COMMIT}": {"parents": [{"sha": BASE_TIP}, {"sha": HEAD}]},
+            f"repos/{REPO}/compare/{BASE_TIP}...{HEAD}": {
+                "status": "diverged",
+                "merge_base_commit": {"sha": MERGE_BASE},
+            },
+        }
+    )
+    base_sha = resolve_review_base(REPO, PR_META, HEAD, api)
+
+    case = draft_case(REPO, 155, PR_META, REVIEWS, base_sha=base_sha, commits_after=[])
+
+    path = tmp_path / "steward-155.yaml"
+    path.write_text(render_case(case), encoding="utf-8")
+    assert load_case(path).base_sha == MERGE_BASE
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +837,9 @@ def test_draft_case_refuses_a_pr_meta_without_shas() -> None:
 
 
 def test_rendered_draft_loads_back_as_a_valid_case(tmp_path: Path) -> None:
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=BASE, commits_after=[]
+    )
     text = render_case(case)
     assert "annotation:" in text
     assert text.index("case_id") < text.index("base_sha")  # порядок ключей схемы
@@ -694,7 +862,9 @@ def test_rendered_draft_loads_back_as_a_valid_case(tmp_path: Path) -> None:
     again = tmp_path / "again.yaml"
     again.write_text(
         render_case(
-            draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+            draft_case(
+                "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=BASE, commits_after=[]
+            )
         ),
         encoding="utf-8",
     )
@@ -709,7 +879,7 @@ def test_draft_case_for_a_repo_needing_normalisation_round_trips(tmp_path: Path)
     и собственный же `load_case` их отвергал — черновик такого репо нельзя
     было завести вовсе.
     """
-    case = draft_case("org/My_Repo.v2", 7, PR_META, REVIEWS, commits_after=[])
+    case = draft_case("org/My_Repo.v2", 7, PR_META, REVIEWS, base_sha=BASE, commits_after=[])
 
     assert case["case_id"] == "org.my_repo.v2-7"
     assert [d["id"] for d in case["defects"]] == [
@@ -758,7 +928,9 @@ def test_draft_defect_matches_its_own_finding_when_the_title_has_no_words(
         }
     ]
 
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, reviews, base_sha=BASE, commits_after=[]
+    )
     case["annotation"]["status"] = "adjudicated"
     case["annotation"]["adjudicated_by"] = "andrei-shtanakov"
     case["annotation"]["adjudicated_at"] = "2026-09-15"
@@ -796,7 +968,9 @@ def test_draft_defect_matches_its_own_finding_when_the_title_has_no_words(
 
 
 def test_render_case_keeps_unicode_readable() -> None:
-    case = draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+    case = draft_case(
+        "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=BASE, commits_after=[]
+    )
     text = render_case(case)
     assert "\\u" not in text
     assert yaml.safe_load(text)["case_id"] == "andrei-shtanakov.steward-155"
@@ -889,7 +1063,9 @@ def test_fetch_is_the_only_network_surface() -> None:
     os.environ["PATH"] = ""
     try:
         findings = parse_findings(BODY)
-        case = draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+        case = draft_case(
+            "andrei-shtanakov/steward", 155, PR_META, REVIEWS, base_sha=BASE, commits_after=[]
+        )
     finally:
         os.environ["PATH"] = saved
     assert isinstance(findings[0], ParsedFinding)
