@@ -72,6 +72,7 @@ __all__ = [
     "Match",
     "NonDefect",
     "append_registry",
+    "load_cases",
     "check_registry",
     "corpus_digest",
     "is_gold",
@@ -403,6 +404,22 @@ def load_corpus(directory: Path, *, git: str = "git") -> list[Case]:
     «мерить нечего». Существующий пустой каталог пустым корпусом остаётся:
     это законное начальное состояние.
     """
+    cases = load_cases(directory)
+    check_registry(cases, directory, git=git)
+    return cases
+
+
+def load_cases(directory: Path) -> list[Case]:
+    """Все проверки `load_corpus`, **кроме** сверки с реестром.
+
+    Ровно то, что нужно перед `append_registry`: регистрация и списание должны
+    идти по корпусу, уже прошедшему все межфайловые инварианты (уникальность
+    `case_id` и id записей), — иначе надгробие, которое терминально, успевало
+    бы записаться до отказа `duplicate case_id`, и неудачная команда портила
+    бы реестр необратимо. Сверка с реестром здесь намеренно не делается: она
+    отказывает и на незарегистрированном id, и на живом id без кейса — а это
+    ровно то, что регистрация чинит.
+    """
     if not directory.exists():
         raise CorpusError(f"каталога корпуса нет: {directory}")
     if not directory.is_dir():
@@ -425,9 +442,7 @@ def load_corpus(directory: Path, *, git: str = "git") -> list[Case]:
                 raise CorpusError(f"duplicate id '{entry_id}': {prior} and {path}")
             seen_ids[entry_id] = path
 
-    cases = sorted((case for _, case in loaded), key=lambda c: c.case_id)
-    check_registry(cases, directory, git=git)
-    return cases
+    return sorted((case for _, case in loaded), key=lambda c: c.case_id)
 
 
 def corpus_digest(cases: Sequence[Case]) -> str:

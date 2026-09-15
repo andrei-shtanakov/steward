@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+
+import pytest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from steward.review_eval.corpus import Annotation, Case, Defect, Match
 from steward.review_eval.matcher import Prediction, match
 from steward.review_eval.metrics import CaseEval, metrics_for_variant
 from steward.review_eval.report import (
+    ReportError,
     render_compare,
     render_queue,
     render_report,
@@ -1167,6 +1170,64 @@ def test_queue_labels_every_case_with_its_annotation_status() -> None:
     text = render_queue({"variant-a": [ev]})
 
     assert "### C-queue (rep 1, annotation: adjudicated)" in text
+
+
+@pytest.mark.parametrize("name", ["metrics.json", "report.md", "adjudication-queue.md"])
+def test_writers_refuse_a_symlinked_output_and_keep_the_target(tmp_path: Path, name: str) -> None:
+    """Симлинк на месте выходного файла — отказ, внешняя цель не тронута.
+
+    `write_text` по ссылке пишет в её цель: подготовленный каталог прогона
+    выводил бы запись за пределы `run_dir` и портил бы произвольный файл.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    external = tmp_path / "victim.txt"
+    external.write_text("important", encoding="utf-8")
+    (run_dir / name).symlink_to(external)
+    case = make_case(defects=[make_defect()])
+    ev = build_eval(case, findings=[finding()])
+    evals_by_variant = {"v": [ev]}
+    metrics_by_variant = {"v": metrics_for_variant([ev])}
+    manifest = RunManifest(
+        run_id="r",
+        kit={"commit": "c"},
+        tools={},
+        variants=[{"label": "v", "harness": "h", "model": "m", "effort": None}],
+        corpus_digest="d",
+        matcher_version=1,
+        matcher_rules_digest="x",
+        started="s",
+        finished="f",
+        jobs=1,
+        repetitions=1,
+    )
+
+    with pytest.raises(ReportError, match="символическая ссылка"):
+        if name == "metrics.json":
+            write_metrics_json(run_dir, metrics_by_variant)
+        elif name == "report.md":
+            write_report(run_dir, metrics_by_variant, evals_by_variant, manifest)
+        else:
+            write_queue(run_dir, evals_by_variant)
+
+    assert external.read_text(encoding="utf-8") == "important"
+
+
+def test_writers_accept_a_symlinked_prefix_above_the_run_dir(tmp_path: Path) -> None:
+    """Симлинк **выше** `run_dir` (macOS `/tmp` → `/private/tmp`) — не нарушение:
+    та же политика, что у раннера — ссылки запрещены внутри каталога прогона.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    run_dir = link / "sub"
+    run_dir.mkdir()
+
+    path = write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert path == run_dir / "metrics.json"
+    assert (real / "sub" / "metrics.json").is_file()
 
 
 def test_write_queue_writes_render_queue_output(tmp_path: Path) -> None:

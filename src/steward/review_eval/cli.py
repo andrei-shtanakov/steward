@@ -47,7 +47,7 @@ from steward.review_eval.corpus import (
     append_registry,
     corpus_digest,
     is_gold,
-    load_case,
+    load_cases,
     load_corpus,
     registry_path,
 )
@@ -241,14 +241,13 @@ def corpus_validate(
         raise typer.Exit(_EXIT_CONFIG)
     try:
         if register:
-            # Регистрация обязана идти до полной валидации и **без** обратной
-            # проверки реестра: `load_corpus` отказывает и на
-            # незарегистрированном id (регистрировать было бы нечем), и на
-            # живом id без кейса — а это ровно то, что чинит `--retire-deleted`,
-            # так что списание через `load_corpus` было бы недостижимо. Схема
-            # каждого кейса при этом проверена: `load_case` валидирует те же
-            # правила, кроме кросс-кейсовых.
-            drafts = [load_case(path) for path in sorted(corpus.glob("*.yaml"))]
+            # Регистрация идёт по корпусу, прошедшему **все** межфайловые
+            # проверки (`load_cases`: дубликаты case_id и id записей), но **без**
+            # обратной проверки реестра: та отказывает и на незарегистрированном
+            # id, и на живом id без кейса — ровно то, что чинят `--register` и
+            # `--retire-deleted`. Порядок важен: надгробие терминально, и запись
+            # его до `duplicate case_id` превращала бы отказ кодом 2 в порчу реестра.
+            drafts = load_cases(corpus)
             appended = append_registry(
                 drafts, corpus, retire_deleted=retire_deleted, reidentify=ids
             )

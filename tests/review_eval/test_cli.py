@@ -361,6 +361,29 @@ def test_corpus_validate_retire_deleted_tombstones_a_removed_case(tmp_path: Path
     assert load_corpus(corpus)[0].case_id == "andrei-shtanakov.steward-155"
 
 
+def test_corpus_validate_register_leaves_the_registry_untouched_on_a_corpus_error(
+    tmp_path: Path,
+) -> None:
+    """Межфайловая ошибка (дубликат case_id) при `--register --retire-deleted` —
+    код 2 и реестр **байт в байт** прежний: надгробие терминально, и запись
+    его до полной валидации превращала неудачную команду в порчу реестра.
+    """
+    corpus = _corpus(tmp_path, 155, 157, 159)
+    (corpus / "andrei-shtanakov.steward-159.yaml").unlink()  # кандидат на списание
+    duplicate = yaml.safe_dump(_case_payload(155), allow_unicode=True, sort_keys=False)
+    (corpus / "andrei-shtanakov.steward-157.yaml").write_text(duplicate, "utf-8")
+    before = (corpus / "_ids.txt").read_bytes()
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "validate", "--corpus", str(corpus), "--register", "--retire-deleted"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "duplicate case_id" in result.output
+    assert (corpus / "_ids.txt").read_bytes() == before
+
+
 def test_corpus_validate_reidentify_accepts_a_comma_list(tmp_path: Path) -> None:
     """`--reidentify a,b` подтверждает смену ядра идентичности у перечисленных id."""
     corpus = _corpus(tmp_path, 155)

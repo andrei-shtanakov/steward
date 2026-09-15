@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -40,6 +41,45 @@ from steward.review_eval.metrics import (
 )
 from steward.review_eval.runner import RunManifest
 from steward.review_eval.threshold import is_blocking
+
+
+class ReportError(RuntimeError):
+    """Отчёт не может быть записан: путь выводит запись за пределы каталога прогона."""
+
+
+def _write_inside(run_dir: Path, name: str, text: str) -> Path:
+    """Записать `run_dir/name` так, чтобы запись не покинула `run_dir`.
+
+    Ни один компонент от `run_dir` (включая его самого) до цели не симлинк, и
+    сам файл не симлинк: `write_text` по ссылке пишет в её цель, и подготовленный
+    каталог прогона портил бы произвольный файл вне него. Запись атомарна:
+    временный файл рядом, созданный эксклюзивно, затем `os.replace`.
+    """
+    root = Path(os.path.normpath(os.path.abspath(run_dir)))
+    current = root.parent
+    for part in (*root.relative_to(root.parent).parts, name):
+        current = current / part
+        if current.is_symlink():
+            raise ReportError(
+                f"{current}: символическая ссылка на пути отчёта — запись только "
+                "внутри каталога прогона, по ссылкам отчёт не пишется"
+            )
+    path = root / name
+    tmp = root / f".{name}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(tmp, flags, 0o644)
+    except OSError as exc:
+        raise ReportError(f"{tmp}: не удалось создать временный файл отчёта: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink(missing_ok=True)
+    return path
+
 
 __all__ = [
     "render_compare",
@@ -139,9 +179,7 @@ def write_metrics_json(
         "recomputed_with": dict(recomputed_with) if recomputed_with is not None else None,
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
-    path = run_dir / "metrics.json"
-    path.write_text(text, encoding="utf-8")
-    return path
+    return _write_inside(run_dir, "metrics.json", text)
 
 
 # ---------------------------------------------------------------------------
@@ -218,14 +256,13 @@ def write_report(
     recomputed_with: Mapping[str, object] | None = None,
 ) -> Path:
     """Рендерит и пишет ``report.md``."""
-    path = run_dir / "report.md"
-    path.write_text(
+    return _write_inside(
+        run_dir,
+        "report.md",
         render_report(
             metrics_by_variant, evals_by_variant, manifest, recomputed_with=recomputed_with
         ),
-        encoding="utf-8",
     )
-    return path
 
 
 def _manifest_map(manifest: RunManifest | Mapping[str, object]) -> Mapping[str, object]:
@@ -542,9 +579,7 @@ def render_queue(evals_by_variant: Mapping[str, Sequence[CaseEval]]) -> str:
 
 def write_queue(run_dir: Path, evals_by_variant: Mapping[str, Sequence[CaseEval]]) -> Path:
     """Рендерит и пишет ``adjudication-queue.md``."""
-    path = run_dir / "adjudication-queue.md"
-    path.write_text(render_queue(evals_by_variant), encoding="utf-8")
-    return path
+    return _write_inside(run_dir, "adjudication-queue.md", render_queue(evals_by_variant))
 
 
 def _variant_queue_lines(evs: Sequence[CaseEval]) -> list[str]:
