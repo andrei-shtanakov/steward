@@ -434,6 +434,7 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
         evidence=[
             {"file": "app/a.py", "line": 7, "reason": "в файле"},
             {"file": "app/a.py", "line": 8.0, "reason": "целое JSON-число в дробной записи"},
+            {"file": "./app/a.py", "line": 9, "reason": "путь нормализуется, как в матчере"},
             {"file": "app/a.py", "line": 0, "reason": "указатель уровня файла"},
             {"file": "app/a.py", "line": 99, "reason": "за концом файла"},
             {"file": "app/gone.py", "line": 1, "reason": "файла нет на head"},
@@ -453,7 +454,7 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
         file_lines=lambda path: sizes.get(path),
     )
 
-    assert ev.resolvable_evidence == (True, True, True, False, False)
+    assert ev.resolvable_evidence == (True, True, True, True, False, False)
 
 
 def test_evaluate_case_raises_when_promised_verdict_is_unreadable(tmp_path: Path) -> None:
@@ -1161,6 +1162,22 @@ def test_duration_mean_median_p90_and_provider_mean() -> None:
     assert duration["provider_duration_ms_mean"] == pytest.approx(2000.0)
     assert duration["n_runs"] == 4
     assert duration["n_provider_duration_runs"] == 2
+
+
+def test_valid_verdict_rate_ignores_config_failures_with_a_valid_sidecar() -> None:
+    """Код 2 порога при годном sidecar (нет jq) — `config_failure` с `reviewer_ran`:
+    сбой инструмента не входит в знаменатель валидности вердиктов модели.
+    """
+    cases = [make_case(f"C-{i}") for i in range(3)]
+    evals = [
+        build_eval(cases[0]),
+        build_eval(cases[1]),
+        build_eval(cases[2], outcome="config_failure", exit_code=2, reviewer_ran=True),
+    ]
+
+    summary = metrics_for_variant(evals)
+    assert fraction_of(summary, "valid_verdict_rate") == (2, 2)
+    assert fraction_of(summary, "config_failure_rate") == (1, 3)
 
 
 def test_duration_excludes_empty_range_runs_by_outcome() -> None:

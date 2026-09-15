@@ -648,7 +648,9 @@ def _is_resolvable(item: object, file_lines: Callable[[str], int | None]) -> boo
     file = item.get("file")
     if not isinstance(file, str) or not file.strip():
         return False
-    lines = file_lines(file)
+    # Тем же правилом, что матчер и опровержение file-missing: `./app/a.py`
+    # из вердикта иначе не нашёлся бы в дереве.
+    lines = file_lines(normalize_path(file))
     if lines is None:
         return False
     line = as_line_number(
@@ -1024,9 +1026,13 @@ def _operational(gold: Sequence[CaseEval], matched: Sequence[CaseEval]) -> dict[
     gold_defects = sum(len(ev.case.defects) for ev in matched)
     return {
         "completion_rate": _ratio(completed, runs).as_dict(),
+        # Знаменатель — прогоны, где гейт дошёл до оценки вывода модели:
+        # `config_failure` (нет jq, негодный аргумент порога) — сбой инструмента и
+        # уже посчитан в `config_failure_rate`; годный при этом вердикт нельзя
+        # записывать модели как негодный.
         "valid_verdict_rate": _ratio(
             sum(1 for ev in reviewer_ran if ev.result.outcome == "verdict"),
-            len(reviewer_ran),
+            sum(1 for ev in reviewer_ran if ev.result.outcome != "config_failure"),
         ).as_dict(),
         "config_failure_rate": _ratio(
             sum(1 for ev in gold if ev.result.outcome == "config_failure"), runs
