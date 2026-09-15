@@ -2252,9 +2252,17 @@ def test_run_all_refuses_resume_when_an_unavailable_used_client_appears(
     """
     resume = _resume_fixture(tmp_path)
     before = _retool(resume.out_dir, "claude", "unavailable")
+    # Стаб `claude` в PATH прогона: на машине без клиента (CI) «сейчас» тоже
+    # было бы `unavailable`, и дрейфа не случилось бы — тест зависел бы от среды.
+    bin_dir = tmp_path / "claude-bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "claude"
+    stub.write_text('#!/bin/sh\necho "claude 1.2.3-stub"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = {**resume.env_base, "PATH": f"{bin_dir}{os.pathsep}{resume.env_base['PATH']}"}
 
     with pytest.raises(RunnerError, match="tools.claude") as excinfo:
-        resume.again()
+        resume.again(env_base=env)
 
     assert "unavailable" in str(excinfo.value)
     assert (resume.out_dir / "run.json").read_bytes() == before
