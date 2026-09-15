@@ -1,0 +1,51 @@
+schema: review-eval-case/v1
+case_id: steward-161
+repo: andrei-shtanakov/steward
+pr: 161
+base_sha: 09c7926fca88257af8bffa032e2213eb132b8f74
+head_sha: e187b5808f819100831afbf460d9363cae56ce84
+class: clean
+expected_outcome: verdict
+annotation:
+  status: draft
+  blocking_complete: false
+  source: history-proxy
+  adjudicated_by: null
+  adjudicated_at: null
+defects:
+- id: D-steward-161-1
+  severity: minor
+  file: profiles/approval-facts-scope.yaml
+  line_hint: 28
+  scenario: 'Комментарий-довод охвата утверждает «95 — открыт, даёт not_merged», а
+    приложенное в том же патче evidence показывает PR 95 как merged (confidence: high).
+    Патч расширяет блок комментария «Смесь ради soak, и она подобрана…» (строки 25–36)
+    новым доводом про 55/60, оставляя строку 28: «95 — открыт, даёт `not_merged`».
+    Одновременно патч публикует `docs/evidence/2026-09-14-approval-facts-policy-refresh/approval_facts.jsonl`,
+    где запись по PR 95 — `state: merged`, `merge_sha: 5fb32630…`, `actor_class: human`.
+    Читатель охвата (оператор или следующий автор, решающий, что можно вырезать из
+    списка) исходит из того, что бандл A0 покрывает состояние `not_merged`, тогда
+    как по собственному evidence патча в бандле его нет: все девять записей — `merged`.'
+  evidence:
+  - profiles/approval-facts-scope.yaml:28
+  - profiles/approval-facts-scope.yaml:37
+  - docs/evidence/2026-09-14-approval-facts-policy-refresh/approval_facts.jsonl:10
+  match:
+    files:
+    - profiles/approval-facts-scope.yaml
+    line_window: 40
+    keywords_any:
+    - комментарий
+    - приложенное
+    - утверждает
+    - показывает
+    - evidence
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#161, ревью ai-prosto id=5201853242 от 2026-09-14T19:18:46Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 1.
+  head_sha взят из маркера ревью; merge_commit_sha: 4afb50e07a0286d25bb09309564a3f7bfa62a6ba.
+  Коммитов PR после последнего ревью: 0.
+  candidate_status (подсказка D1, не ground truth):
+    - D-steward-161-1: unknown [minor] profiles/approval-facts-scope.yaml:28
+  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.

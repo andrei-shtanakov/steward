@@ -1,0 +1,52 @@
+schema: review-eval-case/v1
+case_id: steward-155
+repo: andrei-shtanakov/steward
+pr: 155
+base_sha: 496e1b2eae15b21c6fb2238a8644eb67a40ccb17
+head_sha: 15fe2fe48111deed95aa17089adb99c894f32a2f
+class: clean
+expected_outcome: verdict
+annotation:
+  status: draft
+  blocking_complete: false
+  source: history-proxy
+  adjudicated_by: null
+  adjudicated_at: null
+defects:
+- id: D-steward-155-1
+  severity: minor
+  file: tests/review/test_harness_claude.py
+  line_hint: 203
+  scenario: 'test_missing_claude_in_path_is_config_error запускает НАСТОЯЩИЙ `claude`,
+    если он лежит в одном каталоге с `jq` (confidence: medium). Машина разработчика/CI,
+    где `jq` и `claude` установлены в один каталог (типично: Homebrew-`jq` и npm-глобальный
+    `claude` оба в `/opt/homebrew/bin` или `/usr/local/bin`). Тест ставит `PATH` равным
+    каталогу `jq` (строка 203–204), рассчитывая, что `claude` там не будет; адаптер
+    делает `command -v claude` (scripts/review/harness-claude:83) — находит настоящий
+    бинарь, проходит префлайт и вызывает `claude -p … --restricted --permission-prompts
+    none` с промптом «ПРОМПТ» и схемой `{"type":"object"}`.'
+  evidence:
+  - tests/review/test_harness_claude.py:203
+  - tests/review/test_harness_claude.py:205
+  - scripts/review/harness-claude:83
+  - scripts/review/harness-claude:102
+  - tests/review/test_local.py:1928
+  match:
+    files:
+    - tests/review/test_harness_claude.py
+    line_window: 40
+    keywords_any:
+    - запускает
+    - настоящий
+    - каталоге
+    - missing
+    - claude
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#155, ревью ai-prosto id=5195557580 от 2026-09-14T08:35:07Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 1.
+  head_sha взят из маркера ревью; merge_commit_sha: a2d7e719564d414fbf04684f5bd7802013a4f681.
+  Коммитов PR после последнего ревью: 0.
+  candidate_status (подсказка D1, не ground truth):
+    - D-steward-155-1: unknown [minor] tests/review/test_harness_claude.py:203
+  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.

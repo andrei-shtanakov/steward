@@ -608,6 +608,18 @@ product decision record (и наоборот). Как approved proposal стан
       ДИЗАЙН-ВОПРОС владельцу: кто и куда пишет из CI — у джобы нет права
       коммитить в master; варианты «аггрегация артефактов по расписанию» и
       «ветка-корпус» дают разные гарантии
+
+  Переоценка по спеке review-eval §14 (2026-09-15): для **терминального
+  канала** пункт потерял остроту — корпус вердиктов уже на GitHub, в телах
+  PR-ревью от ai-prosto, и `review-eval corpus candidates --repo R --pr N`
+  читает его штатно (`gh api` на чтение, парсинг формата
+  `apply-threshold.sh`, маркер `codex-terminal-review head=`), так что
+  «ручной сбор прошлых PR», которого пункт боялся, не понадобился.
+  Открытым остаётся только **CI-канал**: у джобы `report` по-прежнему нет
+  права коммитить в master, и вердикты CI-прогонов нигде не накапливаются.
+  То есть исходный дизайн-вопрос владельцу сужается до «нужен ли нам
+  CI-канал отдельно, если терминальный канал даёт корпус бесплатно», и
+  пункт до этого ответа остаётся `[ ]`.
 - [ ] Детерминированный пре-фильтр в report-джобе (без ключа, без LLM): @owner:github:andrei-shtanakov @id:review-kit-import-detector
       детектор галлюцинированных импортов — импорт, которого нет ни в
       pyproject.toml, ни в uv.lock. Один язык, один пакет-менеджер — вся
@@ -736,6 +748,19 @@ product decision record (и наоборот). Как approved proposal стан
   `src/steward/review_eval/` + `review-eval` (отклонение от `tools/`: hatchling
   и pyrefly видят только `src/`). Закрывается по живому первому прогону на gold
   ≥ 10 кейсов, не по тестам.
+
+  **Код влит PR этой ветки** (`feat/review-eval-harness`): пакет
+  `src/steward/review_eval/` (corpus, cache, threshold, matcher, runner,
+  metrics, report, candidates, cli) и точка входа `review-eval` с командами
+  `corpus validate [--register]`, `corpus candidates --repo --pr`,
+  `corpus materialize`, `run --variant H:M[:E] --out`, `metrics <run_dir>`,
+  `compare <a> <b>`; правки кита `REVIEW_VERDICT_OUT`/`REVIEW_USAGE_OUT`/
+  `REVIEW_EFFORT`; корпус-черновики steward#152/#155/#156/#157/#159/#161
+  (`annotation.status: draft`, разметка — владельцу); док
+  `docs/review-eval.md`. Пункт остаётся `[ ]`: **закрывается по живому
+  прогону на gold ≥ 10 кейсов с evidence-копией прогона в
+  `docs/evidence/`** — не по тестам и не по влитому коду (то же правило, что
+  закрыло V1 live run, §4).
 - [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
       модели × два уровня), не по рассуждению в комментарии workflow
 - [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
@@ -956,6 +981,13 @@ PR и осознанно не закрыто; список полон, друг�
     devtools с sha256-таблицей, когда владелец решит открыть окно; триггер —
     любой следующий фикс кита или запрос потребителя (spec-runner#491
     ждёт #154).
+    Волна несёт и sidecar/effort-слой eval-харнесса (steward#164):
+    `REVIEW_VERDICT_OUT` и `REVIEW_EFFORT` в `local.sh`, `REVIEW_USAGE_OUT` и
+    `--effort` в `harness-claude`. Для потребителей это добавка к трём
+    существующим `REVIEW_*` (умолчания не меняются, отпечаток ревью не
+    трогают: пути sidecar-ов в него не входят), но дайджесты обоих членов
+    уехали — значит та же sha256-таблица, тот же одношаговый ре-вендор, и
+    гнать их отдельной волной незачем.
     Попутно проверить у 15 копий без `review-kit-drift.yml`/checksum-шага в
     CI (по локальным чекаутам их нет вне 7 репо), нужен ли им бутстрап-контракт
     «чекер из base» — или это репо без PR-гейта, где copy-integrity держится
