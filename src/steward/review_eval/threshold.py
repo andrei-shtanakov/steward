@@ -38,6 +38,8 @@ __all__ = [
     "is_blank",
     "is_blocking",
     "is_schema_valid_finding",
+    "is_schema_valid_verdict",
+    "is_structural_verdict",
     "is_text",
 ]
 
@@ -153,6 +155,49 @@ def _is_line_number(value: object) -> bool:
 def _in_enum(value: object, allowed: frozenset[str]) -> bool:
     """Строка из закрытого набора; список/объект — не TypeError, а просто «нет»."""
     return isinstance(value, str) and value in allowed
+
+
+def is_structural_verdict(payload: object) -> bool:
+    """Похож ли объект на вердикт: ``findings`` — список объектов, ``note`` — строка.
+
+    **Структура и схема — разные вопросы.** Здесь только «это вообще вердикт»:
+    битый JSON, обрезанный файл, `findings` не массивом. Годность каждой
+    находки — `is_schema_valid_finding`, и строже здесь значило бы рисковать
+    ложным `invalid_verdict` при расхождении с настоящей схемой кита.
+
+    Определение одно на пакет: раннер решает по нему, писать ли исход
+    `verdict`, а метрики — вправе ли они читать такой sidecar. Разойдись они,
+    прогон, объявленный вердиктом, метрики читали бы по своему правилу и молча
+    выбрасывали часть находок.
+    """
+    if not isinstance(payload, Mapping):
+        return False
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        return False
+    if not all(isinstance(item, Mapping) for item in findings):
+        return False
+    return isinstance(payload.get("note"), str)
+
+
+def is_schema_valid_verdict(payload: object) -> bool:
+    """Годен ли вердикт целиком: структура **плюс** схема каждой находки.
+
+    Это и есть класс, по которому настоящий кит выносит решение:
+    `apply-threshold.sh` валидирует вердикт до порога и на негодном выходит
+    кодом 2, ничего не решая про блокировку. Значит исход `verdict` вправе
+    получить только схемно годный sidecar; структурно годный, но схемно
+    негодный — `invalid_verdict`, ошибка **модели**.
+
+    Раздельно `is_structural_verdict` нужен там, где вопрос именно «это вообще
+    вердикт» (чтение sidecar-а прогона с любым исходом).
+    """
+    if not is_structural_verdict(payload):
+        return False
+    assert isinstance(payload, Mapping)  # noqa: S101 — гарантировано проверкой выше
+    findings = payload.get("findings")
+    assert isinstance(findings, list)  # noqa: S101 — то же
+    return all(is_schema_valid_finding(item) for item in findings)
 
 
 def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:

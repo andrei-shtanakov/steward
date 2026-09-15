@@ -1,0 +1,1393 @@
+"""Раннер review-eval: изолированный прогон настоящего кита по кейсу корпуса.
+
+Один прогон — это тройка `(кейс, вариант, повторение)`
+(`docs/superpowers/specs/2026-09-14-review-eval-harness-design.md` §6):
+
+1. **Изоляция (D3).** Кит запускается в detached worktree на историческом
+   `head_sha` из bare-кэша (`cache.worktree`), а не в текущем чекауте: модель
+   читает рабочее дерево, и запуск «отсюда» измерял бы не тот материал.
+2. **Кит под измерением.** `REVIEW_KIT_DIR`/`REVIEW_PROMPT`/`REVIEW_SCHEMA` —
+   из чекаута steward, где запущен раннер; его commit и дайджесты попадают в
+   `run.json` (`kit_under_test`), потому что «какой кит мерили» — часть факта.
+3. **Вариант (D13).** `REVIEW_HARNESS`/`REVIEW_MODEL`/`REVIEW_EFFORT`;
+   `REVIEW_EFFORT` не задаётся вовсе, если у варианта нет сегмента effort.
+   Из наследуемого окружения вычищается весь `REVIEW_*` — в первую очередь
+   `REVIEW_CMD` (оверрайд целиком — не измеряемый путь), но и
+   `REVIEW_CONTEXT_MANIFEST` тоже: манифест берётся из репо кейса, — а вместе
+   с ним весь `GIT_*`, который увёл бы git кита из worktree в чужое репо.
+4. **Sidecar-артефакты (D4/D12).** `REVIEW_VERDICT_OUT`/`REVIEW_USAGE_OUT`
+   указывают в каталог повторения. Вердикт кит сохраняет **до** порога,
+   поэтому «sidecar есть» = «ревьюер отработал» (`reviewer_ran`).
+5. **Wall-clock (D5)** мерит раннер монотонными часами — для всех харнессов
+   одинаково; `provider_duration_ms` из usage — дополнительная метрика.
+6. **Исход** (`classify`) выводится из кода выхода **и** наличия/валидности
+   sidecar: отказ порога (код 2 при сохранённом вердикте) — ошибка модели
+   (`invalid_verdict`), а не конфигурации.
+7. **Стоимость (D6).** `cost_status: available` только если usage-sidecar
+   есть и несёт числовой `total_cost_usd`; нулём стоимость не подставляется.
+
+Сети раннер не касается никогда (сетевой контракт §5/D12): объектов нет в
+кэше → `RunnerError`, а не `git fetch`. Пишет только внутрь `out_dir`
+(артефакты и `out_dir/scratch` под worktree).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from steward.review_eval.cache import CacheError, has_object, repo_cache_dir, worktree
+from steward.review_eval.corpus import Case, corpus_digest
+from steward.review_eval.matcher import MATCHER_VERSION, rules_digest
+from steward.review_eval.threshold import is_schema_valid_verdict
+
+__all__ = [
+    "HARNESSES",
+    "KitUnderTest",
+    "RunManifest",
+    "RunResult",
+    "RunnerError",
+    "Variant",
+    "EMPTY_RANGE_OUTCOME",
+    "classify",
+    "kit_under_test",
+    "load_results",
+    "parse_variant",
+    "provider_env_names",
+    "run_all",
+    "run_case",
+    "utc_now",
+    "variant_label",
+]
+
+#: Харнессы, которые кит умеет резолвить (спека харнесс-слоя §4).
+HARNESSES: tuple[str, ...] = ("codex", "claude")
+
+#: Подстрока отказа гардрейла `build-prompt.sh` — единственный признак,
+#: отличающий ожидаемый отказ `large` от ошибки конфигурации (обе — код 2).
+GUARDRAIL_MARKER = "диф больше поддерживаемого"
+
+#: Исход «в диапазоне кейса нечего ревьюировать»: `base_sha` и `head_sha` —
+#: разные коммиты с **одинаковым деревом** (правка и её откат). Кит на пустом
+#: дифе выходит кодом 0 и sidecar не пишет, поэтому такой прогон
+#: классифицировался как `mechanical_failure` — негодный **кейс** выглядел
+#: сбоем инструмента. Проверяется до вызова ревьюера: платить за прогон,
+#: которому нечего ревьюировать, незачем.
+EMPTY_RANGE_OUTCOME = "empty_range"
+
+#: Форма значения `REVIEW_MODEL`/`REVIEW_EFFORT`, которую валидирует сам кит:
+#: одно слово, потому что значения интерполируются в `review_cmd`, а он по
+#: контракту разбивается по словам.
+#:
+#: **Слеша здесь нет намеренно.** Метка варианта (`variant_label`) — имя
+#: каталога артефактов, а `--rerun` этот каталог `rmtree`-ит. `codex:x/../../../outside`
+#: раньше проходил разбор, уводил запись за пределы `--out` и позволял удалить
+#: чужое дерево. Двоеточие в классе безвредно (сегменты разделены им же, внутрь
+#: оно не попадает) и оставлено, чтобы класс совпадал с объявленным в спеке.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:@+-]+$")
+
+#: Компоненты пути, которые нельзя допускать в метку варианта ни под каким
+#: видом: точка и две точки — это «здесь» и «уровнем выше», а не имена.
+_PATH_TRAVERSAL = frozenset({".", ".."})
+
+#: Приставки имён provider-переменных окружения, чьи **имена** идут в `run.json`
+#: (§10): к какому аккаунту и через какой прокси ушёл вызов — часть факта
+#: «чем мерили», наравне с дайджестами кита. Сравнение без учёта регистра;
+#: записывается имя как есть. Значения не пишутся никогда — это ключи.
+_PROVIDER_ENV_PREFIXES: tuple[str, ...] = ("ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_")
+
+#: Переменные прокси целиком (приставки у них нет): маршрут вызова — тоже часть
+#: окружения, от которой зависит, куда ушёл запрос.
+_PROVIDER_ENV_NAMES: frozenset[str] = frozenset(
+    {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"}
+)
+
+#: Приставки переменных, вычищаемых из наследуемого окружения (§6.3). `REVIEW_*`
+#: подменяет измеряемый путь (`REVIEW_CMD` — целиком, `REVIEW_CONTEXT_MANIFEST`
+#: и потолки — частично). `GIT_*` опаснее незаметно: `GIT_DIR`/`GIT_WORK_TREE`/
+#: `GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` увели бы git кита в чужое репо, пока
+#: файлы читаются из worktree, — диф и вердикт разошлись бы с материалом кейса.
+_SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("REVIEW_", "GIT_")
+
+#: Приставки аргументов кита, которые кейс не вправе передавать: они меняют
+#: **что** измеряется, а не сколько. `local.sh` берёт последний `--base`/`--head`,
+#: поэтому дописанный после раннера `--head C` увёл бы измерение на чужой
+#: диапазон, оставив gold прежним; `--format`/`--fingerprint-only`/
+#: `--print-review-cmd` меняют режим вывода (исход стал бы неклассифицируемым), а
+#: `--fetch`/`--remote` тянули бы сеть в офлайн-прогон. Схема корпуса такие
+#: `local_args` не пропускает — это вторая линия обороны для `Case`, собранных в коде.
+_FORBIDDEN_LOCAL_ARG_PREFIXES: tuple[str, ...] = (
+    "--base",
+    "--head",
+    "--format",
+    "--fetch",
+    "--remote",
+    "--fingerprint-only",
+    "--print-review-cmd",
+)
+
+_RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
+
+#: Файлы кита, чьи дайджесты идут в `run.json` (§10): всё, что влияет на
+#: поведение ревьюера, — промпт, схема, порог, оркестратор, сбор контекста,
+#: сборка промпта, claude-адаптер.
+_KIT_FILES: tuple[tuple[str, str], ...] = (
+    ("threshold_sha256", "apply-threshold.sh"),
+    ("local_sh_sha256", "local.sh"),
+    ("collect_context_sha256", "collect-context.sh"),
+    ("harness_claude_sha256", "harness-claude"),
+    ("build_prompt_sha256", "build-prompt.sh"),
+)
+
+_TOOL_TIMEOUT_S = 30.0
+
+
+class RunnerError(Exception):
+    """Прогон невозможен: кита нет на месте, объект не в кэше, worktree не создан."""
+
+
+@dataclass(frozen=True)
+class Variant:
+    """Измеряемый вариант ревьюера: харнесс, модель и (опционально) reasoning-уровень."""
+
+    harness: str
+    model: str
+    effort: str | None
+
+
+def parse_variant(text: str) -> Variant:
+    """Разобрать ``<harness>:<model>[:<effort>]`` (D13).
+
+    Отсутствующий сегмент effort — это «переменная не задаётся», а не пустое
+    значение (пустое кит отвергает кодом 2). `ValueError` называет причину.
+
+    Класс символов модели и effort — `[A-Za-z0-9._:@+-]`, **без слеша**, и ни
+    один сегмент не может быть `.` или `..`: метка варианта идёт в путь
+    артефактов, а `--rerun` этот путь удаляет. Вторая линия обороны — `_inside`
+    перед каждой записью, потому что `Variant` собирают и в коде.
+    """
+    if not text or text.strip() != text:
+        raise ValueError(f"variant must be '<harness>:<model>[:<effort>]', got '{text}'")
+    parts = text.split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError(
+            f"variant must have 2 or 3 ':'-separated segments, got {len(parts)} in '{text}'"
+        )
+    harness, model = parts[0], parts[1]
+    effort = parts[2] if len(parts) == 3 else None
+    if harness not in HARNESSES:
+        raise ValueError(f"unsupported harness '{harness}', expected one of {HARNESSES}")
+    if not _TOKEN_RE.fullmatch(model):
+        raise ValueError(f"model must be one word of [A-Za-z0-9._:@+-], got '{model}'")
+    if effort is not None and not _TOKEN_RE.fullmatch(effort):
+        raise ValueError(f"effort must be one word of [A-Za-z0-9._:@+-], got '{effort}'")
+    for name, value in (("model", model), ("effort", effort)):
+        if value in _PATH_TRAVERSAL:
+            raise ValueError(f"{name} must not be a path component like '.' or '..', got '{value}'")
+    return Variant(harness=harness, model=model, effort=effort)
+
+
+def _require_run_path(out_dir: Path, path: Path, *, what: str) -> Path:
+    """Путь внутри `--out`, ни один компонент которого не симлинк; вернуть `resolve()`.
+
+    `_require_inside` сравнивает **результат** `resolve()`, и этого мало для
+    каталогов, которые раннер удаляет: симлинк внутри `scratch/`, указывающий
+    наружу, резолвится в свою цель, и `rmtree` уносит чужое дерево — путь при
+    этом «внутри» не был никогда. Поэтому вторая проверка: ни одного симлинка
+    на участке от `out_dir` до самого пути. Симлинк в каталоге прогона не
+    бывает законным — раннер создаёт там только настоящие каталоги.
+
+    Возвращается `resolve()`: вызывающему нужен именно он (worktree и `rmtree`
+    работают по абсолютному пути), а проверять надо до этого.
+    """
+    root = out_dir.resolve()
+    _require_no_symlinks(root, path, what=what)
+    return _require_inside(out_dir, path, what=what).resolve()
+
+
+def _require_no_symlinks(root: Path, path: Path, *, what: str) -> None:
+    """Отказать, если между `root` и `path` есть симлинк."""
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    current = root
+    try:
+        tail = absolute.relative_to(root)
+    except ValueError:
+        # Путь и так вне `--out`; про это скажет `_require_inside`.
+        return
+    for part in tail.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RunnerError(
+                f"{what}: {current} — символическая ссылка внутри каталога прогона; "
+                "раннер такие пути не создаёт и удалять по ним отказывается"
+            )
+
+
+def _require_inside(out_dir: Path, path: Path, *, what: str) -> Path:
+    """Отказать, если `path` ведёт за пределы `out_dir`; вернуть путь.
+
+    Проверяется **до** любого создания каталога, записи и `rmtree`: путь,
+    ушедший наружу, нельзя «почти создать». Метка варианта собирается из
+    `Variant`, а `Variant` бывает собран в коде мимо `parse_variant`, поэтому
+    запрет слешей в разборе — не единственная защита, а первая.
+
+    Сравнение по `resolve()`: символическая ссылка внутри `--out` тоже увела бы
+    запись наружу, а `is_relative_to` по нормализованным путям это ловит.
+    """
+    resolved = path.resolve()
+    root = out_dir.resolve()
+    if not resolved.is_relative_to(root):
+        raise RunnerError(
+            f"{what}: путь {resolved} вне каталога прогона {root} — запись не выполняется"
+        )
+    return path
+
+
+def variant_label(variant: Variant) -> str:
+    """Каноническая строка варианта — она же имя каталога в артефактах (§10).
+
+    Метка обязана разбираться обратно в тот же вариант: `Variant`, собранный в
+    коде в обход `parse_variant`, иначе пронёс бы в имя каталога слеш или
+    пробел — лишний уровень пути, который поиск результатов не увидит.
+    """
+    if variant.effort is None:
+        label = f"{variant.harness}:{variant.model}"
+    else:
+        label = f"{variant.harness}:{variant.model}:{variant.effort}"
+    try:
+        parsed = parse_variant(label)
+    except ValueError as exc:
+        raise RunnerError(f"метка варианта негодна как имя каталога: {exc}") from exc
+    if parsed != variant:
+        raise RunnerError(f"метка варианта '{label}' не разбирается обратно в вариант")
+    return label
+
+
+@dataclass(frozen=True)
+class KitUnderTest:
+    """Кит под измерением: пути, commit чекаута и дайджесты значимых файлов."""
+
+    kit_dir: Path
+    prompt: Path
+    schema: Path
+    commit: str
+    digests: dict[str, str]
+
+
+def kit_under_test(steward_root: Path, *, git: str = "git") -> KitUnderTest:
+    """Собрать факты о ките из чекаута steward (§6.2, §10).
+
+    Дайджест — «сырой» hex без префикса алгоритма: алгоритм назван в ключе
+    (`prompt_sha256`), в отличие от `corpus_digest`/`rules_digest`, где он
+    назван в значении. Отсутствие любого файла кита — `RunnerError`
+    (конфигурация, код 2 на CLI): мерить нечего.
+
+    `commit` — провенанс, а не доказательство: если чекаут не git-репо,
+    значение ``unavailable``, но содержимое кита всё равно закреплено
+    дайджестами.
+    """
+    root = steward_root.resolve()
+    kit_dir = root / "scripts" / "review"
+    prompt = root / ".github" / "codex" / "review-prompt.md"
+    schema = root / ".github" / "codex" / "review-schema.json"
+
+    digest_sources: list[tuple[str, Path]] = [
+        ("prompt_sha256", prompt),
+        ("schema_sha256", schema),
+        *[(key, kit_dir / name) for key, name in _KIT_FILES],
+    ]
+    missing = [str(path) for _, path in digest_sources if not path.is_file()]
+    if missing:
+        raise RunnerError("kit under test is incomplete, missing: " + ", ".join(missing))
+
+    digests = {key: _sha256_file(path) for key, path in digest_sources}
+    return KitUnderTest(
+        kit_dir=kit_dir,
+        prompt=prompt,
+        schema=schema,
+        commit=_head_commit(root, git=git),
+        digests=digests,
+    )
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """Результат одного прогона `(кейс, вариант, повторение)` — он же ``result.json``.
+
+    Пути к артефактам — относительные к `out_dir` и в POSIX-форме: прогон
+    целиком копируется в `docs/evidence/` (§10), и абсолютный путь машины
+    автора там был бы мусором.
+
+    `teardown_error` — сбой уборки worktree **после** завершённого прогона:
+    сам прогон валиден (исход и артефакты на месте), но каталог scratch утёк.
+    Не исход: метрики по такому прогону считаются как обычно.
+    """
+
+    case_id: str
+    variant: str
+    repetition_id: int
+    exit_code: int
+    outcome: str
+    reviewer_ran: bool
+    wall_clock_s: float
+    verdict_path: str | None
+    usage_path: str | None
+    cost_status: str
+    requested_effort: str | None
+    stdout_path: str
+    stderr_path: str
+    unexpected: bool
+    teardown_error: str | None = None
+
+
+def classify(exit_code: int, sidecar_present: bool, verdict_valid: bool, stderr: str) -> str:
+    """Исход прогона по коду выхода, sidecar-у и тексту stderr (§6.6).
+
+    Порядок проверок существенен. Код 2 многозначен: это и ожидаемый отказ
+    гардрейла (по тексту потолка дифа), и отказ порога при уже полученном
+    вердикте (`invalid_verdict` — ошибка модели: правила
+    ``apply-threshold.sh`` строже схемы), и ошибка конфигурации. Код 0/1 без
+    sidecar — нарушение контракта кита (вердикт обещан до порога), т.е.
+    механический сбой, а не «ревью без находок».
+
+    Гардрейл требует **отсутствия** sidecar: потолок дифа отказывает до вызова
+    ревьюера, поэтому сохранённый вердикт при коде 2 — всегда отказ порога
+    (`invalid_verdict`), даже если текст потолка почему-то оказался в stderr.
+    """
+    if exit_code in (0, 1) and sidecar_present and verdict_valid:
+        return "verdict"
+    if exit_code == 2 and not sidecar_present and GUARDRAIL_MARKER in stderr:
+        return "guardrail_rejection"
+    if exit_code == 2 and sidecar_present:
+        return "invalid_verdict"
+    if exit_code in (0, 1) and sidecar_present:
+        return "invalid_verdict"
+    if exit_code == 2:
+        return "config_failure"
+    return "mechanical_failure"
+
+
+def run_case(
+    case: Case,
+    variant: Variant,
+    rep: int,
+    *,
+    kit: KitUnderTest,
+    cache_root: Path,
+    out_dir: Path,
+    env_base: Mapping[str, str],
+    keep_worktrees: bool = False,
+    git: str = "git",
+    sh: str = "sh",
+) -> RunResult:
+    """Прогнать кит по кейсу в изолированном worktree и записать ``result.json``.
+
+    Офлайн по контракту: если `base_sha`/`head_sha` нет в бare-кэше —
+    `RunnerError` (материализация с сетью — отдельная команда корпуса), никаких
+    `git fetch` отсюда не бывает.
+
+    Артефакты (`stdout.txt`, `stderr.txt`, `result.json`) записываются **до**
+    снятия worktree: прогон уже оплачен, и сбой уборки (`CacheError` из
+    `cache.worktree`) не имеет права его потерять — он записывается в
+    `teardown_error`, а не бросается наружу. Утёкший каталог scratch назван в
+    этом поле; следующий прогон по той же тройке его сам и подчистит.
+    """
+    label = variant_label(variant)
+    _require_safe_local_args(case)
+    missing = [
+        sha
+        for sha in (case.head_sha, case.base_sha)
+        if not has_object(cache_root, case.repo, sha, git=git)
+    ]
+    if missing:
+        raise RunnerError(
+            f"{case.case_id}: object(s) {', '.join(f'{case.repo}@{sha}' for sha in missing)} "
+            f"not in the cache at {cache_root}; run 'review-eval corpus materialize' first "
+            "(run is offline)"
+        )
+
+    rep_dir = _require_inside(
+        out_dir,
+        out_dir / "cases" / case.case_id / label / str(rep),
+        what=f"{case.case_id}/{label}/{rep}",
+    )
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    verdict_out = (rep_dir / "verdict.json").resolve()
+    usage_out = (rep_dir / "usage.json").resolve()
+    stdout_file = rep_dir / "stdout.txt"
+    stderr_file = rep_dir / "stderr.txt"
+    # Sidecar-ы прошлого прогона этой тройки — не факты нового: кит их тоже
+    # инвалидирует, но раннер не вправе зависеть от этого при `--rerun`.
+    _unlink(verdict_out)
+    _unlink(usage_out)
+
+    env = _run_env(kit, variant, env_base, verdict_out=verdict_out, usage_out=usage_out)
+    command = [
+        sh,
+        str(kit.kit_dir / "local.sh"),
+        "--base",
+        case.base_sha,
+        "--head",
+        case.head_sha,
+        "--format",
+        "text",
+        *case.local_args,
+    ]
+
+    dest = _require_run_path(
+        out_dir,
+        out_dir / "scratch" / case.case_id / label / str(rep),
+        what=f"scratch {case.case_id}/{label}/{rep}",
+    )
+    _clear_scratch(cache_root, case.repo, dest, git=git)
+
+    result: RunResult | None = None
+    teardown_error: str | None = None
+    try:
+        with worktree(cache_root, case.repo, case.head_sha, dest, keep=keep_worktrees, git=git):
+            started = time.monotonic()
+            if _range_is_empty(dest, case, git=git):
+                # Ревьюер не зовётся вовсе: диапазон пуст, измерять нечего.
+                # stdout/stderr пишутся пустыми, чтобы набор артефактов тройки
+                # не зависел от исхода (отчёт читает пути безусловно).
+                stdout_file.write_text("", encoding="utf-8")
+                stderr_file.write_text("", encoding="utf-8")
+                result = RunResult(
+                    case_id=case.case_id,
+                    variant=label,
+                    repetition_id=rep,
+                    # Не код кита: кит не запускался. Ноль здесь — «нет кода»,
+                    # и читать его как «чисто» не даёт `reviewer_ran: false`.
+                    exit_code=0,
+                    outcome=EMPTY_RANGE_OUTCOME,
+                    reviewer_ran=False,
+                    wall_clock_s=time.monotonic() - started,
+                    verdict_path=None,
+                    usage_path=None,
+                    cost_status="unavailable",
+                    requested_effort=variant.effort,
+                    stdout_path=_relative(stdout_file, out_dir),
+                    stderr_path=_relative(stderr_file, out_dir),
+                    unexpected=EMPTY_RANGE_OUTCOME != case.expected_outcome,
+                )
+                _write_json(rep_dir / "result.json", dataclasses.asdict(result))
+                return result
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=dest,
+                    env=dict(env),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError as error:
+                raise RunnerError(f"{case.case_id}: cannot run '{sh} local.sh': {error}") from error
+            wall_clock_s = time.monotonic() - started
+
+            stdout_file.write_text(completed.stdout, encoding="utf-8")
+            stderr_file.write_text(completed.stderr, encoding="utf-8")
+
+            sidecar_present = _is_non_empty(verdict_out)
+            verdict_valid = sidecar_present and _verdict_is_valid(verdict_out)
+            outcome = classify(
+                completed.returncode, sidecar_present, verdict_valid, completed.stderr
+            )
+            usage_present = _is_non_empty(usage_out)
+
+            result = RunResult(
+                case_id=case.case_id,
+                variant=label,
+                repetition_id=rep,
+                exit_code=completed.returncode,
+                outcome=outcome,
+                reviewer_ran=sidecar_present,
+                wall_clock_s=wall_clock_s,
+                verdict_path=_relative(verdict_out, out_dir) if sidecar_present else None,
+                usage_path=_relative(usage_out, out_dir) if usage_present else None,
+                cost_status="available"
+                if usage_present and _has_cost(usage_out)
+                else "unavailable",
+                requested_effort=variant.effort,
+                stdout_path=_relative(stdout_file, out_dir),
+                stderr_path=_relative(stderr_file, out_dir),
+                unexpected=outcome != case.expected_outcome,
+            )
+            _write_json(rep_dir / "result.json", dataclasses.asdict(result))
+    except CacheError as error:
+        if result is None:
+            raise RunnerError(
+                f"{case.case_id}: worktree for {case.head_sha} failed: {error}"
+            ) from error
+        teardown_error = f"{error}"
+
+    if result is None:  # pragma: no cover — сюда приводит только исключение выше
+        raise RunnerError(f"{case.case_id}: run produced no result")
+    if teardown_error is not None:
+        result = dataclasses.replace(result, teardown_error=teardown_error)
+        _write_json(rep_dir / "result.json", dataclasses.asdict(result))
+    return result
+
+
+@dataclass(frozen=True)
+class RunManifest:
+    """Метаданные прогона — они же ``run.json`` (§10, D12).
+
+    `provider_env_names` — **имена** provider-переменных окружения прогона
+    (`provider_env_names`), без значений: через месяц по манифесту должно быть
+    видно не только «какой кит», но и «в каком окружении» — аккаунт и прокси
+    меняют результат так же молча, как правка промпта.
+
+    `cases` — отсортированные `case_id` прогона рядом с `corpus_digest`.
+    Дайджест отвечает «тот ли корпус», список — «какие кейсы измеряли», и без
+    него результат чужого кейса в каталоге читался как свой: `load_results`
+    сверить его было не с чем, а доливка другого набора проходила молча.
+
+    Список описывает **прогон**, а не последнюю выборку: `--cases
+    <подмножество>` его не сжимает и не перезаписывает. Он же служит границей —
+    запрошенный набор обязан в него входить (равенство допустимо, выход за
+    пределы — отказ), и `load_results` по нему отвергает результат чужого
+    кейса.
+    """
+
+    run_id: str
+    kit: dict[str, object]
+    tools: dict[str, str]
+    variants: list[dict[str, str | None]]
+    corpus_digest: str
+    matcher_version: int
+    matcher_rules_digest: str
+    started: str
+    finished: str
+    jobs: int
+    repetitions: int
+    provider_env_names: list[str] = dataclasses.field(default_factory=list)
+    cases: list[str] = dataclasses.field(default_factory=list)
+
+
+def provider_env_names(env: Mapping[str, str]) -> list[str]:
+    """Отсортированные **имена** provider-переменных окружения (§10).
+
+    Имя попадает в список, если начинается с одной из `_PROVIDER_ENV_PREFIXES`
+    или совпадает с одной из `_PROVIDER_ENV_NAMES` — сравнение без учёта
+    регистра (`https_proxy` встречается чаще `HTTPS_PROXY`), в список идёт
+    имя как есть. Значения не возвращаются: манифест — публикуемый артефакт
+    (§10, копируется в `docs/evidence/`), и ключ в нём был бы утечкой.
+    """
+    return sorted(
+        name
+        for name in env
+        if name.upper().startswith(_PROVIDER_ENV_PREFIXES) or name.upper() in _PROVIDER_ENV_NAMES
+    )
+
+
+def run_all(
+    cases: Sequence[Case],
+    variants: Sequence[Variant],
+    *,
+    repetitions: int,
+    out_dir: Path,
+    kit: KitUnderTest,
+    cache_root: Path,
+    jobs: int = 1,
+    rerun: bool = False,
+    keep_worktrees: bool = False,
+    env_base: Mapping[str, str] | None = None,
+    corpus_digest_override: str | None = None,
+    git: str = "git",
+    sh: str = "sh",
+) -> RunManifest:
+    """Прогнать все тройки `(кейс, вариант, повторение)` и записать ``run.json``.
+
+    `corpus_digest_override` — дайджест **всего** корпуса, когда `cases` —
+    подмножество (`review-eval run --cases …`): `run.json` обязан назвать
+    корпус, из которого выбирали, а не выборку, иначе два прогона разных
+    подмножеств одного корпуса выглядели бы прогонами разных корпусов.
+    По умолчанию считается по переданным `cases`.
+
+    **`repetitions` только растут — и `--rerun` от этого не освобождает.**
+    Меньшее число перезаписывало бы `run.json`, оставляя на диске `result.json`
+    старших повторений: `--rerun` сносит **выбранные** тройки, то есть 1..N
+    нового N, а каталоги N+1.. остаются — и оказываются вне манифеста. Выход
+    один: новый `--out`.
+
+    **Менять `repetitions` разрешено только запросом по полному набору кейсов
+    манифеста.** Доливка выборки с другим числом давала манифест, объявляющий
+    старшие повторения у **всех** кейсов, тогда как появлялись они лишь у
+    выбранных, — и метрики публиковали такой прогон как `ok`. Число повторений
+    описывает прогон целиком.
+
+    **Результаты без манифеста — отказ.** Если в каталоге есть `result.json`, а
+    `run.json` отсутствует или не читается, провенанс этих результатов
+    неизвестен: прежде отсутствующий манифест читался как «каталог пуст», и
+    раннер писал свой `run.json`, пропуская готовые тройки как свои — чужие
+    результаты получали чужой провенанс. Выход один: `--rerun` по **полному**
+    набору кейсов (он и переизмеряет всё) либо новый `--out`.
+
+    Идемпотентно по тройке: готовый `result.json` пропускается без `rerun`.
+    Доливка в тот же `--out` остаётся тем же прогоном: `run_id` и `started`
+    берутся из прежнего `run.json`, обновляется только `finished`.
+    Последовательно по умолчанию (`jobs=1`): параллельные вызовы модели уже
+    убивали фоновые задачи по памяти (§6). `run.json` пишется дважды — в начале
+    с `finished: null`, в конце целиком: прогон, оборвавшийся на середине,
+    оставляет честный манифест, а не пустой каталог.
+    """
+    if repetitions < 1:
+        raise RunnerError(f"repetitions must be >= 1, got {repetitions}")
+    if jobs < 1:
+        raise RunnerError(f"jobs must be >= 1, got {jobs}")
+    for case in cases:
+        _require_safe_local_args(case)
+    _require_objects(cases, cache_root, git=git)
+
+    environment: Mapping[str, str] = os.environ if env_base is None else env_base
+    labels = [variant_label(v) for v in variants]
+    variant_records: list[dict[str, str | None]] = [
+        {
+            "label": variant_label(v),
+            "harness": v.harness,
+            "model": v.model,
+            "requested_effort": v.effort,
+        }
+        for v in variants
+    ]
+    digest = corpus_digest(cases) if corpus_digest_override is None else corpus_digest_override
+    case_ids = sorted(case.case_id for case in cases)
+    kit_payload: dict[str, object] = {"commit": kit.commit, **kit.digests}
+    tools = _tool_versions(git=git)
+    env_names = provider_env_names(environment)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    previous = _previous_manifest(out_dir)
+    if previous is None and not rerun and _remaining_results(out_dir):
+        raise RunnerError(
+            f"в {out_dir} есть результаты, но run.json отсутствует/нечитаем — "
+            "провенанс неизвестен: --rerun всего каталога или новый --out"
+        )
+    stored_reps = previous.get("repetitions") if previous is not None else None
+    if isinstance(stored_reps, int) and repetitions < stored_reps:
+        raise RunnerError(
+            f"{out_dir / 'run.json'}: уменьшение repetitions запрещено "
+            f"(в манифесте {stored_reps}, запрошено {repetitions}) — результаты "
+            "старших повторений остались бы вне манифеста и без него: новый --out"
+        )
+    # Список кейсов манифеста описывает **прогон**, а не последнюю выборку:
+    # `--cases <подмножество>` его не сжимает, иначе следующая доливка полным
+    # набором оказалась бы «выходом за манифест», а результаты кейсов вне
+    # выборки — «необъявленными» для `load_results`.
+    manifest_cases = _manifest_cases(previous) or case_ids
+    if (
+        isinstance(stored_reps, int)
+        and repetitions != stored_reps
+        and set(case_ids) != set(manifest_cases)
+    ):
+        missing = sorted(set(manifest_cases) - set(case_ids))
+        raise RunnerError(
+            f"{out_dir / 'run.json'}: менять repetitions ({stored_reps} → "
+            f"{repetitions}) можно только запросом по полному набору кейсов "
+            f"манифеста — не запрошены: {', '.join(missing) or '—'}; иначе старшие "
+            "повторения появятся лишь у части кейсов, а манифест объявит их у всех"
+        )
+    run_id = _resolve_run_id(out_dir, previous, labels, digest)
+    drift = _provenance_drift(previous, kit_payload, digest, variant_records, env_names, case_ids)
+    if drift and not rerun:
+        raise RunnerError(
+            f"{out_dir / 'run.json'}: доливка невозможна — провенанс прогона "
+            f"разошёлся с текущим ({', '.join(drift)}); передайте --rerun, "
+            "чтобы начать прогон заново, или выберите другой --out"
+        )
+    if rerun:
+        # Порядок важен: сначала **посчитать** всё, потом отказать, и только
+        # потом удалять. Прежде `_reset_results` сносил выбранные тройки до
+        # проверки остатка, и команда, завершившаяся отказом, успевала
+        # уничтожить оплаченные результаты.
+        targets = _reset_targets(out_dir, cases, variants, repetitions)
+        if drift:
+            leftover = [
+                path
+                for path in _remaining_results(out_dir)
+                if not any(path.is_relative_to(target) for target in targets)
+            ]
+            if leftover:
+                raise RunnerError(
+                    f"{out_dir}: провенанс разошёлся ({', '.join(drift)}), а в каталоге "
+                    f"остались результаты прошлого прогона ({len(leftover)}) вне текущей "
+                    "выборки — начните прогон в другом --out, чтобы не смешивать"
+                )
+        _reset_results(
+            out_dir,
+            targets,
+            [case.repo for case in cases],
+            cache_root=cache_root,
+            git=git,
+        )
+    started = utc_now() if rerun else (_previous_string(previous, "started") or utc_now())
+
+    payload: dict[str, object] = {
+        "run_id": run_id,
+        "kit": kit_payload,
+        "tools": tools,
+        "variants": variant_records,
+        "corpus_digest": digest,
+        "cases": manifest_cases,
+        "matcher_version": MATCHER_VERSION,
+        "matcher_rules_digest": rules_digest(),
+        "started": started,
+        "finished": None,
+        "jobs": jobs,
+        "repetitions": repetitions,
+        "provider_env_names": env_names,
+    }
+    _write_json(out_dir / "run.json", payload)
+
+    pending = [
+        (case, variant, rep)
+        for case in cases
+        for variant in variants
+        for rep in range(1, repetitions + 1)
+        if rerun or not _result_exists(out_dir, case, variant, rep)
+    ]
+
+    def execute(task: tuple[Case, Variant, int]) -> RunResult:
+        case, variant, rep = task
+        return run_case(
+            case,
+            variant,
+            rep,
+            kit=kit,
+            cache_root=cache_root,
+            out_dir=out_dir,
+            env_base=environment,
+            keep_worktrees=keep_worktrees,
+            git=git,
+            sh=sh,
+        )
+
+    results: list[RunResult] = []
+    if jobs == 1:
+        for task in pending:
+            results.append(execute(task))
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            for future in [pool.submit(execute, task) for task in pending]:
+                results.append(future.result())
+
+    if not keep_worktrees and all(item.teardown_error is None for item in results):
+        _remove_empty_scratch(out_dir / "scratch")
+
+    manifest = RunManifest(
+        run_id=run_id,
+        kit=kit_payload,
+        tools=tools,
+        variants=variant_records,
+        corpus_digest=digest,
+        matcher_version=MATCHER_VERSION,
+        matcher_rules_digest=rules_digest(),
+        started=started,
+        finished=utc_now(),
+        jobs=jobs,
+        repetitions=repetitions,
+        provider_env_names=env_names,
+        cases=manifest_cases,
+    )
+    _write_json(out_dir / "run.json", dataclasses.asdict(manifest))
+    return manifest
+
+
+def _remove_empty_scratch(scratch: Path) -> None:
+    """Убрать дерево `scratch/`, если в нём не осталось файлов.
+
+    После чистого прогона там остаются только пустые каталоги — мусор, который
+    попадёт в копию прогона в `docs/evidence/`. Непустое дерево не трогаем: это
+    утёкший worktree (`teardown_error`, `--keep-worktrees`, обрыв), и удалять
+    его молча — значит терять след.
+    """
+    if not scratch.is_dir():
+        return
+    if any(not path.is_dir() for path in scratch.rglob("*")):
+        return
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
+def load_results(out_dir: Path) -> list[RunResult]:
+    """Все записанные `result.json` прогона, отсортированные по тройке.
+
+    Читает `cases/<case>/<variant>/<rep>/result.json` — единственный источник
+    исходов прогона (в т.ч. доложенных прошлыми запусками в тот же `--out`).
+    Порядок детерминирован: отчёт и правило кода выхода CLI не должны зависеть
+    от обхода файловой системы. Битый или неполный `result.json` — `RunnerError`
+    с именем файла: молча потерять исход прогона нельзя.
+
+    **Результат вне манифеста — тоже `RunnerError`.** Каталог прогона может
+    нести остаток прогона с другим `repetitions`, другим набором вариантов или
+    другими кейсами. Тихо включить такой результат в метрики нельзя (числа
+    посчитаны по необъявленному прогону), тихо выбросить — тоже: исход оплачен,
+    и его исчезновение надо объяснять, а не скрывать. Сверяются повторение,
+    метка варианта и `case_id` — манифест перечисляет все три. Манифеста нет
+    вовсе — сверять не с чем, читаем как есть (сам этот случай ловит
+    `run_all`).
+    """
+    cases_dir = out_dir / "cases"
+    manifest = _previous_manifest(out_dir)
+    results: list[RunResult] = []
+    for path in sorted(cases_dir.glob("*/*/*/result.json")):
+        result = _result_from_file(path)
+        _require_in_manifest(result, manifest, path, out_dir=out_dir)
+        results.append(result)
+    _require_complete(results, manifest, out_dir=out_dir)
+    return sorted(results, key=lambda item: (item.case_id, item.variant, item.repetition_id))
+
+
+def _require_complete(
+    results: Sequence[RunResult],
+    manifest: dict[str, object] | None,
+    *,
+    out_dir: Path,
+) -> None:
+    """Отказать, если манифест объявляет тройки, которых на диске нет.
+
+    Манифест объявляет **произведение** «кейсы × варианты × 1..repetitions».
+    Отсутствующий `result.json` значит одно из двух: прогон ещё идёт или он
+    оборвался. В обоих случаях считать метрики нельзя, и `status: ok` по
+    половине прогона выглядел бы измерением — прогон в процессе просто не
+    отчётен.
+
+    Манифеста нет или он не объявляет состав (старый формат) — сверять не с
+    чем; сам этот случай ловит `run_all`.
+    """
+    if manifest is None:
+        return
+    cases = _manifest_cases(manifest)
+    variants = manifest.get("variants")
+    repetitions = manifest.get("repetitions")
+    labels = (
+        [record.get("label") for record in variants if isinstance(record, Mapping)]
+        if isinstance(variants, list)
+        else []
+    )
+    if not cases or not labels or not isinstance(repetitions, int) or repetitions < 1:
+        return
+    present = {(item.case_id, item.variant, item.repetition_id) for item in results}
+    missing = [
+        f"{case_id}/{label}/{rep}"
+        for case_id in cases
+        for label in labels
+        for rep in range(1, repetitions + 1)
+        if (case_id, label, rep) not in present
+    ]
+    if missing:
+        shown = ", ".join(missing[:10]) + (" …" if len(missing) > 10 else "")
+        raise RunnerError(
+            f"{out_dir}: прогон неполон — манифест объявляет тройки, которых нет "
+            f"({len(missing)}): {shown}; прогон ещё идёт или оборвался, метрики по "
+            "нему не считаются (доливка тем же --out либо новый --out)"
+        )
+
+
+def _require_in_manifest(
+    result: RunResult,
+    manifest: dict[str, object] | None,
+    path: Path,
+    *,
+    out_dir: Path,
+) -> None:
+    """Отказать, если `run.json` такого прогона не объявляет."""
+    if manifest is None:
+        return
+    repetitions = manifest.get("repetitions")
+    if isinstance(repetitions, int) and result.repetition_id > repetitions:
+        raise RunnerError(
+            f"{path}: repetition {result.repetition_id} вне манифеста "
+            f"{out_dir / 'run.json'} (repetitions={repetitions}) — результат "
+            "необъявленного прогона: --rerun всего каталога или новый --out"
+        )
+    declared = manifest.get("cases")
+    if isinstance(declared, list) and declared and result.case_id not in declared:
+        raise RunnerError(
+            f"{path}: кейс '{result.case_id}' вне манифеста {out_dir / 'run.json'} — "
+            "результат необъявленного прогона: --rerun всего каталога или новый --out"
+        )
+    variants = manifest.get("variants")
+    if isinstance(variants, list):
+        labels = {record.get("label") for record in variants if isinstance(record, Mapping)}
+        if labels and result.variant not in labels:
+            raise RunnerError(
+                f"{path}: вариант '{result.variant}' вне манифеста "
+                f"{out_dir / 'run.json'} — результат необъявленного прогона: "
+                "--rerun всего каталога или новый --out"
+            )
+
+
+def _provenance_drift(
+    previous: dict[str, object] | None,
+    kit: Mapping[str, object],
+    digest: str,
+    variants: Sequence[Mapping[str, str | None]],
+    env_names: Sequence[str],
+    case_ids: Sequence[str],
+) -> list[str]:
+    """Поля, в которых прежний `run.json` расходится с текущим прогоном.
+
+    Сравнивается то, что отвечает на вопрос **что измерено**: кит (commit и
+    каждый дайджест), корпус, матчер, набор вариантов, **набор кейсов** и
+    **набор имён provider-переменных**. `tools`, `jobs`, `repetitions`
+    намеренно не сравниваются: версия git на машине или добавленное повторение
+    доливку ломать не должны.
+
+    Набор кейсов сравнивается на **вхождение**, а не на равенство: выборка
+    внутри списка манифеста законна (`--cases <подмножество>` — штатный
+    сценарий, для него и существует `corpus_digest_override`), выход за него —
+    нет. Прогон по A и прогон по A+B разные измерения, и один `run.json` их не
+    описывает, поэтому надмножество отвергается наравне с чужим кейсом.
+    Равенство требовать нельзя: переизмерить один кейс существующего прогона
+    значило бы заводить новый `--out` и платить за весь корпус.
+
+    Сам список манифеста от выборки не меняется (см. `run_all`): он описывает
+    прогон целиком, а не последнюю выборку.
+
+    Окружение попало сюда не как «обстоятельство»: имена provider-переменных
+    отвечают, к какому аккаунту и через какой прокси ушёл вызов. Прежде
+    повторение 2 с другим набором доливалось молча, а `run.json`
+    перезаписывался новым набором — файл утверждал, что весь прогон шёл через
+    одно окружение, хотя половина шла через другое. Сравниваются **имена**,
+    значения не читаются никогда.
+    """
+    if previous is None:
+        return []
+    drift: list[str] = []
+    stored_kit = previous.get("kit")
+    stored_kit = stored_kit if isinstance(stored_kit, Mapping) else {}
+    for key in sorted(set(kit) | set(stored_kit)):
+        if stored_kit.get(key) != kit.get(key):
+            drift.append(f"kit.{key}")
+    if previous.get("corpus_digest") != digest:
+        drift.append("corpus_digest")
+    if previous.get("matcher_version") != MATCHER_VERSION:
+        drift.append("matcher_version")
+    if previous.get("matcher_rules_digest") != rules_digest():
+        drift.append("matcher_rules_digest")
+    if previous.get("variants") != [dict(record) for record in variants]:
+        drift.append("variants")
+    stored_cases = _manifest_cases(previous)
+    outside = sorted(set(case_ids) - set(stored_cases)) if stored_cases else []
+    if outside:
+        drift.append(
+            f"кейсы вне манифеста прогона: {', '.join(outside)} "
+            f"(манифест называет: {', '.join(stored_cases)})"
+        )
+    stored_env = previous.get("provider_env_names")
+    stored_env = list(stored_env) if isinstance(stored_env, list) else []
+    if stored_env != list(env_names):
+        drift.append(
+            f"provider_env_names (было: {', '.join(str(n) for n in stored_env) or '—'}; "
+            f"стало: {', '.join(env_names) or '—'})"
+        )
+    return drift
+
+
+def _reset_targets(
+    out_dir: Path,
+    cases: Sequence[Case],
+    variants: Sequence[Variant],
+    repetitions: int,
+) -> list[Path]:
+    """Каталоги троек, которые снесёт `--rerun` — **посчитанные, но не тронутые**.
+
+    Отдельная функция, потому что порядок в `run_all` обязан быть «посчитать →
+    отказать → удалить»: список нужен и для проверки остатка (что останется
+    после задуманного сброса), и для самого сброса.
+
+    Каждый путь проверяется `_require_inside`: метка варианта попадает в него
+    как есть, и уход за пределы `--out` должен кончаться отказом, а не
+    `rmtree` наружу.
+    """
+    targets: list[Path] = []
+    for case in cases:
+        for variant in variants:
+            label = variant_label(variant)
+            for rep in range(1, repetitions + 1):
+                targets.append(
+                    _require_inside(
+                        out_dir,
+                        out_dir / "cases" / case.case_id / label / str(rep),
+                        what=f"--rerun {case.case_id}/{label}/{rep}",
+                    )
+                )
+    return targets
+
+
+def _reset_results(
+    out_dir: Path,
+    targets: Sequence[Path],
+    repos: Sequence[str],
+    *,
+    cache_root: Path,
+    git: str,
+) -> None:
+    """`--rerun`: снести посчитанные `_reset_targets` каталоги и `scratch/`.
+
+    Сносятся **только выбранные** тройки: результат прогона оплачен, и
+    `--rerun --cases <подмножество>` не имеет права удалять чужие. Смесь
+    провенансов это не открывает — при расхождении провенанса вызывающий
+    отказывается **до** вызова этой функции, если что-то остаётся
+    (см. `run_all`).
+
+    После удаления каталогов worktree обязателен `worktree prune`: иначе
+    `worktree add` упрётся в прежнюю регистрацию (тот же контракт, что у
+    `_clear_scratch`).
+    """
+    for target in targets:
+        shutil.rmtree(target, ignore_errors=True)
+    scratch = _require_inside(out_dir, out_dir / "scratch", what="--rerun scratch")
+    if not scratch.exists():
+        return
+    shutil.rmtree(scratch, ignore_errors=True)
+    for repo in dict.fromkeys(repos):
+        cache = repo_cache_dir(cache_root, repo)
+        if cache.exists():
+            subprocess.run(
+                [git, "-C", str(cache), "worktree", "prune"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+
+def _remaining_results(out_dir: Path) -> list[Path]:
+    """Оставшиеся в каталоге `result.json` — след прогона, который здесь уже был."""
+    return sorted((out_dir / "cases").glob("*/*/*/result.json"))
+
+
+def _require_safe_local_args(case: Case) -> None:
+    """Отказать, если `local_args` кейса подменяют измеряемое, а не его объём.
+
+    Отказ до создания worktree и до вызова кита: прогон с подменённым
+    диапазоном не «частично валиден», он измеряет не тот материал, и такой
+    результат опаснее отсутствующего — он выглядит как нормальный.
+    """
+    forbidden = [
+        argument
+        for argument in case.local_args
+        if argument.startswith(_FORBIDDEN_LOCAL_ARG_PREFIXES)
+    ]
+    if forbidden:
+        raise RunnerError(
+            f"{case.case_id}: local_args подменяют измерение и запрещены: "
+            f"{', '.join(forbidden)} (диапазон задаёт раннер по base_sha/head_sha)"
+        )
+
+
+def _require_objects(cases: Sequence[Case], cache_root: Path, *, git: str) -> None:
+    """Fail fast: все `base_sha`/`head_sha` выбранных кейсов уже в bare-кэше.
+
+    Проверка до первого прогона, а не по ходу: иначе оплаченные прогоны
+    первых кейсов обрывались бы на непокрытом кейсе в середине очереди.
+    """
+    missing = [
+        f"{case.repo}@{sha} ({case.case_id})"
+        for case in cases
+        for sha in dict.fromkeys((case.base_sha, case.head_sha))
+        if not has_object(cache_root, case.repo, sha, git=git)
+    ]
+    if missing:
+        raise RunnerError(
+            f"objects not in the cache at {cache_root}: {', '.join(missing)}; "
+            "run 'review-eval corpus materialize' first (run is offline)"
+        )
+
+
+def _result_from_file(path: Path) -> RunResult:
+    """`RunResult` из `result.json`; лишние ключи игнорируются, нехватка — ошибка."""
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        raise RunnerError(f"{path}: result.json is not a JSON object")
+    fields = dataclasses.fields(RunResult)
+    missing = [
+        field.name
+        for field in fields
+        if field.name not in payload and field.default is dataclasses.MISSING
+    ]
+    if missing:
+        raise RunnerError(f"{path}: result.json is missing field(s): {', '.join(missing)}")
+    known = {field.name: payload[field.name] for field in fields if field.name in payload}
+    numeric = ("repetition_id", "exit_code", "wall_clock_s")
+    bad = [
+        name
+        for name in numeric
+        if not isinstance(known.get(name), (int, float)) or isinstance(known.get(name), bool)
+    ]
+    if bad:
+        raise RunnerError(f"{path}: result.json field(s) must be numeric: {', '.join(bad)}")
+    return RunResult(**known)
+
+
+def _unlink(path: Path) -> None:
+    """Удалить файл, если он есть (остаток прошлого прогона этой тройки)."""
+    path.unlink(missing_ok=True)
+
+
+def _run_env(
+    kit: KitUnderTest,
+    variant: Variant,
+    env_base: Mapping[str, str],
+    *,
+    verdict_out: Path,
+    usage_out: Path,
+) -> dict[str, str]:
+    """Окружение прогона: наследуемое без `REVIEW_*`/`GIT_*` плюс наши переменные.
+
+    Вычищаются приставки целиком, а не только `REVIEW_CMD`: любая
+    унаследованная `REVIEW_*` (модель, манифест контекста, потолки) или `GIT_*`
+    (`GIT_DIR`, `GIT_WORK_TREE`, …) подменила бы измеряемый путь молча (§6.3).
+    Остальное окружение наследуется как есть — `PATH`, `HOME`, `TMPDIR`, локаль
+    киту нужны.
+    """
+    env = {
+        key: value for key, value in env_base.items() if not key.startswith(_SCRUBBED_ENV_PREFIXES)
+    }
+    env["REVIEW_KIT_DIR"] = str(kit.kit_dir)
+    env["REVIEW_PROMPT"] = str(kit.prompt)
+    env["REVIEW_SCHEMA"] = str(kit.schema)
+    env["REVIEW_HARNESS"] = variant.harness
+    env["REVIEW_MODEL"] = variant.model
+    if variant.effort is not None:
+        env["REVIEW_EFFORT"] = variant.effort
+    env["REVIEW_VERDICT_OUT"] = str(verdict_out)
+    env["REVIEW_USAGE_OUT"] = str(usage_out)
+    return env
+
+
+def _range_is_empty(worktree_dir: Path, case: Case, *, git: str) -> bool:
+    """Пуст ли диф диапазона ревью — тот же диапазон, что считает кит.
+
+    `merge-base(base, head)..head`: именно его берёт `local.sh`, поэтому
+    проверять что-то другое значило бы отвечать не на тот вопрос. Считается в
+    worktree кейса, офлайн — объекты уже в bare-кэше.
+
+    Сбой git (нет бинаря, битый кэш) — **не** «диапазон пуст»: возвращается
+    `False`, и прогон идёт обычным путём, где сбой проявится честно. Молча
+    объявить кейс негодным из-за неудачного вызова git было бы хуже: он
+    исчез бы из метрик качества.
+    """
+    merge_base = _git_stdout(git, worktree_dir, ["merge-base", case.base_sha, case.head_sha])
+    if merge_base is None:
+        return False
+    completed = _git_run(git, worktree_dir, ["diff", "--quiet", f"{merge_base}..{case.head_sha}"])
+    return completed is not None and completed.returncode == 0
+
+
+def _git_run(git: str, cwd: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
+    """Вызов git в каталоге; ``None`` — бинаря нет или его не удалось запустить."""
+    try:
+        return subprocess.run(  # noqa: S603 — argv фиксирован, без shell
+            [git, "-C", str(cwd), *args], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+
+
+def _git_stdout(git: str, cwd: Path, args: Sequence[str]) -> str | None:
+    """stdout удачного вызова git без пробелов по краям, иначе ``None``."""
+    completed = _git_run(git, cwd, args)
+    if completed is None or completed.returncode != 0:
+        return None
+    text = completed.stdout.strip()
+    return text or None
+
+
+def _clear_scratch(cache_root: Path, repo: str, dest: Path, *, git: str) -> None:
+    """Убрать остаток worktree по пути `dest` (после `--keep-worktrees` или обрыва).
+
+    Только каталог внутри `out_dir/scratch`, который раннер сам и создаёт;
+    после удаления обязателен `worktree prune`, иначе `worktree add` упрётся в
+    прежнюю регистрацию.
+    """
+    if not dest.exists():
+        return
+    shutil.rmtree(dest)
+    cache = repo_cache_dir(cache_root, repo)
+    if cache.exists():
+        subprocess.run(
+            [git, "-C", str(cache), "worktree", "prune"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+def _verdict_is_valid(path: Path) -> bool:
+    """Годен ли sidecar как вердикт — по общему определению `threshold`.
+
+    Правило одно на пакет (`is_schema_valid_verdict`): структура **плюс** схема
+    каждой находки. Это класс настоящего кита: `apply-threshold.sh` отвергает
+    схемно негодный вердикт кодом 2, поэтому исход `verdict` такому sidecar-у
+    не положен — он `invalid_verdict`, ошибка модели. Прежде раннер проверял
+    только структуру, и находка без обязательного `title` попадала в метрики
+    качества: TP/FP считались по вердикту, по которому гейт решения не выносил.
+    """
+    return is_schema_valid_verdict(_read_json(path))
+
+
+def _has_cost(path: Path) -> bool:
+    """Несёт ли usage-sidecar числовой `total_cost_usd` (D6: `null` — не 0)."""
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return False
+    cost = payload.get("total_cost_usd")
+    return isinstance(cost, (int, float)) and not isinstance(cost, bool)
+
+
+def _read_json(path: Path) -> object:
+    """JSON из файла или ``None``, если файла нет / он не разбирается."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def _is_non_empty(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _relative(path: Path, out_dir: Path) -> str:
+    """Путь относительно `out_dir` в POSIX-форме (артефакты переносимы, §10)."""
+    return path.resolve().relative_to(out_dir.resolve()).as_posix()
+
+
+def _write_json(path: Path, payload: object) -> None:
+    """Записать JSON **атомарно**: временный файл рядом плюс ``os.replace``.
+
+    `run.json` перезаписывается дважды (в начале с ``finished: null``, в конце
+    целиком), а `result.json` — единственный источник исхода прогона. Обрыв
+    посреди `write_text` оставил бы обрезанный файл, то есть прогон без
+    манифеста или без исхода; ``os.replace`` в пределах одного каталога либо
+    заменяет файл целиком, либо не заменяет вовсе.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _result_exists(out_dir: Path, case: Case, variant: Variant, rep: int) -> bool:
+    result = out_dir / "cases" / case.case_id / variant_label(variant) / str(rep) / "result.json"
+    return result.is_file()
+
+
+def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
+    """Прежний `run.json` этого каталога, если он есть и разбирается."""
+    payload = _read_json(out_dir / "run.json")
+    return payload if isinstance(payload, dict) else None
+
+
+def _manifest_cases(previous: dict[str, object] | None) -> list[str]:
+    """Список кейсов прежнего манифеста; пустой — его там нет или он не список."""
+    if previous is None:
+        return []
+    stored = previous.get("cases")
+    return [str(item) for item in stored] if isinstance(stored, list) else []
+
+
+def _previous_string(previous: dict[str, object] | None, key: str) -> str | None:
+    """Непустая строка из прежнего манифеста или ``None``."""
+    if previous is None:
+        return None
+    value = previous.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_run_id(
+    out_dir: Path,
+    previous: dict[str, object] | None,
+    labels: Sequence[str],
+    digest: str,
+) -> str:
+    """`run_id` прогона: имя каталога, затем прежний `run.json`, затем новый.
+
+    Идемпотентный повтор в тот же `--out` обязан остаться **тем же** прогоном:
+    новый `run_id` при доливке результатов сделал бы `run.json` и уже
+    записанные артефакты разными прогонами.
+    """
+    if _RUN_ID_RE.fullmatch(out_dir.name):
+        return out_dir.name
+    return _previous_string(previous, "run_id") or _new_run_id(labels, digest)
+
+
+def _new_run_id(labels: Sequence[str], digest: str) -> str:
+    """``<UTC ts>-<8 hex>``: метка времени плюс отпечаток вариантов и корпуса (§6)."""
+    material = "\n".join([*labels, digest]).encode("utf-8")
+    short = hashlib.sha256(material).hexdigest()[:8]
+    return f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{short}"
+
+
+def utc_now() -> str:
+    """Текущее время UTC в форме, которой пользуются артефакты прогона (§10).
+
+    Публичная: ту же метку ставит `cli` в `recomputed_with`, и два формата
+    времени в одном `metrics.json` читались бы как два разных источника.
+    """
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _tool_versions(*, git: str) -> dict[str, str]:
+    """Версии `claude`, `codex`, `git` — ``unavailable``, если бинаря нет или он упал."""
+    return {
+        "claude": _tool_version("claude"),
+        "codex": _tool_version("codex"),
+        "git": _tool_version(git),
+    }
+
+
+def _tool_version(binary: str) -> str:
+    if shutil.which(binary) is None:
+        return "unavailable"
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TOOL_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if result.returncode != 0:
+        return "unavailable"
+    first_line = result.stdout.strip().splitlines()
+    return first_line[0].strip() if first_line else "unavailable"
+
+
+def _head_commit(root: Path, *, git: str) -> str:
+    """Commit чекаута или ``unavailable``, если это не git-репо.
+
+    Невозможность **запустить** `git` — другое дело: `OSError` значит неверный
+    `--git`, и молчаливое ``unavailable`` скрыло бы ошибку конфигурации за
+    провенансом, которого нет.
+    """
+    try:
+        result = subprocess.run(
+            [git, "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise RunnerError(f"cannot run '{git}': {error}") from error
+    if result.returncode != 0:
+        return "unavailable"
+    return result.stdout.strip() or "unavailable"
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
