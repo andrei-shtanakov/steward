@@ -362,15 +362,28 @@ def classify(exit_code: int, sidecar_present: bool, verdict_valid: bool, stderr:
     механический сбой, а не «ревью без находок».
 
     Гардрейл требует **отсутствия** sidecar: потолок дифа отказывает до вызова
-    ревьюера, поэтому сохранённый вердикт при коде 2 — всегда отказ порога
-    (`invalid_verdict`), даже если текст потолка почему-то оказался в stderr.
+    ревьюера, поэтому сохранённый вердикт при коде 2 гардрейлом быть не может,
+    даже если текст потолка почему-то оказался в stderr.
+
+    **Код 2 с сохранённым вердиктом делится по схеме.** Вердикт годен —
+    `config_failure`: sidecar пишется до порога, значит порог отказал по своей
+    причине (нет `jq`, негодный аргумент), и списывать это на модель нельзя.
+    Вердикт негоден — `invalid_verdict`: ровно то, за что порог и отказывает.
+    Прежде оба случая шли в `invalid_verdict`, то есть сбой инструмента
+    выглядел ошибкой модели. Текст stderr здесь не читается: гадать по нему,
+    какая из причин кода 2 сработала, — ровно та хрупкость, от которой
+    классификация уходит к фактам про sidecar.
     """
     if exit_code in (0, 1) and sidecar_present and verdict_valid:
         return "verdict"
     if exit_code == 2 and not sidecar_present and GUARDRAIL_MARKER in stderr:
         return "guardrail_rejection"
     if exit_code == 2 and sidecar_present:
-        return "invalid_verdict"
+        # Sidecar пишется **до** порога, поэтому «код 2 при годном вердикте»
+        # значит, что отказал сам порог по своей причине (нет `jq`, негодный
+        # аргумент) — это конфигурация, а не ошибка модели. Негодный по схеме
+        # вердикт при том же коде — ровно отказ порога, `invalid_verdict`.
+        return "config_failure" if verdict_valid else "invalid_verdict"
     if exit_code in (0, 1) and sidecar_present:
         return "invalid_verdict"
     if exit_code == 2:
@@ -663,6 +676,15 @@ def run_all(
 
     environment: Mapping[str, str] = os.environ if env_base is None else env_base
     labels = [variant_label(v) for v in variants]
+    duplicated = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicated:
+        # Метка — имя каталога артефактов, поэтому дубликат писал бы вердикт и
+        # результат по одному пути из двух задач (при `--jobs > 1` —
+        # одновременно), а счёт прогонов вырос бы вдвое без второго измерения.
+        raise RunnerError(
+            f"варианты повторяются: {', '.join(duplicated)} — одна тройка была бы "
+            "оплачена дважды и писала бы артефакты по одному пути"
+        )
     variant_records: list[dict[str, str | None]] = [
         {
             "label": variant_label(v),
@@ -675,7 +697,7 @@ def run_all(
     digest = corpus_digest(cases) if corpus_digest_override is None else corpus_digest_override
     case_ids = sorted(case.case_id for case in cases)
     kit_payload: dict[str, object] = {"commit": kit.commit, **kit.digests}
-    tools = _tool_versions(git=git)
+    tools = _tool_versions(environment, git=git)
     env_names = provider_env_names(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
     previous = _previous_manifest(out_dir)
@@ -853,6 +875,9 @@ def load_results(out_dir: Path) -> list[RunResult]:
     называет тройку дважды — деревом каталогов и полями внутри, — и оба
     утверждения должны совпадать.
 
+    Симлинк на месте `result.json` или любого каталога выше — `RunnerError`
+    (`_require_result_file`): содержимое пришло бы извне прогона.
+
     **Результат вне манифеста — тоже `RunnerError`.** Каталог прогона может
     нести остаток прогона с другим `repetitions`, другим набором вариантов или
     другими кейсами. Тихо включить такой результат в метрики нельзя (числа
@@ -867,6 +892,7 @@ def load_results(out_dir: Path) -> list[RunResult]:
     results: list[RunResult] = []
     seen: dict[tuple[str, str, int], Path] = {}
     for path in sorted(cases_dir.glob("*/*/*/result.json")):
+        _require_result_file(out_dir, path)
         result = _result_from_file(path)
         _require_path_matches_payload(result, path, cases_dir=cases_dir)
         _require_unique(result, path, seen)
@@ -1174,8 +1200,17 @@ def _reset_results(
 
 
 def _remaining_results(out_dir: Path) -> list[Path]:
-    """Оставшиеся в каталоге `result.json` — след прогона, который здесь уже был."""
-    return sorted((out_dir / "cases").glob("*/*/*/result.json"))
+    """Оставшиеся в каталоге `result.json` — след прогона, который здесь уже был.
+
+    Каждый путь проходит `_require_result_file`: симлинк на месте результата
+    отвергается **раньше** любых решений про провенанс и сброс. Иначе
+    подложенная ссылка попадала бы в счёт остатка, то есть участвовала бы в
+    рассуждении о том, чей это каталог.
+    """
+    return [
+        _require_result_file(out_dir, path)
+        for path in sorted((out_dir / "cases").glob("*/*/*/result.json"))
+    ]
 
 
 def _require_safe_local_args(case: Case) -> None:
@@ -1429,8 +1464,34 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 def _result_exists(out_dir: Path, case: Case, variant: Variant, rep: int) -> bool:
-    result = out_dir / "cases" / case.case_id / variant_label(variant) / str(rep) / "result.json"
+    """Есть ли **настоящий** `result.json` этой тройки (тогда прогон пропускается).
+
+    По ссылке идти нельзя ни в какую сторону: симлинк на месте `result.json`
+    выглядел готовым прогоном, тройка пропускалась, и в метрики попадал файл
+    извне прогона. Прогнать поверх ссылки тоже нельзя (`_require_result_file`
+    отказывает), поэтому здесь отказ, а не «считаем, что результата нет».
+    """
+    result = _require_result_file(
+        out_dir,
+        out_dir / "cases" / case.case_id / variant_label(variant) / str(rep) / "result.json",
+    )
     return result.is_file()
+
+
+def _require_result_file(out_dir: Path, path: Path) -> Path:
+    """Путь `result.json` без симлинков на участке от `--out`; иначе `RunnerError`.
+
+    «Готовый результат» — обычный файл, созданный раннером. Ссылка на его месте
+    (или на месте любого каталога выше) означает, что содержимое пришло извне
+    прогона, а по такому пути нельзя ни читать исход, ни пропускать тройку.
+    """
+    _require_no_symlinks(out_dir.resolve(), path, what=f"{path.name} прогона")
+    if path.is_symlink():
+        raise RunnerError(
+            f"{path}: символическая ссылка на месте результата прогона — "
+            "раннер такие пути не создаёт и доверять им отказывается"
+        )
+    return path
 
 
 def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
@@ -1488,17 +1549,23 @@ def utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _tool_versions(*, git: str) -> dict[str, str]:
-    """Версии `claude`, `codex`, `git` — ``unavailable``, если бинаря нет или он упал."""
+def _tool_versions(env: Mapping[str, str], *, git: str) -> dict[str, str]:
+    """Версии `claude`, `codex`, `git` — ``unavailable``, если бинаря нет или он упал.
+
+    Резолвятся и запускаются **в окружении прогона** (`env`), а не процесса:
+    раннер сам собирает это окружение (§6.3) и в нём же ищет ревьюера, поэтому
+    `PATH` процесса дал бы версию не того бинаря, который вызывался, — то есть
+    провенанс, расходящийся с измерением.
+    """
     return {
-        "claude": _tool_version("claude"),
-        "codex": _tool_version("codex"),
-        "git": _tool_version(git),
+        "claude": _tool_version("claude", env),
+        "codex": _tool_version("codex", env),
+        "git": _tool_version(git, env),
     }
 
 
-def _tool_version(binary: str) -> str:
-    if shutil.which(binary) is None:
+def _tool_version(binary: str, env: Mapping[str, str]) -> str:
+    if shutil.which(binary, path=env.get("PATH")) is None:
         return "unavailable"
     try:
         result = subprocess.run(
@@ -1507,6 +1574,7 @@ def _tool_version(binary: str) -> str:
             text=True,
             check=False,
             timeout=_TOOL_TIMEOUT_S,
+            env=dict(env),
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"

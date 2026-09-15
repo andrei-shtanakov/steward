@@ -350,8 +350,10 @@ def test_variant_label_refuses_a_variant_built_in_code_with_a_bad_model(model: s
         (0, True, True, "", "verdict"),
         (1, True, True, "", "verdict"),
         (2, False, False, GUARDRAIL_TEXT, "guardrail_rejection"),
-        (2, True, True, "", "invalid_verdict"),
-        (2, True, True, GUARDRAIL_TEXT, "invalid_verdict"),
+        # Код 2 при годном вердикте: sidecar пишется **до** порога, значит
+        # порог отказал по своей причине — конфигурация, не ошибка модели.
+        (2, True, True, "", "config_failure"),
+        (2, True, True, GUARDRAIL_TEXT, "config_failure"),
         (2, True, False, GUARDRAIL_TEXT, "invalid_verdict"),
         (2, True, False, "", "invalid_verdict"),
         (0, True, False, "", "invalid_verdict"),
@@ -384,8 +386,13 @@ def test_classify_guardrail_beats_config_failure() -> None:
         (0, VALID_VERDICT, "", "verdict", True),
         (1, VALID_VERDICT, "", "verdict", True),
         (2, "", GUARDRAIL_TEXT, "guardrail_rejection", False),
-        (2, VALID_VERDICT, "", "invalid_verdict", True),
-        (2, VALID_VERDICT, GUARDRAIL_TEXT, "invalid_verdict", True),
+        # Код 2 при **схемно годном** вердикте — сбой конфигурации, а не
+        # ошибка модели: sidecar пишется до порога, и порог на годном вердикте
+        # кодом 2 отказывает по своей причине (нет jq, негодный аргумент).
+        (2, VALID_VERDICT, "", "config_failure", True),
+        (2, VALID_VERDICT, GUARDRAIL_TEXT, "config_failure", True),
+        # Код 2 при негодном по схеме вердикте — ровно отказ порога.
+        (2, SCHEMA_INVALID_VERDICT, "", "invalid_verdict", True),
         (0, "{not json", "", "invalid_verdict", True),
         (0, '{"findings": "nope", "note": "x"}', "", "invalid_verdict", True),
         # Структурно годен, схемно нет (находка без `title`) — настоящий кит
@@ -2179,6 +2186,114 @@ def test_run_all_refuses_resume_when_an_unavailable_used_client_appears(
 
     assert "unavailable" in str(excinfo.value)
     assert (resume.out_dir / "run.json").read_bytes() == before
+
+
+_STUB_CODEX = """#!/bin/sh
+echo "codex 42.0.0-stub"
+"""
+
+
+def test_run_all_records_tool_versions_from_env_base(tmp_path: Path) -> None:
+    """Версии CLI берутся из `env_base`, а не из окружения процесса.
+
+    Раннер сам вычищает и собирает окружение прогона (§6.3) и в нём же ищет
+    ревьюера. Резолвить версии по `PATH` процесса значило бы записать в
+    `run.json` версию не того бинаря, который вызывался, — то есть провенанс,
+    расходящийся с измерением.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir()
+    stub_codex = bin_dir / "codex"
+    stub_codex.write_text(_STUB_CODEX, encoding="utf-8")
+    stub_codex.chmod(0o755)
+    env_base = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    env_base["PATH"] = f"{bin_dir}:{env_base['PATH']}"
+
+    manifest = run_all(
+        [_make_case(base_sha=first, head_sha=second)],
+        [Variant("codex", "gpt-5.4", "high")],
+        repetitions=1,
+        out_dir=tmp_path / "run",
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env_base,
+    )
+
+    assert manifest.tools["codex"] == "codex 42.0.0-stub"
+
+
+def test_run_all_refuses_duplicate_variants(tmp_path: Path) -> None:
+    """Два одинаковых варианта — одна тройка, оплаченная дважды, и гонка за каталог.
+
+    Метка варианта — имя каталога артефактов, поэтому дубликат писал бы
+    `verdict.json` и `result.json` по одному пути из двух задач (при
+    `--jobs > 1` — одновременно), а счёт прогонов вырос бы вдвое без второго
+    измерения.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    record = tmp_path / "record.txt"
+    variant = Variant("claude", "claude-opus-5", None)
+
+    with pytest.raises(RunnerError, match="claude:claude-opus-5"):
+        run_all(
+            [_make_case(base_sha=first, head_sha=second)],
+            [variant, variant],
+            repetitions=1,
+            out_dir=tmp_path / "run",
+            kit=_make_stub_kit(tmp_path),
+            cache_root=cache_root,
+            env_base=_env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT),
+        )
+
+    assert not record.exists(), "кит не должен был запускаться"
+
+
+def test_run_all_refuses_a_symlinked_result_on_resume(tmp_path: Path) -> None:
+    """Симлинк на месте `result.json` — не готовый результат и не повод пропустить тройку.
+
+    `_result_exists` шёл по ссылке, поэтому подложенный симлинк выглядел
+    готовым прогоном: тройка пропускалась, а в метрики попадал чужой файл.
+    Пропустить нельзя, прогнать поверх ссылки тоже нельзя — отказ.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    out_dir = tmp_path / "run"
+    external = tmp_path / "external-result.json"
+    external.write_text("{}", encoding="utf-8")
+    rep_dir = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1"
+    rep_dir.mkdir(parents=True)
+    (rep_dir / "result.json").symlink_to(external)
+    record = tmp_path / "record.txt"
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        run_all(
+            [_make_case(base_sha=first, head_sha=second)],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=_make_stub_kit(tmp_path),
+            cache_root=cache_root,
+            env_base=_env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT),
+        )
+
+    assert external.read_text(encoding="utf-8") == "{}"
+
+
+def test_load_results_refuses_a_symlinked_result(tmp_path: Path) -> None:
+    """`load_results` по ссылке не читает: содержимое пришло бы извне прогона."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    victim = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
+    external = out_dir.parent / "outside-result.json"
+    external.write_text(victim.read_text(encoding="utf-8"), encoding="utf-8")
+    victim.unlink()
+    victim.symlink_to(external)
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        load_results(out_dir)
 
 
 def test_load_results_empty_run_dir(tmp_path: Path) -> None:
