@@ -1105,7 +1105,7 @@ def test_run_all_rejects_an_empty_variant_list(tmp_path: Path) -> None:
     out_dir = tmp_path / "run"
     with pytest.raises(RunnerError, match="variants"):
         run_all(
-            [],
+            [_make_case(base_sha="a" * 40, head_sha="b" * 40)],
             [],
             repetitions=1,
             out_dir=out_dir,
@@ -2538,6 +2538,52 @@ def test_partial_rerun_keeps_the_worktrees_of_other_cases(tmp_path: Path) -> Non
     assert other.is_dir(), "worktree невыбранного кейса сохранён"
 
 
+def test_run_all_rejects_an_empty_case_list(tmp_path: Path) -> None:
+    """Пустой набор кейсов (например, после фильтра `--cases`) — отказ до run.json."""
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    with pytest.raises(RunnerError, match="cases"):
+        run_all(
+            [],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=tmp_path / "cache",
+        )
+    assert not (out_dir / "run.json").exists()
+
+
+def test_resume_of_a_subset_does_not_close_an_incomplete_run(tmp_path: Path) -> None:
+    """Возобновление подмножества не ставит `finished`, пока произведение манифеста
+    не полно: иначе run.json объявлял бы A+B завершёнными без результата B, и
+    тот же `load_results` такой каталог отверг бы.
+    """
+    cases, out_dir, cache_root, kit, _counter, digest, env_base = _two_case_run(tmp_path)
+    missing = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
+    missing.unlink()
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["finished"] = None
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="не полон"):
+        run_all(
+            [cases[0]],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=digest,
+        )
+
+    stored = json.loads(run_json.read_text(encoding="utf-8"))
+    assert stored["finished"] is None
+    assert stored["cases"] == ["steward-155", "steward-157"]
+
+
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
     """`finished: null` — прогон не завершён, даже если все `result.json` на месте.
 
@@ -2701,6 +2747,23 @@ def test_provider_env_fingerprint_ignores_secret_values_only() -> None:
 
     assert provider_env_fingerprint(base) == provider_env_fingerprint(same_secret_other_value)
     assert provider_env_fingerprint(base) != provider_env_fingerprint(other_proxy)
+
+
+def test_provider_env_fingerprint_redacts_userinfo_in_proxy_urls() -> None:
+    """Логин и пароль из `http://user:pass@proxy` в материал отпечатка не входят.
+
+    Манифест публикуется; детерминированный дайджест полного URL был бы
+    оракулом для перебора пароля прокси. Хост и порт остаются — они и есть
+    «маршрут», ради которого отпечаток заведён.
+    """
+    with_pass = {"HTTPS_PROXY": "http://alice:letmein@proxy.example:8080"}
+    other_pass = {"HTTPS_PROXY": "http://alice:other@proxy.example:8080"}
+    no_userinfo = {"HTTPS_PROXY": "http://proxy.example:8080"}
+    other_host = {"HTTPS_PROXY": "http://other.example:8080"}
+
+    assert provider_env_fingerprint(with_pass) == provider_env_fingerprint(other_pass)
+    assert provider_env_fingerprint(with_pass) == provider_env_fingerprint(no_userinfo)
+    assert provider_env_fingerprint(no_userinfo) != provider_env_fingerprint(other_host)
 
 
 def test_provider_env_fingerprint_is_unambiguous_with_newlines_in_values() -> None:

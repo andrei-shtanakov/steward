@@ -46,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from steward.review_eval.cache import CacheError, has_object, repo_cache_dir, worktree
 from steward.review_eval.corpus import Case, corpus_digest
@@ -734,9 +735,29 @@ def provider_env_fingerprint(env: Mapping[str, str]) -> str:
     """
     # Канонический JSON, не `name=value` через перевод строки: перевод строки
     # внутри значения делал две разные пары неотличимыми от одной.
-    pairs = [[name, env[name]] for name in provider_env_names(env) if not _is_secret_env_name(name)]
+    pairs = [
+        [name, _redact_userinfo(env[name])]
+        for name in provider_env_names(env)
+        if not _is_secret_env_name(name)
+    ]
     canonical = json.dumps(pairs, ensure_ascii=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _redact_userinfo(value: str) -> str:
+    """URL без `user:pass@`: логин и пароль прокси в материал отпечатка не входят.
+
+    Значение прокси «несекретно» только по имени переменной; `http://alice:pw@host`
+    в детерминированном дайджесте публикуемого манифеста стал бы оракулом для
+    перебора пароля. Хост и порт остаются — это и есть маршрут.
+    """
+    if "://" not in value:
+        return value
+    parts = urlsplit(value)
+    if "@" not in parts.netloc:
+        return value
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
 
 
 def _is_secret_env_name(name: str) -> bool:
@@ -802,6 +823,8 @@ def run_all(
     с `finished: null`, в конце целиком: прогон, оборвавшийся на середине,
     оставляет честный манифест, а не пустой каталог.
     """
+    if not cases:
+        raise RunnerError("cases must not be empty: без кейсов измерять нечего")
     if not variants:
         raise RunnerError("variants must not be empty: без варианта измерять нечего")
     if repetitions < 1:
@@ -988,6 +1011,24 @@ def run_all(
 
     if not keep_worktrees and all(item.teardown_error is None for item in results):
         _remove_empty_scratch(out_dir / "scratch")
+
+    # `finished` — только когда всё произведение манифеста на диске: возобновление
+    # подмножества иначе закрывало бы прогон без результатов остальных кейсов,
+    # и тот же `load_results` такой каталог отверг бы.
+    labels = [variant_label(v) for v in variants]
+    unfilled = [
+        f"{case_id}/{label}/{rep}"
+        for case_id in manifest_cases
+        for label in labels
+        for rep in range(1, repetitions + 1)
+        if not (out_dir / "cases" / case_id / label / str(rep) / "result.json").is_file()
+    ]
+    if unfilled:
+        raise RunnerError(
+            f"{out_dir}: прогон не полон — нет результатов {', '.join(unfilled[:5])}"
+            f"{' …' if len(unfilled) > 5 else ''}; run.json остаётся незакрытым "
+            "(finished: null) — возобновите прогон полным набором кейсов"
+        )
 
     manifest = RunManifest(
         run_id=run_id,
