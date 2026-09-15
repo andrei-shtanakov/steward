@@ -187,6 +187,18 @@ def test_blank_keyword_gives_no_edge(keyword: str) -> None:
     assert result.assigned == {}
 
 
+def test_keyword_with_surrounding_whitespace_still_matches() -> None:
+    """`" PATH "` — валидный keyword корпуса (непробельный), и матчится как `PATH`.
+
+    Нормализация объявлена как strip+casefold; проверка вхождения без strip
+    искала `" path "` в стоге и теряла ребро — FP плюс пропуск на одной паре.
+    """
+    prediction = preds(make_finding(title="PATH hijack"))
+    padded = match(prediction, [make_defect("d1", keywords_any=(" PATH ",))], [])
+    plain = match(prediction, [make_defect("d1", keywords_any=("PATH",))], [])
+    assert padded.assigned == plain.assigned == {0: "d1"}
+
+
 def test_blank_keyword_does_not_add_weight() -> None:
     """Пустое слово рядом с настоящим не считается попаданием: вес не растёт."""
     prediction = preds(make_finding(title="PATH hijack"))

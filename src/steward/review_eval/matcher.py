@@ -498,13 +498,8 @@ def _edge(
     # дефект побеждал равного конкурента, то есть неоднозначность превращалась
     # в TP. Схема корпуса повтор теперь отвергает; здесь то же правило для
     # `Defect`, собранных в коде.
-    hits = len(
-        {
-            kw.strip().casefold()
-            for kw in defect.match.keywords_any
-            if kw.strip() and kw.casefold() in haystack
-        }
-    )
+    normalized = {kw.strip().casefold() for kw in defect.match.keywords_any if kw.strip()}
+    hits = len({kw for kw in normalized if kw in haystack})
     if hits == 0:
         return None
     overlap = len(evidence_files & _gold_evidence_files(defect))
