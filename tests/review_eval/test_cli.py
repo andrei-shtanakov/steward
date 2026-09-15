@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,22 @@ from typer.testing import CliRunner
 from steward.review_eval import cli
 from steward.review_eval.corpus import append_registry, corpus_digest, load_case, load_corpus
 from steward.review_eval.matcher import MATCHER_VERSION, rules_digest
-from steward.review_eval.runner import KitUnderTest, RunManifest, RunResult
+from steward.review_eval.runner import (
+    KitUnderTest,
+    RunManifest,
+    RunResult,
+    provider_env_fingerprint,
+)
 
 runner = CliRunner()
 
 BASE = "1" * 40
 HEAD = "2" * 40
+#: merge-base диапазона ревью: её резолвит `resolve_review_base` через API, и
+#: она **не равна** `base.sha` PR (после мержа голова базы содержит сам PR).
+MERGE_BASE = "3" * 40
+#: Шапка формата кита: без неё `draft_case` тело не признаёт (`parse_findings`).
+KIT_HEADER = "## Ревью Codex — независимый чек"
 VARIANT = "claude:claude-opus-5"
 
 
@@ -40,7 +51,7 @@ def _case_payload(pr: int, *, status: str = "adjudicated", defects: bool = True)
     """Кейс корпуса с одним major-дефектом (или чистый)."""
     payload: dict[str, Any] = {
         "schema": "review-eval-case/v1",
-        "case_id": f"steward-{pr}",
+        "case_id": f"andrei-shtanakov.steward-{pr}",
         "repo": "andrei-shtanakov/steward",
         "pr": pr,
         "base_sha": BASE,
@@ -61,7 +72,7 @@ def _case_payload(pr: int, *, status: str = "adjudicated", defects: bool = True)
     if defects:
         payload["defects"] = [
             {
-                "id": f"D-steward-{pr}-1",
+                "id": f"D-andrei-shtanakov.steward-{pr}-1",
                 "severity": "major",
                 "file": "scripts/review/local.sh",
                 "line_hint": 644,
@@ -83,7 +94,7 @@ def _corpus(tmp_path: Path, *prs: int, **kwargs: Any) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     for pr in prs:
         payload = _case_payload(pr, **kwargs)
-        path = directory / f"steward-{pr}.yaml"
+        path = directory / f"andrei-shtanakov.steward-{pr}.yaml"
         path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8")
     append_registry([load_case(p) for p in sorted(directory.glob("*.yaml"))], directory)
     return directory
@@ -159,8 +170,12 @@ def _write_run(
                 )
     manifest = RunManifest(
         run_id="20260915T000000Z-deadbeef",
-        kit={"commit": "c" * 40},
-        tools={"git": "git version 2.0"},
+        # Манифест обязан нести и дайджесты кита, и версии инструментов, и
+        # дайджест конфига git по каждому репо: без них провенанс результатов
+        # неизвестен, и `load_results` их не читает.
+        kit={"commit": "c" * 40, "local_sh_sha256": "a" * 64},
+        tools={"git": "git version 2.0", "claude": "claude 1.0", "codex": "unavailable"},
+        git_config_digests={"andrei-shtanakov/steward": "sha256:" + "b" * 64},
         variants=[
             {
                 "label": label,
@@ -179,6 +194,12 @@ def _write_run(
         finished="2026-09-15T00:01:00Z",
         jobs=1,
         repetitions=repetitions,
+        # Манифест обязан объявлять состав прогона: `load_results` сверяет с
+        # ним каждый результат и требует полноты произведения
+        # «кейсы × варианты × повторения».
+        cases=sorted(case_ids),
+        provider_env_names=[],
+        provider_env_fingerprint=provider_env_fingerprint({}),
     )
     out.mkdir(parents=True, exist_ok=True)
     (out / "run.json").write_text(json.dumps(dataclasses.asdict(manifest)), "utf-8")
@@ -249,7 +270,7 @@ def test_corpus_validate_register_registers_then_revalidates(tmp_path: Path) -> 
     (corpus / "_ids.txt").write_text("", encoding="utf-8")
     result = runner.invoke(cli.app, ["corpus", "validate", "--corpus", str(corpus), "--register"])
     assert result.exit_code == 0, result.output
-    assert "D-steward-155-1" in (corpus / "_ids.txt").read_text(encoding="utf-8")
+    assert "D-andrei-shtanakov.steward-155-1" in (corpus / "_ids.txt").read_text(encoding="utf-8")
 
 
 def test_corpus_validate_reregisters_an_edited_defect(tmp_path: Path) -> None:
@@ -262,7 +283,7 @@ def test_corpus_validate_reregisters_an_edited_defect(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     payload = _case_payload(155)
     payload["defects"][0]["match"]["line_window"] = 10
-    (corpus / "steward-155.yaml").write_text(
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
         yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
     )
 
@@ -276,17 +297,97 @@ def test_corpus_validate_reregisters_an_edited_defect(tmp_path: Path) -> None:
     lines = [
         line
         for line in (corpus / "_ids.txt").read_text(encoding="utf-8").splitlines()
-        if line.startswith("D-steward-155-1 ")
+        if line.startswith("D-andrei-shtanakov.steward-155-1 ")
     ]
     assert len(lines) == 2
 
 
 def test_corpus_validate_exits_2_on_a_broken_case(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
-    (corpus / "steward-155.yaml").write_text("schema: wrong\n", encoding="utf-8")
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text("schema: wrong\n", encoding="utf-8")
     result = runner.invoke(cli.app, ["corpus", "validate", "--corpus", str(corpus)])
     assert result.exit_code == 2
     assert "corpus invalid" in result.output
+
+
+def test_corpus_validate_retire_deleted_tombstones_a_removed_case(tmp_path: Path) -> None:
+    """`--register --retire-deleted` списывает id ушедшего кейса надгробием.
+
+    Регистрация обязана читать кейсы **без** обратной проверки реестра (живой
+    id без кейса): она и есть то, что списание чинит, — иначе списание
+    недостижимо (отказ приходит до `append_registry`).
+    """
+    corpus = _corpus(tmp_path, 155, 157)
+    (corpus / "andrei-shtanakov.steward-157.yaml").unlink()
+
+    refused = runner.invoke(cli.app, ["corpus", "validate", "--corpus", str(corpus)])
+    assert refused.exit_code == 2
+    assert "зарегистрирован, но кейса с ним нет" in refused.output
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "validate", "--corpus", str(corpus), "--register", "--retire-deleted"],
+    )
+
+    assert result.exit_code == 0, result.output
+    registry = (corpus / "_ids.txt").read_text(encoding="utf-8")
+    assert "D-andrei-shtanakov.steward-157-1 deleted" in registry
+    assert load_corpus(corpus)[0].case_id == "andrei-shtanakov.steward-155"
+
+
+def test_corpus_validate_reidentify_accepts_a_comma_list(tmp_path: Path) -> None:
+    """`--reidentify a,b` подтверждает смену ядра идентичности у перечисленных id."""
+    corpus = _corpus(tmp_path, 155)
+    payload = _case_payload(155)
+    payload["defects"][0]["scenario"] = "другой дефект под тем же id по решению разметчика"
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
+    )
+
+    refused = runner.invoke(cli.app, ["corpus", "validate", "--corpus", str(corpus), "--register"])
+    assert refused.exit_code == 2
+    assert "--reidentify" in refused.output
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "corpus",
+            "validate",
+            "--corpus",
+            str(corpus),
+            "--register",
+            "--reidentify",
+            "D-andrei-shtanakov.steward-155-1,NF-andrei-shtanakov.steward-155-9",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    line = [
+        row
+        for row in (corpus / "_ids.txt").read_text(encoding="utf-8").splitlines()
+        if row.startswith("D-andrei-shtanakov.steward-155-1 ")
+    ][-1]
+    assert line.split()[-1] == "reidentified"
+
+
+def test_corpus_validate_register_on_an_empty_corpus_points_at_tombstones(
+    tmp_path: Path,
+) -> None:
+    """Пустой корпус с живыми id: отказ советует надгробия, а не удаление реестра."""
+    corpus = _corpus(tmp_path, 155)
+    (corpus / "andrei-shtanakov.steward-155.yaml").unlink()
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "validate", "--corpus", str(corpus), "--register", "--retire-deleted"],
+    )
+
+    assert result.exit_code == 2
+    # Сообщение ведёт к надгробиям, дописанным руками под ревью PR, и прямо
+    # запрещает удалять файл: реестр append-only, его нельзя «почистить».
+    assert "вручную" in result.output
+    assert "deleted" in result.output
+    assert "файл не удалять" in result.output
 
 
 def test_corpus_validate_says_when_there_is_no_gold(tmp_path: Path) -> None:
@@ -410,12 +511,20 @@ def test_corpus_candidates_writes_a_draft_into_the_corpus(
 ) -> None:
     corpus = tmp_path / "corpus"
     body = (
+        f"{KIT_HEADER}\n\n"
         "### [major] PATH расширяется — `scripts/review/local.sh:644`\n"
         "- Сценарий: s\n- Наблюдаемое: o\n- Ожидаемое: e\n"
         "- Evidence: `scripts/review/local.sh:644` — r\n"
         "- confidence: high → БЛОКИРУЕТ\n"
         f"\n<!-- codex-terminal-review head={HEAD} -->\n"
     )
+    resolved: dict[str, Any] = {}
+
+    def fake_resolve(repo: str, pr_meta: Any, head_sha: str, *_a: Any, **_k: Any) -> str:
+        resolved.update(repo=repo, head_sha=head_sha, pr_meta=pr_meta)
+        return MERGE_BASE
+
+    monkeypatch.setattr(cli, "resolve_review_base", fake_resolve)
     monkeypatch.setattr(
         cli, "fetch_pr", lambda *_a, **_k: {"base": {"sha": BASE}, "head": {"sha": HEAD}}
     )
@@ -446,10 +555,79 @@ def test_corpus_candidates_writes_a_draft_into_the_corpus(
         ],
     )
     assert result.exit_code == 0, result.output
-    draft = load_case(corpus / "steward-155.yaml")
+    draft = load_case(corpus / "andrei-shtanakov.steward-155.yaml")
     assert draft.annotation.status == "draft"
     assert draft.annotation.source == "history-proxy"
     assert draft.cls == "defective"
+    # База кейса — merge-base диапазона ревью, а не `base.sha` PR: после мержа
+    # голова базы содержит сам PR, и диапазон вышел бы пустым (раунд 21).
+    assert draft.base_sha == MERGE_BASE
+    # Голову для резолва берём ту же, что возьмёт `draft_case`: из маркера тела.
+    assert resolved == {
+        "repo": "andrei-shtanakov/steward",
+        "head_sha": HEAD,
+        "pr_meta": {"base": {"sha": BASE}, "head": {"sha": HEAD}},
+    }
+
+
+def test_corpus_candidates_resolves_the_base_from_the_pr_head_without_a_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Маркера в теле нет — голова берётся из PR, и база резолвится от неё."""
+    body = f"{KIT_HEADER}\n\nНаходок нет.\n"
+    seen: dict[str, Any] = {}
+
+    def fake_resolve(repo: str, pr_meta: Any, head_sha: str, *_a: Any, **_k: Any) -> str:
+        seen["head_sha"] = head_sha
+        return MERGE_BASE
+
+    monkeypatch.setattr(cli, "resolve_review_base", fake_resolve)
+    monkeypatch.setattr(
+        cli, "fetch_pr", lambda *_a, **_k: {"base": {"sha": BASE}, "head": {"sha": HEAD}}
+    )
+    monkeypatch.setattr(
+        cli,
+        "fetch_reviews",
+        lambda *_a, **_k: [
+            {"id": 1, "user": {"login": "ai-prosto"}, "submitted_at": "z", "body": body}
+        ],
+    )
+    monkeypatch.setattr(cli, "fetch_commits", lambda *_a, **_k: [])
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "candidates", "--repo", "org/repo", "--pr", "7", "--corpus", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["head_sha"] == HEAD
+    assert load_case(tmp_path / "org.repo-7.yaml").base_sha == MERGE_BASE
+
+
+def test_corpus_candidates_exits_2_on_an_unrecognised_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Тело без признаков формата кита — отказ кода 2 с сообщением кандидата."""
+    monkeypatch.setattr(cli, "resolve_review_base", lambda *_a, **_k: MERGE_BASE)
+    monkeypatch.setattr(
+        cli, "fetch_pr", lambda *_a, **_k: {"base": {"sha": BASE}, "head": {"sha": HEAD}}
+    )
+    monkeypatch.setattr(
+        cli,
+        "fetch_reviews",
+        lambda *_a, **_k: [
+            {"id": 1, "user": {"login": "ai-prosto"}, "submitted_at": "z", "body": "проза"}
+        ],
+    )
+    monkeypatch.setattr(cli, "fetch_commits", lambda *_a, **_k: [])
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "candidates", "--repo", "org/repo", "--pr", "7", "--corpus", str(tmp_path)],
+    )
+
+    assert result.exit_code == 2
+    assert "тело ревью не распознано" in result.output
 
 
 def test_corpus_candidates_exits_2_without_an_ai_prosto_review(
@@ -516,13 +694,13 @@ def test_run_passes_the_whole_corpus_digest_with_a_case_subset(
             "--out",
             str(tmp_path / "run"),
             "--cases",
-            "steward-157",
+            "andrei-shtanakov.steward-157",
         ],
     )
     assert result.exit_code == 0, result.output
-    assert captured_run["cases"] == ["steward-157"]
+    assert captured_run["cases"] == ["andrei-shtanakov.steward-157"]
     assert captured_run["corpus_digest_override"] == whole
-    assert whole != corpus_digest([load_case(corpus / "steward-157.yaml")])
+    assert whole != corpus_digest([load_case(corpus / "andrei-shtanakov.steward-157.yaml")])
 
 
 def test_run_exits_2_on_an_unknown_case_id(
@@ -564,7 +742,7 @@ def test_run_exits_2_on_a_variant_label_with_a_slash(
         ],
     )
     assert result.exit_code == 2
-    assert "не может содержать '/'" in result.output
+    assert "model must be one word" in result.output
     assert "cases" not in captured_run
 
 
@@ -651,7 +829,9 @@ def test_run_exits_1_on_an_unexpected_outcome(
     out = tmp_path / "run"
 
     def fake_run_all(cases: Any, variants: Any, **kwargs: Any) -> RunManifest:
-        return _write_run(kwargs["out_dir"], ["steward-155"], outcome="config_failure")
+        return _write_run(
+            kwargs["out_dir"], ["andrei-shtanakov.steward-155"], outcome="config_failure"
+        )
 
     monkeypatch.setattr(cli, "run_all", fake_run_all)
     result = runner.invoke(
@@ -673,7 +853,7 @@ def test_run_exits_1_when_the_adjudication_queue_is_open(
     unlabeled["evidence"] = [{"file": "scripts/review/other.sh", "line": 1, "reason": "r"}]
 
     def fake_run_all(cases: Any, variants: Any, **kwargs: Any) -> RunManifest:
-        return _write_run(kwargs["out_dir"], ["steward-155"], findings=[unlabeled])
+        return _write_run(kwargs["out_dir"], ["andrei-shtanakov.steward-155"], findings=[unlabeled])
 
     monkeypatch.setattr(cli, "run_all", fake_run_all)
     result = runner.invoke(
@@ -868,10 +1048,10 @@ def _e2e_corpus(directory: Path, base: str, head: str) -> None:
         "line_window": 5,
         "keywords_any": ["path", "расширяется"],
     }
-    (directory / "steward-155.yaml").write_text(
+    (directory / "andrei-shtanakov.steward-155.yaml").write_text(
         yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
     )
-    append_registry([load_case(directory / "steward-155.yaml")], directory)
+    append_registry([load_case(directory / "andrei-shtanakov.steward-155.yaml")], directory)
 
 
 def test_run_end_to_end_with_the_real_runner(tmp_path: Path) -> None:
@@ -945,7 +1125,7 @@ def test_run_end_to_end_with_the_real_runner(tmp_path: Path) -> None:
     assert variant["metrics"]["resolvable_evidence_rate"]["value"] == 1.0
     assert (out / "adjudication-queue.md").read_text(encoding="utf-8") == "Очередь пуста.\n"
 
-    rep_dir = out / "cases" / "steward-155" / "codex:gpt-5.4:high" / "1"
+    rep_dir = out / "cases" / "andrei-shtanakov.steward-155" / "codex:gpt-5.4:high" / "1"
     outcome = json.loads((rep_dir / "result.json").read_text(encoding="utf-8"))
     assert (outcome["outcome"], outcome["exit_code"], outcome["unexpected"]) == (
         "verdict",
@@ -973,8 +1153,9 @@ def test_run_end_to_end_with_the_real_runner(tmp_path: Path) -> None:
     assert manifest["variants"][0]["label"] == "codex:gpt-5.4:high"
     assert "ANTHROPIC_API_KEY" in manifest["provider_env_names"]
     assert "секрет" not in (out / "run.json").read_text(encoding="utf-8")
-    assert set(manifest["kit"]) == {
-        "commit",
+    # Рядом с каждым дайджестом — права на исполнение: `chmod -x` содержимого
+    # не меняет, а прогон вариантом claude ломает, и провенанс это обязан видеть.
+    digest_keys = {
         "prompt_sha256",
         "schema_sha256",
         "threshold_sha256",
@@ -983,8 +1164,51 @@ def test_run_end_to_end_with_the_real_runner(tmp_path: Path) -> None:
         "harness_claude_sha256",
         "build_prompt_sha256",
     }
+    assert set(manifest["kit"]) == {"commit"} | digest_keys | {
+        key.removesuffix("_sha256") + "_executable" for key in digest_keys
+    }
     # Чистый прогон не оставляет пустого дерева worktree.
     assert not (out / "scratch").exists()
+
+
+def test_run_accepts_a_relative_out_and_a_git_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    captured_run: dict[str, Any],
+    stub_kit: KitUnderTest,
+) -> None:
+    """`--out` может быть относительным, а `--git` — путём к бинарю.
+
+    Относительный `--out` — обычный способ запуска из корня репо
+    (`--out eval/runs/…`); путь в `--git` нужен, чтобы мерить конкретной
+    версией, и раннер сам делает её видимой киту (`pin_git`).
+    """
+    corpus = _corpus(tmp_path, 155)
+    monkeypatch.chdir(tmp_path)
+    git_path = shutil.which("git")
+    assert git_path is not None
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--corpus",
+            str(corpus),
+            "--variant",
+            VARIANT,
+            "--out",
+            "runs/one",
+            "--cache",
+            str(tmp_path / "cache"),
+            "--git",
+            git_path,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured_run["out_dir"] == Path("runs/one")
+    assert captured_run["git"] == git_path
+    assert (tmp_path / "runs" / "one" / "metrics.json").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -998,7 +1222,7 @@ def test_metrics_recomputes_from_artifacts_after_annotation(tmp_path: Path) -> N
     unlabeled = _finding()
     unlabeled["file"] = "scripts/review/other.sh"
     unlabeled["evidence"] = [{"file": "scripts/review/other.sh", "line": 1, "reason": "r"}]
-    _write_run(out, ["steward-155"], findings=[unlabeled])
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[unlabeled])
 
     open_queue = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
     assert open_queue.exit_code == 1
@@ -1008,7 +1232,7 @@ def test_metrics_recomputes_from_artifacts_after_annotation(tmp_path: Path) -> N
     payload = _case_payload(155)
     payload["non_defects"] = [
         {
-            "id": "NF-steward-155-1",
+            "id": "NF-andrei-shtanakov.steward-155-1",
             "file": "scripts/review/other.sh",
             "line_hint": 644,
             "scenario": "историческая ложная находка",
@@ -1019,10 +1243,10 @@ def test_metrics_recomputes_from_artifacts_after_annotation(tmp_path: Path) -> N
             },
         }
     ]
-    (corpus / "steward-155.yaml").write_text(
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
         yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
     )
-    append_registry([load_case(corpus / "steward-155.yaml")], corpus)
+    append_registry([load_case(corpus / "andrei-shtanakov.steward-155.yaml")], corpus)
 
     closed = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
     assert closed.exit_code == 0, closed.output
@@ -1040,7 +1264,7 @@ def test_metrics_exits_2_on_a_missing_git_binary(tmp_path: Path) -> None:
     """
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
-    _write_run(out, ["steward-155"], findings=[_finding()])
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
 
     result = runner.invoke(
         cli.app,
@@ -1057,8 +1281,8 @@ def test_compare_exits_2_on_a_missing_git_binary(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     run_a = tmp_path / "a"
     run_b = tmp_path / "b"
-    _write_run(run_a, ["steward-155"], findings=[_finding()])
-    _write_run(run_b, ["steward-155"], findings=[])
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], findings=[])
 
     result = runner.invoke(
         cli.app,
@@ -1086,7 +1310,7 @@ def test_metrics_without_a_cache_publishes_no_resolvable_rate(tmp_path: Path) ->
     """
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
-    _write_run(out, ["steward-155"], findings=[_finding()])
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
 
     result = runner.invoke(
         cli.app,
@@ -1097,7 +1321,12 @@ def test_metrics_without_a_cache_publishes_no_resolvable_rate(tmp_path: Path) ->
     payload = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
     entry = payload["variants"][VARIANT]["metrics"]["resolvable_evidence_rate"]
     assert entry["value"] is None
-    assert entry["note"] == "кэш недоступен — evidence не проверялся (1 кейсов)"
+    # Пометка называет обе потери: и evidence, и сверку gold «файла нет» с
+    # деревом head — без источника фактов о файлах не проверено ни то, ни другое.
+    assert entry["note"] == (
+        "кэш недоступен — evidence не проверялся; сверка gold 'файла нет' с деревом "
+        "head_sha тоже пропущена (1 кейсов)"
+    )
     assert (entry["numerator"], entry["denominator"]) == (0, 0)
     # Метрики, не зависящие от кэша, на месте.
     assert payload["variants"][VARIANT]["metrics"]["precision"]["value"] == 1.0
@@ -1117,7 +1346,12 @@ def test_metrics_exits_2_on_matcher_drift(tmp_path: Path) -> None:
     """
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
-    _write_run(out, ["steward-155"], findings=[_finding()], matcher_rules_digest=FOREIGN_DIGEST)
+    _write_run(
+        out,
+        ["andrei-shtanakov.steward-155"],
+        findings=[_finding()],
+        matcher_rules_digest=FOREIGN_DIGEST,
+    )
 
     result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
 
@@ -1130,7 +1364,12 @@ def test_metrics_exits_2_on_matcher_version_drift(tmp_path: Path) -> None:
     """Версия матчера — такой же различитель, как дайджест правил."""
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
-    _write_run(out, ["steward-155"], findings=[_finding()], matcher_version=MATCHER_VERSION + 1)
+    _write_run(
+        out,
+        ["andrei-shtanakov.steward-155"],
+        findings=[_finding()],
+        matcher_version=MATCHER_VERSION + 1,
+    )
 
     result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
 
@@ -1146,7 +1385,12 @@ def test_metrics_allow_matcher_drift_records_the_recompute(tmp_path: Path) -> No
     """
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
-    _write_run(out, ["steward-155"], findings=[_finding()], matcher_rules_digest=FOREIGN_DIGEST)
+    _write_run(
+        out,
+        ["andrei-shtanakov.steward-155"],
+        findings=[_finding()],
+        matcher_rules_digest=FOREIGN_DIGEST,
+    )
 
     result = runner.invoke(
         cli.app,
@@ -1171,8 +1415,13 @@ def test_compare_exits_2_on_matcher_drift(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     run_a = tmp_path / "a"
     run_b = tmp_path / "b"
-    _write_run(run_a, ["steward-155"], findings=[_finding()], matcher_rules_digest=FOREIGN_DIGEST)
-    _write_run(run_b, ["steward-155"], findings=[])
+    _write_run(
+        run_a,
+        ["andrei-shtanakov.steward-155"],
+        findings=[_finding()],
+        matcher_rules_digest=FOREIGN_DIGEST,
+    )
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], findings=[])
 
     drifted = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
     assert drifted.exit_code == 2, drifted.output
@@ -1213,8 +1462,12 @@ def test_compare_prints_a_table_per_common_variant(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155, 157)
     run_a = tmp_path / "a"
     run_b = tmp_path / "b"
-    _write_run(run_a, ["steward-155", "steward-157"], findings=[_finding()])
-    _write_run(run_b, ["steward-155", "steward-157"], findings=[])
+    _write_run(
+        run_a,
+        ["andrei-shtanakov.steward-155", "andrei-shtanakov.steward-157"],
+        findings=[_finding()],
+    )
+    _write_run(run_b, ["andrei-shtanakov.steward-155", "andrei-shtanakov.steward-157"], findings=[])
     result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
     assert result.exit_code == 0, result.output
     assert f"## {VARIANT}" in result.output
@@ -1225,8 +1478,8 @@ def test_compare_names_variants_outside_the_comparison(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     run_a = tmp_path / "a"
     run_b = tmp_path / "b"
-    _write_run(run_a, ["steward-155"], labels=[VARIANT, "codex:gpt-5.4"])
-    _write_run(run_b, ["steward-155"], labels=[VARIANT])
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], labels=[VARIANT, "codex:gpt-5.4"])
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], labels=[VARIANT])
     result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
     assert result.exit_code == 0, result.output
     assert "codex:gpt-5.4" in result.output
@@ -1237,8 +1490,8 @@ def test_compare_exits_2_without_a_common_variant(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     run_a = tmp_path / "a"
     run_b = tmp_path / "b"
-    _write_run(run_a, ["steward-155"], labels=[VARIANT])
-    _write_run(run_b, ["steward-155"], labels=["codex:gpt-5.4"])
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], labels=[VARIANT])
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], labels=["codex:gpt-5.4"])
     result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
     assert result.exit_code == 2
     assert "общих вариантов" in result.output
@@ -1253,6 +1506,105 @@ def test_steward_root_points_at_the_checkout_with_the_kit() -> None:
     root = cli._steward_root()
     assert (root / "pyproject.toml").is_file()
     assert (root / "scripts" / "review" / "local.sh").is_file()
+
+
+def test_metrics_exits_2_on_an_unfinished_run(tmp_path: Path) -> None:
+    """Прогон не закрыт (`finished: null`) — читать нечего: код 2 с сообщением.
+
+    Это отказ **артефактов прогона**, а не дефект инструмента: раннер
+    оборвался между последней тройкой и финальной записью манифеста. Код 3
+    объявил бы сбоем сам `review-eval`.
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    manifest["finished"] = None
+    (out / "run.json").write_text(json.dumps(manifest), "utf-8")
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "прогон не завершён" in result.output
+
+
+def test_metrics_exits_2_on_an_incomplete_run(tmp_path: Path) -> None:
+    """Манифест объявляет тройку, которой нет — прогон неполон, код 2."""
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()], repetitions=2)
+    import shutil
+
+    shutil.rmtree(out / "cases" / "andrei-shtanakov.steward-155" / VARIANT / "2")
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "прогон неполон" in result.output
+
+
+def test_metrics_exits_2_without_a_manifest(tmp_path: Path) -> None:
+    """Результаты без `run.json` — провенанс неизвестен, код 2."""
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    (out / "run.json").unlink()
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+
+
+def test_file_lines_at_pins_git_config_and_scrubs_git_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Чтение дерева идёт тем же git и в том же окружении, что и прогон.
+
+    `GIT_DIR` процесса увёл бы `git show` в чужое репо, а глобальный
+    `.gitconfig` мог бы подменить обработку файла; провенанс прогона фиксирует
+    конфиг кэша, и пересчёт метрик обязан читать так же.
+    """
+    import subprocess as sp
+
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    sp.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
+    sp.run(["git", "-C", str(checkout), "add", "a.txt"], check=True)
+    sp.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "c",
+        ],
+        check=True,
+    )
+    sha = sp.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    cache_root = tmp_path / "cache"
+    (cache_root / "org").mkdir(parents=True)
+    sp.run(
+        ["git", "clone", "--bare", "-q", str(checkout), str(cache_root / "org" / "repo.git")],
+        check=True,
+    )
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere.git"))
+
+    lines = cli._file_lines_at(cache_root, "org/repo", sha)
+
+    assert lines("a.txt") == 2
+    # Путь нормализуется правилом матчера: `./a.txt` — тот же файл.
+    assert lines("./a.txt") == 2
 
 
 def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path) -> None:
@@ -1290,7 +1642,7 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     subprocess.run(
-        ["git", "clone", "--bare", "-q", str(checkout), str(cache_root / "org__repo.git")],
+        ["git", "clone", "--bare", "-q", str(checkout), str(cache_root / "org" / "repo.git")],
         check=True,
     )
     lines = cli._file_lines_at(cache_root, "org/repo", sha)
@@ -1322,7 +1674,7 @@ def test_file_lines_at_raises_when_git_itself_fails(tmp_path: Path) -> None:
     shim.write_text('#!/bin/sh\necho "нечто своё" >&2\nexit 1\n', encoding="utf-8")
     shim.chmod(0o755)
     cache_root = tmp_path / "cache"
-    (cache_root / "org__repo.git").mkdir(parents=True)
+    (cache_root / "org" / "repo.git").mkdir(parents=True)
 
     lines = cli._file_lines_at(cache_root, "org/repo", "a" * 40, git=str(shim))
 
@@ -1331,11 +1683,14 @@ def test_file_lines_at_raises_when_git_itself_fails(tmp_path: Path) -> None:
 
 
 def test_file_lines_at_raises_when_the_git_binary_is_missing(tmp_path: Path) -> None:
-    """Бинаря git нет вовсе — тоже отказ, а не «файла нет»."""
-    cache_root = tmp_path / "cache"
-    (cache_root / "org__repo.git").mkdir(parents=True)
+    """Бинаря git нет вовсе — отказ **сразу**, а не «файла нет» на первом пути.
 
-    lines = cli._file_lines_at(cache_root, "org/repo", "a" * 40, git="/nonexistent/git")
+    Бинарь резолвится тем же `pin_git`, что у прогона, поэтому негодный `--git`
+    виден до первого чтения дерева: возвращать функцию, которая упадёт на
+    каждом пути, значило бы откладывать один и тот же отказ.
+    """
+    cache_root = tmp_path / "cache"
+    (cache_root / "org" / "repo.git").mkdir(parents=True)
 
     with pytest.raises(cli.CacheError, match="/nonexistent/git"):
-        lines("a.txt")
+        cli._file_lines_at(cache_root, "org/repo", "a" * 40, git="/nonexistent/git")

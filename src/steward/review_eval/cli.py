@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -37,6 +38,8 @@ from steward.review_eval.candidates import (
     fetch_pr,
     fetch_reviews,
     render_case,
+    resolve_review_base,
+    review_head,
 )
 from steward.review_eval.corpus import (
     Case,
@@ -48,7 +51,7 @@ from steward.review_eval.corpus import (
     load_corpus,
     registry_path,
 )
-from steward.review_eval.matcher import MATCHER_VERSION, rules_digest
+from steward.review_eval.matcher import MATCHER_VERSION, normalize_path, rules_digest
 from steward.review_eval.metrics import CaseEval, MetricsError, compare, evaluate_case
 from steward.review_eval.metrics import metrics_for_variant as summarize_variant
 from steward.review_eval.report import (
@@ -64,7 +67,9 @@ from steward.review_eval.runner import (
     kit_under_test,
     load_results,
     parse_variant,
+    pin_git,
     run_all,
+    scrubbed_git_env,
     utc_now,
     variant_label,
 )
@@ -93,6 +98,9 @@ _PENDING = "pending_adjudication"
 #: остальное — отказ самого git (нет бинаря, кэш не репозиторий, падение), и
 #: путать эти два случая нельзя: первое — факт о данных, второе — о конфигурации.
 _MISSING_OBJECT_SIGNATURES: tuple[bytes, ...] = (b"does not exist", b"not a valid object name")
+
+#: Форма sha коммита — та же, что требует корпус: 40 строчных hex.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _require_git(git: str) -> None:
@@ -206,16 +214,46 @@ def corpus_validate(
     register: bool = typer.Option(
         False, "--register", help="дописать новые id дефектов в append-only реестр _ids.txt"
     ),
+    retire_deleted: bool = typer.Option(
+        False,
+        "--retire-deleted",
+        help="списать надгробием id, которых больше нет в корпусе (необратимо)",
+    ),
+    reidentify: str | None = typer.Option(
+        None,
+        "--reidentify",
+        help="id через запятую, у которых смена ядра идентичности подтверждена",
+    ),
 ) -> None:
-    """Проверить схему, уникальность id и реестр корпуса (код 2 при нарушении)."""
+    """Проверить схему, уникальность id и реестр корпуса (код 2 при нарушении).
+
+    `--register` дописывает новые id; `--retire-deleted` списывает надгробием
+    те, что ушли из корпуса (необратимо — id больше никому не достанется);
+    `--reidentify` подтверждает, что под перечисленными id теперь другой
+    дефект (сменилось ядро `kind` + `file` + `scenario`).
+    """
+    ids = _reidentify_ids(reidentify)
+    if (retire_deleted or ids) and not register:
+        typer.echo(
+            "config error: --retire-deleted/--reidentify имеют смысл только с --register",
+            err=True,
+        )
+        raise typer.Exit(_EXIT_CONFIG)
     try:
         if register:
-            # Регистрация обязана идти до полной валидации: `load_corpus`
-            # отказывает на незарегистрированном id, и зарегистрировать его
-            # было бы уже нечем. Схема каждого кейса при этом проверена —
-            # `load_case` валидирует ровно те же правила, кроме кросс-кейсовых.
+            # Регистрация обязана идти до полной валидации и **без** обратной
+            # проверки реестра: `load_corpus` отказывает и на
+            # незарегистрированном id (регистрировать было бы нечем), и на
+            # живом id без кейса — а это ровно то, что чинит `--retire-deleted`,
+            # так что списание через `load_corpus` было бы недостижимо. Схема
+            # каждого кейса при этом проверена: `load_case` валидирует те же
+            # правила, кроме кросс-кейсовых.
             drafts = [load_case(path) for path in sorted(corpus.glob("*.yaml"))]
-            append_registry(drafts, corpus)
+            appended = append_registry(
+                drafts, corpus, retire_deleted=retire_deleted, reidentify=ids
+            )
+            for line in appended:
+                typer.echo(f"реестр: + {line}")
         cases = load_corpus(corpus)
     except CorpusError as error:
         typer.echo(f"corpus invalid: {error}", err=True)
@@ -255,11 +293,18 @@ def corpus_candidates(
         reviews = fetch_reviews(repo, pr, gh=gh)
         commits = fetch_commits(repo, pr, gh=gh)
         last_review_at = _last_ai_prosto_submitted_at(reviews)
+        # База кейса — merge-base **диапазона ревью**, и считает её API, а не
+        # `draft_case` (он чистая функция). Копировать `base.sha` PR нельзя:
+        # после мержа голова базы содержит сам PR и может быть потомком
+        # `head_sha` из маркера — диапазон кейса вышел бы пустым (раунд 21).
+        head_sha = _review_head_sha(repo, pr, pr_meta, reviews)
+        base_sha = resolve_review_base(repo, pr_meta, head_sha, gh=gh)
         case = draft_case(
             repo,
             pr,
             pr_meta,
             reviews,
+            base_sha=base_sha,
             commits_after=commits_after(commits, last_review_at),
         )
     except CandidatesError as error:
@@ -473,7 +518,16 @@ def compare_runs(
     except CacheError as error:
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
-    except (RunnerError, MetricsError) as error:
+    except RunnerError as error:
+        # Отказ **артефактов прогона**: манифест не закрыт, прогон неполон,
+        # результат вне манифеста, манифеста нет. Это конфигурация каталога, а
+        # не дефект инструмента, поэтому код 2: код 3 объявил бы сбоем сам
+        # `review-eval` и в CI читался бы как «инструмент сломался».
+        typer.echo(f"config error: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
+    except MetricsError as error:
+        # А расхождение артефактов с `result.json` — механический сбой (§11):
+        # прогон обещал вердикт, которого нет или который не читается.
         typer.echo(f"cannot read run artifacts: {error}", err=True)
         raise typer.Exit(_EXIT_MECHANICAL) from error
 
@@ -523,7 +577,16 @@ def _report(
         # сбой: артефакты прогона в порядке, читать их нечем.
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
-    except (RunnerError, MetricsError) as error:
+    except RunnerError as error:
+        # Отказ **артефактов прогона**: манифест не закрыт, прогон неполон,
+        # результат вне манифеста, манифеста нет. Это конфигурация каталога, а
+        # не дефект инструмента, поэтому код 2: код 3 объявил бы сбоем сам
+        # `review-eval` и в CI читался бы как «инструмент сломался».
+        typer.echo(f"config error: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
+    except MetricsError as error:
+        # А расхождение артефактов с `result.json` — механический сбой (§11):
+        # прогон обещал вердикт, которого нет или который не читается.
         typer.echo(f"cannot read run artifacts: {error}", err=True)
         raise typer.Exit(_EXIT_MECHANICAL) from error
 
@@ -614,6 +677,11 @@ def _file_lines_at(
 
     Байты, а не текст: в дереве бывают не-UTF-8 файлы, и падать на декодировании
     при подсчёте строк незачем.
+
+    Git берётся тот же, что у прогона (`pin_git`), и запускается в том же
+    вычищенном окружении (`scrubbed_git_env`): унаследованный `GIT_DIR` увёл бы
+    чтение дерева в чужое репо, а глобальный `.gitconfig` мог бы подменить
+    обработку файла — evidence считалась бы по другому материалу, чем мерили.
     """
     # Кэша нет вовсе (или слаг репо негоден) — так бывает при пересчёте метрик
     # из скопированного прогона (§7). Это не «файла нет»: спрашивать некого, и
@@ -626,17 +694,32 @@ def _file_lines_at(
     if not cache.exists():
         return _unavailable(f"bare-кэша {cache} нет — evidence проверить нечем")
 
+    # Тот же git и то же окружение, что у прогона: `pin_git` резолвит бинарь
+    # против PATH (и ставит его каталог первым), `scrubbed_git_env` снимает
+    # `GIT_*` процесса и пинует конфиг. Иначе унаследованный `GIT_DIR` увёл бы
+    # чтение дерева в чужое репо, а глобальный `.gitconfig` подменил бы
+    # обработку файла — и evidence считалась бы по другому материалу.
+    try:
+        binary, env_base = pin_git(git, None)
+    except RunnerError as error:
+        raise CacheError(f"{error}") from error
+    env = scrubbed_git_env(env_base)
+
     def run_git(args: list[str]) -> subprocess.CompletedProcess[bytes]:
         try:
             return subprocess.run(  # noqa: S603 — argv фиксирован, без shell
-                [git, "-C", str(cache), *args],
+                [binary, "-C", str(cache), *args],
                 capture_output=True,
                 check=False,
+                env=env,
             )
         except OSError as error:
             raise CacheError(f"--git '{git}' не запускается: {error}") from error
 
-    def file_lines(path: str) -> int | None:
+    def file_lines(raw_path: str) -> int | None:
+        # Путь нормализуется правилом матчера: `./app/a.py` и `app//a.py` — тот
+        # же файл, и в дереве он лежит под нормализованным именем.
+        path = normalize_path(raw_path)
         kind = run_git(["cat-file", "-t", f"{sha}:{path}"])
         if kind.returncode != 0:
             if _is_missing_object(kind):
@@ -753,6 +836,13 @@ def _load_manifest(run_dir: Path) -> Mapping[str, object]:
     return payload
 
 
+def _reidentify_ids(raw: str | None) -> frozenset[str]:
+    """`--reidentify a,b` → множество id; пустые элементы отбрасываются."""
+    if raw is None:
+        return frozenset()
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
 def _parse_variants(raw: Sequence[str]) -> list[Variant]:
     """Разобрать `--variant` и отсеять метки, ломающие раскладку артефактов.
 
@@ -816,6 +906,37 @@ def _local_checkout(workspace_root: Path, repo: str) -> Path | None:
     _owner, _sep, name = repo.partition("/")
     candidate = workspace_root / name
     return candidate if (candidate / ".git").exists() else None
+
+
+def _review_head_sha(
+    repo: str,
+    pr: int,
+    pr_meta: Mapping[str, object],
+    reviews: Sequence[Mapping[str, object]],
+) -> str:
+    """Голова, от которой считается диапазон ревью: маркер тела, иначе `head.sha` PR.
+
+    Правило то же, что внутри `draft_case`: маркер называет ровно то дерево,
+    которое ревьюер видел, и `head.sha` нужен только там, где маркера нет.
+    Здесь оно повторено потому, что база (`resolve_review_base`) считается
+    **до** черновика и от той же головы; разойдись эти два выбора — кейс
+    получил бы базу от одной головы и `head_sha` от другой.
+    """
+    bodies = [
+        review.get("body")
+        for review in reviews
+        if _login(review) == AI_PROSTO and isinstance(review.get("body"), str)
+    ]
+    if not bodies:
+        raise CandidatesError(f"{repo}#{pr}: нет ревью от {AI_PROSTO} — черновик не из чего делать")
+    marker = review_head(str(bodies[-1]))
+    if marker is not None:
+        return marker
+    head = pr_meta.get("head")
+    sha = head.get("sha") if isinstance(head, Mapping) else None
+    if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
+        raise CandidatesError(f"{repo}#{pr}: head.sha не 40-hex sha: {sha!r}")
+    return sha
 
 
 def _last_ai_prosto_submitted_at(reviews: Sequence[Mapping[str, object]]) -> str | None:
