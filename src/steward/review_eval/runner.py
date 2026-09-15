@@ -694,6 +694,11 @@ class RunManifest:
     provider_env_names: list[str] = dataclasses.field(default_factory=list)
     cases: list[str] = dataclasses.field(default_factory=list)
     provider_env_fingerprint: str = ""
+    #: Дайджест конфига bare-кэша **по репозиториям** (единственная действующая
+    #: конфигурация git при `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`). Карта, не
+    #: одно значение: частичный `--rerun` видит только репо своей выборки и
+    #: сверяет их, не объявляя дрейфом отсутствие остальных.
+    git_config_digests: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def provider_env_names(env: Mapping[str, str]) -> list[str]:
@@ -876,7 +881,7 @@ def run_all(
             "для варианта claude (chmod +x)"
         )
     tools = _tool_versions(git_env, git=git)
-    tools["git_config_digest"] = _git_config_digest(cache_root, [case.repo for case in cases])
+    config_digests = _git_config_digests(cache_root, [case.repo for case in cases])
     env_names = provider_env_names(environment)
     env_fingerprint = provider_env_fingerprint(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -920,6 +925,7 @@ def run_all(
         case_ids,
         tools,
         env_fingerprint,
+        config_digests,
     )
     if drift and not rerun:
         raise RunnerError(
@@ -967,6 +973,11 @@ def run_all(
     fresh_start = rerun and not leftover
     started = utc_now() if fresh_start else (_previous_string(previous, "started") or utc_now())
 
+    stored_configs = previous.get("git_config_digests") if previous else None
+    merged_configs = {
+        **(dict(stored_configs) if isinstance(stored_configs, Mapping) else {}),
+        **config_digests,
+    }
     payload: dict[str, object] = {
         "run_id": run_id,
         "kit": kit_payload,
@@ -982,6 +993,7 @@ def run_all(
         "repetitions": repetitions,
         "provider_env_names": env_names,
         "provider_env_fingerprint": env_fingerprint,
+        "git_config_digests": merged_configs,
     }
     _write_json(out_dir / "run.json", payload)
 
@@ -1053,6 +1065,7 @@ def run_all(
         provider_env_names=env_names,
         provider_env_fingerprint=env_fingerprint,
         cases=manifest_cases,
+        git_config_digests=merged_configs,
     )
     _write_json(out_dir / "run.json", dataclasses.asdict(manifest))
     return manifest
@@ -1285,6 +1298,7 @@ def _provenance_drift(
     case_ids: Sequence[str],
     tools: Mapping[str, str],
     env_fingerprint: str,
+    config_digests: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Поля, в которых прежний `run.json` расходится с текущим прогоном.
 
@@ -1347,12 +1361,17 @@ def _provenance_drift(
             drift.append(f"kit.{key}")
     stored_tools = previous.get("tools")
     stored_tools = stored_tools if isinstance(stored_tools, Mapping) else {}
-    for name in sorted(
-        _used_clients(previous.get("variants"), variants) | {"git", "git_config_digest"}
-    ):
+    for name in sorted(_used_clients(previous.get("variants"), variants) | {"git"}):
         was, now = stored_tools.get(name), tools.get(name)
         if was != now:
             drift.append(f"tools.{name} (было: {was}; стало: {now})")
+    stored_configs = previous.get("git_config_digests")
+    stored_configs = stored_configs if isinstance(stored_configs, Mapping) else {}
+    for repo, now in sorted((config_digests or {}).items()):
+        # Только репо текущей выборки: частичный rerun остальных не видит и не
+        # обязан — их дайджесты остаются в манифесте как были.
+        if stored_configs.get(repo) != now:
+            drift.append(f"git_config_digests.{repo}")
     if previous.get("corpus_digest") != digest:
         drift.append("corpus_digest")
     if previous.get("matcher_version") != MATCHER_VERSION:
@@ -1724,7 +1743,7 @@ def _pin_git_config(env: dict[str, str]) -> dict[str, str]:
     """Зафиксировать конфигурацию git: `diff.context`/`diff.algorithm` из
     глобального конфига меняли бы текст дифа при той же версии git — вход
     ревьюера плыл бы под одним манифестом. Остаётся только конфиг репозитория
-    (кэша), и его дайджест входит в провенанс (`tools.git_config_digest`).
+    (кэша), и его дайджест по репо входит в провенанс (`git_config_digests`).
     """
     env.update(GIT_CONFIG_PINS)
     return env
@@ -1966,10 +1985,11 @@ _MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("provider_env_fingerprint", str),
     ("matcher_version", int),
     ("matcher_rules_digest", str),
+    ("git_config_digests", dict),
 )
 
 #: Обязательное содержимое блока `tools` манифеста.
-_MANIFEST_TOOLS: tuple[str, ...] = ("claude", "codex", "git", "git_config_digest")
+_MANIFEST_TOOLS: tuple[str, ...] = ("claude", "codex", "git")
 
 #: Списки состава прогона не бывают пустыми: `cases: []` при результатах —
 #: манифест, не объявляющий ни одного из них, а не «проверять нечего».
@@ -2012,6 +2032,12 @@ def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
     if not isinstance(kit_block.get("commit"), str) or len(kit_block) < 2:
         raise RunnerError(
             f"{path}: манифест повреждён — блок kit без commit и дайджестов; "
+            "провенанс результатов неизвестен (новый --out или восстановите run.json)"
+        )
+    configs_block = payload["git_config_digests"]
+    if not configs_block or not all(isinstance(v, str) for v in configs_block.values()):
+        raise RunnerError(
+            f"{path}: манифест повреждён — git_config_digests пуст или не строки; "
             "провенанс результатов неизвестен (новый --out или восстановите run.json)"
         )
     if not all(isinstance(tools_block.get(name), str) for name in _MANIFEST_TOOLS):
@@ -2088,18 +2114,16 @@ def utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _git_config_digest(cache_root: Path, repos: Sequence[str]) -> str:
-    """sha256 конфигов bare-кэшей прогона (единственная действующая конфигурация git
-    при `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`): смена `diff.*` в конфиге кэша меняет
-    диф при той же версии git.
+def _git_config_digests(cache_root: Path, repos: Sequence[str]) -> dict[str, str]:
+    """sha256 конфига bare-кэша по каждому репо (единственная действующая
+    конфигурация git при `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`): смена `diff.*` в
+    конфиге кэша меняет диф при той же версии git.
     """
-    digest = hashlib.sha256()
+    digests: dict[str, str] = {}
     for repo in sorted(set(repos)):
         config = repo_cache_dir(cache_root, repo) / "config"
-        digest.update(repo.encode("utf-8") + b"\0")
-        digest.update(config.read_bytes() if config.is_file() else b"")
-        digest.update(b"\0")
-    return digest.hexdigest()
+        digests[repo] = hashlib.sha256(config.read_bytes() if config.is_file() else b"").hexdigest()
+    return digests
 
 
 def _tool_versions(env: Mapping[str, str], *, git: str) -> dict[str, str]:

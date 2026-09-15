@@ -756,7 +756,8 @@ def test_run_all_writes_manifest_and_is_idempotent(tmp_path: Path) -> None:
     assert payload["finished"] == manifest.finished
     assert payload["kit"]["commit"] == kit.commit
     assert payload["kit"]["local_sh_sha256"] == "deadbeef"
-    assert set(payload["tools"]) == {"claude", "codex", "git", "git_config_digest"}
+    assert set(payload["tools"]) == {"claude", "codex", "git"}
+    assert set(payload["git_config_digests"]) == {REPO}
     assert payload["variants"] == manifest.variants
     assert payload["cases"] == manifest.cases
 
@@ -2732,7 +2733,7 @@ def test_resume_refuses_when_the_cache_git_config_changed(tmp_path: Path) -> Non
     subprocess.run(["git", "config", "-f", str(config), "diff.context", "7"], check=True)
     before = (out_dir / "run.json").read_bytes()
 
-    with pytest.raises(RunnerError, match="git_config_digest"):
+    with pytest.raises(RunnerError, match="git_config_digests"):
         run_all(
             [case],
             [Variant("claude", "claude-opus-5", None)],
@@ -2744,6 +2745,54 @@ def test_resume_refuses_when_the_cache_git_config_changed(tmp_path: Path) -> Non
         )
 
     assert (out_dir / "run.json").read_bytes() == before
+
+
+def test_partial_rerun_across_two_repositories_is_not_config_drift(tmp_path: Path) -> None:
+    """Кейсы из двух репо; `--rerun --cases A` сверяет конфиг только репо A и
+    сохраняет результат B: агрегированный дайджест по выборке считал бы это дрейфом.
+    """
+    repo_a, a1, a2 = _make_fixture_repo(tmp_path)
+    second_root = tmp_path / "second"
+    second_root.mkdir()
+    repo_b, b1, b2 = _make_fixture_repo(second_root)
+    cache_root = tmp_path / "cache"
+    materialize(cache_root, REPO, [a1, a2], local_checkout=repo_a, remote_url=REMOTE_URL)
+    materialize(cache_root, "org/other", [b1, b2], local_checkout=repo_b, remote_url=REMOTE_URL)
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    env = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    case_a = _make_case(base_sha=a1, head_sha=a2)
+    case_b = dataclasses.replace(
+        _make_case(base_sha=b1, head_sha=b2, case_id="org.other-155"), repo="org/other"
+    )
+    variants = [Variant("claude", "claude-opus-5", None)]
+    cases = [case_a, case_b]
+    run_all(
+        cases,
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+    )
+    kept = out_dir / "cases" / case_b.case_id / "claude:claude-opus-5" / "1" / "result.json"
+    before = kept.read_bytes()
+
+    manifest = run_all(
+        [case_a],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        rerun=True,
+        corpus_digest_override=corpus_digest(cases),
+    )
+
+    assert kept.read_bytes() == before
+    assert set(manifest.git_config_digests) == {REPO, "org/other"}
 
 
 def test_full_rerun_works_with_a_relative_out_dir(
