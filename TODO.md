@@ -749,18 +749,74 @@ product decision record (и наоборот). Как approved proposal стан
   и pyrefly видят только `src/`). Закрывается по живому первому прогону на gold
   ≥ 10 кейсов, не по тестам.
 
-  **Код влит PR этой ветки** (`feat/review-eval-harness`): пакет
+  **Код влит четырьмя PR** (#165 корпус/кэш/порог, #166 матчер и генератор
+  кандидатов, #167 раннер, #168 метрики и отчёт, плюс CLI этой ветки): пакет
   `src/steward/review_eval/` (corpus, cache, threshold, matcher, runner,
   metrics, report, candidates, cli) и точка входа `review-eval` с командами
-  `corpus validate [--register]`, `corpus candidates --repo --pr`,
-  `corpus materialize`, `run --variant H:M[:E] --out`, `metrics <run_dir>`,
-  `compare <a> <b>`; правки кита `REVIEW_VERDICT_OUT`/`REVIEW_USAGE_OUT`/
-  `REVIEW_EFFORT`; корпус-черновики steward#152/#155/#156/#157/#159/#161
+  `corpus validate [--register [--retire-deleted] [--reidentify ID,…]]`,
+  `corpus candidates --repo --pr`, `corpus materialize`,
+  `run --variant H:M[:E] --out`, `metrics <run_dir>`, `compare <a> <b>`;
+  правки кита `REVIEW_VERDICT_OUT`/`REVIEW_USAGE_OUT`/`REVIEW_EFFORT`;
+  корпус-черновики steward#152/#155/#156/#157/#159/#161
   (`annotation.status: draft`, разметка — владельцу); док
   `docs/review-eval.md`. Пункт остаётся `[ ]`: **закрывается по живому
   прогону на gold ≥ 10 кейсов с evidence-копией прогона в
   `docs/evidence/`** — не по тестам и не по влитому коду (то же правило, что
   закрыло V1 live run, §4).
+
+  Открытые решения владельца, вскрытые ревью-контуром харнесса (каждое —
+  отдельный пункт ниже, чтобы не потерялось в прозе): граница секции находок и
+  экранирование evidence в ките, разовый bump `MATCHER_VERSION`, эвристика
+  секретных имён, промежуточные метрики идущего прогона, дайджест дифа вместо
+  прокси по версиям инструментов, головы PR до фикса для gold-кейсов.
+- [ ] Кит: граница секции находок и экранирование evidence в `apply-threshold.sh` @owner:github:andrei-shtanakov @id:review-kit-findings-boundary
+      `note` модели рендерится **раньше** находок и не экранируется, границы
+      перед секцией находок нет. Поэтому note, оформленный как
+      `### [major] … — \`file:line\``, для `corpus candidates` неотличим от
+      настоящей находки: генератор ловит только пустой вердикт (строка
+      `Находок нет.` рядом с заголовком находки), а в непустом лишняя находка
+      попадёт в черновик, и снимать её — работа разметчика. Второе там же:
+      текст вида `; \`path:line\` — ` внутри `reason` неотличим от второй
+      записи evidence, потому что разделитель записей и допустимый текст
+      причины — одни и те же символы. Лечится на стороне кита — маркер границы
+      в рендере и экранирование (или структура вместо строки), — а не догадками
+      в парсере
+- [ ] Разовый bump `MATCHER_VERSION` перед первым живым прогоном @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-matcher-version-bump
+      Правила матчера менялись после объявления версии 1 (согласие по `kind`,
+      общее правило номера строки, уникальные ключевые слова), а версия не
+      поднималась: прогонов ещё нет, сравнивать отчёты не с чем, и версия,
+      прокрученная до пяти до первого запуска, потеряла бы смысл метки
+      несравнимости. `rules_digest()` расхождение фиксирует, но собственная
+      декларация в `matcher.py` требует поднимать версию на любое
+      семантическое изменение. Решение: поднять **один раз** перед первым
+      прогоном либо снять требование из декларации
+- [ ] Эвристика секретных имён окружения: allow-list вместо подстроки @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-secret-name-heuristic
+      `provider_env_fingerprint` не хэширует значения переменных, в имени
+      которых есть `KEY`/`TOKEN`/`SECRET`/`PASSWORD`/`CREDENTIAL`. Это
+      подстрока, а не знание: переменная с ключом в значении и безобидным
+      именем (`ANTHROPIC_AUTH`) попадёт в отпечаток вместе со значением, а
+      безобидная переменная с `TOKEN` в имени (`*_TOKEN_LIMIT`) из отпечатка
+      выпадет молча. Решение — закрытый список имён, чьи значения хэшируются,
+      вместо чёрного списка подстрок
+- [ ] Промежуточные метрики идущего прогона (`metrics --partial`) @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-partial-metrics
+      `load_results` требует полноты и закрытого манифеста, поэтому посмотреть
+      на половину большого прогона нельзя вовсе: оператору остаётся читать
+      `result.json` глазами. Правило верное (`status: ok` по половине прогона
+      выглядел бы измерением), но нужен явный режим, который печатает числа с
+      пометкой «прогон не завершён» и **не** пишет `metrics.json`
+- [ ] Дайджест отревьюированного дифа в `result.json` вместо прокси по версиям @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-diff-digest
+      Сейчас «тот же вход или нет» доказывается косвенно: версии `git` и
+      клиентов ревьюера плюс дайджест конфига репозитория кэша. Поэтому
+      обновление системы прерывает растянутый на дни прогон, хотя диф мог не
+      измениться. Дайджест самого дифа (того, что кит передал модели) отвечал
+      бы на вопрос прямо, и сверку версий можно было бы ослабить
+- [ ] Головы PR до фикса (`refs/pull/<n>/head`) для gold-кейсов @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-prefix-heads
+      Черновики из истории пинуют `head_sha` из маркера ревью — то дерево,
+      которое ревьюер видел. Но для кейса «дефект должен быть найден» нужна
+      голова **до** фикса, а она у смерженного PR доступна только через
+      `refs/pull/<n>/head`, и материализация такого объекта — отдельный шаг
+      (`corpus materialize` тянет только `base_sha`/`head_sha` кейса). Без
+      этого часть gold-кейсов придётся пинить руками
 - [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
       модели × два уровня), не по рассуждению в комментарии workflow
 - [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
