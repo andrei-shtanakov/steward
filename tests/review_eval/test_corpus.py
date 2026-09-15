@@ -428,6 +428,15 @@ def test_case_with_a_normalised_slug_is_valid(tmp_path: Path) -> None:
     assert [d.id for d in case.defects] == ["D-org.my_repo.v2-7-1"]
 
 
+@pytest.mark.parametrize("pr", [0, -7])
+def test_pr_number_must_be_positive(tmp_path: Path, pr: int) -> None:
+    """Номер PR — целое ≥ 1 (как в approval-facts): ноль и отрицательные — ошибка."""
+    data = _valid_case(pr=pr, case_id=f"andrei-shtanakov.steward-{pr}")
+    path = _write_case(tmp_path, data)
+    with pytest.raises(CorpusError, match="pr.*≥ 1"):
+        load_case(path)
+
+
 def test_case_id_must_match_repo_and_pr(tmp_path: Path) -> None:
     data = _valid_case(case_id="wrong-155")
     path = _write_case(tmp_path, data)

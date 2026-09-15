@@ -117,8 +117,10 @@ def as_line_number(value: object) -> int | None:
     инструмент вместо ответа «годен / не годен». Такое число принимается как
     есть — это законное JSON-число, равное своему floor, и jq его тоже
     пропускает; отвергнет его уже разметка, а не парсер. `inf` и `nan`
-    отвергаются: у них нет номера строки, хотя `inf == floor(inf)` в jq истинно
-    (расхождение сознательное и в безопасную сторону — см. отчёт A14).
+    номером строки не становятся (матчеру нечего сопоставлять), но схемная
+    проверка `_is_line_number` +inf **принимает** — как jq, у которого
+    `inf == floor(inf)`: вердикт с `line: 1e400` кит блокирует, и зеркало
+    обязано ответить так же.
     """
     if isinstance(value, bool):
         return None
@@ -132,7 +134,14 @@ def as_line_number(value: object) -> int | None:
 
 
 def _is_line_number(value: object) -> bool:
-    """Годится ли значение номером строки (см. `as_line_number`)."""
+    """Годится ли значение по схеме: см. `as_line_number`, плюс +inf — как jq.
+
+    `1e400` в JSON jq читает как бесконечность и пропускает через
+    `. == floor and . >= 0`; Python-разбор даёт `float('inf')`. Схемное зеркало
+    повторяет jq, а номер строки у такого значения всё равно `None`.
+    """
+    if isinstance(value, float) and value == math.inf:
+        return True
     return as_line_number(value) is not None
 
 

@@ -383,6 +383,37 @@ def test_contract_schema_invalid_verdict_never_blocks(
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason=f"скрипт не найден: {SCRIPT}")
+def test_contract_overflowing_json_number_blocks_on_both_sides(tmp_path: Path) -> None:
+    """``line: 1e400`` — jq читает как бесконечность, ``inf == floor(inf)`` истинно,
+    порог **блокирует**. Python-разбор даёт ``float('inf')``; зеркало обязано
+    ответить так же — годна и блокирует, — иначе реально красная находка
+    считалась бы негодной. Сырой JSON: ``json.dumps`` записал бы ``Infinity``,
+    которого jq не принимает.
+    """
+    finding = _finding()
+    verdict = _verdict([finding])
+    raw = json.dumps(verdict).replace(f'"line": {finding["line"]}', '"line": 1e400', 1)
+    assert "1e400" in raw
+    verdict_path = tmp_path / "verdict.json"
+    verdict_path.write_text(raw, encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--verdict", str(verdict_path), "--format", "text"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr
+
+    parsed = json.loads(raw)["findings"][0]
+    assert parsed["line"] == float("inf")
+    assert is_schema_valid_finding(parsed)
+    assert is_blocking(parsed)
+    # Номера строки у бесконечности нет: матчер рёбер не строит.
+    assert as_line_number(parsed["line"]) is None
+
+
+@pytest.mark.skipif(not SCRIPT.exists(), reason=f"скрипт не найден: {SCRIPT}")
 @pytest.mark.parametrize(
     ("_case_id", "findings"),
     CONTRACT_TABLE,

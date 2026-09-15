@@ -320,6 +320,8 @@ def load_case(path: Path) -> Case:
 
     repo = _str(raw, "repo", where)
     pr = _int(raw, "pr", where)
+    if pr < 1:
+        raise CorpusError(f"{where}: pr — целое ≥ 1, got {pr}")
     case_id = _str(raw, "case_id", where)
     expected_case_id = f"{_repo_slug(repo, where)}-{pr}"
     if case_id != expected_case_id:
