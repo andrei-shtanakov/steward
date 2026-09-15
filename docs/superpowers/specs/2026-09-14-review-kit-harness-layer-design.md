@@ -95,10 +95,16 @@ claude-ревьюером по одному env-переключателю, вк
    принадлежат слою ниже, а оверрайд — целиком. `REVIEW_CMD=""` — как unset.
 2. `REVIEW_MODEL` объявлен, но пуст (D6) → код 2:
    «REVIEW_MODEL задан пустым — уберите переменную или назовите модель».
-3. `REVIEW_HARNESS` не задан или `codex` → `review_cmd="codex exec"`; если
-   `REVIEW_MODEL` задан — `review_cmd="codex exec -m $REVIEW_MODEL"`. Строка
-   умолчания **побайтно** `codex exec` (D1).
-4. `REVIEW_HARNESS=claude` →
+3. `REVIEW_EFFORT` объявлен, но пуст (спека review-eval §7, D13) → код 2:
+   «REVIEW_EFFORT задан пустым — уберите переменную или назовите уровень»
+   (тот же класс отказа, что у `REVIEW_MODEL`, тем же порядком проверки).
+4. `REVIEW_HARNESS` не задан или `codex` → `review_cmd="codex exec"`; если
+   `REVIEW_MODEL` задан — `review_cmd="codex exec -m $REVIEW_MODEL"`; если
+   `REVIEW_EFFORT` задан — к строке добавляется
+   `-c model_reasoning_effort=$REVIEW_EFFORT` (после `-m`, если оба заданы).
+   Строка умолчания без `REVIEW_MODEL`/`REVIEW_EFFORT` остаётся **побайтно**
+   `codex exec` (D1).
+5. `REVIEW_HARNESS=claude` →
    - префлайт адаптера: `[ -f "$kit_dir/harness-claude" ]` иначе код 2
      «кит обновлён наполовину: REVIEW_HARNESS=claude, а
      $kit_dir/harness-claude нет» (тот же класс, что детекция
@@ -107,19 +113,28 @@ claude-ревьюером по одному env-переключателю, вк
      «ревьюер не отработал»); `[ -x … ]` иначе код 2 с рецептом `chmod +x`
      (см. §5 про режим файла);
    - `review_cmd="harness-claude --model ${REVIEW_MODEL}"`, модель по
-     умолчанию `claude-opus-5`, если `REVIEW_MODEL` не объявлен;
+     умолчанию `claude-opus-5`, если `REVIEW_MODEL` не объявлен; если
+     `REVIEW_EFFORT` задан — к строке добавляется `--effort $REVIEW_EFFORT`;
    - `reviewer_exec="$kit_dir/harness-claude"`: абсолютный путь, по которому
      адаптер реально запускается (D7, §4.1); `PATH` не трогается нигде в
      резолве.
-5. Любое другое значение `REVIEW_HARNESS` → код 2 «неизвестный харнесс
+6. Любое другое значение `REVIEW_HARNESS` → код 2 «неизвестный харнесс
    '<значение>' (claude|codex)». Пустая строка `REVIEW_HARNESS=""` — тот же
    отказ, не умолчание (симметрично D6).
 
-`REVIEW_HARNESS=""`/`REVIEW_MODEL=""` — отказы, а не умолчания, потому что
-пустое значение приходит только от явной, но сломанной настройки (опечатка в
-профиле, `export REVIEW_MODEL=` без значения), и молча уйти на codex значило
-бы сжечь ровно тот лимит, ради которого переменная выставлялась (прецедент —
-толерантный парсер `harness.env` в `review-pr.sh`).
+`REVIEW_HARNESS=""`/`REVIEW_MODEL=""`/`REVIEW_EFFORT=""` — отказы, а не
+умолчания, потому что пустое значение приходит только от явной, но сломанной
+настройки (опечатка в профиле, `export REVIEW_MODEL=` без значения), и молча
+уйти на codex значило бы сжечь ровно тот лимит, ради которого переменная
+выставлялась (прецедент — толерантный парсер `harness.env` в
+`review-pr.sh`). Кит валидирует только ФОРМУ значений
+`REVIEW_MODEL`/`REVIEW_EFFORT` — одно слово из `[A-Za-z0-9._:/@+-]`
+(значения интерполируются в `review_cmd`, который по контракту разбивается
+по словам; иначе `REVIEW_EFFORT='high --model x'` подменял бы модель —
+находка терминального ревью ветки sidecars); семантику значения (допустимый
+уровень, имя модели) отвергает провайдер. При непустом `REVIEW_CMD` (п. 1)
+`REVIEW_EFFORT` игнорируется молча вместе с `REVIEW_HARNESS`/`REVIEW_MODEL`,
+оверрайд — целиком.
 
 Резолв выполняется **до** `--fingerprint-only` и до любой работы с
 диапазоном/remote: отпечаток видит эффективную строку (§6). В
@@ -232,6 +247,11 @@ PIN, `checksum.sh` лишние файлы игнорирует по контр�
 - Коды: 0 — вердикт записан; 2 — аргументы/префлайт; 3 — claude не
   отработал или ответ негоден. Для кита различие 2/3 адаптера несущественно
   (любой не-0 → код 3 кита), но оно бесплатно и полезно при ручном вызове.
+- Адаптер дополнительно принимает необязательный `--effort <уровень>`
+  (транслируется в reasoning-уровень вызова claude) и, когда задан
+  `REVIEW_USAGE_OUT`, атомарно пишет нормализованный usage/стоимость-sidecar
+  — в том числе при ненулевом исходе claude; контракт обеих переменных —
+  спека review-eval harness §7 (`2026-09-14-review-eval-harness-design.md`).
 
 ## 6. Отпечаток
 
@@ -244,6 +264,8 @@ PIN, `checksum.sh` лишние файлы игнорирует по контр�
 | `REVIEW_MODEL=X` | `codex exec -m X` (совпадает с тем, что сегодня собирает `review-pr.sh --harness codex --model X`) |
 | `REVIEW_HARNESS=claude` | `harness-claude --model claude-opus-5` |
 | `REVIEW_HARNESS=claude REVIEW_MODEL=X` | `harness-claude --model X` |
+| `REVIEW_EFFORT=high` | `codex exec -c model_reasoning_effort=high` |
+| `REVIEW_HARNESS=claude REVIEW_EFFORT=high` | `harness-claude --model claude-opus-5 --effort high` |
 | `REVIEW_CMD=…` (непустой) | как задано (без изменений) |
 | `REVIEW_CMD=""` | как unset — `codex exec` (D5, совместимость с `${REVIEW_CMD:-…}`) |
 

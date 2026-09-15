@@ -1667,7 +1667,15 @@ def run_local_env(
     base = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("REVIEW_CMD", "REVIEW_HARNESS", "REVIEW_MODEL")
+        if k
+        not in (
+            "REVIEW_CMD",
+            "REVIEW_HARNESS",
+            "REVIEW_MODEL",
+            "REVIEW_EFFORT",
+            "REVIEW_VERDICT_OUT",
+            "REVIEW_USAGE_OUT",
+        )
     }
     base["REVIEW_KIT_DIR"] = str(kit_dir or ROOT / "scripts" / "review")
     base["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
@@ -1840,6 +1848,67 @@ def test_print_review_cmd_is_exclusive(tmp_path: Path, other: str) -> None:
     assert "--print-review-cmd" in res.stderr
 
 
+# --- REVIEW_EFFORT (спека review-eval D13) -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({"REVIEW_EFFORT": "high"}, "codex exec -c model_reasoning_effort=high"),
+        (
+            {"REVIEW_MODEL": "gpt-5.4", "REVIEW_EFFORT": "low"},
+            "codex exec -m gpt-5.4 -c model_reasoning_effort=low",
+        ),
+        (
+            {"REVIEW_HARNESS": "claude", "REVIEW_EFFORT": "high"},
+            "harness-claude --model claude-opus-5 --effort high",
+        ),
+        ({"REVIEW_CMD": "my-reviewer", "REVIEW_EFFORT": "high"}, "my-reviewer"),
+    ],
+)
+def test_effort_resolution(tmp_path: Path, env: dict[str, str], expected: str) -> None:
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env=env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert res.stdout == expected + "\n"
+
+
+def test_effort_changes_fingerprint_and_matches_explicit_cmd(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    with_effort = harness_fp(repo, {"REVIEW_EFFORT": "high"})
+    assert with_effort != harness_fp(repo)
+    assert with_effort == harness_fp(
+        repo, {"REVIEW_CMD": "codex exec -c model_reasoning_effort=high"}
+    )
+
+
+def test_effort_empty_is_config_error(tmp_path: Path) -> None:
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env={"REVIEW_EFFORT": ""})
+    assert res.returncode == 2 and "REVIEW_EFFORT" in res.stderr
+
+
+def test_effort_with_spaces_is_config_error(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): REVIEW_EFFORT попадает в
+    review_cmd текстом, и run_reviewer() намеренно word-splits эту строку —
+    значение с пробелом внутри (`high --model claude-haiku`) иначе долетало
+    бы до ревьюера лишним argv и подменяло бы модель мимо REVIEW_MODEL."""
+    _, local = make_repo(tmp_path)
+    res = run_local_env(
+        local, "--print-review-cmd", env={"REVIEW_EFFORT": "high --model claude-haiku"}
+    )
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_EFFORT" in res.stderr
+
+
+def test_model_with_spaces_is_config_error(tmp_path: Path) -> None:
+    """Тот же класс инъекции, что и у REVIEW_EFFORT выше, но для REVIEW_MODEL."""
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env={"REVIEW_MODEL": "x -c y"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_MODEL" in res.stderr
+
+
 # --- Сквозной путь claude: вердикт доезжает до apply-threshold.sh -------------
 
 # Копия из test_harness_claude.py: pyrefly резолвит импорты только от src/ и не
@@ -1923,6 +1992,20 @@ def test_claude_harness_end_to_end_reaches_threshold(
     assert res.returncode == code, res.stdout + res.stderr
     prompt = Path(env["CLAUDE_STUB_PROMPT"]).read_text(encoding="utf-8")
     assert "new.txt" in prompt  # диф реально дошёл до claude
+
+
+def test_effort_injection_rejected_before_claude_invoked(tmp_path: Path) -> None:
+    """Сквозной случай для гейта финального ревью этой ветки (major):
+    REVIEW_EFFORT с встроенным флагом обязан отказать ДО вызова claude, а не
+    долететь до адаптера лишним argv и подменить модель."""
+    repo = make_repo_with_diff(tmp_path)
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    env["REVIEW_MODEL"] = "claude-opus-5"
+    env["REVIEW_EFFORT"] = "high --model claude-haiku"
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_EFFORT" in res.stderr
+    assert not Path(env["CLAUDE_STUB_ARGV"]).exists()  # claude не вызван
 
 
 def _path_without_executable(name: str) -> str:
@@ -2009,3 +2092,153 @@ def test_kit_dir_path_prefix_does_not_leak_into_preparation(tmp_path: Path) -> N
     res = run_local_env(repo, env=env, kit_dir=kit)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "подставной git" not in res.stderr
+
+
+# --- REVIEW_VERDICT_OUT (спека review-eval §7) -------------------------------
+
+
+def test_verdict_out_is_written_even_when_threshold_blocks(tmp_path: Path) -> None:
+    """Sidecar пишется ДО apply-threshold.sh: при коде 1 (major) вердикт доступен."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "artifacts" / "verdict.json"
+    env = _claude_stand(tmp_path, MAJOR_FINDING)
+    env["REVIEW_VERDICT_OUT"] = str(out)
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert json.loads(out.read_text(encoding="utf-8")) == MAJOR_FINDING
+
+
+def test_verdict_out_is_written_when_threshold_rejects_verdict(tmp_path: Path) -> None:
+    """Битый по схеме вердикт: apply-threshold.sh даёт 2, но sidecar уже сохранён."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "verdict.json"
+    env = _claude_stand(tmp_path, {"findings": [{"severity": "major"}], "note": "x"})
+    env["REVIEW_VERDICT_OUT"] = str(out)
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert out.exists()
+
+
+def test_verdict_out_empty_is_config_error(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, "--print-review-cmd", env={"REVIEW_VERDICT_OUT": ""})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_VERDICT_OUT" in res.stderr
+
+
+def test_verdict_out_directory_is_config_error(tmp_path: Path) -> None:
+    """Каталог вместо файла: `mv` унёс бы временный файл ВНУТРЬ каталога, и
+    прогон вышел бы кодом 0 без вердикта по заявленному пути, оставив внутри
+    осиротевший `.verdict.*` — находка финального ревью этой ветки."""
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, env={"REVIEW_VERDICT_OUT": str(tmp_path)})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "каталог" in res.stderr
+    assert list(tmp_path.glob(".verdict.*")) == []
+
+
+def test_verdict_out_overlapping_with_usage_dir_is_refused(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (minor): REVIEW_USAGE_OUT ВНУТРИ
+    дерева REVIEW_VERDICT_OUT проходит ранний `-d`-guard local.sh (путь ещё
+    не каталог), но адаптер делает `mkdir -p` для usage'а ДО того, как
+    local.sh дойдёт до копирующего блока — REVIEW_VERDICT_OUT к этому
+    моменту уже каталог, и `mv` переносит verdict_tmp ВНУТРЬ него вместо
+    переименования в него. Post-mv проверка обязана поймать это явным
+    отказом."""
+    repo = make_repo_with_diff(tmp_path)
+    verdict_out = tmp_path / "artifact"
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    env["REVIEW_VERDICT_OUT"] = str(verdict_out)
+    env["REVIEW_USAGE_OUT"] = str(verdict_out / "usage.json")
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_VERDICT_OUT" in res.stderr
+    assert list(verdict_out.glob(".verdict.*")) == []
+
+
+def test_verdict_out_stale_file_removed_on_reviewer_failure(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): провал ревьюера (код 3)
+    выходит ДО копирующего блока, и без явной инвалидации файл прошлого
+    успешного прогона остался бы на месте — eval читает наличие sidecar как
+    `reviewer_ran: true` и принял бы устаревший вердикт за результат текущего
+    провала."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "verdict.json"
+    out.write_text('{"findings":[],"note":"stale"}', encoding="utf-8")
+    stub = make_stub(tmp_path, STUB_BROKEN)
+    res = run_local(repo, stub, env_overrides={"REVIEW_VERDICT_OUT": str(out)})
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert not out.exists()
+
+
+def test_usage_out_empty_is_config_error_on_codex_path(tmp_path: Path) -> None:
+    """Minor: README обещает код 2 на пустой REVIEW_USAGE_OUT независимо от
+    харнесса, но только адаптер claude её проверял — на codex-пути (умолчание)
+    переменная раньше вообще не читалась local.sh."""
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, "--print-review-cmd", env={"REVIEW_USAGE_OUT": ""})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_USAGE_OUT" in res.stderr
+
+
+def test_usage_out_directory_is_config_error_on_codex_path(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, env={"REVIEW_USAGE_OUT": str(tmp_path)})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "каталог" in res.stderr
+
+
+def test_usage_out_stale_file_removed_on_early_guardrail_exit(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): инвалидация адаптера
+    срабатывает, только если адаптер вообще запускается — build-prompt.sh
+    может завершить прогон раньше (здесь — потолок дифа, код 2), и без
+    собственной инвалидации local.sh прежний usage.json пережил бы этот ранний
+    отказ. eval приписал бы устаревшую стоимость сбою конфигурации, а не
+    реальному прогону."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "usage.json"
+    out.write_text('{"stale": true}', encoding="utf-8")
+    res = run_local_env(repo, "--max-diff-bytes", "1", env={"REVIEW_USAGE_OUT": str(out)})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "диф больше поддерживаемого" in res.stderr
+    assert not out.exists()
+
+
+def test_verdict_out_path_with_apostrophe_keeps_trap_working(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (minor): апостроф в пути
+    REVIEW_VERDICT_OUT ломал старую форму `trap "rm -rf '$work'; rm -f
+    '$verdict_tmp'" EXIT` — интерполяция текстом внутрь одинарных кавычек, и
+    апостроф из самого пути обрывал закрывающую кавычку раньше срока. Тело
+    trap'а теперь в одинарных кавычках целиком, переменные разворачиваются
+    при СРАБАТЫВАНИИ, не при регистрации — путь с апострофом больше не может
+    исказить сам текст команды."""
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp, "mktemp не найден — стенд не может подменить его осмысленно"
+
+    repo = make_repo_with_diff(tmp_path)
+    work_parent = tmp_path / "work-parent"
+    work_parent.mkdir()
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    shim = stub_bin / "mktemp"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "-d" ]; then exec {real_mktemp} -d "{work_parent}/tmp.XXXXXX"; fi\n'
+        f'exec {real_mktemp} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+
+    out = tmp_path / "O'Connor" / "verdict.json"
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    env["REVIEW_VERDICT_OUT"] = str(out)
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert json.loads(out.read_text(encoding="utf-8")) == {"findings": [], "note": "stub"}
+    assert list(work_parent.glob("tmp.*")) == []  # рабочий каталог убран trap'ом
+
+
+def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})

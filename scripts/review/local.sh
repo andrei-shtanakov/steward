@@ -49,6 +49,69 @@ prompt="${REVIEW_PROMPT:-$repo_root/.github/codex/review-prompt.md}"
 # только в ветке claude: под `set -u` переменная обязана существовать при
 # любом исходе резолва (REVIEW_CMD-оверрайд её не выставляет вовсе).
 reviewer_exec=""
+# Sidecar-артефакты eval (спека review-eval §7): пути задаются окружением,
+# пустое значение — отказ (прецедент REVIEW_MODEL), в отпечаток не входят.
+if [ -n "${REVIEW_VERDICT_OUT+x}" ] && [ -z "$REVIEW_VERDICT_OUT" ]; then
+    echo "REVIEW_VERDICT_OUT задан пустым — уберите переменную или назовите путь." >&2
+    exit 2
+fi
+# Каталог вместо файла: без этой проверки `mv "$tmp" "$REVIEW_VERDICT_OUT"`
+# переносит временный файл ВНУТРЬ каталога (POSIX-семантика mv), прогон
+# завершается кодом 0 без вердикта по заявленному пути, а внутри каталога
+# остаётся осиротевший `.verdict.*` — находка финального ревью этой ветки.
+[ ! -d "${REVIEW_VERDICT_OUT:-}" ] || {
+    echo "REVIEW_VERDICT_OUT: путь — каталог, а не файл: $REVIEW_VERDICT_OUT" >&2
+    exit 2
+}
+# Наличие файла обязано означать результат ИМЕННО этого прогона (контракт
+# eval: sidecar есть = ревьюер отработал) — прежний вердикт снимается до
+# любой работы. Без этого сброса провал ревьюера (код 3, до копирующего
+# блока ниже) оставлял бы файл предыдущего прогона на месте, и eval читал
+# бы устаревший «успех» с чужими находками как результат текущего.
+[ -z "${REVIEW_VERDICT_OUT:-}" ] || rm -f "$REVIEW_VERDICT_OUT" || {
+    echo "REVIEW_VERDICT_OUT: не удалить прежний файл $REVIEW_VERDICT_OUT" >&2
+    exit 2
+}
+# REVIEW_USAGE_OUT содержательно пишет и заново инвалидирует при каждом своём
+# запуске адаптер harness-claude, но местный прогон обязан отказывать на тех
+# же условиях, что обещаны в README (пустое значение и каталог — код 2), а не
+# молча уходить в codex-путь, где переменная вообще не проверяется.
+if [ -n "${REVIEW_USAGE_OUT+x}" ] && [ -z "$REVIEW_USAGE_OUT" ]; then
+    echo "REVIEW_USAGE_OUT задан пустым — уберите переменную или назовите путь." >&2
+    exit 2
+fi
+[ ! -d "${REVIEW_USAGE_OUT:-}" ] || {
+    echo "REVIEW_USAGE_OUT: путь — каталог, а не файл: $REVIEW_USAGE_OUT" >&2
+    exit 2
+}
+# Инвалидация — ДО любой операции, способной завершить прогон раньше
+# адаптера (потолок дифа build-prompt.sh, отказ манифеста контекста и т.п.):
+# адаптер повторяет ту же инвалидацию для собственных прямых вызовов, но его
+# инвалидация не срабатывает, если он вообще не запускается. Без этой
+# страховки прежний usage.json пережил бы ранний отказ гардрейла, и eval
+# приписал бы устаревшую стоимость сбою конфигурации, а не реальному прогону.
+[ -z "${REVIEW_USAGE_OUT:-}" ] || rm -f "$REVIEW_USAGE_OUT" || {
+    echo "REVIEW_USAGE_OUT: не удалить прежний файл $REVIEW_USAGE_OUT" >&2
+    exit 2
+}
+# REVIEW_MODEL/REVIEW_EFFORT попадают в review_cmd ТЕКСТОМ, а run_reviewer()
+# намеренно word-splits эту строку (REVIEW_CMD — команда целиком, включая
+# флаги, — тот же контракт распространяется на собранную строку умолчания).
+# Значит значение обязано быть ОДНИМ словом: `REVIEW_EFFORT='high --model
+# claude-haiku'` иначе долетало бы до ревьюера лишним argv и подменяло бы
+# модель мимо REVIEW_MODEL — находка финального ревью этой ветки (major).
+# Безопасный алфавит — буквы, цифры и `. _ : / @ + -`: ни пробелов, ни
+# кавычек, ни `$ ; & | \` и прочих метасимволов шелла.
+check_safe_word() {
+    # $1 — имя переменной (для сообщения), $2 — значение.
+    case "$2" in
+        *[!A-Za-z0-9._:/@+-]*)
+            echo "$1: недопустимое значение (разрешены буквы, цифры и" \
+                ". _ : / @ + -): $2" >&2
+            exit 2
+            ;;
+    esac
+}
 if [ -n "${REVIEW_CMD:-}" ]; then
     review_cmd="$REVIEW_CMD"
 else
@@ -57,9 +120,25 @@ else
             "модель." >&2
         exit 2
     fi
+    if [ -n "${REVIEW_MODEL:-}" ]; then
+        check_safe_word REVIEW_MODEL "$REVIEW_MODEL"
+    fi
+    # REVIEW_EFFORT — reasoning-уровень (спека review-eval D13): та же
+    # пустота-отказ, что у REVIEW_MODEL, и теперь та же форма-проверка
+    # (check_safe_word). Effort — часть команды, значит и отпечатка: при
+    # REVIEW_CMD-оверрайде выше эта ветка не выполняется, и effort вместе с
+    # harness/model игнорируется целиком.
+    if [ -n "${REVIEW_EFFORT+x}" ] && [ -z "$REVIEW_EFFORT" ]; then
+        echo "REVIEW_EFFORT задан пустым — уберите переменную или назовите" \
+            "уровень." >&2
+        exit 2
+    fi
+    if [ -n "${REVIEW_EFFORT:-}" ]; then
+        check_safe_word REVIEW_EFFORT "$REVIEW_EFFORT"
+    fi
     case "${REVIEW_HARNESS-codex}" in
         codex)
-            review_cmd="codex exec${REVIEW_MODEL:+ -m $REVIEW_MODEL}"
+            review_cmd="codex exec${REVIEW_MODEL:+ -m $REVIEW_MODEL}${REVIEW_EFFORT:+ -c model_reasoning_effort=$REVIEW_EFFORT}"
             ;;
         claude)
             # Адаптер — член кита; зовётся по АБСОЛЮТНОМУ пути
@@ -88,7 +167,7 @@ else
                 exit 2
             fi
             reviewer_exec="$kit_dir/harness-claude"
-            review_cmd="harness-claude --model ${REVIEW_MODEL:-claude-opus-5}"
+            review_cmd="harness-claude --model ${REVIEW_MODEL:-claude-opus-5}${REVIEW_EFFORT:+ --effort $REVIEW_EFFORT}"
             ;;
         *)
             echo "неизвестный харнесс REVIEW_HARNESS='${REVIEW_HARNESS}'" \
@@ -434,8 +513,17 @@ info "голова:   $(git rev-parse --short "$head_sha")"
 info "диапазон: ${mb}..${head_sha}"
 
 work=$(mktemp -d)
-# shellcheck disable=SC2064
-trap "rm -rf '$work'" EXIT
+# verdict_tmp объявлен здесь и ПУСТ, пока REVIEW_VERDICT_OUT не запрошен
+# (заполняется ниже, в копирующем блоке) — единственная регистрация EXIT
+# trap'а живёт тут же, а не переопределяется там, где verdict_tmp
+# появляется. Тело trap'а — В ОДИНАРНЫХ кавычках: переменные разворачиваются
+# в момент СРАБАТЫВАНИЯ, а не в момент регистрации. Прежняя форма
+# (`trap "rm -rf '$work'; rm -f '$verdict_tmp'" EXIT`, интерполяция путей
+# внутрь одинарных кавычек текстом) ломалась на апостроф в самом пути —
+# закрывающая кавычка обрывалась раньше срока (находка гейта на этой ветке,
+# `REVIEW_VERDICT_OUT` под каталогом вида `O'Connor/`).
+verdict_tmp=""
+trap 'rm -rf "$work"; [ -z "$verdict_tmp" ] || rm -f "$verdict_tmp"' EXIT
 
 git diff "$mb..$head_sha" > "$work/diff.patch"
 if [ ! -s "$work/diff.patch" ]; then
@@ -754,6 +842,41 @@ fi
 if [ ! -s "$work/verdict.json" ]; then
     echo "ревьюер завершился успешно, но вердикта не оставил" >&2
     exit 3
+fi
+
+# Копия вердикта ДО порога (спека review-eval §7, D4): eval обязан видеть
+# находки и при коде 1, и при отказе валидации порога. Атомарно: tmp в
+# каталоге цели + mv; потерять запрошенный артефакт молча нельзя — код 2.
+if [ -n "${REVIEW_VERDICT_OUT:-}" ]; then
+    verdict_out_dir=$(dirname "$REVIEW_VERDICT_OUT")
+    mkdir -p "$verdict_out_dir" || { echo "REVIEW_VERDICT_OUT: не создать каталог $verdict_out_dir" >&2; exit 2; }
+    verdict_tmp=$(mktemp "$verdict_out_dir/.verdict.XXXXXX") \
+        || { echo "REVIEW_VERDICT_OUT: не создать временный файл в $verdict_out_dir" >&2; exit 2; }
+    # Trap уже зарегистрирован (см. work=$(mktemp -d) выше) и читает
+    # verdict_tmp по имени при срабатывании — присваивание здесь достаточно,
+    # повторная регистрация не нужна и не переживает апостроф в пути.
+    if ! cp "$work/verdict.json" "$verdict_tmp" || ! mv "$verdict_tmp" "$REVIEW_VERDICT_OUT"; then
+        rm -f "$verdict_tmp"
+        echo "REVIEW_VERDICT_OUT: не удалось сохранить вердикт в $REVIEW_VERDICT_OUT" >&2
+        exit 2
+    fi
+    if [ ! -f "$REVIEW_VERDICT_OUT" ]; then
+        # Пройденный по значению `-d` guard выше отсекает REVIEW_VERDICT_OUT,
+        # который УЖЕ каталог — но не пересекающиеся sidecar-пути (находка
+        # терминального ревью этой ветки): REVIEW_USAGE_OUT ВНУТРИ дерева
+        # REVIEW_VERDICT_OUT (`REVIEW_VERDICT_OUT=/x/artifact`,
+        # `REVIEW_USAGE_OUT=/x/artifact/usage.json`) заставляет адаптер
+        # сделать `mkdir -p /x/artifact` уже ПОСЛЕ раннего guard'а local.sh —
+        # и `mv` выше "успевает" структурно (POSIX-семантика: цель — каталог,
+        # файл переносится ВНУТРЬ него, а не переименовывается в него),
+        # оставляя осиротевший `.verdict.*` внутри. Зеркало post-mv проверки
+        # адаптера (`[ -f "$verdict" ]`): убрать осиротевший файл и отказать
+        # явно, а не молчать кодом 0 без вердикта по заявленному пути.
+        rm -f "$REVIEW_VERDICT_OUT/$(basename "$verdict_tmp")"
+        echo "REVIEW_VERDICT_OUT: вердикт не сохранён как файл по заданному" \
+            "пути: $REVIEW_VERDICT_OUT" >&2
+        exit 2
+    fi
 fi
 
 sh "$kit_dir/apply-threshold.sh" --verdict "$work/verdict.json" --format "$format"

@@ -82,15 +82,20 @@ class Stand:
         stdin: str = "ПРОМПТ\n",
         path: str | None = None,
         claude_exit: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self.env_file.write_text(envelope_text, encoding="utf-8")
-        env = dict(os.environ)
+        env = {
+            k: v for k, v in os.environ.items() if k not in ("REVIEW_USAGE_OUT", "REVIEW_EFFORT")
+        }
         env["PATH"] = path if path is not None else f"{self.bin}{os.pathsep}{os.environ['PATH']}"
         env["CLAUDE_STUB_ARGV"] = str(self.argv)
         env["CLAUDE_STUB_PROMPT"] = str(self.prompt)
         env["CLAUDE_STUB_ENVELOPE"] = str(self.env_file)
         if claude_exit is not None:
             env["CLAUDE_STUB_EXIT"] = claude_exit
+        if extra_env:
+            env.update(extra_env)
         # Интерпретатор — АБСОЛЮТНЫМ путём, найденным по PATH теста ДО сужения:
         # CPython резолвит executable по env["PATH"] переданного окружения, и
         # при PATH из одного каталога голое `sh` дало бы FileNotFoundError
@@ -127,6 +132,28 @@ def test_unknown_or_bare_flag_is_config_error(tmp_path: Path, bad: list[str]) ->
     s = Stand(tmp_path)
     res = s.run(*bad)
     assert res.returncode == 2, res.stderr
+    assert not s.verdict.exists()
+
+
+def test_effort_empty_arg_is_config_error(tmp_path: Path) -> None:
+    """Minor #6: `--effort ""` принимался и молча отбрасывался — тот же
+    класс отказа, что у голого флага без значения выше."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args("--effort", ""))
+    assert res.returncode == 2, res.stderr
+    assert "--effort" in res.stderr
+    assert not s.verdict.exists()
+
+
+def test_effort_with_spaces_is_config_error(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major), зеркало проверки local.sh:
+    прямой вызов адаптера с составным `--effort` обязан отказать тем же
+    кодом 2 — тот же класс инъекции, что и через local.sh/REVIEW_EFFORT,
+    доступен и в обход local.sh."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args("--effort", "high --model x"))
+    assert res.returncode == 2, res.stderr
+    assert "--effort" in res.stderr
     assert not s.verdict.exists()
 
 
@@ -326,6 +353,196 @@ def test_temp_file_lives_next_to_verdict(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
     assert ".verdict." in probe.read_text(encoding="utf-8")
     assert list(s.out.glob(".verdict.*")) == []
+
+
+# --- REVIEW_USAGE_OUT и --effort (спека review-eval §7, D12/D13) ----------------
+
+FULL_ENVELOPE = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "structured_output": VERDICT_OK,
+        "duration_ms": 12345,
+        "total_cost_usd": 0.42,
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 900,
+        },
+    }
+)
+
+
+def _usage_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    out = tmp_path / "side" / "usage.json"
+    return {"REVIEW_USAGE_OUT": str(out)}, out
+
+
+def test_usage_sidecar_written_on_success(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    res = s.run(
+        *s.codex_args("--model", "claude-opus-5", "--effort", "high"),
+        envelope_text=FULL_ENVELOPE,
+        extra_env=env,
+    )
+    assert res.returncode == 0, res.stderr
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["schema"] == "review-usage/v1" and u["provider"] == "claude"
+    assert u["model"] == "claude-opus-5" and u["requested_effort"] == "high"
+    assert u["usage"]["input_tokens"] == 1000 and u["total_cost_usd"] == 0.42
+    assert u["provider_duration_ms"] == 12345 and u["outcome"] == "success"
+    argv = s.argv.read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--effort") + 1] == "high"
+
+
+def test_usage_sidecar_written_on_error_envelope(tmp_path: Path) -> None:
+    """Ошибочный ответ тоже стоил денег (D12): sidecar есть, outcome=error, код адаптера 3."""
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    bad = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "is_error": True,
+            "total_cost_usd": 0.05,
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+        }
+    )
+    res = s.run(*s.codex_args(), envelope_text=bad, extra_env=env)
+    assert res.returncode == 3
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["outcome"] == "error" and u["total_cost_usd"] == 0.05
+    assert u["provider_duration_ms"] is None  # отсутствует → null, не 0
+    assert list(out.parent.glob(".usage.*")) == []
+
+
+def test_usage_sidecar_on_unparseable_envelope(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    res = s.run(*s.codex_args(), envelope_text="not json {", extra_env=env)
+    assert res.returncode == 3
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["outcome"] == "error" and u["usage"] is None
+
+
+def test_multi_document_envelope_is_error(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (minor): `jq` без `-s` применяет
+    фильтр к КАЖДОМУ top-level JSON-значению потока по отдельности —
+    конкатенация двух валидных success-конвертов тихо проходила бы
+    ENVELOPE_OK и печатала бы построчный JSONL там, где ожидается один
+    JSON-объект (и в sidecar'е usage, и в самом вердикте)."""
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    res = s.run(*s.codex_args(), envelope_text=FULL_ENVELOPE + "\n" + FULL_ENVELOPE, extra_env=env)
+    assert res.returncode == 3, res.stderr
+    assert not s.verdict.exists()
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["outcome"] == "error" and u["usage"] is None
+
+
+def test_usage_out_empty_is_config_error(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": ""})
+    assert res.returncode == 2 and "REVIEW_USAGE_OUT" in res.stderr
+
+
+def test_usage_out_directory_is_config_error(tmp_path: Path) -> None:
+    """Каталог вместо файла: `mv` унёс бы временный файл ВНУТРЬ каталога, и
+    адаптер вышел бы кодом 0, не записав sidecar по заявленному пути —
+    находка финального ревью этой ветки. Проверка теперь в префлайте, до
+    вызова claude."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": str(tmp_path)})
+    assert res.returncode == 2, res.stderr
+    assert "каталог" in res.stderr
+    assert list(tmp_path.glob(".usage.*")) == []
+    assert not s.argv.exists()  # claude не вызван
+
+
+def test_usage_out_stale_file_removed_when_claude_missing(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): наличие sidecar-файла
+    обязано означать результат ИМЕННО этого прогона (контракт eval), и это
+    верно даже когда адаптер обрывается раньше на отсутствующем бинаре —
+    инвалидация REVIEW_USAGE_OUT стоит впереди префлайтов claude/jq, а не
+    после них."""
+    s = Stand(tmp_path)
+    out_dir = tmp_path / "side"
+    out_dir.mkdir()
+    stale = out_dir / "usage.json"
+    stale.write_text('{"stale": true}', encoding="utf-8")
+    # PATH несёт jq и обычные coreutils (rm/mkdir/mktemp/dirname нужны самому
+    # REVIEW_USAGE_OUT-префлайту, который теперь идёт ДО проверки claude), но
+    # НЕ несёт `s.bin` — каталог подставного claude.
+    jq_dir = Path(shutil.which("jq") or "").parent
+    res = s.run(
+        *s.codex_args(),
+        path=f"{jq_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        extra_env={"REVIEW_USAGE_OUT": str(stale)},
+    )
+    assert res.returncode == 2, res.stderr
+    assert "claude не найден в PATH" in res.stderr
+    assert not stale.exists()
+
+
+def test_usage_out_unwritable_dir_fails_before_claude(tmp_path: Path) -> None:
+    """Важное #2: валидация REVIEW_USAGE_OUT — целиком в префлайте, ДО
+    платного вызова claude. Неписуемый каталог ловится на `mktemp` временного
+    файла (mkdir -p на уже существующем каталоге успеха не гарантирует
+    записи в него)."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root игнорирует биты доступа")
+    s = Stand(tmp_path)
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir()
+    unwritable.chmod(0o500)
+    try:
+        res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": str(unwritable / "usage.json")})
+        assert res.returncode == 2, res.stderr
+        assert not s.argv.exists()  # claude не вызван
+    finally:
+        unwritable.chmod(0o700)
+
+
+def test_usage_post_call_failure_keeps_claude_code_3(tmp_path: Path) -> None:
+    """Важное #2: sidecar не собрался ПОСЛЕ вызова claude, но сам claude уже
+    отказал (claude_exit=7) — код адаптера остаётся 3 (сбой ревьюера), а не
+    маскируется 2 (конфигурация sidecar'а). `jq` подставной: делегирует
+    настоящему jq для всего, кроме `-c`/`-nc` (сборка sidecar-документа),
+    которую намеренно проваливает."""
+    real_jq = shutil.which("jq")
+    assert real_jq, "нужен системный jq для теста"
+    jq_bin = tmp_path / "jq-bin"
+    jq_bin.mkdir()
+    shim = jq_bin / "jq"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '    case "$a" in\n'
+        "        -c|-nc|-cn)\n"
+        '            echo "jq shim: intentional failure" >&2\n'
+        "            exit 1\n"
+        "            ;;\n"
+        "    esac\n"
+        "done\n"
+        f'exec "{real_jq}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    s = Stand(tmp_path)
+    env, _out = _usage_env(tmp_path)
+    path = f"{s.bin}{os.pathsep}{jq_bin}{os.pathsep}{os.environ['PATH']}"
+    res = s.run(*s.codex_args(), path=path, claude_exit="7", extra_env=env)
+    assert res.returncode == 3, res.stderr
+    assert "sidecar" in res.stderr
+
+
+def test_no_effort_flag_without_effort_arg(tmp_path: Path) -> None:
+    s = Stand(tmp_path)
+    assert s.run(*s.codex_args()).returncode == 0
+    assert "--effort" not in s.argv.read_text(encoding="utf-8").splitlines()
 
 
 def test_adapter_is_executable_in_git_tree() -> None:
