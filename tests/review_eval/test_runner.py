@@ -2915,6 +2915,69 @@ def test_out_dir_under_a_symlinked_prefix_is_accepted(tmp_path: Path) -> None:
         cache_root=cache_root,
         env_base=env,
     )
+    # Полный `--rerun` с другим китом: остаток считается по физическим путям,
+    # иначе под симлинк-префиксом все результаты выглядели бы «вне выборки».
+    rerun = run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=_other_kit(kit),
+        cache_root=cache_root,
+        env_base=env,
+        rerun=True,
+    )
+    assert rerun.finished
+    assert [item.outcome for item in load_results(out_dir)] == ["verdict"]
+
+
+def test_full_rerun_with_a_superset_may_grow_repetitions(tmp_path: Path) -> None:
+    """Надмножество + рост `repetitions` при полном `--rerun`: все кейсы манифеста
+    запрошены, отказывать «не запрошены: —» не за что.
+    """
+    cases, out_dir, cache_root, kit, _counter, _digest, env_base = _two_case_run(tmp_path)
+    added = dataclasses.replace(cases[0], case_id="steward-161")
+
+    manifest = run_all(
+        [*cases, added],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=2,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env_base,
+        rerun=True,
+    )
+
+    assert manifest.repetitions == 2
+    assert len(load_results(out_dir)) == 6
+
+
+def test_run_case_survives_non_utf8_output_of_the_kit(tmp_path: Path) -> None:
+    """Байт вне UTF-8 в stderr кита — исход записывается, а не UnicodeDecodeError."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    local_sh = kit.kit_dir / "local.sh"
+    local_sh.write_bytes(
+        b"#!/bin/sh\nprintf '\\377\\376 bad bytes' >&2\n"
+        b'printf \'%s\' "$STUB_VERDICT_BODY" > "$REVIEW_VERDICT_OUT"\nexit 0\n'
+    )
+    env = _env_base(tmp_path / "record.txt", STUB_VERDICT_BODY=VALID_VERDICT)
+
+    result = run_case(
+        _make_case(base_sha=first, head_sha=second),
+        Variant("claude", "claude-opus-5", None),
+        1,
+        kit=kit,
+        cache_root=cache_root,
+        out_dir=tmp_path / "run",
+        env_base=env,
+    )
+
+    assert result.outcome == "verdict"
+    stderr = (tmp_path / "run" / result.stderr_path).read_text(encoding="utf-8")
+    assert "bad bytes" in stderr
 
 
 def test_full_rerun_works_with_a_relative_out_dir(
