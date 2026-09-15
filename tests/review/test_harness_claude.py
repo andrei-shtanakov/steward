@@ -135,6 +135,16 @@ def test_unknown_or_bare_flag_is_config_error(tmp_path: Path, bad: list[str]) ->
     assert not s.verdict.exists()
 
 
+def test_effort_empty_arg_is_config_error(tmp_path: Path) -> None:
+    """Minor #6: `--effort ""` принимался и молча отбрасывался — тот же
+    класс отказа, что у голого флага без значения выше."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args("--effort", ""))
+    assert res.returncode == 2, res.stderr
+    assert "--effort" in res.stderr
+    assert not s.verdict.exists()
+
+
 @pytest.mark.parametrize(
     "args, reason",
     [
@@ -394,6 +404,7 @@ def test_usage_sidecar_written_on_error_envelope(tmp_path: Path) -> None:
     u = json.loads(out.read_text(encoding="utf-8"))
     assert u["outcome"] == "error" and u["total_cost_usd"] == 0.05
     assert u["provider_duration_ms"] is None  # отсутствует → null, не 0
+    assert list(out.parent.glob(".usage.*")) == []
 
 
 def test_usage_sidecar_on_unparseable_envelope(tmp_path: Path) -> None:
@@ -409,6 +420,71 @@ def test_usage_out_empty_is_config_error(tmp_path: Path) -> None:
     s = Stand(tmp_path)
     res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": ""})
     assert res.returncode == 2 and "REVIEW_USAGE_OUT" in res.stderr
+
+
+def test_usage_out_directory_is_config_error(tmp_path: Path) -> None:
+    """Каталог вместо файла: `mv` унёс бы временный файл ВНУТРЬ каталога, и
+    адаптер вышел бы кодом 0, не записав sidecar по заявленному пути —
+    находка финального ревью этой ветки. Проверка теперь в префлайте, до
+    вызова claude."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": str(tmp_path)})
+    assert res.returncode == 2, res.stderr
+    assert "каталог" in res.stderr
+    assert list(tmp_path.glob(".usage.*")) == []
+    assert not s.argv.exists()  # claude не вызван
+
+
+def test_usage_out_unwritable_dir_fails_before_claude(tmp_path: Path) -> None:
+    """Важное #2: валидация REVIEW_USAGE_OUT — целиком в префлайте, ДО
+    платного вызова claude. Неписуемый каталог ловится на `mktemp` временного
+    файла (mkdir -p на уже существующем каталоге успеха не гарантирует
+    записи в него)."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root игнорирует биты доступа")
+    s = Stand(tmp_path)
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir()
+    unwritable.chmod(0o500)
+    try:
+        res = s.run(*s.codex_args(), extra_env={"REVIEW_USAGE_OUT": str(unwritable / "usage.json")})
+        assert res.returncode == 2, res.stderr
+        assert not s.argv.exists()  # claude не вызван
+    finally:
+        unwritable.chmod(0o700)
+
+
+def test_usage_post_call_failure_keeps_claude_code_3(tmp_path: Path) -> None:
+    """Важное #2: sidecar не собрался ПОСЛЕ вызова claude, но сам claude уже
+    отказал (claude_exit=7) — код адаптера остаётся 3 (сбой ревьюера), а не
+    маскируется 2 (конфигурация sidecar'а). `jq` подставной: делегирует
+    настоящему jq для всего, кроме `-c`/`-nc` (сборка sidecar-документа),
+    которую намеренно проваливает."""
+    real_jq = shutil.which("jq")
+    assert real_jq, "нужен системный jq для теста"
+    jq_bin = tmp_path / "jq-bin"
+    jq_bin.mkdir()
+    shim = jq_bin / "jq"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '    case "$a" in\n'
+        "        -c|-nc|-cn)\n"
+        '            echo "jq shim: intentional failure" >&2\n'
+        "            exit 1\n"
+        "            ;;\n"
+        "    esac\n"
+        "done\n"
+        f'exec "{real_jq}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    s = Stand(tmp_path)
+    env, _out = _usage_env(tmp_path)
+    path = f"{s.bin}{os.pathsep}{jq_bin}{os.pathsep}{os.environ['PATH']}"
+    res = s.run(*s.codex_args(), path=path, claude_exit="7", extra_env=env)
+    assert res.returncode == 3, res.stderr
+    assert "sidecar" in res.stderr
 
 
 def test_no_effort_flag_without_effort_arg(tmp_path: Path) -> None:
