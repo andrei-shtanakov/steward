@@ -322,6 +322,11 @@ SCHEMA_INVALID_TABLE: list[tuple[str, list[dict[str, Any]]]] = [
     ("line-negative", [_finding(line=-1)]),
     ("line-boolean", [_finding(line=True)]),
     ("kind-outside-the-enum", [_finding(kind="bogus")]),
+    # Нехешируемое значение enum-поля: членство во frozenset бросало TypeError,
+    # а контракт предикатов — False на любом негодном sidecar, не исключение.
+    ("kind-unhashable-list", [_finding(kind=[])]),
+    ("severity-unhashable-object", [_finding(severity={"x": 1})]),
+    ("confidence-unhashable-list", [_finding(confidence=["high"])]),
     ("severity-outside-the-enum", [_finding(severity="critical")]),
     ("confidence-outside-the-enum", [_finding(confidence="certain")]),
     ("file-not-a-string", [_finding(file=0)]),

@@ -136,6 +136,11 @@ def _is_line_number(value: object) -> bool:
     return as_line_number(value) is not None
 
 
+def _in_enum(value: object, allowed: frozenset[str]) -> bool:
+    """Строка из закрытого набора; список/объект — не TypeError, а просто «нет»."""
+    return isinstance(value, str) and value in allowed
+
+
 def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:
     """Годна ли **одна находка** по схеме вердикта v2 — зеркало jq-проверки кита.
 
@@ -157,15 +162,15 @@ def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:
     """
     if not isinstance(finding, Mapping):
         return False
-    if finding.get("kind") not in KINDS:
+    if not _in_enum(finding.get("kind"), KINDS):
         return False
     if not _is_line_number(finding.get("line")):
         return False
     if finding.get("kind") == "file-missing" and finding.get("line") != 0:
         return False
-    if finding.get("severity") not in SEVERITIES:
+    if not _in_enum(finding.get("severity"), SEVERITIES):
         return False
-    if finding.get("confidence") not in CONFIDENCES:
+    if not _in_enum(finding.get("confidence"), CONFIDENCES):
         return False
     if not all(isinstance(finding.get(field), str) for field in _TEXT_FIELDS):
         return False

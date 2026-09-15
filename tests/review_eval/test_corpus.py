@@ -1319,6 +1319,43 @@ def test_handwritten_format_downgrade_is_refused(tmp_path: Path) -> None:
         check_registry([case], corpus_dir)
 
 
+def test_handwritten_legacy_upgrade_with_changed_content_needs_the_marker(
+    tmp_path: Path,
+) -> None:
+    """Legacy-строка → трёхполевая с другим содержимым и ядром — это смена дефекта.
+
+    `append_registry` на таком переходе требует `--reidentify` (раунд 5);
+    рукописная трёхполевая строка обходила бы это: прежнее ядро неизвестно,
+    сравнивать «не с чем» — и новое ядро становилось текущим молча.
+    Прежний content — единственный след прежней записи, и он изменился.
+    """
+    corpus_dir = tmp_path
+    case, content, identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {'c' * 64}",
+        f"D-andrei-shtanakov.steward-155-1 {content} {identity}",
+    )
+
+    with pytest.raises(CorpusError, match="строка 3.*без подтверждения reidentified"):
+        check_registry([case], corpus_dir)
+
+
+def test_handwritten_legacy_upgrade_with_same_content_needs_no_marker(tmp_path: Path) -> None:
+    """Тот же content, дописано ядро — штатное дополнение legacy-строки."""
+    corpus_dir = tmp_path
+    case, content, identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {content}",
+        f"D-andrei-shtanakov.steward-155-1 {content} {identity}",
+    )
+
+    check_registry([case], corpus_dir)  # не бросает
+
+
 def test_handwritten_content_change_needs_no_marker(tmp_path: Path) -> None:
     """Смена только содержимого при том же ядре — законная перерегистрация.
 

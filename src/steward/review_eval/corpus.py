@@ -1139,8 +1139,8 @@ def _unacknowledged_identity_change(previous: _Registered | None, state: _Regist
 
     - прежнее состояние — надгробие → своё правило (строка после надгробия);
     - прежнее ядро неизвестно (строка старого, двухполевого формата) →
-      сравнивать не с чем, остаётся правило раунда 5: первая же регистрация
-      ядро дописывает, а изменившееся содержимое требует `--reidentify`;
+      правило раунда 5 по content: тот же content — ядро дописывается,
+      изменившийся — смена дефекта, нужна метка (или новый id);
     - новая строка ядра не несёт (двухполевая) при известном прежнем ядре →
       понижение формата, отдельное правило (`_forgets_known_identity`);
     - ядро то же, содержимое другое → законная перерегистрация правки, метки
@@ -1148,9 +1148,15 @@ def _unacknowledged_identity_change(previous: _Registered | None, state: _Regist
     """
     if previous is None or previous.deleted or state.deleted:
         return False
-    if previous.identity is None or state.identity is None:
+    if state.identity is None or state.reidentified:
         return False
-    return state.identity != previous.identity and not state.reidentified
+    if previous.identity is None:
+        # Legacy-строка: ядро неизвестно, единственный след прежней записи —
+        # content. Тот же content — штатное дополнение ядром; другой — смена
+        # дефекта, и `append_registry` на ней требует `--reidentify` (раунд 5),
+        # рукописная строка не должна проходить мягче.
+        return state.content != previous.content
+    return state.identity != previous.identity
 
 
 def _require_append_only(path: Path, *, git: str) -> None:
