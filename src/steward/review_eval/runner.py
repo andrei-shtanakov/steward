@@ -1968,6 +1968,9 @@ _MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("matcher_rules_digest", str),
 )
 
+#: Обязательное содержимое блока `tools` манифеста.
+_MANIFEST_TOOLS: tuple[str, ...] = ("claude", "codex", "git", "git_config_digest")
+
 #: Списки состава прогона не бывают пустыми: `cases: []` при результатах —
 #: манифест, не объявляющий ни одного из них, а не «проверять нечего».
 _MANIFEST_NON_EMPTY: tuple[str, ...] = ("cases", "variants")
@@ -2004,6 +2007,18 @@ def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
                 f"{path}: манифест повреждён — поле '{field}' пусто; прогон без состава "
                 "не объявляет ни одного результата (новый --out или восстановите run.json)"
             )
+    kit_block = payload["kit"]
+    tools_block = payload["tools"]
+    if not isinstance(kit_block.get("commit"), str) or len(kit_block) < 2:
+        raise RunnerError(
+            f"{path}: манифест повреждён — блок kit без commit и дайджестов; "
+            "провенанс результатов неизвестен (новый --out или восстановите run.json)"
+        )
+    if not all(isinstance(tools_block.get(name), str) for name in _MANIFEST_TOOLS):
+        raise RunnerError(
+            f"{path}: манифест повреждён — блок tools без {', '.join(_MANIFEST_TOOLS)}; "
+            "провенанс результатов неизвестен (новый --out или восстановите run.json)"
+        )
     for field in ("repetitions", "jobs"):
         if isinstance(payload.get(field), int) and payload[field] < 1:
             raise RunnerError(

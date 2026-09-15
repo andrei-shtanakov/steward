@@ -52,6 +52,27 @@ CONFIDENCES: frozenset[str] = frozenset({"high", "medium", "low"})
 
 #: Обязательные текстовые поля находки: присутствие проверяется наравне с типом
 #: (в jq — тем же `all(type == "string")` по списку).
+#: Закрытые наборы ключей схемы вердикта v2 (`additionalProperties: false` на
+#: всех трёх уровнях). Гейт `apply-threshold.sh` их **не** проверяет — лишний
+#: ключ он терпит, — но контракт eval (§6.6) требует схемы целиком:
+#: `is_schema_valid_verdict` отвергает лишние ключи, `is_blocking` — нет.
+VERDICT_KEYS: frozenset[str] = frozenset({"findings", "note"})
+FINDING_KEYS: frozenset[str] = frozenset(
+    {
+        "kind",
+        "severity",
+        "title",
+        "file",
+        "line",
+        "scenario",
+        "observed_result",
+        "expected_result",
+        "evidence",
+        "confidence",
+    }
+)
+EVIDENCE_KEYS: frozenset[str] = frozenset({"file", "line", "reason"})
+
 _TEXT_FIELDS: tuple[str, ...] = (
     "title",
     "file",
@@ -195,17 +216,31 @@ def is_schema_valid_verdict(payload: object) -> bool:
     Раздельно `is_structural_verdict` нужен там, где вопрос именно «это вообще
     вердикт» (чтение sidecar-а прогона с любым исходом).
 
-    «Схемно годен» здесь и ниже значит **«то, что принимает
-    `apply-threshold.sh`»**, а не «то, что разрешает `review-schema.json`»:
-    решение выносит скрипт, и зеркало обязано совпадать с ним, а не с файлом
-    схемы (см. `is_schema_valid_finding`).
+    Здесь «схемно годен» — **по схеме кита целиком** (§6.6), включая
+    `additionalProperties: false` на всех уровнях. Гейт `apply-threshold.sh`
+    лишние ключи терпит (контрактный тест это закрепляет), поэтому предикат
+    блокировки (`is_blocking` → `is_schema_valid_finding`) зеркалит гейт и
+    ключи не сверяет, а классификация исхода — схему: вердикт с лишним
+    ключом измеряться не должен (`invalid_verdict`).
     """
     if not is_structural_verdict(payload):
         return False
     assert isinstance(payload, Mapping)  # noqa: S101 — гарантировано проверкой выше
+    if not set(payload) <= VERDICT_KEYS:
+        return False
     findings = payload.get("findings")
     assert isinstance(findings, list)  # noqa: S101 — то же
-    return all(is_schema_valid_finding(item) for item in findings)
+    return all(is_schema_valid_finding(item) and has_only_schema_keys(item) for item in findings)
+
+
+def has_only_schema_keys(finding: Mapping[str, object]) -> bool:
+    """Нет ли в находке и её evidence ключей вне схемы (`additionalProperties`)."""
+    if not set(finding) <= FINDING_KEYS:
+        return False
+    evidence = finding.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    return all(isinstance(item, Mapping) and set(item) <= EVIDENCE_KEYS for item in evidence)
 
 
 def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:

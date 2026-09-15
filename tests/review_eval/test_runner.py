@@ -44,6 +44,8 @@ REMOTE_URL = "https://example.invalid/andrei-shtanakov/steward.git"
 MISSING_SHA = "f" * 40
 
 VALID_VERDICT = json.dumps({"findings": [], "note": "ok"}, ensure_ascii=False)
+#: Sidecar с лишним ключом верхнего уровня — структурно годен, по схеме нет.
+EXTRA_KEY_VERDICT = json.dumps({"findings": [], "note": "ok", "extra": 1})
 #: Sidecar с литералом `Infinity`: Python-декодер принял бы его как float('inf'),
 #: jq порога — нет (код 2). Собирается текстом: `json.dumps` такой JSON не пишет.
 INFINITY_VERDICT = (
@@ -413,6 +415,8 @@ def test_classify_guardrail_beats_config_failure() -> None:
         # Python-декодер по умолчанию принял бы его как float('inf') и превратил
         # «код 2 + якобы годный sidecar» в config_failure — ошибку не модели.
         (2, INFINITY_VERDICT, "", "invalid_verdict", True),
+        # Лишний ключ: гейт терпит (код 0), схема кита — нет → invalid_verdict (§6.6).
+        (0, EXTRA_KEY_VERDICT, "", "invalid_verdict", True),
         (2, "", "REVIEW_PROMPT не найден", "config_failure", False),
         (3, "", "harness-claude упал", "mechanical_failure", False),
         (0, "", "", "mechanical_failure", False),
@@ -2469,6 +2473,19 @@ def test_rerun_refuses_a_symlinked_case_directory_with_a_dotdot_out_dir(tmp_path
         )
 
     assert keep.exists()
+
+
+@pytest.mark.parametrize("field", ["kit", "tools"])
+def test_load_results_refuses_an_empty_provenance_block(tmp_path: Path, field: str) -> None:
+    """`kit: {}` / `tools: {}` — провенанс неизвестен, а не «нечего сравнивать»."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload[field] = {}
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match=f"манифест.*{field}"):
+        load_results(out_dir)
 
 
 @pytest.mark.parametrize("field", ["cases", "variants"])

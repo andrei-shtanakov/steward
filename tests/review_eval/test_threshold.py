@@ -416,18 +416,14 @@ def test_contract_overflowing_json_number_blocks_on_both_sides(tmp_path: Path) -
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason=f"скрипт не найден: {SCRIPT}")
-def test_contract_extra_keys_are_accepted_by_the_gate(tmp_path: Path) -> None:
-    """Лишние ключи гейт принимает — и зеркало обязано принимать их так же.
+def test_contract_extra_keys_gate_accepts_but_schema_rejects(tmp_path: Path) -> None:
+    """Лишние ключи: гейт принимает (код 0/1), схема кита — нет.
 
-    Файл схемы (`review-schema.json`) запрещает `additionalProperties`, но
-    решение выносит **не он**: `apply-threshold.sh` проверяет только известные
-    поля, и вердикт с лишним ключом для него — обычный вердикт (код 0/1).
-    Ужесточить зеркало по файлу схемы значило бы объявлять `invalid_verdict`
-    там, где настоящий гейт выносит решение, — то есть выбрасывать из метрик
-    прогон, который в проде считается измеренным.
-
-    `additionalProperties` обеспечивает structured output провайдера на этапе
-    генерации, а не гейт при проверке.
+    `apply-threshold.sh` проверяет только известные поля, поэтому предикат
+    **блокировки** (`is_schema_valid_finding` → `is_blocking`) лишние ключи
+    терпит — иначе он разошёлся бы с кодом выхода гейта. Но классификация
+    исхода (§6.6) — по схеме целиком: `is_schema_valid_verdict` такой sidecar
+    отвергает, и прогон получает `invalid_verdict`, а не измеряется.
     """
     finding = _finding(extra_finding_key="ignored")
     finding["evidence"] = [{"file": "a.py", "line": 10, "reason": "r", "extra": "ignored"}]
@@ -445,9 +441,11 @@ def test_contract_extra_keys_are_accepted_by_the_gate(tmp_path: Path) -> None:
     assert result.returncode in (0, 1), (
         f"гейт отверг вердикт с лишними ключами (код {result.returncode}): {result.stderr}"
     )
-    assert is_schema_valid_verdict(verdict)
-    assert is_schema_valid_finding(finding)
+    assert is_schema_valid_finding(finding), "предикат блокировки зеркалит гейт"
     assert is_structural_verdict(verdict)
+    assert not is_schema_valid_verdict(verdict), "схема кита целиком: лишние ключи негодны"
+    assert not is_schema_valid_verdict({**_verdict([_finding()]), "extra": 1})
+    assert is_schema_valid_verdict(_verdict([_finding()]))
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason=f"скрипт не найден: {SCRIPT}")
