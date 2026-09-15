@@ -38,6 +38,8 @@ __all__ = [
     "is_blank",
     "is_blocking",
     "is_schema_valid_finding",
+    "is_schema_valid_verdict",
+    "is_structural_verdict",
     "is_text",
 ]
 
@@ -50,6 +52,27 @@ CONFIDENCES: frozenset[str] = frozenset({"high", "medium", "low"})
 
 #: Обязательные текстовые поля находки: присутствие проверяется наравне с типом
 #: (в jq — тем же `all(type == "string")` по списку).
+#: Закрытые наборы ключей схемы вердикта v2 (`additionalProperties: false` на
+#: всех трёх уровнях). Гейт `apply-threshold.sh` их **не** проверяет — лишний
+#: ключ он терпит, — но контракт eval (§6.6) требует схемы целиком:
+#: `is_schema_valid_verdict` отвергает лишние ключи, `is_blocking` — нет.
+VERDICT_KEYS: frozenset[str] = frozenset({"findings", "note"})
+FINDING_KEYS: frozenset[str] = frozenset(
+    {
+        "kind",
+        "severity",
+        "title",
+        "file",
+        "line",
+        "scenario",
+        "observed_result",
+        "expected_result",
+        "evidence",
+        "confidence",
+    }
+)
+EVIDENCE_KEYS: frozenset[str] = frozenset({"file", "line", "reason"})
+
 _TEXT_FIELDS: tuple[str, ...] = (
     "title",
     "file",
@@ -155,6 +178,71 @@ def _in_enum(value: object, allowed: frozenset[str]) -> bool:
     return isinstance(value, str) and value in allowed
 
 
+def is_structural_verdict(payload: object) -> bool:
+    """Похож ли объект на вердикт: ``findings`` — список объектов, ``note`` — строка.
+
+    **Структура и схема — разные вопросы.** Здесь только «это вообще вердикт»:
+    битый JSON, обрезанный файл, `findings` не массивом. Годность каждой
+    находки — `is_schema_valid_finding`, и строже здесь значило бы рисковать
+    ложным `invalid_verdict` при расхождении с настоящей схемой кита.
+
+    Определение одно на пакет: раннер решает по нему, писать ли исход
+    `verdict`, а метрики — вправе ли они читать такой sidecar. Разойдись они,
+    прогон, объявленный вердиктом, метрики читали бы по своему правилу и молча
+    выбрасывали часть находок.
+
+    **Лишние ключи допустимы** — см. `is_schema_valid_finding` про то, чьё
+    именно решение зеркалит этот модуль.
+    """
+    if not isinstance(payload, Mapping):
+        return False
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        return False
+    if not all(isinstance(item, Mapping) for item in findings):
+        return False
+    return isinstance(payload.get("note"), str)
+
+
+def is_schema_valid_verdict(payload: object) -> bool:
+    """Годен ли вердикт целиком: структура **плюс** схема каждой находки.
+
+    Это и есть класс, по которому настоящий кит выносит решение:
+    `apply-threshold.sh` валидирует вердикт до порога и на негодном выходит
+    кодом 2, ничего не решая про блокировку. Значит исход `verdict` вправе
+    получить только схемно годный sidecar; структурно годный, но схемно
+    негодный — `invalid_verdict`, ошибка **модели**.
+
+    Раздельно `is_structural_verdict` нужен там, где вопрос именно «это вообще
+    вердикт» (чтение sidecar-а прогона с любым исходом).
+
+    Здесь «схемно годен» — **по схеме кита целиком** (§6.6), включая
+    `additionalProperties: false` на всех уровнях. Гейт `apply-threshold.sh`
+    лишние ключи терпит (контрактный тест это закрепляет), поэтому предикат
+    блокировки (`is_blocking` → `is_schema_valid_finding`) зеркалит гейт и
+    ключи не сверяет, а классификация исхода — схему: вердикт с лишним
+    ключом измеряться не должен (`invalid_verdict`).
+    """
+    if not is_structural_verdict(payload):
+        return False
+    assert isinstance(payload, Mapping)  # noqa: S101 — гарантировано проверкой выше
+    if not set(payload) <= VERDICT_KEYS:
+        return False
+    findings = payload.get("findings")
+    assert isinstance(findings, list)  # noqa: S101 — то же
+    return all(is_schema_valid_finding(item) and has_only_schema_keys(item) for item in findings)
+
+
+def has_only_schema_keys(finding: Mapping[str, object]) -> bool:
+    """Нет ли в находке и её evidence ключей вне схемы (`additionalProperties`)."""
+    if not set(finding) <= FINDING_KEYS:
+        return False
+    evidence = finding.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    return all(isinstance(item, Mapping) and set(item) <= EVIDENCE_KEYS for item in evidence)
+
+
 def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:
     """Годна ли **одна находка** по схеме вердикта v2 — зеркало jq-проверки кита.
 
@@ -171,8 +259,19 @@ def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:
     объектов со строковыми ``file``/``reason`` и целым ``line`` ≥ 0.
 
     Чего здесь нет: проверки ``note`` и типа ``findings`` — они уровня
-    вердикта, а не находки, и живут у вызывающего (`metrics._findings`,
-    `runner._verdict_is_structural`).
+    вердикта, а не находки, и живут у вызывающего (`is_structural_verdict`).
+
+    **Лишние ключи не проверяются — и не должны.** Файл схемы
+    (`.github/codex/review-schema.json`) запрещает `additionalProperties`, но
+    решение выносит **не он**: jq-проверка в `apply-threshold.sh` смотрит
+    только на известные поля, и вердикт с лишним ключом для гейта — обычный
+    вердикт (код 0/1). Зеркало обязано совпадать с гейтом: ужесточи его по
+    файлу схемы — и прогон, который в проде считается измеренным, уходил бы в
+    `invalid_verdict`, то есть выпадал из метрик качества.
+    `additionalProperties` обеспечивает structured output провайдера на этапе
+    генерации, а не гейт при проверке. Контрактный тест
+    (`test_contract_extra_keys_are_accepted_by_the_gate`) держит это
+    утверждение на настоящем скрипте.
     """
     if not isinstance(finding, Mapping):
         return False

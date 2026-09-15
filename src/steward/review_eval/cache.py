@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -80,6 +80,7 @@ def materialize(
     local_checkout: Path | None,
     remote_url: str,
     git: str = "git",
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Гарантирует локальную доступность объектов `shas` в bare-кэше `repo`.
 
@@ -98,33 +99,40 @@ def materialize(
     if not cache.exists():
         source = str(local_checkout) if local_checkout is not None else remote_url
         cache.parent.mkdir(parents=True, exist_ok=True)
-        result = _run(git, None, ["clone", "--bare", "--no-hardlinks", source, str(cache)])
+        result = _run(git, None, ["clone", "--bare", "--no-hardlinks", source, str(cache)], env)
         if result.returncode != 0:
             raise CacheError(f"git clone --bare {source} {cache} failed: {_stderr(result)}")
 
     for sha in shas:
-        if has_object(cache_root, repo, sha, git=git):
+        if has_object(cache_root, repo, sha, git=git, env=env):
             continue
         errors: list[str] = []
         fetched = False
         if local_checkout is not None:
-            result = _run(git, cache, ["fetch", str(local_checkout), sha])
+            result = _run(git, cache, ["fetch", str(local_checkout), sha], env)
             if result.returncode == 0:
                 fetched = True
             else:
                 errors.append(f"fetch {local_checkout}: {_stderr(result)}")
         if not fetched:
-            result = _run(git, cache, ["fetch", remote_url, sha])
+            result = _run(git, cache, ["fetch", remote_url, sha], env)
             if result.returncode == 0:
                 fetched = True
             else:
                 errors.append(f"fetch {remote_url}: {_stderr(result)}")
-        if not fetched or not has_object(cache_root, repo, sha, git=git):
+        if not fetched or not has_object(cache_root, repo, sha, git=git, env=env):
             detail = "; ".join(errors) if errors else "object not found after fetch"
             raise CacheError(f"cannot materialize {repo}@{sha}: {detail}")
 
 
-def has_object(cache_root: Path, repo: str, sha: str, *, git: str = "git") -> bool:
+def has_object(
+    cache_root: Path,
+    repo: str,
+    sha: str,
+    *,
+    git: str = "git",
+    env: Mapping[str, str] | None = None,
+) -> bool:
     """Есть ли коммит `sha` в bare-кэше `repo`. Никогда не касается сети.
 
     ``False`` — «объекта нет»; неработающий `git` — `CacheError` из `_run`, а
@@ -140,7 +148,7 @@ def has_object(cache_root: Path, repo: str, sha: str, *, git: str = "git") -> bo
     cache = repo_cache_dir(cache_root, repo)
     if not cache.exists():
         return False
-    result = _run(git, cache, ["cat-file", "-e", f"{sha}^{{commit}}"])
+    result = _run(git, cache, ["cat-file", "-e", f"{sha}^{{commit}}"], env)
     return result.returncode == 0
 
 
@@ -153,6 +161,7 @@ def worktree(
     *,
     keep: bool = False,
     git: str = "git",
+    env: Mapping[str, str] | None = None,
 ) -> Iterator[Path]:
     """Detached worktree на `sha`, материализованный от bare-кэша `repo` в `dest`.
 
@@ -174,37 +183,53 @@ def worktree(
         raise CacheUnavailable(
             f"bare-кэша {cache} нет — его создаёт 'review-eval corpus materialize' (сеть)"
         )
-    if not has_object(cache_root, repo, sha, git=git):
+    if not has_object(cache_root, repo, sha, git=git, env=env):
         raise CacheError(f"object {sha} is not in cache for {repo}; run materialize first")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    result = _run(git, cache, ["worktree", "add", "--detach", str(dest), sha])
+    result = _run(git, cache, ["worktree", "add", "--detach", str(dest), sha], env)
     if result.returncode != 0:
         raise CacheError(f"git worktree add --detach {dest} {sha} failed: {_stderr(result)}")
     try:
         yield dest
     finally:
         if not keep:
-            remove_result = _run(git, cache, ["worktree", "remove", "--force", str(dest)])
+            remove_result = _run(git, cache, ["worktree", "remove", "--force", str(dest)], env)
             if remove_result.returncode != 0:
                 raise CacheError(
                     f"git worktree remove --force {dest} failed: {_stderr(remove_result)}"
                 )
 
 
-def _run(git: str, cwd: Path | None, args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    git: str,
+    cwd: Path | None,
+    args: list[str],
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Запустить `git` с явными `args`, опционально ``-C <cwd>``.
 
     Ненулевой код выхода — обычный результат (решает вызывающий), но
     **невозможность запустить** `git` — `CacheError`: `OSError` («нет такого
     файла», «отказано в доступе») означает неверный `--git`, то есть ошибку
     конфигурации, а не сбой инструмента.
+
+    `env` передаёт вызывающий, когда окружение процесса доверять нельзя:
+    унаследованный `GIT_DIR`/`GIT_WORK_TREE` увёл бы **эти** вызовы в чужое
+    репо, и кэш выглядел бы непокрытым (`has_object` → ``False``) или worktree
+    создавался бы не от кэша. ``None`` — окружение процесса как есть.
     """
     command = [git]
     if cwd is not None:
         command += ["-C", str(cwd)]
     command += args
     try:
-        return subprocess.run(command, capture_output=True, text=True, check=False)
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=None if env is None else dict(env),
+        )
     except OSError as error:
         raise CacheError(f"cannot run '{git}': {error}") from error
 
