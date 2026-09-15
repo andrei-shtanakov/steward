@@ -860,6 +860,23 @@ if [ -n "${REVIEW_VERDICT_OUT:-}" ]; then
         echo "REVIEW_VERDICT_OUT: не удалось сохранить вердикт в $REVIEW_VERDICT_OUT" >&2
         exit 2
     fi
+    if [ ! -f "$REVIEW_VERDICT_OUT" ]; then
+        # Пройденный по значению `-d` guard выше отсекает REVIEW_VERDICT_OUT,
+        # который УЖЕ каталог — но не пересекающиеся sidecar-пути (находка
+        # терминального ревью этой ветки): REVIEW_USAGE_OUT ВНУТРИ дерева
+        # REVIEW_VERDICT_OUT (`REVIEW_VERDICT_OUT=/x/artifact`,
+        # `REVIEW_USAGE_OUT=/x/artifact/usage.json`) заставляет адаптер
+        # сделать `mkdir -p /x/artifact` уже ПОСЛЕ раннего guard'а local.sh —
+        # и `mv` выше "успевает" структурно (POSIX-семантика: цель — каталог,
+        # файл переносится ВНУТРЬ него, а не переименовывается в него),
+        # оставляя осиротевший `.verdict.*` внутри. Зеркало post-mv проверки
+        # адаптера (`[ -f "$verdict" ]`): убрать осиротевший файл и отказать
+        # явно, а не молчать кодом 0 без вердикта по заявленному пути.
+        rm -f "$REVIEW_VERDICT_OUT/$(basename "$verdict_tmp")"
+        echo "REVIEW_VERDICT_OUT: вердикт не сохранён как файл по заданному" \
+            "пути: $REVIEW_VERDICT_OUT" >&2
+        exit 2
+    fi
 fi
 
 sh "$kit_dir/apply-threshold.sh" --verdict "$work/verdict.json" --format "$format"

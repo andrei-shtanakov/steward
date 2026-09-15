@@ -2137,6 +2137,25 @@ def test_verdict_out_directory_is_config_error(tmp_path: Path) -> None:
     assert list(tmp_path.glob(".verdict.*")) == []
 
 
+def test_verdict_out_overlapping_with_usage_dir_is_refused(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (minor): REVIEW_USAGE_OUT ВНУТРИ
+    дерева REVIEW_VERDICT_OUT проходит ранний `-d`-guard local.sh (путь ещё
+    не каталог), но адаптер делает `mkdir -p` для usage'а ДО того, как
+    local.sh дойдёт до копирующего блока — REVIEW_VERDICT_OUT к этому
+    моменту уже каталог, и `mv` переносит verdict_tmp ВНУТРЬ него вместо
+    переименования в него. Post-mv проверка обязана поймать это явным
+    отказом."""
+    repo = make_repo_with_diff(tmp_path)
+    verdict_out = tmp_path / "artifact"
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    env["REVIEW_VERDICT_OUT"] = str(verdict_out)
+    env["REVIEW_USAGE_OUT"] = str(verdict_out / "usage.json")
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_VERDICT_OUT" in res.stderr
+    assert list(verdict_out.glob(".verdict.*")) == []
+
+
 def test_verdict_out_stale_file_removed_on_reviewer_failure(tmp_path: Path) -> None:
     """Гейт финального ревью этой ветки (major): провал ревьюера (код 3)
     выходит ДО копирующего блока, и без явной инвалидации файл прошлого
