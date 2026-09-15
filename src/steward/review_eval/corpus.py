@@ -17,6 +17,8 @@ Id несут слаг репо ``owner.name`` (`repo_slug`) — он инъек
   нормализованный ``file``, ``scenario``) — «та же это запись», содержимое —
   «то же ли у неё наполнение»;
 - ``<id> … reidentified`` — смена идентичности, подтверждённая разметчиком;
+  строка из трёх полей с другим ядром, но без метки, делает реестр невалидным:
+  иначе подмена дефекта под живым id сводилась бы к правке файла руками;
 - ``<id> deleted`` — **надгробие**: id израсходован и больше не выдаётся;
   строка с дайджестом после надгробия делает реестр невалидным;
 - ``<id> <sha256>`` — строка старого формата: ядро неизвестно, проверяется
@@ -775,6 +777,12 @@ def _parse_annotation(raw: dict[str, Any], where: str) -> Annotation:
     adjudicated_by = _optional_str(ann, "adjudicated_by", sub_where)
     adjudicated_at = _optional_str(ann, "adjudicated_at", sub_where)
 
+    # Поле необязательно, но пробельное значение — не «его нет», а «есть, и
+    # оно пустое»: разметка выдавалась бы за подтверждённую кем-то. Проверка не
+    # зависит от `status`: объявлено — значит должно что-то называть.
+    if adjudicated_by is not None and _is_blank(adjudicated_by):
+        raise CorpusError(f"{sub_where}: 'adjudicated_by' must not be blank")
+
     if status == "adjudicated":
         if not adjudicated_by:
             raise CorpusError(f"{sub_where}: status 'adjudicated' requires adjudicated_by")
@@ -834,7 +842,7 @@ def _parse_defect(item: object, index: int, where: str, *, slug: str, pr: int) -
         raise CorpusError(f"{sub_where}: severity must be one of {_SEVERITIES}, got '{severity}'")
     file_ = _non_blank_str(item, "file", sub_where)
     line_hint = _int(item, "line_hint", sub_where)
-    scenario = _str(item, "scenario", sub_where)
+    scenario = _non_blank_str(item, "scenario", sub_where)
     evidence = _str_tuple(
         item.get("evidence"), "evidence", sub_where, allow_empty=False, allow_blank=False
     )
@@ -881,7 +889,7 @@ def _parse_non_defect(item: object, index: int, where: str, *, slug: str, pr: in
     non_defect_id = _entry_id(item, sub_where, prefix=f"NF-{slug}-{pr}-", generic=_NON_DEFECT_ID_RE)
     file_ = _non_blank_str(item, "file", sub_where)
     line_hint = _int(item, "line_hint", sub_where)
-    scenario = _str(item, "scenario", sub_where)
+    scenario = _non_blank_str(item, "scenario", sub_where)
     match = _parse_match(item.get("match"), f"{sub_where}: match")
     kind = _parse_kind(item, line_hint, sub_where)
 
@@ -1043,6 +1051,8 @@ class _Registered:
     content: str | None
     identity: str | None
     deleted: bool = False
+    #: Строка несла метку `reidentified`, то есть смена ядра объявлена явно.
+    reidentified: bool = False
 
 
 def _read_registry(directory: Path, *, git: str = "git") -> dict[str, _Registered]:
@@ -1063,6 +1073,11 @@ def _read_registry(directory: Path, *, git: str = "git") -> dict[str, _Registere
     файла на одну строку — состояние last-wins воскрешало бы id, и
     `check_registry`, который смотрит только на состояние, этого не заметил бы.
     Повторное надгробие терпится: списание идемпотентно.
+
+    **Смена ядра объявляется меткой.** Строка из трёх полей, несущая другое
+    ядро живого id, чьё прежнее ядро известно, делает реестр невалидным
+    (`_unacknowledged_identity_change`): обойти `--reidentify` правкой файла
+    на одну строку нельзя.
     """
     path = registry_path(directory)
     if not path.exists():
@@ -1081,8 +1096,42 @@ def _read_registry(directory: Path, *, git: str = "git") -> dict[str, _Registere
                 f"{path}: реестр повреждён: строка после надгробия для '{entry_id}' "
                 f"(строка {lineno}) — списанный id не возвращается, заведите новый"
             )
+        if _unacknowledged_identity_change(previous, state):
+            raise CorpusError(
+                f"{path}: строка {lineno} меняет идентичность '{entry_id}' без "
+                f"подтверждения reidentified — новый дефект получает новый id, "
+                f"смена ядра подтверждается --reidentify"
+            )
         registry[entry_id] = state
     return registry
+
+
+def _unacknowledged_identity_change(previous: _Registered | None, state: _Registered) -> bool:
+    """Меняет ли строка известное ядро живого id, не объявив этого меткой.
+
+    `append_registry` без `--reidentify` смену ядра отвергает, но реестр —
+    текстовый файл: дописать третьим полем другое ядро можно руками, и
+    состояние last-wins принимало его как текущее. Дальше `check_registry`
+    сверял кейс с **уже подменённым** ядром и молчал, то есть подмена дефекта
+    под живым id сводилась к правке файла на одну строку. Метка `reidentified`
+    и есть то, что отличает решение разметчика от такой правки.
+
+    Правило узкое намеренно:
+
+    - прежнее состояние — надгробие → своё правило (строка после надгробия);
+    - прежнее ядро неизвестно (строка старого, двухполевого формата) →
+      сравнивать не с чем, остаётся правило раунда 5: первая же регистрация
+      ядро дописывает, а изменившееся содержимое требует `--reidentify`;
+    - новая строка ядра не несёт (тоже двухполевая) → идентичность не
+      меняется, а забывается; это не подмена;
+    - ядро то же, содержимое другое → законная перерегистрация правки, метки
+      не требует: иначе метка обесценилась бы.
+    """
+    if previous is None or previous.deleted or state.deleted:
+        return False
+    if previous.identity is None or state.identity is None:
+        return False
+    return state.identity != previous.identity and not state.reidentified
 
 
 def _require_append_only(path: Path, *, git: str) -> None:
@@ -1337,4 +1386,4 @@ def _parse_registry_line(stripped: str, path: Path, lineno: int) -> tuple[str, _
         )
     if len(parts) == 2:
         return entry_id, _Registered(content=parts[1], identity=None)
-    return entry_id, _Registered(content=parts[1], identity=parts[2])
+    return entry_id, _Registered(content=parts[1], identity=parts[2], reidentified=len(parts) == 4)

@@ -837,6 +837,53 @@ def test_match_keyword_must_not_be_blank(tmp_path: Path, keyword: str) -> None:
         load_case(path)
 
 
+@pytest.mark.parametrize("blank", ["  ", "\t", "\n"], ids=["spaces", "tab", "newline"])
+def test_defect_scenario_must_not_be_blank(tmp_path: Path, blank: str) -> None:
+    """Пробельный `scenario` — ground truth без содержания, и он значим.
+
+    `scenario` входит в **ядро идентичности** записи и в стог ключевых слов
+    матчера. Пробельная строка проходила как значение: запись получала
+    идентичность, построенную на пустоте, и разметчик, читая кейс, не видел,
+    о чём дефект. Отказ здесь дешевле молчаливого gold без смысла.
+    """
+    data = _valid_case()
+    data["defects"][0]["scenario"] = blank
+    path = _write_case(tmp_path, data)
+    with pytest.raises(CorpusError, match="defects\\[0\\].*'scenario' must not be blank"):
+        load_case(path)
+
+
+def test_non_defect_scenario_must_not_be_blank(tmp_path: Path) -> None:
+    """То же правило у non-defect: его `scenario` — тоже ground truth."""
+    data = _valid_case()
+    data["non_defects"][0]["scenario"] = " "
+    path = _write_case(tmp_path, data)
+    with pytest.raises(CorpusError, match="non_defects\\[0\\].*'scenario' must not be blank"):
+        load_case(path)
+
+
+def test_defect_evidence_item_must_not_be_blank(tmp_path: Path) -> None:
+    """Пробельный элемент `evidence[]` — ссылка в никуда."""
+    data = _valid_case()
+    data["defects"][0]["evidence"] = ["scripts/review/local.sh:644", "  "]
+    path = _write_case(tmp_path, data)
+    with pytest.raises(CorpusError, match="evidence"):
+        load_case(path)
+
+
+def test_annotation_adjudicated_by_must_not_be_blank(tmp_path: Path) -> None:
+    """Пробельный `adjudicated_by` — адъюдикация без адъюдикатора.
+
+    Проверка не зависит от `status`: поле присутствует — значит объявлено, и
+    пробельное значение выдаёт разметку за подтверждённую кем-то.
+    """
+    data = _valid_case()
+    data["annotation"]["adjudicated_by"] = "   "
+    path = _write_case(tmp_path, data)
+    with pytest.raises(CorpusError, match="annotation.*'adjudicated_by' must not be blank"):
+        load_case(path)
+
+
 def test_match_keywords_must_be_unique_casefold(tmp_path: Path) -> None:
     """Повтор ключевого слова завышает вес ребра, не добавляя доказательства.
 
@@ -1195,6 +1242,79 @@ def test_registry_identity_change_with_an_acknowledgement_is_recorded(tmp_path: 
     assert len(line) == 4
     assert line[3] == "reidentified"
     check_registry([replaced_case], corpus_dir)  # не бросает
+
+
+def _handwritten_registry(corpus_dir: Path, case: Case, *defect_lines: str) -> None:
+    """Реестр, собранный руками: строка non-defect как есть, строки дефекта — свои."""
+    nf_line = _registry_line(corpus_dir, "NF-andrei-shtanakov.steward-155-1")
+    registry_path(corpus_dir).write_text(
+        "\n".join([nf_line, *defect_lines]) + "\n", encoding="utf-8"
+    )
+
+
+def _registered_case(corpus_dir: Path) -> tuple[Case, str, str]:
+    """Зарегистрированный кейс и настоящие дайджесты его дефекта."""
+    case = load_case(_write_case(corpus_dir, _valid_case(), "steward-155.yaml"))
+    append_registry([case], corpus_dir)
+    parts = _registry_line(corpus_dir, "D-andrei-shtanakov.steward-155-1").split()
+    return case, parts[1], parts[2]
+
+
+def test_handwritten_identity_change_without_the_marker_is_refused(tmp_path: Path) -> None:
+    """Смена ядра строкой из трёх полей — обход `--reidentify`, и он не проходит.
+
+    `append_registry` без `--reidentify` смену ядра отвергает, но реестр —
+    текстовый файл: дописать третьим полем другое ядро можно руками, и
+    состояние last-wins принимало новую идентичность как текущую. После этого
+    `check_registry` сверял кейс с **уже подменённым** ядром и молчал: подмена
+    дефекта под живым id становилась законной правкой файла на одну строку.
+    """
+    corpus_dir = tmp_path
+    case, content, identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {content} {'e' * 64}",
+        f"D-andrei-shtanakov.steward-155-1 {content} {identity}",
+    )
+
+    with pytest.raises(CorpusError, match="меняет идентичность.*без подтверждения reidentified"):
+        check_registry([case], corpus_dir)
+    with pytest.raises(CorpusError, match="строка 3"):
+        check_registry([case], corpus_dir)
+
+
+def test_handwritten_identity_change_with_the_marker_is_accepted(tmp_path: Path) -> None:
+    """Та же смена с меткой `reidentified` — объявленное решение разметчика."""
+    corpus_dir = tmp_path
+    case, content, identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {content} {'e' * 64}",
+        f"D-andrei-shtanakov.steward-155-1 {content} {identity} reidentified",
+    )
+
+    check_registry([case], corpus_dir)  # не бросает
+
+
+def test_handwritten_content_change_needs_no_marker(tmp_path: Path) -> None:
+    """Смена только содержимого при том же ядре — законная перерегистрация.
+
+    Метку требует смена **ядра**: правка живой записи (severity, `match`,
+    `line_window`) ядра не меняет, и требовать на неё `reidentified` значило бы
+    обесценить метку.
+    """
+    corpus_dir = tmp_path
+    case, content, identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {'d' * 64} {identity}",
+        f"D-andrei-shtanakov.steward-155-1 {content} {identity}",
+    )
+
+    check_registry([case], corpus_dir)  # не бросает
 
 
 def test_registry_identity_ignores_path_respelling(tmp_path: Path) -> None:
