@@ -1351,6 +1351,26 @@ def test_handwritten_legacy_upgrade_with_changed_content_needs_the_marker(
         check_registry([case], corpus_dir)
 
 
+def test_handwritten_legacy_to_legacy_with_changed_content_is_refused(tmp_path: Path) -> None:
+    """Двухполевая строка с другим content после двухполевой — та же подмена.
+
+    `append_registry` двухполевых строк не пишет никогда, а рукописная
+    проходила: ядро неизвестно с обеих сторон, а `check_registry` сравнивал
+    только content, который как раз и совпал с подменённой записью.
+    """
+    corpus_dir = tmp_path
+    case, content, _identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {'c' * 64}",
+        f"D-andrei-shtanakov.steward-155-1 {content}",
+    )
+
+    with pytest.raises(CorpusError, match="строка 3.*без подтверждения reidentified"):
+        check_registry([case], corpus_dir)
+
+
 def test_handwritten_legacy_upgrade_with_same_content_needs_no_marker(tmp_path: Path) -> None:
     """Тот же content, дописано ядро — штатное дополнение legacy-строки."""
     corpus_dir = tmp_path

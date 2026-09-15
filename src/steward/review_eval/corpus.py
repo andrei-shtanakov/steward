@@ -1150,8 +1150,15 @@ def _unacknowledged_identity_change(previous: _Registered | None, state: _Regist
     """
     if previous is None or previous.deleted or state.deleted:
         return False
-    if state.identity is None or state.reidentified:
+    if state.reidentified:
         return False
+    if state.identity is None:
+        # Двухполевая новая строка: `append_registry` таких не пишет никогда,
+        # рукописная с другим content — та же подмена (ядро неизвестно с обеих
+        # сторон, а сверка с корпусом сравнила бы только content, который
+        # как раз и совпал с подменённой записью). После известного ядра
+        # её уже отвергло понижение формата.
+        return previous.identity is None and state.content != previous.content
     if previous.identity is None:
         # Legacy-строка: ядро неизвестно, единственный след прежней записи —
         # content. Тот же content — штатное дополнение ядром; другой — смена
