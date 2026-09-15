@@ -2400,7 +2400,15 @@ def test_rerun_refuses_a_symlinked_case_directory(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "field",
-    ["cases", "variants", "repetitions", "kit", "corpus_digest", "provider_env_fingerprint"],
+    [
+        "cases",
+        "variants",
+        "repetitions",
+        "kit",
+        "corpus_digest",
+        "provider_env_fingerprint",
+        "jobs",
+    ],
 )
 def test_load_results_refuses_a_structurally_incomplete_manifest(
     tmp_path: Path, field: str
@@ -2793,6 +2801,50 @@ def test_partial_rerun_across_two_repositories_is_not_config_drift(tmp_path: Pat
 
     assert kept.read_bytes() == before
     assert set(manifest.git_config_digests) == {REPO, "org/other"}
+
+
+def test_run_all_refuses_a_nested_stray_result_without_a_manifest(tmp_path: Path) -> None:
+    """Без run.json любой result.json — и на неканонической глубине — остаток
+    чужого прогона: отказ до платного запуска, а не манифест, который загрузчик
+    тут же отвергнет.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    stray = out_dir / "cases" / "legacy" / "v" / "1" / "backup"
+    stray.mkdir(parents=True)
+    (stray / "result.json").write_text("{}", encoding="utf-8")
+    record = tmp_path / "record.txt"
+
+    with pytest.raises(RunnerError, match="run.json отсутствует"):
+        run_all(
+            [_make_case(base_sha=first, head_sha=second)],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=_env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT),
+        )
+
+    assert not record.exists(), "ревьюер не запускался"
+
+
+def test_git_alias_quotes_a_path_with_shell_metacharacters(tmp_path: Path) -> None:
+    """Путь бинаря с `$` в имени каталога передаётся буквально, а не раскрывается."""
+    weird = tmp_path / "dir$HOME`x`"
+    weird.mkdir()
+    real = shutil.which("git")
+    assert real
+    wrapper = weird / "git-under-test"
+    wrapper.write_text(_GIT_WRAPPER.format(real=real), encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    resolved, _env = pin_git(str(wrapper), {"PATH": os.environ["PATH"]})
+    version = subprocess.run([resolved, "--version"], capture_output=True, text=True, check=False)
+
+    assert version.stdout.strip() == "git version 9.9.9-stub", version.stderr
 
 
 def test_full_rerun_works_with_a_relative_out_dir(

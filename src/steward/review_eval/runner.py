@@ -38,6 +38,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -1530,9 +1531,13 @@ def _remaining_results(out_dir: Path) -> list[Path]:
     подложенная ссылка попадала бы в счёт остатка, то есть участвовала бы в
     рассуждении о том, чей это каталог.
     """
+    cases_dir = out_dir / "cases"
+    # rglob, как в `load_results`: result.json на неканонической глубине — тоже
+    # след чужого прогона, и не видеть его здесь значило бы закрыть манифест,
+    # который загрузчик тут же отвергнет.
     return [
         _require_result_file(out_dir, path)
-        for path in sorted((out_dir / "cases").glob("*/*/*/result.json"))
+        for path in (sorted(cases_dir.rglob("result.json")) if cases_dir.exists() else [])
     ]
 
 
@@ -1704,7 +1709,7 @@ def _git_alias(binary: str) -> str:
         return cached
     alias_dir = Path(tempfile.mkdtemp(prefix="review-eval-git-"))
     alias = alias_dir / "git"
-    body = f'#!/bin/sh\nexec "{binary}" "$@"\n'
+    body = f'#!/bin/sh\nexec {shlex.quote(binary)} "$@"\n'
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(alias, flags, 0o700)
@@ -1986,6 +1991,7 @@ _MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("matcher_version", int),
     ("matcher_rules_digest", str),
     ("git_config_digests", dict),
+    ("jobs", int),
 )
 
 #: Обязательное содержимое блока `tools` манифеста.
