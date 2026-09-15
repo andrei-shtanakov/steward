@@ -972,6 +972,11 @@ def run_all(
     # `--rerun` остаются результаты прежнего прогона, и новая дата
     # датировала бы их позже измерения.
     fresh_start = rerun and not leftover
+    if fresh_start:
+        # Полный сброс: манифест описывает **этот** запрос. Наследование старого
+        # списка при надмножестве закрывало бы прогон без новых кейсов, а их
+        # оплаченные результаты `load_results` затем отвергал как необъявленные.
+        manifest_cases = list(case_ids)
     started = utc_now() if fresh_start else (_previous_string(previous, "started") or utc_now())
 
     stored_configs = previous.get("git_config_digests") if previous else None
@@ -1965,7 +1970,9 @@ def _require_result_file(out_dir: Path, path: Path) -> Path:
     (или на месте любого каталога выше) означает, что содержимое пришло извне
     прогона, а по такому пути нельзя ни читать исход, ни пропускать тройку.
     """
-    _require_no_symlinks(out_dir.resolve(), path, what=f"{path.name} прогона")
+    # Корень **не** резолвится: симлинк-префикс выше `--out` (macOS `/tmp` →
+    # `/private/tmp`) не нарушение; обе стороны нормализуются лексически внутри.
+    _require_no_symlinks(out_dir, path, what=f"{path.name} прогона")
     if path.is_symlink():
         raise RunnerError(
             f"{path}: символическая ссылка на месте результата прогона — "

@@ -2847,6 +2847,68 @@ def test_git_alias_quotes_a_path_with_shell_metacharacters(tmp_path: Path) -> No
     assert version.stdout.strip() == "git version 9.9.9-stub", version.stderr
 
 
+def test_full_rerun_with_a_superset_declares_the_new_cases(tmp_path: Path) -> None:
+    """Полный `--rerun` с надмножеством кейсов: манифест описывает новый запрос,
+    результаты добавленного кейса читаются.
+    """
+    cases, out_dir, cache_root, kit, _counter, _digest, env_base = _two_case_run(tmp_path)
+    added = dataclasses.replace(cases[0], case_id="steward-161")
+    all_cases = [*cases, added]
+
+    manifest = run_all(
+        all_cases,
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env_base,
+        rerun=True,
+    )
+
+    assert manifest.cases == ["steward-155", "steward-157", "steward-161"]
+    assert len(load_results(out_dir)) == 3
+
+
+def test_out_dir_under_a_symlinked_prefix_is_accepted(tmp_path: Path) -> None:
+    """`--out` под симлинк-префиксом **выше** каталога прогона (macOS `/tmp` →
+    `/private/tmp`): не нарушение — симлинки запрещены только внутри `--out`.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    out_dir = link / "run"
+    env = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    variants = [Variant("claude", "claude-opus-5", None)]
+    case = _make_case(base_sha=first, head_sha=second)
+
+    manifest = run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+    )
+    assert manifest.finished
+    assert [item.outcome for item in load_results(out_dir)] == ["verdict"]
+    # Идемпотентный повтор видит готовую тройку и кит не запускает.
+    run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+    )
+
+
 def test_full_rerun_works_with_a_relative_out_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
