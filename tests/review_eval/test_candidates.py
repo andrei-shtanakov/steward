@@ -330,6 +330,29 @@ def test_parse_findings_refuses_an_unparsed_evidence_line(line: str) -> None:
         parse_findings(body)
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "- Evidence: `a.py:1` — ",
+        "- Evidence: `a.py:1` —",
+        "- Evidence: `b.py:2` — причина; `a.py:1` — ",
+    ],
+    ids=["trailing-space", "stripped", "last-of-two"],
+)
+def test_parse_findings_accepts_an_evidence_item_with_an_empty_reason(line: str) -> None:
+    """`reason: ""` годен по схеме кита; рендер печатает ``\`a.py:1\` — `` с хвостовым
+    пробелом, который парсер стирает `strip()`-ом. Регулярка требовала « — » с
+    пробелом после тире и не находила ни одной записи, а `parse_findings`
+    отвергал **весь** черновик как мусор. Пустая причина — пустое поле.
+    """
+    body = f"### [minor] t — `a.py:7`\n- Сценарий: s\n{line}\n"
+
+    evidence = parse_findings(body)[0].evidence
+    assert evidence[-1].file == "a.py"
+    assert evidence[-1].line == 1
+    assert evidence[-1].reason == ""
+
+
 def test_parse_findings_keeps_the_no_evidence_dash() -> None:
     """`—` по-прежнему значит «evidence нет», а не негодную строку."""
     body = "### [minor] t — `a.py:7`\n- Сценарий: s\n- Evidence: —\n"
