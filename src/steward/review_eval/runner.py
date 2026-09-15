@@ -497,6 +497,7 @@ def run_case(
     """
     label = variant_label(variant)
     _require_safe_local_args(case)
+    git, env_base = pin_git(git, env_base)
     # Собственные git-вызовы раннера идут без `GIT_*` окружения процесса:
     # унаследованный `GIT_DIR` увёл бы их в чужое репо (см. `scrubbed_git_env`).
     git_env = scrubbed_git_env(env_base)
@@ -833,10 +834,11 @@ def run_all(
         raise RunnerError(f"jobs must be >= 1, got {jobs}")
     for case in cases:
         _require_safe_local_args(case)
+    git, env_base = pin_git(git, env_base)
     git_env = scrubbed_git_env(env_base)
     _require_objects(cases, cache_root, git=git, env=git_env)
 
-    environment: Mapping[str, str] = os.environ if env_base is None else env_base
+    environment: Mapping[str, str] = env_base
     labels = [variant_label(v) for v in variants]
     duplicated = sorted({label for label in labels if labels.count(label) > 1})
     if duplicated:
@@ -1623,6 +1625,34 @@ def _require_artifact(rep_dir: Path, name: Path | str, *, what: str) -> Path:
             "раннер такие пути не создаёт и писать по ним отказывается"
         )
     return path
+
+
+def pin_git(git: str, env_base: Mapping[str, str] | None) -> tuple[str, dict[str, str]]:
+    """Один и тот же git у раннера и у кита.
+
+    `local.sh` зовёт голое `git` из PATH окружения прогона, а раннер — бинарь из
+    параметра `git`; версия в манифесте писалась с параметра, а диф строил
+    PATH-бинарь (и по его возможностям кит выбирает обработку generated-файлов).
+    Поэтому: `git` резолвится против PATH прогона (явный путь — как есть), его
+    каталог ставится в начало PATH, и всё дальше — own-вызовы, версии, кит —
+    работает с этим одним бинарём.
+    """
+    source: Mapping[str, str] = os.environ if env_base is None else env_base
+    if os.sep in git or (os.altsep and os.altsep in git):
+        resolved = os.path.abspath(git)
+        if not os.access(resolved, os.X_OK):
+            raise RunnerError(f"--git {git}: бинарь не найден или не исполняем")
+    else:
+        found = shutil.which(git, path=source.get("PATH"))
+        if found is None:
+            raise RunnerError(f"--git {git}: не найден в PATH окружения прогона")
+        resolved = os.path.abspath(found)
+    env = dict(source)
+    gitdir = os.path.dirname(resolved)
+    path = env.get("PATH", "")
+    if path.split(os.pathsep)[0] != gitdir:
+        env["PATH"] = gitdir + (os.pathsep + path if path else "")
+    return resolved, env
 
 
 def scrubbed_git_env(env_base: Mapping[str, str] | None) -> dict[str, str]:

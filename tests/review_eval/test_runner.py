@@ -89,6 +89,7 @@ _STUB_LOCAL_SH = """#!/bin/sh
   printf 'kit_dir:%s prompt:%s schema:%s\\n' \\
       "${REVIEW_KIT_DIR-<unset>}" "${REVIEW_PROMPT-<unset>}" "${REVIEW_SCHEMA-<unset>}"
   printf 'pwd:%s\\n' "$(pwd)"
+  printf 'gitbin:%s\\n' "$(command -v git)"
   printf 'atxt:%s\\n' "$(cat a.txt 2>/dev/null)"
 } > "$STUB_RECORD"
 [ -z "${STUB_COUNTER-}" ] || echo call >> "$STUB_COUNTER"
@@ -2582,6 +2583,74 @@ def test_resume_of_a_subset_does_not_close_an_incomplete_run(tmp_path: Path) -> 
     stored = json.loads(run_json.read_text(encoding="utf-8"))
     assert stored["finished"] is None
     assert stored["cases"] == ["steward-155", "steward-157"]
+
+
+_GIT_WRAPPER = """#!/bin/sh
+if [ "$1" = "--version" ]; then echo "git version 9.9.9-stub"; exit 0; fi
+exec {real} "$@"
+"""
+
+
+def _stub_git_dir(tmp_path: Path) -> Path:
+    """Каталог с обёрткой `git`: своя `--version`, остальное — настоящему git."""
+    real = shutil.which("git")
+    assert real
+    gitdir = tmp_path / "gitbin"
+    gitdir.mkdir()
+    wrapper = gitdir / "git"
+    wrapper.write_text(_GIT_WRAPPER.format(real=real), encoding="utf-8")
+    wrapper.chmod(0o755)
+    return gitdir
+
+
+def test_manifest_records_the_git_the_kit_actually_uses(tmp_path: Path) -> None:
+    """`tools.git` — версия git из PATH прогона, то есть того, который вызовет
+    `local.sh` (он зовёт голое `git`), а не бинаря процесса.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    gitdir = _stub_git_dir(tmp_path)
+    record = tmp_path / "record.txt"
+    env = _env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    env["PATH"] = f"{gitdir}{os.pathsep}{env['PATH']}"
+
+    manifest = run_all(
+        [_make_case(base_sha=first, head_sha=second)],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=tmp_path / "run",
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+    )
+
+    assert manifest.tools["git"] == "git version 9.9.9-stub"
+    assert f"gitbin:{gitdir / 'git'}" in record.read_text(encoding="utf-8")
+
+
+def test_explicit_git_binary_is_the_one_the_kit_sees(tmp_path: Path) -> None:
+    """`git=<путь>` — тот же бинарь и у кита: его каталог встаёт в начало PATH."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    gitdir = _stub_git_dir(tmp_path)
+    record = tmp_path / "record.txt"
+    env = _env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+
+    manifest = run_all(
+        [_make_case(base_sha=first, head_sha=second)],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=tmp_path / "run",
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        git=str(gitdir / "git"),
+    )
+
+    assert manifest.tools["git"] == "git version 9.9.9-stub"
+    assert f"gitbin:{gitdir / 'git'}" in record.read_text(encoding="utf-8")
 
 
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
