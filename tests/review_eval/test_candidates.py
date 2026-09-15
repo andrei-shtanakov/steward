@@ -64,6 +64,10 @@ _Порог: красным делают только `blocker`/`major` с `conf
 <!-- codex-terminal-review head={HEAD} fp={FP} -->
 """
 
+#: Шапка формата кита: подпись доверенного рендера (`apply-threshold.sh`).
+#: Без неё `draft_case` тело не признаёт, поэтому фикстуры её несут.
+KIT_HEADER = "## Ревью Codex — независимый чек"
+
 PR_META = {
     "base": {"sha": BASE},
     "head": {"sha": HEAD},
@@ -184,6 +188,28 @@ def test_draft_case_refuses_a_body_with_an_unparsed_finding() -> None:
 
     with pytest.raises(CandidatesError, match="не разобран заголовок находки"):
         draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+
+
+@pytest.mark.parametrize("path_text", [" ", "  ", "\t"], ids=["space", "spaces", "tab"])
+def test_parse_findings_refuses_a_blank_file_in_the_heading(path_text: str) -> None:
+    """Пробельный путь в заголовке — находка, которую корпус всё равно отвергнет.
+
+    `_HEADER_RE` берёт путь как «что угодно между бэктиками», поэтому
+    ``### [major] t — ` :7` `` разбирался, а `load_case` потом падал на
+    `file must not be blank` — далеко от причины и уже после записи черновика.
+    """
+    body = f"### [major] t — `{path_text}:7`\n- Сценарий: s\n"
+
+    with pytest.raises(CandidatesError, match="пробельный путь в заголовке находки"):
+        parse_findings(body)
+
+
+def test_parse_findings_refuses_a_blank_file_in_evidence() -> None:
+    """То же правило у записи evidence: ссылка на пробельный путь не ссылка."""
+    body = "### [major] t — `a.py:7`\n- Сценарий: s\n- Evidence: ` :7` — причина\n"
+
+    with pytest.raises(CandidatesError, match="пробельный путь в evidence"):
+        parse_findings(body)
 
 
 def test_parse_findings_keeps_a_reason_containing_a_semicolon() -> None:
@@ -313,6 +339,7 @@ def test_draft_case_refuses_an_ambiguous_marker(tmp_path: Path) -> None:
     """Черновик по неоднозначному телу не создаётся вовсе."""
     other = "c" * 40
     body = (
+        f"{KIT_HEADER}\n\n"
         "### [major] настоящая — `a.py:7`\n- Сценарий: s\n"
         f"\n<!-- codex-terminal-review head={other} -->\n"
         f"<!-- codex-terminal-review head={HEAD} -->\n"
@@ -444,6 +471,7 @@ def test_draft_case_uses_the_last_ai_prosto_review_and_its_marker() -> None:
             "user": {"login": "ai-prosto"},
             "submitted_at": "2026-09-14T10:00:00Z",
             "body": (
+                f"{KIT_HEADER}\n\n"
                 "### [blocker] поздняя находка — `a.py:7`\n"
                 "- Сценарий: s\n- Наблюдаемое: o\n- Ожидаемое: e\n"
                 "- Evidence: `a.py:7` — r\n- confidence: high → БЛОКИРУЕТ\n"
@@ -458,10 +486,53 @@ def test_draft_case_uses_the_last_ai_prosto_review_and_its_marker() -> None:
 
 
 def test_draft_case_falls_back_to_pr_head_when_the_marker_is_absent() -> None:
-    reviews = [{**REVIEWS[0], "body": "### [minor] t — `a.py:1`\n- Сценарий: s\n"}]
+    body = f"{KIT_HEADER}\n\n### [minor] t — `a.py:1`\n- Сценарий: s\n"
+    reviews = [{**REVIEWS[0], "body": body}]
     case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
     assert case["head_sha"] == HEAD
     assert "из head.sha PR (маркера нет)" in case["notes"]
+
+
+def test_draft_case_refuses_a_body_it_does_not_recognise() -> None:
+    """Тело без признаков формата кита — отказ, а не «чистый» кейс.
+
+    Непустое ревью ai-prosto, в котором парсер не нашёл ни находки, ни строки
+    `Находок нет.`, давало `class: clean` с пустым `defects[]`: PR объявлялся
+    чистым по факту **неразбора**. Такой кейс — не измерение, а испорченный
+    gold: в метриках он даёт recall по нулю дефектов и хвалит ревьюера за
+    молчание.
+    """
+    reviews = [{**REVIEWS[0], "body": "Проза ревьюера без находок и без шапки кита.\n"}]
+
+    with pytest.raises(CandidatesError, match="тело ревью не распознано"):
+        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+
+
+def test_draft_case_accepts_an_empty_verdict_with_the_kit_header() -> None:
+    """Шапка кита плюс `Находок нет.` — законный чистый черновик."""
+    body = f"{KIT_HEADER}\n\nНаходок нет.\n\n<!-- codex-terminal-review head={HEAD} -->\n"
+    reviews = [{**REVIEWS[0], "body": body}]
+
+    case = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+
+    assert case["class"] == "clean"
+    assert case["defects"] == []
+
+
+def test_draft_case_refuses_findings_without_the_kit_header() -> None:
+    """Находки без шапки кита — тело не от доверенного рендера, отказ.
+
+    Шапку печатает `apply-threshold.sh`; всё, что её не несёт, могло быть
+    написано кем угодно, в том числе моделью в `note`. Признак формата — не
+    придирка: на нём держится право считать заголовки находками.
+    """
+    body = (
+        f"### [major] t — `a.py:7`\n- Сценарий: s\n\n<!-- codex-terminal-review head={HEAD} -->\n"
+    )
+    reviews = [{**REVIEWS[0], "body": body}]
+
+    with pytest.raises(CandidatesError, match="тело ревью не распознано"):
+        draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
 
 
 def test_draft_case_refuses_a_pr_without_an_ai_prosto_review() -> None:
@@ -478,6 +549,7 @@ def test_draft_case_skips_nit_findings_and_says_so_in_notes() -> None:
     заголовки уходят в `notes`.
     """
     body = (
+        f"{KIT_HEADER}\n\n"
         "### [major] настоящая — `a.py:7`\n"
         "- Сценарий: s\n- confidence: high → БЛОКИРУЕТ\n"
         "\n"
@@ -499,6 +571,7 @@ def test_draft_case_skips_nit_findings_and_says_so_in_notes() -> None:
 def test_draft_case_with_only_nit_findings_is_clean_and_empty() -> None:
     """Только `nit` — валидный чистый черновик, а не отказ."""
     body = (
+        f"{KIT_HEADER}\n\n"
         "### [nit] мелочь — `b.py:3`\n- Сценарий: s\n"
         f"\n<!-- codex-terminal-review head={HEAD} -->\n"
     )
@@ -512,7 +585,8 @@ def test_draft_case_with_only_nit_findings_is_clean_and_empty() -> None:
 
 
 def test_draft_case_refuses_an_unknown_severity_instead_of_downgrading() -> None:
-    reviews = [{**REVIEWS[0], "body": "### [critical] t — `a.py:1`\n- Сценарий: s\n"}]
+    body = f"{KIT_HEADER}\n\n### [critical] t — `a.py:1`\n- Сценарий: s\n"
+    reviews = [{**REVIEWS[0], "body": body}]
     with pytest.raises(CandidatesError, match="вне набора корпуса"):
         draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
 
@@ -538,7 +612,8 @@ def test_draft_case_uses_the_marker_when_pr_meta_has_no_head() -> None:
 
 def test_draft_case_refuses_a_body_without_a_marker_and_without_head_sha() -> None:
     """Ни маркера, ни `head.sha` — пинить кейс нечем, отказ."""
-    reviews = [{**REVIEWS[0], "body": "### [minor] t — `a.py:1`\n- Сценарий: s\n"}]
+    body = f"{KIT_HEADER}\n\n### [minor] t — `a.py:1`\n- Сценарий: s\n"
+    reviews = [{**REVIEWS[0], "body": body}]
 
     with pytest.raises(CandidatesError, match="head.sha"):
         draft_case(
@@ -576,6 +651,17 @@ def test_rendered_draft_loads_back_as_a_valid_case(tmp_path: Path) -> None:
 
     append_registry([loaded], tmp_path)
     assert "D-andrei-shtanakov.steward-155-1" in (tmp_path / "_ids.txt").read_text(encoding="utf-8")
+
+    # Инвариант: что `draft_case` выдал, то `load_case` обязан принять. Он и
+    # закрывает класс находок «черновик создан, а корпус его не берёт».
+    again = tmp_path / "again.yaml"
+    again.write_text(
+        render_case(
+            draft_case("andrei-shtanakov/steward", 155, PR_META, REVIEWS, commits_after=[])
+        ),
+        encoding="utf-8",
+    )
+    assert load_case(again).case_id == "andrei-shtanakov.steward-155"
 
 
 def test_draft_case_for_a_repo_needing_normalisation_round_trips(tmp_path: Path) -> None:
@@ -616,6 +702,7 @@ def test_draft_defect_matches_its_own_finding_when_the_title_has_no_words(
     внутри латинского слова текста, сделав проверку зелёной по случайности.
     """
     body = (
+        f"{KIT_HEADER}\n\n"
         "### [major] 123 — `src/zzz.py:10`\n"
         "- Сценарий: Ревьюер запускается с расширенным путём поиска\n"
         "- Наблюдаемое: побеждает подставной исполняемый файл\n"

@@ -101,6 +101,11 @@ _EVIDENCE_NONE = "—"
 #: модель (`parse_findings`).
 _EMPTY_VERDICT_MARKER = "Находок нет."
 
+#: Шапка формата кита — **подпись доверенного рендера**. Её печатает
+#: `apply-threshold.sh` (в markdown с префиксом ``## ``, в plain без него), и
+#: она отделяет тело, собранное китом, от произвольного текста ревью.
+_KIT_HEADER = "Ревью Codex — независимый чек"
+
 #: Severity, которую кит выдаёт, а корпус не знает: находка не становится
 #: дефектом черновика, но и не теряется — её след уходит в `notes` (§5).
 SKIPPED_SEVERITY = "nit"
@@ -228,6 +233,11 @@ def parse_findings(body: str) -> list[ParsedFinding]:
     заголовком находки — `CandidatesError`: два признака противоречат друг
     другу, и заголовок почти наверняка написала модель в `note`.
 
+    **Пробельный путь** в заголовке или в записи evidence — тоже
+    `CandidatesError`. Регулярки берут путь как «что угодно между бэктиками»,
+    поэтому такая находка разбиралась, а падал потом `load_case` на
+    `file must not be blank` — далеко от причины и уже после записи черновика.
+
     **Принятый предел.** Границы перед секцией находок кит не рендерит, а
     `note` модели печатается раньше находок и не экранируется. Поэтому note,
     оформленный как заголовок находки, в непустом вердикте от настоящей находки
@@ -241,6 +251,10 @@ def parse_findings(body: str) -> list[ParsedFinding]:
     for index, line in enumerate(lines):
         match = _HEADER_RE.match(line)
         if match is not None:
+            if _is_blank(match.group("file")):
+                raise CandidatesError(
+                    f"пробельный путь в заголовке находки: {line!r} — черновик не создаётся"
+                )
             headers.append((index, match))
             continue
         if _FINDING_HEADING_RE.match(line):
@@ -311,6 +325,11 @@ def draft_case(
     равно попадают в `defects` со своей severity: предсказание на gold-minor —
     это FP, и без записи в кейсе оно выглядело бы неразмеченным.
 
+    Тело обязано **предъявить формат кита** (`_require_kit_format`): подпись
+    рендера плюс вердикт (находка или ``Находок нет.``). Без этого непустое
+    ревью, в котором парсер не понял ничего, давало `class: clean` с пустым
+    `defects[]` — PR объявлялся чистым по факту неразбора.
+
     Находки `severity: nit` кит выдавать вправе (его схема их допускает), а
     корпус — нет (`blocker|major|minor`). Такая находка **пропускается**, и её
     число с заголовками уходит в `notes`: падать всем черновиком из-за
@@ -326,6 +345,7 @@ def draft_case(
     body = _body(last)
 
     parsed = parse_findings(body)
+    _require_kit_format(body, parsed)
     skipped = [f for f in parsed if f.severity == SKIPPED_SEVERITY]
     findings = [f for f in parsed if f.severity != SKIPPED_SEVERITY]
     base_sha = _require_sha(_dig(pr_meta, "base", "sha"), f"{repo}#{pr}: base.sha")
@@ -409,6 +429,36 @@ def render_case(case: Mapping[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # внутреннее
 # ---------------------------------------------------------------------------
+
+
+def _require_kit_format(body: str, parsed: Sequence[ParsedFinding]) -> None:
+    """Тело обязано предъявить формат кита, иначе черновик не создаётся.
+
+    Два независимых требования, и оба нужны:
+
+    1. **подпись рендера** — строка `Ревью Codex — независимый чек` (с
+       префиксом ``## `` или без: кит печатает markdown и plain). На ней
+       держится право считать `### [severity] …` заголовком находки: всё, что
+       подписи не несёт, могло быть написано кем угодно, включая модель в
+       `note`;
+    2. **вердикт** — хотя бы одна разобранная находка **или** строка
+       `Находок нет.`. Иначе непустое ревью, в котором парсер не понял ничего,
+       давало `class: clean` с пустым `defects[]`: PR объявлялся чистым по
+       факту неразбора. Такой кейс не измерение, а испорченный gold — в
+       метриках он даёт recall по нулю дефектов и хвалит ревьюера за молчание.
+
+    Обратная сторона: формат кита сменится — генератор встанет. Это и есть
+    замысел. Молчаливый `clean` дороже: он выглядит как данные.
+    """
+    lines = body.splitlines()
+    has_header = any(line.strip() in (_KIT_HEADER, f"## {_KIT_HEADER}") for line in lines)
+    has_verdict = bool(parsed) or any(line.strip() == _EMPTY_VERDICT_MARKER for line in lines)
+    if not has_header or not has_verdict:
+        raise CandidatesError(
+            f"тело ревью не распознано: ни заголовка находки, ни "
+            f"{_EMPTY_VERDICT_MARKER!r} — черновик не создаётся "
+            f"(старый/усечённый формат?)"
+        )
 
 
 def _draft_defect(slug: str, pr: int, index: int, finding: ParsedFinding) -> dict[str, Any]:
@@ -603,6 +653,11 @@ def _parse_evidence(text: str) -> tuple[Evidence, ...]:
     matches = list(_EVIDENCE_ITEM_RE.finditer(stripped))
     if not _covers_everything(matches, stripped):
         raise CandidatesError(f"не разобрана строка evidence: {stripped!r} — черновик не создаётся")
+    for match in matches:
+        if _is_blank(match.group("file")):
+            raise CandidatesError(
+                f"пробельный путь в evidence: {stripped!r} — черновик не создаётся"
+            )
     return tuple(
         Evidence(
             file=match.group("file"),
@@ -611,6 +666,16 @@ def _parse_evidence(text: str) -> tuple[Evidence, ...]:
         )
         for match in matches
     )
+
+
+def _is_blank(value: str) -> bool:
+    """Строка без непробельных символов.
+
+    Путь из пробелов проходит `[^`]+` в регулярках, поэтому черновик получался,
+    а `load_case` падал на `file must not be blank` — далеко от причины и уже
+    после записи файла. Отказ ставится туда, где путь читается.
+    """
+    return not value.strip()
 
 
 def _covers_everything(matches: Sequence[re.Match[str]], text: str) -> bool:
