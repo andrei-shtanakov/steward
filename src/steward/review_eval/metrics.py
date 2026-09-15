@@ -46,7 +46,7 @@ from steward.review_eval.corpus import FILE_MISSING_KIND, Case, is_gold
 from steward.review_eval.matcher import MatchResult, Prediction, normalize_path
 from steward.review_eval.matcher import match as match_predictions
 from steward.review_eval.runner import EMPTY_RANGE_OUTCOME, RunResult
-from steward.review_eval.threshold import is_blocking, is_schema_valid_verdict
+from steward.review_eval.threshold import as_line_number, is_blocking, is_schema_valid_verdict
 
 __all__ = [
     "CACHE_UNAVAILABLE_NOTE",
@@ -651,8 +651,10 @@ def _is_resolvable(item: object, file_lines: Callable[[str], int | None]) -> boo
     lines = file_lines(file)
     if lines is None:
         return False
-    line = item.get("line")
-    if isinstance(line, bool) or not isinstance(line, int):
+    line = as_line_number(
+        item.get("line")
+    )  # тот же контракт, что у схемы и матчера: `10.0` — строка 10
+    if line is None:
         return False
     if line == 0:
         return True
@@ -1016,7 +1018,9 @@ def _operational(gold: Sequence[CaseEval], matched: Sequence[CaseEval]) -> dict[
     duplicates = sum(len(ev.match.duplicates) for ev in matched if ev.match is not None)
     predictions = sum(len(ev.findings) for ev in matched)
     refuted = sum(len(ev.refuted) for ev in matched)
-    contradicted = len(contradicted_gold(matched))
+    # По прогонам, как и знаменатель: эксплуатационные метрики считают каждое
+    # повторение отдельной строкой, и `set` по id занижал бы числитель.
+    contradicted = sum(len(ev.contradicted_gold) for ev in matched)
     gold_defects = sum(len(ev.case.defects) for ev in matched)
     return {
         "completion_rate": _ratio(completed, runs).as_dict(),

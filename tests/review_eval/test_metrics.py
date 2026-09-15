@@ -433,6 +433,7 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
     blocking = finding(
         evidence=[
             {"file": "app/a.py", "line": 7, "reason": "в файле"},
+            {"file": "app/a.py", "line": 8.0, "reason": "целое JSON-число в дробной записи"},
             {"file": "app/a.py", "line": 0, "reason": "указатель уровня файла"},
             {"file": "app/a.py", "line": 99, "reason": "за концом файла"},
             {"file": "app/gone.py", "line": 1, "reason": "файла нет на head"},
@@ -452,7 +453,7 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
         file_lines=lambda path: sizes.get(path),
     )
 
-    assert ev.resolvable_evidence == (True, True, False, False)
+    assert ev.resolvable_evidence == (True, True, True, False, False)
 
 
 def test_evaluate_case_raises_when_promised_verdict_is_unreadable(tmp_path: Path) -> None:
@@ -624,6 +625,20 @@ def test_contradicted_gold_keeps_the_variant_out_of_ok() -> None:
 
     assert summary["status"] == "pending_adjudication"
     assert "precision" not in metrics
+
+
+def test_contradicted_gold_count_counts_every_repetition() -> None:
+    """Один противоречащий gold в двух повторениях — 2/2, не 1/2: числитель и
+    знаменатель считаются по прогонам одинаково.
+    """
+    case = make_case("C-1", defects=[make_defect("D-1")])
+    evals = [
+        build_eval(case, contradicted_gold=("D-1",), rep=1),
+        build_eval(case, contradicted_gold=("D-1",), rep=2),
+    ]
+
+    summary = metrics_for_variant(evals)
+    assert fraction_of(summary, "contradicted_gold_count") == (2, 2)
 
 
 def test_contradicted_gold_count_is_zero_by_default() -> None:
