@@ -1,5 +1,5 @@
 schema: review-eval-case/v1
-case_id: steward-155
+case_id: andrei-shtanakov.steward-155
 repo: andrei-shtanakov/steward
 pr: 155
 base_sha: 496e1b2eae15b21c6fb2238a8644eb67a40ccb17
@@ -13,7 +13,7 @@ annotation:
   adjudicated_by: null
   adjudicated_at: null
 defects:
-- id: D-steward-155-1
+- id: D-andrei-shtanakov.steward-155-1
   severity: minor
   file: tests/review/test_harness_claude.py
   line_hint: 203
@@ -48,5 +48,5 @@ notes: |-
   head_sha взят из маркера ревью; merge_commit_sha: a2d7e719564d414fbf04684f5bd7802013a4f681.
   Коммитов PR после последнего ревью: 0.
   candidate_status (подсказка D1, не ground truth):
-    - D-steward-155-1: unknown [minor] tests/review/test_harness_claude.py:203
+    - D-andrei-shtanakov.steward-155-1: unknown [minor] tests/review/test_harness_claude.py:203
   Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.

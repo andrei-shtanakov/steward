@@ -1,5 +1,5 @@
 schema: review-eval-case/v1
-case_id: steward-161
+case_id: andrei-shtanakov.steward-161
 repo: andrei-shtanakov/steward
 pr: 161
 base_sha: 09c7926fca88257af8bffa032e2213eb132b8f74
@@ -13,7 +13,7 @@ annotation:
   adjudicated_by: null
   adjudicated_at: null
 defects:
-- id: D-steward-161-1
+- id: D-andrei-shtanakov.steward-161-1
   severity: minor
   file: profiles/approval-facts-scope.yaml
   line_hint: 28
@@ -47,5 +47,5 @@ notes: |-
   head_sha взят из маркера ревью; merge_commit_sha: 4afb50e07a0286d25bb09309564a3f7bfa62a6ba.
   Коммитов PR после последнего ревью: 0.
   candidate_status (подсказка D1, не ground truth):
-    - D-steward-161-1: unknown [minor] profiles/approval-facts-scope.yaml:28
+    - D-andrei-shtanakov.steward-161-1: unknown [minor] profiles/approval-facts-scope.yaml:28
   Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.

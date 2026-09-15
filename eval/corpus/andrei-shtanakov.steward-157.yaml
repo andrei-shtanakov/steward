@@ -1,5 +1,5 @@
 schema: review-eval-case/v1
-case_id: steward-157
+case_id: andrei-shtanakov.steward-157
 repo: andrei-shtanakov/steward
 pr: 157
 base_sha: b84a3bbb3ef9f4c9c23194e16e94d6c4836f79a9
@@ -13,7 +13,7 @@ annotation:
   adjudicated_by: null
   adjudicated_at: null
 defects:
-- id: D-steward-157-1
+- id: D-andrei-shtanakov.steward-157-1
   severity: minor
   file: tests/review/test_collect_context.py
   line_hint: 613
@@ -43,7 +43,7 @@ defects:
     - docstring
     - quotepath
     - механизм
-- id: D-steward-157-2
+- id: D-andrei-shtanakov.steward-157-2
   severity: minor
   file: scripts/review/collect-context.sh
   line_hint: 228
@@ -79,6 +79,6 @@ notes: |-
   head_sha взят из маркера ревью; merge_commit_sha: 57170da804ecd638cc3d8b5184c3c87f93bf99a1.
   Коммитов PR после последнего ревью: 0.
   candidate_status (подсказка D1, не ground truth):
-    - D-steward-157-1: unknown [minor] tests/review/test_collect_context.py:613
-    - D-steward-157-2: unknown [minor] scripts/review/collect-context.sh:228
+    - D-andrei-shtanakov.steward-157-1: unknown [minor] tests/review/test_collect_context.py:613
+    - D-andrei-shtanakov.steward-157-2: unknown [minor] scripts/review/collect-context.sh:228
   Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.

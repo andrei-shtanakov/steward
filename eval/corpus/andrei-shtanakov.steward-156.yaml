@@ -1,9 +1,9 @@
 schema: review-eval-case/v1
-case_id: steward-152
+case_id: andrei-shtanakov.steward-156
 repo: andrei-shtanakov/steward
-pr: 152
-base_sha: 9d5f8e70c1b7f6a7ad5999189c20153162d9c015
-head_sha: 2b57713fcde8e1a0323a0df4df63fffdd2fdf995
+pr: 156
+base_sha: a2d7e719564d414fbf04684f5bd7802013a4f681
+head_sha: 2f8ee82e968d753cdae03809c62a95485627e110
 class: clean
 expected_outcome: verdict
 annotation:
@@ -15,8 +15,8 @@ annotation:
 defects: []
 non_defects: []
 notes: |-
-  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#152, ревью ai-prosto id=5194285192 от 2026-09-14T05:50:16Z.
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#156, ревью ai-prosto id=5200428802 от 2026-09-14T16:47:45Z.
   Ревью ai-prosto на PR: 1; находок в последнем: 0.
-  head_sha взят из маркера ревью; merge_commit_sha: 1912a07db5f52ae05693ef4fff5a87ae2148ee19.
+  head_sha взят из маркера ревью; merge_commit_sha: b84a3bbb3ef9f4c9c23194e16e94d6c4836f79a9.
   Коммитов PR после последнего ревью: 0.
   Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.

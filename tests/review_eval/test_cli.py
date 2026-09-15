@@ -501,6 +501,31 @@ def test_corpus_validate_exits_3_on_an_unexpected_error(
     assert "Traceback" not in result.output
 
 
+def test_repo_corpus_is_valid_and_registered() -> None:
+    """Корпус самого репозитория загружается: шесть черновиков, id в реестре.
+
+    Гейт ветки проверяется этим же вызовом, но руками; тест делает его
+    постоянным: правка черновика или реестра, ломающая загрузку, падает здесь,
+    а не в чужом прогоне.
+    """
+    corpus = Path(__file__).resolve().parents[2] / "eval" / "corpus"
+
+    cases = load_corpus(corpus)
+
+    assert [case.case_id for case in cases] == [
+        "andrei-shtanakov.steward-152",
+        "andrei-shtanakov.steward-155",
+        "andrei-shtanakov.steward-156",
+        "andrei-shtanakov.steward-157",
+        "andrei-shtanakov.steward-159",
+        "andrei-shtanakov.steward-161",
+    ]
+    # Все шесть — прокси из истории ревью: в метрики они не входят, пока
+    # разметчик не перевёл их в `adjudicated` (D1).
+    assert all(case.annotation.status == "draft" for case in cases)
+    assert sum(len(case.defects) for case in cases) == 4
+
+
 # ---------------------------------------------------------------------------
 # corpus candidates
 # ---------------------------------------------------------------------------
