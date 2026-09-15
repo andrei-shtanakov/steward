@@ -2382,7 +2382,10 @@ def test_rerun_refuses_a_symlinked_case_directory(tmp_path: Path) -> None:
     assert keep.exists()
 
 
-@pytest.mark.parametrize("field", ["cases", "variants", "repetitions", "kit", "corpus_digest"])
+@pytest.mark.parametrize(
+    "field",
+    ["cases", "variants", "repetitions", "kit", "corpus_digest", "provider_env_fingerprint"],
+)
 def test_load_results_refuses_a_structurally_incomplete_manifest(
     tmp_path: Path, field: str
 ) -> None:
@@ -2455,6 +2458,84 @@ def test_rerun_refuses_a_symlinked_case_directory_with_a_dotdot_out_dir(tmp_path
         )
 
     assert keep.exists()
+
+
+@pytest.mark.parametrize("field", ["cases", "variants"])
+def test_load_results_refuses_an_empty_composition_list(tmp_path: Path, field: str) -> None:
+    """`cases: []` / `variants: []` при наличии результатов — не «проверять нечего»,
+    а манифест, не объявляющий ни одного из них: проверка принадлежности
+    отключалась условием «список непуст».
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload[field] = []
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match=f"манифест.*{field}"):
+        load_results(out_dir)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("reviewer_ran", "false"), ("unexpected", "false"), ("outcome", 42), ("outcome", "bogus")],
+    ids=["reviewer_ran-str", "unexpected-str", "outcome-int", "outcome-enum"],
+)
+def test_load_results_refuses_a_result_with_a_wrongly_typed_field(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """Типы полей result.json проверяются все, не только числовые: строка
+    `"false"` истинна, а dataclass типов во время исполнения не проверяет.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    result = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1" / "result.json"
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    payload[field] = value
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match=field):
+        load_results(out_dir)
+
+
+def test_partial_rerun_keeps_the_worktrees_of_other_cases(tmp_path: Path) -> None:
+    """`--rerun` подмножества при `keep_worktrees` чистит scratch только своих троек."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    env = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    cases = [
+        _make_case(base_sha=first, head_sha=second),
+        _make_case(base_sha=first, head_sha=second, case_id="steward-157"),
+    ]
+    variants = [Variant("claude", "claude-opus-5", None)]
+    run_all(
+        cases,
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        keep_worktrees=True,
+    )
+    other = out_dir / "scratch" / cases[1].case_id / "claude:claude-opus-5" / "1"
+    assert other.is_dir()
+
+    run_all(
+        [cases[0]],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        keep_worktrees=True,
+        rerun=True,
+        corpus_digest_override=corpus_digest(cases),
+    )
+
+    assert other.is_dir(), "worktree невыбранного кейса сохранён"
 
 
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:

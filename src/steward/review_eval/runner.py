@@ -88,6 +88,20 @@ GUARDRAIL_MARKER = "диф больше поддерживаемого"
 #: которому нечего ревьюировать, незачем.
 EMPTY_RANGE_OUTCOME = "empty_range"
 
+#: Все исходы прогона: `classify` плюс `empty_range`, который ставится в обход
+#: классификатора (кит не запускался). Загрузчик результатов сверяет `outcome`
+#: с этим множеством — значение вне него значит чужой или битый result.json.
+OUTCOMES: frozenset[str] = frozenset(
+    {
+        "verdict",
+        "guardrail_rejection",
+        "invalid_verdict",
+        "config_failure",
+        "mechanical_failure",
+        EMPTY_RANGE_OUTCOME,
+    }
+)
+
 #: Форма значения `REVIEW_MODEL`/`REVIEW_EFFORT`, которую валидирует сам кит:
 #: одно слово, потому что значения интерполируются в `review_cmd`, а он по
 #: контракту разбивается по словам.
@@ -1196,7 +1210,7 @@ def _require_in_manifest(
             "необъявленного прогона: --rerun всего каталога или новый --out"
         )
     declared = manifest.get("cases")
-    if isinstance(declared, list) and declared and result.case_id not in declared:
+    if isinstance(declared, list) and result.case_id not in declared:
         raise RunnerError(
             f"{path}: кейс '{result.case_id}' вне манифеста {out_dir / 'run.json'} — "
             "результат необъявленного прогона: --rerun всего каталога или новый --out"
@@ -1204,7 +1218,7 @@ def _require_in_manifest(
     variants = manifest.get("variants")
     if isinstance(variants, list):
         labels = {record.get("label") for record in variants if isinstance(record, Mapping)}
-        if labels and result.variant not in labels:
+        if result.variant not in labels:
             raise RunnerError(
                 f"{path}: вариант '{result.variant}' вне манифеста "
                 f"{out_dir / 'run.json'} — результат необъявленного прогона: "
@@ -1402,9 +1416,18 @@ def _reset_results(
     `worktree add` упрётся в прежнюю регистрацию (тот же контракт, что у
     `_clear_scratch`).
     """
-    scratch = _require_inside(out_dir, out_dir / "scratch", what="--rerun scratch")
-    if scratch.exists():
-        shutil.rmtree(scratch, ignore_errors=True)
+    # Scratch чистится только у выбранных троек: при `keep_worktrees` деревья
+    # невыбранных кейсов оставлены для разбора, и сносить весь `scratch/`
+    # значило бы отнять их у частичного `--rerun`.
+    cases_root = out_dir / "cases"
+    for target in targets:
+        scratch = _require_run_path(
+            out_dir,
+            out_dir / "scratch" / target.relative_to(cases_root.resolve()),
+            what="--rerun scratch",
+        )
+        if scratch.exists():
+            shutil.rmtree(scratch, ignore_errors=True)
     # prune — **до** удаления результатов и с вычищенным окружением: с
     # унаследованным `GIT_DIR` он молча падал, регистрация worktree оставалась,
     # и следующий `worktree add` отказывал уже после потери оплаченного результата.
@@ -1496,14 +1519,34 @@ def _result_from_file(path: Path) -> RunResult:
     if missing:
         raise RunnerError(f"{path}: result.json is missing field(s): {', '.join(missing)}")
     known = {field.name: payload[field.name] for field in fields if field.name in payload}
-    numeric = ("repetition_id", "exit_code", "wall_clock_s")
+    numeric = ("repetition_id", "exit_code", "wall_clock_s", "precheck_s")
     bad = [
         name
         for name in numeric
-        if not isinstance(known.get(name), (int, float)) or isinstance(known.get(name), bool)
+        if name in known
+        and (not isinstance(known[name], (int, float)) or isinstance(known[name], bool))
     ]
     if bad:
         raise RunnerError(f"{path}: result.json field(s) must be numeric: {', '.join(bad)}")
+    # Остальные типы тоже проверяются: dataclass во время исполнения их не
+    # сверяет, а строка "false" истинна — `reviewer_ran`/`unexpected` врали бы.
+    text = ("case_id", "variant", "outcome", "cost_status", "stdout_path", "stderr_path")
+    optional_text = ("verdict_path", "usage_path", "requested_effort", "teardown_error")
+    flags = ("reviewer_ran", "unexpected")
+    wrong = [name for name in text if not isinstance(known.get(name), str)]
+    wrong += [
+        name
+        for name in optional_text
+        if name in known and not isinstance(known[name], (str, type(None)))
+    ]
+    wrong += [name for name in flags if not isinstance(known.get(name), bool)]
+    if wrong:
+        raise RunnerError(f"{path}: result.json field(s) of the wrong type: {', '.join(wrong)}")
+    if known["outcome"] not in OUTCOMES:
+        raise RunnerError(
+            f"{path}: result.json outcome '{known['outcome']}' вне известных исходов "
+            f"({', '.join(sorted(OUTCOMES))})"
+        )
     return RunResult(**known)
 
 
@@ -1790,7 +1833,14 @@ _MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("repetitions", int),
     ("provider_env_names", list),
     ("cases", list),
+    ("provider_env_fingerprint", str),
+    ("matcher_version", int),
+    ("matcher_rules_digest", str),
 )
+
+#: Списки состава прогона не бывают пустыми: `cases: []` при результатах —
+#: манифест, не объявляющий ни одного из них, а не «проверять нечего».
+_MANIFEST_NON_EMPTY: tuple[str, ...] = ("cases", "variants")
 
 
 def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
@@ -1817,6 +1867,12 @@ def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
             raise RunnerError(
                 f"{path}: манифест повреждён — нет поля '{field}' нужного типа; "
                 "результаты без объявления не читаются (новый --out или восстановите run.json)"
+            )
+    for field in _MANIFEST_NON_EMPTY:
+        if not payload.get(field):
+            raise RunnerError(
+                f"{path}: манифест повреждён — поле '{field}' пусто; прогон без состава "
+                "не объявляет ни одного результата (новый --out или восстановите run.json)"
             )
     return payload
 
