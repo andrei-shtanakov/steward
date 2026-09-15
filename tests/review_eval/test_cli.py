@@ -310,6 +310,32 @@ def test_corpus_validate_exits_2_on_a_broken_case(tmp_path: Path) -> None:
     assert "corpus invalid" in result.output
 
 
+def test_corpus_validate_refuses_a_duplicate_yaml_key(tmp_path: Path) -> None:
+    """Повторный ключ в YAML кейса — отказ: CLI читает строгим загрузчиком корпуса.
+
+    `yaml.safe_load` оставил бы **последнее** значение молча, то есть второй
+    `defects:` стёр бы первый, и корпус утверждал бы не то, что написал
+    разметчик. CLI своего чтения YAML не имеет вовсе — только через
+    `corpus.load_case`, где загрузчик строгий.
+    """
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    payload = _case_payload(155)
+    text = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        text + "defects: []\n", encoding="utf-8"
+    )
+
+    plain = runner.invoke(cli.app, ["corpus", "validate", "--corpus", str(corpus)])
+    registering = runner.invoke(
+        cli.app, ["corpus", "validate", "--corpus", str(corpus), "--register"]
+    )
+
+    assert plain.exit_code == 2
+    assert registering.exit_code == 2, registering.output
+    assert "повторный ключ" in registering.output
+
+
 def test_corpus_validate_retire_deleted_tombstones_a_removed_case(tmp_path: Path) -> None:
     """`--register --retire-deleted` списывает id ушедшего кейса надгробием.
 
