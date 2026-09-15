@@ -223,20 +223,27 @@ def _require_run_path(out_dir: Path, path: Path, *, what: str) -> Path:
     Возвращается `resolve()`: вызывающему нужен именно он (worktree и `rmtree`
     работают по абсолютному пути), а проверять надо до этого.
     """
-    root = out_dir.resolve()
-    _require_no_symlinks(root, path, what=what)
+    _require_no_symlinks(out_dir, path, what=what)
     return _require_inside(out_dir, path, what=what).resolve()
 
 
 def _require_no_symlinks(root: Path, path: Path, *, what: str) -> None:
-    """Отказать, если между `root` и `path` есть симлинк."""
-    absolute = path if path.is_absolute() else Path.cwd() / path
+    """Отказать, если между `root` и `path` есть симлинк.
+
+    Обе стороны нормализуются **лексически** (`os.path.normpath`, без следования
+    по ссылкам): `--out` вида `sub/../run` иначе не совпадал с уже разрешённым
+    корнем, `relative_to` падал, и проверка молча прекращалась — а `rmtree`
+    уходил через симлинк-префикс.
+    """
+    root = Path(os.path.normpath(os.path.abspath(root)))
+    absolute = Path(os.path.normpath(os.path.abspath(path)))
     current = root
     try:
         tail = absolute.relative_to(root)
     except ValueError:
-        # Путь и так вне `--out`; про это скажет `_require_inside`.
-        return
+        raise RunnerError(
+            f"{what}: {absolute} вне каталога прогона {root} — операция не выполняется"
+        ) from None
     for part in tail.parts:
         current = current / part
         if current.is_symlink():
@@ -711,10 +718,11 @@ def provider_env_fingerprint(env: Mapping[str, str]) -> str:
     либо хранение соли вне артефакта, то есть отдельный секрет-менеджмент,
     которого у харнесса нет.
     """
-    lines = [
-        f"{name}={env[name]}" for name in provider_env_names(env) if not _is_secret_env_name(name)
-    ]
-    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+    # Канонический JSON, не `name=value` через перевод строки: перевод строки
+    # внутри значения делал две разные пары неотличимыми от одной.
+    pairs = [[name, env[name]] for name in provider_env_names(env) if not _is_secret_env_name(name)]
+    canonical = json.dumps(pairs, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _is_secret_env_name(name: str) -> bool:
@@ -1793,6 +1801,13 @@ def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
     результаты через все проверки.
     """
     path = out_dir / "run.json"
+    if path.is_symlink():
+        # До любого чтения и тем более до сброса: по ссылке манифест не читается,
+        # а «ошибка чтения = манифеста нет» пускала полный --rerun в удаление.
+        raise RunnerError(
+            f"{path}: символическая ссылка на месте run.json — раннер такие пути "
+            "не создаёт; уберите ссылку или начните новый --out"
+        )
     payload = _read_json(path)
     if not isinstance(payload, dict):
         return None

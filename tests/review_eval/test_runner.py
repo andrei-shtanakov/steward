@@ -2399,6 +2399,64 @@ def test_load_results_refuses_a_structurally_incomplete_manifest(
         load_results(out_dir)
 
 
+def test_rerun_refuses_a_symlinked_run_json_before_deleting_anything(tmp_path: Path) -> None:
+    """Симлинк на месте `run.json` — отказ **до** сброса результатов.
+
+    Манифест читался по ссылке, ошибка чтения считалась «манифеста нет», полный
+    сброс проходил, и только запись нового `run.json` замечала симлинк — когда
+    оплаченные результаты уже были удалены.
+    """
+    cases, out_dir, cache_root, kit, _counter, digest, env_base = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    run_json.unlink()
+    run_json.symlink_to(out_dir.parent / "dangling.json")
+    results = sorted((out_dir / "cases").rglob("result.json"))
+    assert results
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        run_all(
+            cases,
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=digest,
+            rerun=True,
+        )
+
+    assert all(path.exists() for path in results)
+
+
+def test_rerun_refuses_a_symlinked_case_directory_with_a_dotdot_out_dir(tmp_path: Path) -> None:
+    """`--out` в форме `sub/../run` не выключает проверку симлинков на пути."""
+    cases, out_dir, cache_root, kit, _counter, digest, env_base = _two_case_run(tmp_path)
+    (tmp_path / "sub").mkdir()
+    dotted = tmp_path / "sub" / ".." / "run"
+    case_dir = out_dir / "cases" / "steward-155"
+    archive = out_dir / "archive"
+    shutil.move(str(case_dir), str(archive))
+    case_dir.symlink_to(archive, target_is_directory=True)
+    keep = archive / "claude:claude-opus-5" / "1" / "important.txt"
+    keep.write_text("не трогать", encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        run_all(
+            [cases[0]],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=dotted,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=digest,
+            rerun=True,
+        )
+
+    assert keep.exists()
+
+
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
     """`finished: null` — прогон не завершён, даже если все `result.json` на месте.
 
@@ -2562,6 +2620,19 @@ def test_provider_env_fingerprint_ignores_secret_values_only() -> None:
 
     assert provider_env_fingerprint(base) == provider_env_fingerprint(same_secret_other_value)
     assert provider_env_fingerprint(base) != provider_env_fingerprint(other_proxy)
+
+
+def test_provider_env_fingerprint_is_unambiguous_with_newlines_in_values() -> None:
+    """Перевод строки внутри значения не сливает две разные пары в одни байты.
+
+    `name=value` через `\\n` давал одинаковую строку для
+    {A: "x\\nB=y", B: "z"} и {A: "x", B: "y\\nB=z"} — разные окружения с
+    одним отпечатком, то есть ровно тот fail-open, который отпечаток закрывает.
+    """
+    first = {"ANTHROPIC_BASE_URL": "x\nHTTPS_PROXY=y", "HTTPS_PROXY": "z"}
+    second = {"ANTHROPIC_BASE_URL": "x", "HTTPS_PROXY": "y\nHTTPS_PROXY=z"}
+
+    assert provider_env_fingerprint(first) != provider_env_fingerprint(second)
 
 
 _SLOW_LOCAL_SH = """#!/bin/sh
