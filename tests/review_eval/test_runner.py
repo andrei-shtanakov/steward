@@ -2496,6 +2496,196 @@ def test_provider_env_fingerprint_ignores_secret_values_only() -> None:
     assert provider_env_fingerprint(base) != provider_env_fingerprint(other_proxy)
 
 
+_SLOW_LOCAL_SH = """#!/bin/sh
+sleep 0.2
+printf '%s' "$STUB_VERDICT_BODY" > "$REVIEW_VERDICT_OUT"
+exit 0
+"""
+
+
+def _make_kit_tree(tmp_path: Path) -> Path:
+    """Дерево чекаута steward со всеми пинуемыми файлами кита (все исполняемые)."""
+    root = tmp_path / "fake-steward"
+    kit_dir = root / "scripts" / "review"
+    kit_dir.mkdir(parents=True)
+    codex = root / ".github" / "codex"
+    codex.mkdir(parents=True)
+    (codex / "review-prompt.md").write_text("prompt\n", encoding="utf-8")
+    (codex / "review-schema.json").write_text("{}\n", encoding="utf-8")
+    for name in (
+        "apply-threshold.sh",
+        "local.sh",
+        "collect-context.sh",
+        "harness-claude",
+        "build-prompt.sh",
+    ):
+        path = kit_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+    return root
+
+
+def test_run_all_scrubs_git_env_for_its_own_git_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GIT_DIR` из окружения процесса не должен уводить **наши** git-вызовы.
+
+    Вычищалось только окружение кита, а `has_object`/`worktree` и проверка
+    диапазона наследовали `GIT_*` процесса: `GIT_DIR` увёл бы их в чужое репо,
+    и раннер объявил бы объекты отсутствующими в кэше — прогон падал бы на
+    машине, где переменная просто выставлена.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere.git"))
+    monkeypatch.setenv("STUB_EXIT", "0")
+    monkeypatch.setenv("STUB_VERDICT_BODY", VALID_VERDICT)
+    monkeypatch.setenv("STUB_RECORD", str(tmp_path / "record.txt"))
+
+    manifest = run_all(
+        [_make_case(base_sha=first, head_sha=second)],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=tmp_path / "run",
+        kit=_make_stub_kit(tmp_path),
+        cache_root=cache_root,
+        env_base=None,
+    )
+
+    assert manifest.finished
+    results = load_results(tmp_path / "run")
+    assert [item.outcome for item in results] == ["verdict"]
+
+
+def test_load_results_refuses_results_without_a_manifest(tmp_path: Path) -> None:
+    """Результаты есть, `run.json` нет — читать нечего: провенанс неизвестен.
+
+    Прежде `load_results` просто возвращал такие результаты, и метрики
+    считались по прогону, о котором артефакты не говорят ни кита, ни корпуса,
+    ни варианта.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    (out_dir / "run.json").unlink()
+
+    with pytest.raises(RunnerError, match="результаты без манифеста"):
+        load_results(out_dir)
+
+
+def test_run_case_measures_wall_clock_around_the_kit_only(tmp_path: Path) -> None:
+    """`wall_clock_s` — только вызов кита; предпроверка диапазона отдельно.
+
+    Проверка «диапазон пуст» (два вызова git) шла внутрь измерения, то есть в
+    метрику длительности ревьюера попадало время раннера. Теперь таймер
+    открывается прямо перед `local.sh` и закрывается сразу после, а
+    предпроверка записана в `precheck_s`.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    (kit.kit_dir / "local.sh").write_text(_SLOW_LOCAL_SH, encoding="utf-8")
+    (kit.kit_dir / "local.sh").chmod(0o755)
+
+    result = run_case(
+        _make_case(base_sha=first, head_sha=second),
+        Variant("claude", "claude-opus-5", None),
+        1,
+        kit=kit,
+        cache_root=cache_root,
+        out_dir=tmp_path / "run",
+        env_base=_env_base(tmp_path / "record.txt", STUB_VERDICT_BODY=VALID_VERDICT),
+    )
+
+    assert result.wall_clock_s >= 0.2
+    assert result.precheck_s > 0.0
+    assert result.precheck_s < result.wall_clock_s
+
+
+def test_run_case_empty_range_keeps_wall_clock_at_zero(tmp_path: Path) -> None:
+    """У `empty_range` ревьюер не вызывался, поэтому его время — ноль, не время git."""
+    repo, base, head = _make_empty_range_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [base, head])
+
+    result = run_case(
+        _make_case(base_sha=base, head_sha=head),
+        Variant("claude", "claude-opus-5", None),
+        1,
+        kit=_make_stub_kit(tmp_path),
+        cache_root=cache_root,
+        out_dir=tmp_path / "run",
+        env_base=_env_base(tmp_path / "record.txt", STUB_EXIT="0"),
+    )
+
+    assert result.outcome == "empty_range"
+    assert result.wall_clock_s == 0.0
+    assert result.precheck_s > 0.0
+
+
+def test_kit_under_test_records_executable_bits() -> None:
+    """Права на исполнение — такой же факт про кит, как дайджест."""
+    root = Path(__file__).resolve().parents[2]
+
+    kit = kit_under_test(root)
+
+    assert kit.executables["harness_claude_executable"] is True
+    assert kit.executables["prompt_executable"] is False
+
+
+def test_kit_under_test_refuses_a_non_executable_harness_for_claude(tmp_path: Path) -> None:
+    """`chmod -x harness-claude` при запрошенном варианте claude — кит негоден.
+
+    Прежде это было невидимо: дайджест файла не менялся, прогон шёл и падал
+    `config_failure` под тем же манифестом — сбой конфигурации выглядел
+    свойством варианта.
+    """
+    root = _make_kit_tree(tmp_path)
+    (root / "scripts" / "review" / "harness-claude").chmod(0o644)
+
+    with pytest.raises(RunnerError, match="harness-claude не исполняем"):
+        kit_under_test(root, harnesses=["claude"])
+
+    # Без варианта claude адаптер не нужен — кит годен.
+    assert kit_under_test(root, harnesses=["codex"]).commit
+
+
+def test_run_all_refuses_a_non_executable_harness_before_running(tmp_path: Path) -> None:
+    """Тот же отказ на стороне прогона: он знает и кит, и варианты."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    root = _make_kit_tree(tmp_path)
+    (root / "scripts" / "review" / "harness-claude").chmod(0o644)
+    kit = kit_under_test(root)
+    record = tmp_path / "record.txt"
+
+    with pytest.raises(RunnerError, match="harness-claude не исполняем"):
+        run_all(
+            [_make_case(base_sha=first, head_sha=second)],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=tmp_path / "run",
+            kit=kit,
+            cache_root=cache_root,
+            env_base=_env_base(record, STUB_EXIT="0"),
+        )
+
+    assert not record.exists()
+    assert not (tmp_path / "run" / "cases").exists()
+
+
+def test_run_all_refuses_resume_when_an_executable_bit_changed(tmp_path: Path) -> None:
+    """Снятый бит исполнения — дрейф провенанса наравне с дайджестом."""
+    resume = _resume_fixture(tmp_path)
+    run_json = resume.out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["kit"]["local_sh_executable"] = False
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+    before = run_json.read_bytes()
+
+    with pytest.raises(RunnerError, match="kit.local_sh_executable"):
+        resume.again()
+
+    assert run_json.read_bytes() == before
+
+
 def test_load_results_empty_run_dir(tmp_path: Path) -> None:
     assert load_results(tmp_path / "empty") == []
 

@@ -66,6 +66,7 @@ __all__ = [
     "parse_variant",
     "provider_env_fingerprint",
     "provider_env_names",
+    "scrubbed_git_env",
     "run_all",
     "run_case",
     "utc_now",
@@ -294,9 +295,16 @@ class KitUnderTest:
     schema: Path
     commit: str
     digests: dict[str, str]
+    #: Права на исполнение пинуемых файлов кита (`<ключ>_executable`). Это
+    #: такой же факт про кит, как дайджест: `chmod -x harness-claude`
+    #: содержимого не меняет, а прогон вариантом claude ломает — и прежде
+    #: провенанс этого не видел вовсе.
+    executables: dict[str, bool] = dataclasses.field(default_factory=dict)
 
 
-def kit_under_test(steward_root: Path, *, git: str = "git") -> KitUnderTest:
+def kit_under_test(
+    steward_root: Path, *, git: str = "git", harnesses: Sequence[str] = ()
+) -> KitUnderTest:
     """Собрать факты о ките из чекаута steward (§6.2, §10).
 
     Дайджест — «сырой» hex без префикса алгоритма: алгоритм назван в ключе
@@ -307,6 +315,15 @@ def kit_under_test(steward_root: Path, *, git: str = "git") -> KitUnderTest:
     `commit` — провенанс, а не доказательство: если чекаут не git-репо,
     значение ``unavailable``, но содержимое кита всё равно закреплено
     дайджестами.
+
+    **Права на исполнение** снимаются рядом с дайджестами (`executables`):
+    `chmod -x` содержимого не меняет, поэтому дайджест такой кит пропускал, а
+    прогон падал `config_failure` под тем же манифестом — сбой конфигурации
+    выглядел свойством варианта.
+
+    `harnesses` — какие харнессы собираются мерить. Если среди них `claude`, а
+    `harness-claude` не исполняем, кит негоден **сразу**: платить за прогоны,
+    обречённые на отказ, незачем.
     """
     root = steward_root.resolve()
     kit_dir = root / "scripts" / "review"
@@ -323,13 +340,28 @@ def kit_under_test(steward_root: Path, *, git: str = "git") -> KitUnderTest:
         raise RunnerError("kit under test is incomplete, missing: " + ", ".join(missing))
 
     digests = {key: _sha256_file(path) for key, path in digest_sources}
+    executables = {
+        f"{key.removesuffix('_sha256')}_executable": _is_executable(path)
+        for key, path in digest_sources
+    }
+    if "claude" in harnesses and not executables.get("harness_claude_executable", False):
+        raise RunnerError(
+            f"{kit_dir / 'harness-claude'}: harness-claude не исполняем — кит негоден "
+            "для варианта claude (chmod +x)"
+        )
     return KitUnderTest(
         kit_dir=kit_dir,
         prompt=prompt,
         schema=schema,
         commit=_head_commit(root, git=git),
         digests=digests,
+        executables=executables,
     )
+
+
+def _is_executable(path: Path) -> bool:
+    """Есть ли хоть один бит исполнения (`mode & 0o111`)."""
+    return bool(path.stat().st_mode & 0o111)
 
 
 @dataclass(frozen=True)
@@ -339,6 +371,12 @@ class RunResult:
     Пути к артефактам — относительные к `out_dir` и в POSIX-форме: прогон
     целиком копируется в `docs/evidence/` (§10), и абсолютный путь машины
     автора там был бы мусором.
+
+    `wall_clock_s` мерит **только** вызов кита: таймер открывается прямо перед
+    `local.sh` и закрывается сразу после. Время предпроверки диапазона лежит
+    отдельно, в `precheck_s`, — смешивать их значило бы приписывать модели
+    работу раннера. У исхода `empty_range` ревьюер не вызывался вовсе, поэтому
+    `wall_clock_s` там ноль, а `precheck_s` заполнен.
 
     `teardown_error` — сбой уборки worktree **после** завершённого прогона:
     сам прогон валиден (исход и артефакты на месте), но каталог scratch утёк.
@@ -360,6 +398,10 @@ class RunResult:
     stderr_path: str
     unexpected: bool
     teardown_error: str | None = None
+    #: Время **предпроверки** раннера (диапазон пуст или нет) — не время
+    #: ревьюера. Прежде оно лежало внутри `wall_clock_s`, то есть в метрику
+    #: длительности модели попадали вызовы git.
+    precheck_s: float = 0.0
 
 
 def classify(exit_code: int, sidecar_present: bool, verdict_valid: bool, stderr: str) -> str:
@@ -429,10 +471,13 @@ def run_case(
     """
     label = variant_label(variant)
     _require_safe_local_args(case)
+    # Собственные git-вызовы раннера идут без `GIT_*` окружения процесса:
+    # унаследованный `GIT_DIR` увёл бы их в чужое репо (см. `scrubbed_git_env`).
+    git_env = scrubbed_git_env(env_base)
     missing = [
         sha
         for sha in (case.head_sha, case.base_sha)
-        if not has_object(cache_root, case.repo, sha, git=git)
+        if not has_object(cache_root, case.repo, sha, git=git, env=git_env)
     ]
     if missing:
         raise RunnerError(
@@ -483,9 +528,19 @@ def run_case(
     result: RunResult | None = None
     teardown_error: str | None = None
     try:
-        with worktree(cache_root, case.repo, case.head_sha, dest, keep=keep_worktrees, git=git):
-            started = time.monotonic()
-            if _range_is_empty(dest, case, git=git):
+        with worktree(
+            cache_root,
+            case.repo,
+            case.head_sha,
+            dest,
+            keep=keep_worktrees,
+            git=git,
+            env=git_env,
+        ):
+            precheck_started = time.monotonic()
+            empty_range = _range_is_empty(dest, case, git=git, env=git_env)
+            precheck_s = time.monotonic() - precheck_started
+            if empty_range:
                 # Ревьюер не зовётся вовсе: диапазон пуст, измерять нечего.
                 # stdout/stderr пишутся пустыми, чтобы набор артефактов тройки
                 # не зависел от исхода (отчёт читает пути безусловно).
@@ -500,7 +555,9 @@ def run_case(
                     exit_code=0,
                     outcome=EMPTY_RANGE_OUTCOME,
                     reviewer_ran=False,
-                    wall_clock_s=time.monotonic() - started,
+                    # Ревьюер не вызывался — его времени нет. Время
+                    # предпроверки лежит в `precheck_s`, а не здесь.
+                    wall_clock_s=0.0,
                     verdict_path=None,
                     usage_path=None,
                     cost_status="unavailable",
@@ -508,9 +565,13 @@ def run_case(
                     stdout_path=_relative(stdout_file, out_dir),
                     stderr_path=_relative(stderr_file, out_dir),
                     unexpected=EMPTY_RANGE_OUTCOME != case.expected_outcome,
+                    precheck_s=precheck_s,
                 )
                 _write_json(result_file, dataclasses.asdict(result))
                 return result
+            # Таймер открывается прямо перед вызовом кита и закрывается сразу
+            # после: `wall_clock_s` — длительность **ревьюера**, а не раннера.
+            started = time.monotonic()
             try:
                 completed = subprocess.run(
                     command,
@@ -551,6 +612,7 @@ def run_case(
                 stdout_path=_relative(stdout_file, out_dir),
                 stderr_path=_relative(stderr_file, out_dir),
                 unexpected=outcome != case.expected_outcome,
+                precheck_s=precheck_s,
             )
             _write_json(result_file, dataclasses.asdict(result))
     except CacheError as error:
@@ -722,7 +784,8 @@ def run_all(
         raise RunnerError(f"jobs must be >= 1, got {jobs}")
     for case in cases:
         _require_safe_local_args(case)
-    _require_objects(cases, cache_root, git=git)
+    git_env = scrubbed_git_env(env_base)
+    _require_objects(cases, cache_root, git=git, env=git_env)
 
     environment: Mapping[str, str] = os.environ if env_base is None else env_base
     labels = [variant_label(v) for v in variants]
@@ -746,8 +809,17 @@ def run_all(
     ]
     digest = corpus_digest(cases) if corpus_digest_override is None else corpus_digest_override
     case_ids = sorted(case.case_id for case in cases)
-    kit_payload: dict[str, object] = {"commit": kit.commit, **kit.digests}
-    tools = _tool_versions(environment, git=git)
+    kit_payload: dict[str, object] = {"commit": kit.commit, **kit.digests, **kit.executables}
+    if any(v.harness == "claude" for v in variants) and (
+        kit.executables.get("harness_claude_executable") is False
+    ):
+        # Тот же отказ, что в `kit_under_test`, но здесь известны варианты:
+        # `KitUnderTest` собирают и в коде, не называя харнессов.
+        raise RunnerError(
+            f"{kit.kit_dir / 'harness-claude'}: harness-claude не исполняем — кит негоден "
+            "для варианта claude (chmod +x)"
+        )
+    tools = _tool_versions(git_env, git=git)
     env_names = provider_env_names(environment)
     env_fingerprint = provider_env_fingerprint(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -942,6 +1014,11 @@ def load_results(out_dir: Path) -> list[RunResult]:
     результатов при ``finished: null`` значит, что раннер оборвался между
     последней тройкой и финальной записью, а не что прогон готов.
 
+    **Результаты без манифеста — отказ.** Прежде они просто возвращались, и
+    метрики считались по прогону, о котором артефакты не говорят ни кита, ни
+    корпуса, ни варианта, ни окружения. Пустой (или новый) каталог — пустой
+    список, как прежде: там и результатов нет.
+
     **Результат вне манифеста — тоже `RunnerError`.** Каталог прогона может
     нести остаток прогона с другим `repetitions`, другим набором вариантов или
     другими кейсами. Тихо включить такой результат в метрики нельзя (числа
@@ -962,6 +1039,12 @@ def load_results(out_dir: Path) -> list[RunResult]:
         _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
         results.append(result)
+    if manifest is None and results:
+        raise RunnerError(
+            f"{out_dir}: результаты без манифеста — провенанс неизвестен: чем мерили "
+            "(кит, корпус, вариант, окружение) сказать нечем; --rerun всего каталога "
+            "или новый --out"
+        )
     _require_finished(manifest, out_dir=out_dir)
     _require_complete(results, manifest, out_dir=out_dir)
     return sorted(results, key=lambda item: (item.case_id, item.variant, item.repetition_id))
@@ -1340,7 +1423,9 @@ def _require_safe_local_args(case: Case) -> None:
         )
 
 
-def _require_objects(cases: Sequence[Case], cache_root: Path, *, git: str) -> None:
+def _require_objects(
+    cases: Sequence[Case], cache_root: Path, *, git: str, env: Mapping[str, str] | None = None
+) -> None:
     """Fail fast: все `base_sha`/`head_sha` выбранных кейсов уже в bare-кэше.
 
     Проверка до первого прогона, а не по ходу: иначе оплаченные прогоны
@@ -1350,7 +1435,7 @@ def _require_objects(cases: Sequence[Case], cache_root: Path, *, git: str) -> No
         f"{case.repo}@{sha} ({case.case_id})"
         for case in cases
         for sha in dict.fromkeys((case.base_sha, case.head_sha))
-        if not has_object(cache_root, case.repo, sha, git=git)
+        if not has_object(cache_root, case.repo, sha, git=git, env=env)
     ]
     if missing:
         raise RunnerError(
@@ -1418,6 +1503,23 @@ def _require_artifact(rep_dir: Path, name: Path | str, *, what: str) -> Path:
     return path
 
 
+def scrubbed_git_env(env_base: Mapping[str, str] | None) -> dict[str, str]:
+    """Окружение для **собственных** git-вызовов раннера: без `GIT_*`.
+
+    Вычищалось только окружение кита, а `has_object`, `worktree`, проверка
+    диапазона и опрос версий наследовали `GIT_*` процесса. Унаследованный
+    `GIT_DIR`/`GIT_WORK_TREE` увёл бы их в чужое репо: кэш выглядел бы
+    непокрытым, worktree создавался бы не от кэша, а `git --version` — от
+    другого чекаута. Прогон падал бы на машине, где переменная просто
+    выставлена.
+
+    `REVIEW_*` здесь **не** вычищается: на git они не влияют, а на кита идёт
+    отдельное окружение (`_run_env`), где вычищено и то, и другое.
+    """
+    source = os.environ if env_base is None else env_base
+    return {key: value for key, value in source.items() if not key.startswith("GIT_")}
+
+
 def _run_env(
     kit: KitUnderTest,
     variant: Variant,
@@ -1449,7 +1551,9 @@ def _run_env(
     return env
 
 
-def _range_is_empty(worktree_dir: Path, case: Case, *, git: str) -> bool:
+def _range_is_empty(
+    worktree_dir: Path, case: Case, *, git: str, env: Mapping[str, str] | None = None
+) -> bool:
     """Пуст ли диф диапазона ревью — тот же диапазон, что считает кит.
 
     `merge-base(base, head)..head`: именно его берёт `local.sh`, поэтому
@@ -1461,26 +1565,38 @@ def _range_is_empty(worktree_dir: Path, case: Case, *, git: str) -> bool:
     объявить кейс негодным из-за неудачного вызова git было бы хуже: он
     исчез бы из метрик качества.
     """
-    merge_base = _git_stdout(git, worktree_dir, ["merge-base", case.base_sha, case.head_sha])
+    merge_base = _git_stdout(
+        git, worktree_dir, ["merge-base", case.base_sha, case.head_sha], env=env
+    )
     if merge_base is None:
         return False
-    completed = _git_run(git, worktree_dir, ["diff", "--quiet", f"{merge_base}..{case.head_sha}"])
+    completed = _git_run(
+        git, worktree_dir, ["diff", "--quiet", f"{merge_base}..{case.head_sha}"], env=env
+    )
     return completed is not None and completed.returncode == 0
 
 
-def _git_run(git: str, cwd: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
+def _git_run(
+    git: str, cwd: Path, args: Sequence[str], *, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str] | None:
     """Вызов git в каталоге; ``None`` — бинаря нет или его не удалось запустить."""
     try:
         return subprocess.run(  # noqa: S603 — argv фиксирован, без shell
-            [git, "-C", str(cwd), *args], capture_output=True, text=True, check=False
+            [git, "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=None if env is None else dict(env),
         )
     except OSError:
         return None
 
 
-def _git_stdout(git: str, cwd: Path, args: Sequence[str]) -> str | None:
+def _git_stdout(
+    git: str, cwd: Path, args: Sequence[str], *, env: Mapping[str, str] | None = None
+) -> str | None:
     """stdout удачного вызова git без пробелов по краям, иначе ``None``."""
-    completed = _git_run(git, cwd, args)
+    completed = _git_run(git, cwd, args, env=env)
     if completed is None or completed.returncode != 0:
         return None
     text = completed.stdout.strip()

@@ -451,6 +451,28 @@ provider/proxy-переменных, чьё имя не выглядит сек�
 сам собирает это окружение (§6.3) и в нём же ищет ревьюера, поэтому `PATH`
 процесса дал бы в `run.json` версию не того бинаря, который вызывался.
 
+**`GIT_*` вычищается и для собственных git-вызовов раннера** — не только для
+окружения кита. `has_object`, `worktree`, проверка «диапазон пуст» и опрос
+версий получают окружение без `GIT_*` (`scrubbed_git_env`); унаследованный
+`GIT_DIR`/`GIT_WORK_TREE` увёл бы их в чужое репо, и прогон падал бы на машине,
+где переменная просто выставлена. `cache._run` и его публичные вызовы
+(`has_object`/`worktree`/`materialize`) принимают это окружение параметром.
+
+**`wall_clock_s` мерит только вызов кита.** Таймер открывается прямо перед
+`local.sh` и закрывается сразу после; время предпроверки диапазона лежит
+отдельно, в `precheck_s` (пишется у каждого результата). У исхода
+`empty_range` ревьюер не вызывался, поэтому `wall_clock_s` там ноль. Прежде
+предпроверка входила в `wall_clock_s`, то есть в метрику длительности модели
+попадали вызовы git.
+
+**Провенанс кита включает права на исполнение.** Рядом с каждым дайджестом в
+`run.json` лежит `<файл>_executable`, и дрейф сверяет их наравне с
+содержимым: `chmod -x scripts/review/harness-claude` дайджеста не меняет, а
+прогон вариантом claude ломает — прежде это было невидимо, и позднейшие
+повторения падали `config_failure` под тем же манифестом. Кроме того, кит с
+неисполняемым `harness-claude` при запрошенном варианте claude отвергается
+сразу, до первого прогона.
+
 ## 7. Правки кита (D4, D6, D12)
 
 **`local.sh` — `REVIEW_VERDICT_OUT`.** Объявлена и пуста → код 2 «задан
@@ -672,7 +694,8 @@ M --effort E"`; адаптер принимает `--effort <e>` и переда
 ```
 eval/runs/<run_id>/
   run.json          # kit: {commit, prompt_sha256, schema_sha256, threshold_sha256,
-                    #       local_sh_sha256, collect_context_sha256, harness_claude_sha256},
+                    #       local_sh_sha256, collect_context_sha256, harness_claude_sha256,
+                    #       и рядом <файл>_executable: bool — права на исполнение},
                     # tools: {claude, codex, git} версии — в провенансе сверяются
                     #   git и клиенты используемых харнессов; неиспользуемые клиенты
                     #   пишутся для протокола; variants; corpus_digest;
@@ -685,6 +708,8 @@ eval/runs/<run_id>/
                     #   выборка (--cases) список не сжимает — он описывает прогон;
                     # matcher_version, matcher_rules_digest; started/finished; jobs
   cases/<case_id>/<variant>/<rep>/{result.json, verdict.json, usage.json, stdout.txt, stderr.txt}
+                    # result.json: wall_clock_s — только вызов кита, precheck_s —
+                    #   предпроверка диапазона раннером (у empty_range wall_clock_s = 0)
   metrics.json      # по вариантам, с знаменателями и статусом
   report.md         # таблица вариантов + список кейсов с исходами
   adjudication-queue.md   # unlabeled/ambiguous предсказания: кейс, вариант, находка, кандидаты
