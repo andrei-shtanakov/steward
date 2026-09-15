@@ -361,9 +361,14 @@ def resolve_review_base(
 
 
 def _base_candidate(repo: str, pr_meta: Mapping[str, Any], fetch: Callable[[str], Any]) -> str:
-    """Голова базы на момент ревью: родитель 0 коммита мержа либо `base.sha`."""
+    """Голова базы на момент ревью: родитель 0 коммита мержа либо `base.sha`.
+
+    Родителя спрашиваем только при `merged: true`: у открытого PR GitHub тоже
+    отдаёт `merge_commit_sha` — тестовый merge ref, который пересчитывается и
+    может быть недоступен; состоявшимся мержем он не является.
+    """
     merge_commit = pr_meta.get("merge_commit_sha")
-    if not isinstance(merge_commit, str) or not merge_commit:
+    if pr_meta.get("merged") is not True or not isinstance(merge_commit, str) or not merge_commit:
         return _require_sha(_dig(pr_meta, "base", "sha"), f"{repo}: base.sha")
     path = f"repos/{repo}/commits/{merge_commit}"
     commit = fetch(path)

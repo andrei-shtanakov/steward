@@ -92,6 +92,7 @@ KIT_HEADER = "## Ревью Codex — независимый чек"
 PR_META = {
     "base": {"sha": BASE},
     "head": {"sha": HEAD},
+    "merged": True,
     "merge_commit_sha": "a2d7e719564d414fbf04684f5bd7802013a4f681",
 }
 
@@ -752,6 +753,29 @@ def test_resolve_review_base_uses_the_merge_commit_first_parent() -> None:
     )
 
     assert resolve_review_base(REPO, PR_META, HEAD, api) == MERGE_BASE
+
+
+def test_resolve_review_base_ignores_the_test_merge_sha_of_an_open_pr() -> None:
+    """Открытый PR: GitHub отдаёт `merge_commit_sha` тестового merge ref при
+    `merged: false`. Это не состоявшийся мерж — родителя у него спрашивать
+    нельзя (ref пересчитывается и может быть недоступен); кандидат — `base.sha`.
+    """
+    pr_meta = {
+        "base": {"sha": BASE},
+        "head": {"sha": HEAD},
+        "merged": False,
+        "merge_commit_sha": MERGE_COMMIT,
+    }
+    api = _fake_api(
+        {
+            f"repos/{REPO}/compare/{BASE}...{HEAD}": {
+                "status": "ahead",
+                "merge_base_commit": {"sha": MERGE_BASE},
+            }
+        }
+    )
+
+    assert resolve_review_base(REPO, pr_meta, HEAD, api) == MERGE_BASE
 
 
 def test_resolve_review_base_falls_back_to_base_sha_when_not_merged() -> None:
