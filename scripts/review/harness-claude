@@ -54,6 +54,16 @@ while [ $# -gt 0 ]; do
         --effort)
             [ $# -ge 2 ] || fail 2 "--effort требует значение"
             [ -n "$2" ] || fail 2 "--effort требует непустое значение"
+            # Зеркало проверки local.sh (гейт финального ревью этой ветки,
+            # major): значение эффорта в REVIEW_EFFORT долетает сюда через
+            # word-splitting строки review_cmd, и то же ограничение (одно
+            # безопасное слово) держит адаптер согласованным при прямом
+            # вызове, минуя local.sh.
+            case "$2" in
+                *[!A-Za-z0-9._:/@+-]*)
+                    fail 2 "--effort: недопустимое значение (разрешены буквы," \
+                        "цифры и . _ : / @ + -): $2" ;;
+            esac
             effort="$2"; shift 2 ;;
         --sandbox)
             [ $# -ge 2 ] || fail 2 "--sandbox требует значение"
@@ -138,7 +148,7 @@ write_usage() {
     [ -n "${REVIEW_USAGE_OUT:-}" ] || return 0
     usage_fail_code=2
     [ "$claude_code" -eq 0 ] || usage_fail_code=3
-    if jq -e 'type == "object"' "$envelope" >/dev/null 2>&1; then
+    if [ "$envelope_single_json" -eq 1 ] && jq -e 'type == "object"' "$envelope" >/dev/null 2>&1; then
         jq -c --arg model "$model" --arg effort "$effort" --arg outcome "$1" '{
             schema: "review-usage/v1", provider: "claude", model: $model,
             requested_effort: (if $effort == "" then null else $effort end),
@@ -193,13 +203,27 @@ claude "$@" \
 claude_code=$?
 set -e
 
+# Ровно ОДИН top-level JSON-документ (гейт финального ревью этой ветки,
+# minor): без `-s` jq применяет фильтр к КАЖДОМУ top-level значению потока
+# по отдельности, а не к ответу целиком — конкатенация двух валидных
+# success-конвертов иначе тихо проходила бы ENVELOPE_OK ниже, и
+# `jq -c '{...}' "$envelope"`/`jq -c '.structured_output' "$envelope"`
+# печатали бы построчный JSONL там, где ожидается один JSON-объект: sidecar
+# и вердикт молча портились бы на N строк вместо одной. Вычислено ОДИН раз
+# (используется в write_usage() и в проверке ниже), а не по месту в каждой
+# точке, чтобы не гонять `jq` трижды за один прогон.
+envelope_single_json=1
+[ "$(jq -c '.' "$envelope" 2>/dev/null | wc -l | tr -d ' ')" = "1" ] \
+    || envelope_single_json=0
+
 # Sidecar usage — сразу после разбора конверта как JSON, ДО того как код
 # выхода/subtype/structured_output решают код выхода адаптера (D12):
 # ошибочный ответ тоже стоил денег. Провал `write_usage` теперь МЕНЯЕТ код
 # выхода (см. её тело): 2, когда claude сам отработал, но sidecar не
 # собрался/не сохранился, и 3, когда сам claude уже отказал — код сбоя
 # ревьюера не маскируется неудачным sidecar'ом.
-if [ "$claude_code" -eq 0 ] && jq -e "$ENVELOPE_OK" "$envelope" >/dev/null 2>&1; then
+if [ "$claude_code" -eq 0 ] && [ "$envelope_single_json" -eq 1 ] \
+    && jq -e "$ENVELOPE_OK" "$envelope" >/dev/null 2>&1; then
     write_usage success
 else
     write_usage error
@@ -209,8 +233,10 @@ fi
 
 # Разбор конверта: только успешный ответ с непустым объектом
 # structured_output становится вердиктом. `jq -e` даёт не-0 и на false/null
-# фильтра, и на битом JSON (код 2 парсера) — оба случая один класс.
-if ! jq -e "$ENVELOPE_OK" "$envelope" >/dev/null 2>&1; then
+# фильтра, и на битом JSON (код 2 парсера) — оба случая один класс;
+# многодокументный поток — третий, гейтится отдельно выше по той же причине.
+if [ "$envelope_single_json" -ne 1 ] \
+    || ! jq -e "$ENVELOPE_OK" "$envelope" >/dev/null 2>&1; then
     fail 3 "ответ claude без валидного structured_output"
 fi
 # Каноническая сериализация — `jq -c`: байты определяет jq, а не контракт;

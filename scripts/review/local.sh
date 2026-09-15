@@ -94,6 +94,24 @@ fi
     echo "REVIEW_USAGE_OUT: не удалить прежний файл $REVIEW_USAGE_OUT" >&2
     exit 2
 }
+# REVIEW_MODEL/REVIEW_EFFORT попадают в review_cmd ТЕКСТОМ, а run_reviewer()
+# намеренно word-splits эту строку (REVIEW_CMD — команда целиком, включая
+# флаги, — тот же контракт распространяется на собранную строку умолчания).
+# Значит значение обязано быть ОДНИМ словом: `REVIEW_EFFORT='high --model
+# claude-haiku'` иначе долетало бы до ревьюера лишним argv и подменяло бы
+# модель мимо REVIEW_MODEL — находка финального ревью этой ветки (major).
+# Безопасный алфавит — буквы, цифры и `. _ : / @ + -`: ни пробелов, ни
+# кавычек, ни `$ ; & | \` и прочих метасимволов шелла.
+check_safe_word() {
+    # $1 — имя переменной (для сообщения), $2 — значение.
+    case "$2" in
+        *[!A-Za-z0-9._:/@+-]*)
+            echo "$1: недопустимое значение (разрешены буквы, цифры и" \
+                ". _ : / @ + -): $2" >&2
+            exit 2
+            ;;
+    esac
+}
 if [ -n "${REVIEW_CMD:-}" ]; then
     review_cmd="$REVIEW_CMD"
 else
@@ -102,15 +120,21 @@ else
             "модель." >&2
         exit 2
     fi
+    if [ -n "${REVIEW_MODEL:-}" ]; then
+        check_safe_word REVIEW_MODEL "$REVIEW_MODEL"
+    fi
     # REVIEW_EFFORT — reasoning-уровень (спека review-eval D13): та же
-    # пустота-отказ, что у REVIEW_MODEL, и та же логика — значение не
-    # валидируется, только непустота. Effort — часть команды, значит и
-    # отпечатка: при REVIEW_CMD-оверрайде выше эта ветка не выполняется,
-    # и effort вместе с harness/model игнорируется целиком.
+    # пустота-отказ, что у REVIEW_MODEL, и теперь та же форма-проверка
+    # (check_safe_word). Effort — часть команды, значит и отпечатка: при
+    # REVIEW_CMD-оверрайде выше эта ветка не выполняется, и effort вместе с
+    # harness/model игнорируется целиком.
     if [ -n "${REVIEW_EFFORT+x}" ] && [ -z "$REVIEW_EFFORT" ]; then
         echo "REVIEW_EFFORT задан пустым — уберите переменную или назовите" \
             "уровень." >&2
         exit 2
+    fi
+    if [ -n "${REVIEW_EFFORT:-}" ]; then
+        check_safe_word REVIEW_EFFORT "$REVIEW_EFFORT"
     fi
     case "${REVIEW_HARNESS-codex}" in
         codex)

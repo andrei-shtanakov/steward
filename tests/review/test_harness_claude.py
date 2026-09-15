@@ -145,6 +145,18 @@ def test_effort_empty_arg_is_config_error(tmp_path: Path) -> None:
     assert not s.verdict.exists()
 
 
+def test_effort_with_spaces_is_config_error(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major), зеркало проверки local.sh:
+    прямой вызов адаптера с составным `--effort` обязан отказать тем же
+    кодом 2 — тот же класс инъекции, что и через local.sh/REVIEW_EFFORT,
+    доступен и в обход local.sh."""
+    s = Stand(tmp_path)
+    res = s.run(*s.codex_args("--effort", "high --model x"))
+    assert res.returncode == 2, res.stderr
+    assert "--effort" in res.stderr
+    assert not s.verdict.exists()
+
+
 @pytest.mark.parametrize(
     "args, reason",
     [
@@ -412,6 +424,21 @@ def test_usage_sidecar_on_unparseable_envelope(tmp_path: Path) -> None:
     env, out = _usage_env(tmp_path)
     res = s.run(*s.codex_args(), envelope_text="not json {", extra_env=env)
     assert res.returncode == 3
+    u = json.loads(out.read_text(encoding="utf-8"))
+    assert u["outcome"] == "error" and u["usage"] is None
+
+
+def test_multi_document_envelope_is_error(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (minor): `jq` без `-s` применяет
+    фильтр к КАЖДОМУ top-level JSON-значению потока по отдельности —
+    конкатенация двух валидных success-конвертов тихо проходила бы
+    ENVELOPE_OK и печатала бы построчный JSONL там, где ожидается один
+    JSON-объект (и в sidecar'е usage, и в самом вердикте)."""
+    s = Stand(tmp_path)
+    env, out = _usage_env(tmp_path)
+    res = s.run(*s.codex_args(), envelope_text=FULL_ENVELOPE + "\n" + FULL_ENVELOPE, extra_env=env)
+    assert res.returncode == 3, res.stderr
+    assert not s.verdict.exists()
     u = json.loads(out.read_text(encoding="utf-8"))
     assert u["outcome"] == "error" and u["usage"] is None
 

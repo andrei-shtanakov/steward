@@ -1888,6 +1888,27 @@ def test_effort_empty_is_config_error(tmp_path: Path) -> None:
     assert res.returncode == 2 and "REVIEW_EFFORT" in res.stderr
 
 
+def test_effort_with_spaces_is_config_error(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): REVIEW_EFFORT попадает в
+    review_cmd текстом, и run_reviewer() намеренно word-splits эту строку —
+    значение с пробелом внутри (`high --model claude-haiku`) иначе долетало
+    бы до ревьюера лишним argv и подменяло бы модель мимо REVIEW_MODEL."""
+    _, local = make_repo(tmp_path)
+    res = run_local_env(
+        local, "--print-review-cmd", env={"REVIEW_EFFORT": "high --model claude-haiku"}
+    )
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_EFFORT" in res.stderr
+
+
+def test_model_with_spaces_is_config_error(tmp_path: Path) -> None:
+    """Тот же класс инъекции, что и у REVIEW_EFFORT выше, но для REVIEW_MODEL."""
+    _, local = make_repo(tmp_path)
+    res = run_local_env(local, "--print-review-cmd", env={"REVIEW_MODEL": "x -c y"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_MODEL" in res.stderr
+
+
 # --- Сквозной путь claude: вердикт доезжает до apply-threshold.sh -------------
 
 # Копия из test_harness_claude.py: pyrefly резолвит импорты только от src/ и не
@@ -1971,6 +1992,20 @@ def test_claude_harness_end_to_end_reaches_threshold(
     assert res.returncode == code, res.stdout + res.stderr
     prompt = Path(env["CLAUDE_STUB_PROMPT"]).read_text(encoding="utf-8")
     assert "new.txt" in prompt  # диф реально дошёл до claude
+
+
+def test_effort_injection_rejected_before_claude_invoked(tmp_path: Path) -> None:
+    """Сквозной случай для гейта финального ревью этой ветки (major):
+    REVIEW_EFFORT с встроенным флагом обязан отказать ДО вызова claude, а не
+    долететь до адаптера лишним argv и подменить модель."""
+    repo = make_repo_with_diff(tmp_path)
+    env = _claude_stand(tmp_path, {"findings": [], "note": "stub"})
+    env["REVIEW_MODEL"] = "claude-opus-5"
+    env["REVIEW_EFFORT"] = "high --model claude-haiku"
+    res = run_local_env(repo, env=env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_EFFORT" in res.stderr
+    assert not Path(env["CLAUDE_STUB_ARGV"]).exists()  # claude не вызван
 
 
 def _path_without_executable(name: str) -> str:
