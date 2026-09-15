@@ -64,6 +64,7 @@ __all__ = [
     "kit_under_test",
     "load_results",
     "parse_variant",
+    "provider_env_fingerprint",
     "provider_env_names",
     "run_all",
     "run_case",
@@ -111,6 +112,16 @@ _PROVIDER_ENV_PREFIXES: tuple[str, ...] = ("ANTHROPIC_", "CLAUDE_", "CODEX_", "O
 #: окружения, от которой зависит, куда ушёл запрос.
 _PROVIDER_ENV_NAMES: frozenset[str] = frozenset(
     {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"}
+)
+
+#: Подстроки имён, по которым переменная считается секретом: её **значение** не
+#: попадает ни в манифест, ни в отпечаток. Сравнение без учёта регистра.
+_SECRET_ENV_MARKERS: tuple[str, ...] = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "CREDENTIAL",
 )
 
 #: Приставки переменных, вычищаемых из наследуемого окружения (§6.3). `REVIEW_*`
@@ -591,6 +602,7 @@ class RunManifest:
     repetitions: int
     provider_env_names: list[str] = dataclasses.field(default_factory=list)
     cases: list[str] = dataclasses.field(default_factory=list)
+    provider_env_fingerprint: str = ""
 
 
 def provider_env_names(env: Mapping[str, str]) -> list[str]:
@@ -607,6 +619,42 @@ def provider_env_names(env: Mapping[str, str]) -> list[str]:
         for name in env
         if name.upper().startswith(_PROVIDER_ENV_PREFIXES) or name.upper() in _PROVIDER_ENV_NAMES
     )
+
+
+def provider_env_fingerprint(env: Mapping[str, str]) -> str:
+    """sha256 значений provider-переменных, **кроме секретных** (§10).
+
+    Имена в манифесте уже есть (`provider_env_names`), но их мало: смена
+    значения `HTTPS_PROXY` или переменной, выбирающей аккаунт, оставляла набор
+    имён прежним — и половина прогона могла уйти другим маршрутом под одним
+    манифестом. Отпечаток закрывает именно значения.
+
+    **Что хэшируется:** строки ``имя=значение`` тех provider-переменных, чьё
+    имя не выглядит секретом, отсортированные по имени.
+
+    **Что не хэшируется и почему:** значения переменных, в имени которых есть
+    `KEY`/`TOKEN`/`SECRET`/`PASSWORD`/`CREDENTIAL` (без учёта регистра). Такие
+    переменные участвуют только именем — оно и так в `provider_env_names`.
+    Причина не в «осторожности»: манифест публикуется (§10, копируется в
+    `docs/evidence/`), а дайджест секрета вскрывается словарём — ключи
+    провайдеров имеют узнаваемый формат и ограниченную энтропию. Соль в том же
+    файле не помогла бы: она публикуется вместе с дайджестом.
+
+    **Принятый предел:** смена аккаунта при том же имени переменной остаётся
+    невидимой для дрейфа. Ловит её только человек; альтернатива — либо утечка,
+    либо хранение соли вне артефакта, то есть отдельный секрет-менеджмент,
+    которого у харнесса нет.
+    """
+    lines = [
+        f"{name}={env[name]}" for name in provider_env_names(env) if not _is_secret_env_name(name)
+    ]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _is_secret_env_name(name: str) -> bool:
+    """Похоже ли имя переменной на секрет (тогда значение не хэшируется)."""
+    upper = name.upper()
+    return any(marker in upper for marker in _SECRET_ENV_MARKERS)
 
 
 def run_all(
@@ -699,6 +747,7 @@ def run_all(
     kit_payload: dict[str, object] = {"commit": kit.commit, **kit.digests}
     tools = _tool_versions(environment, git=git)
     env_names = provider_env_names(environment)
+    env_fingerprint = provider_env_fingerprint(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
     previous = _previous_manifest(out_dir)
     if previous is None and not rerun and _remaining_results(out_dir):
@@ -732,7 +781,14 @@ def run_all(
         )
     run_id = _resolve_run_id(out_dir, previous, labels, digest)
     drift = _provenance_drift(
-        previous, kit_payload, digest, variant_records, env_names, case_ids, tools
+        previous,
+        kit_payload,
+        digest,
+        variant_records,
+        env_names,
+        case_ids,
+        tools,
+        env_fingerprint,
     )
     if drift and not rerun:
         raise RunnerError(
@@ -789,6 +845,7 @@ def run_all(
         "jobs": jobs,
         "repetitions": repetitions,
         "provider_env_names": env_names,
+        "provider_env_fingerprint": env_fingerprint,
     }
     _write_json(out_dir / "run.json", payload)
 
@@ -840,6 +897,7 @@ def run_all(
         jobs=jobs,
         repetitions=repetitions,
         provider_env_names=env_names,
+        provider_env_fingerprint=env_fingerprint,
         cases=manifest_cases,
     )
     _write_json(out_dir / "run.json", dataclasses.asdict(manifest))
@@ -878,6 +936,10 @@ def load_results(out_dir: Path) -> list[RunResult]:
     Симлинк на месте `result.json` или любого каталога выше — `RunnerError`
     (`_require_result_file`): содержимое пришло бы извне прогона.
 
+    **Незакрытый манифест — тоже отказ** (`_require_finished`): полный набор
+    результатов при ``finished: null`` значит, что раннер оборвался между
+    последней тройкой и финальной записью, а не что прогон готов.
+
     **Результат вне манифеста — тоже `RunnerError`.** Каталог прогона может
     нести остаток прогона с другим `repetitions`, другим набором вариантов или
     другими кейсами. Тихо включить такой результат в метрики нельзя (числа
@@ -898,6 +960,7 @@ def load_results(out_dir: Path) -> list[RunResult]:
         _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
         results.append(result)
+    _require_finished(manifest, out_dir=out_dir)
     _require_complete(results, manifest, out_dir=out_dir)
     return sorted(results, key=lambda item: (item.case_id, item.variant, item.repetition_id))
 
@@ -937,6 +1000,26 @@ def _require_unique(result: RunResult, path: Path, seen: dict[tuple[str, str, in
             f"встречается дважды — она же в {first}; уберите лишнюю копию"
         )
     seen[key] = path
+
+
+def _require_finished(manifest: dict[str, object] | None, *, out_dir: Path) -> None:
+    """Отказать, если манифест не закрыт (`finished` пуст или отсутствует).
+
+    `run.json` пишется дважды: в начале с ``finished: null``, в конце целиком.
+    Обрыв между последней тройкой и финальной записью оставляет полный набор
+    `result.json` при незакрытом манифесте — и каталог читался как готовый
+    прогон, хотя раннер до конца не дошёл: не убран `scratch`, не записано
+    `finished`, а значит неизвестно, что ещё он собирался сделать. Полнота
+    результатов «завершённости» не доказывает.
+    """
+    if manifest is None:
+        return
+    finished = manifest.get("finished")
+    if not isinstance(finished, str) or not finished:
+        raise RunnerError(
+            f"{out_dir / 'run.json'}: прогон не завершён (finished отсутствует): "
+            "дождитесь завершения или возобновите run"
+        )
 
 
 def _require_complete(
@@ -1027,6 +1110,7 @@ def _provenance_drift(
     env_names: Sequence[str],
     case_ids: Sequence[str],
     tools: Mapping[str, str],
+    env_fingerprint: str,
 ) -> list[str]:
     """Поля, в которых прежний `run.json` расходится с текущим прогоном.
 
@@ -1042,11 +1126,15 @@ def _provenance_drift(
     под манифестом от новой. Обновили используемый клиент — новый `--out` либо
     полный `--rerun`.
 
-    `git` и неиспользуемые клиенты пишутся в `run.json` для протокола, но в
-    сверку не входят: диапазон задаёт раннер по `base_sha`/`head_sha`, материал
-    берётся из bare-кэша, а появление на машине клиента, которым прогон не
-    пользуется, к измеренному отношения не имеет. Прежде сверялись все три, и
-    обновление системы стоило оператору всего прогона.
+    **`git` сверяется всегда.** Он не «обстоятельство»: `local.sh` выбирает
+    алгоритм подготовки дифа по возможностям git (`check-attr --source`), то
+    есть обновление git меняет **вход ревьюера** — ровно то, что провенанс
+    обязан фиксировать. Один раунд он из сверки выводился как «версия на
+    машине»; это была ошибка, и она исправлена.
+
+    Неиспользуемые клиенты ревьюера пишутся в `run.json` для протокола, но в
+    сверку не входят: появление на машине клиента, которым прогон не
+    пользуется, к измеренному отношения не имеет.
 
     Переход используемого клиента между `unavailable` и настоящей версией —
     дрейф наравне с обновлением: прогон, где ревьюер записан недоступным, и
@@ -1067,8 +1155,13 @@ def _provenance_drift(
     отвечают, к какому аккаунту и через какой прокси ушёл вызов. Прежде
     повторение 2 с другим набором доливалось молча, а `run.json`
     перезаписывался новым набором — файл утверждал, что весь прогон шёл через
-    одно окружение, хотя половина шла через другое. Сравниваются **имена**,
-    значения не читаются никогда.
+    одно окружение, хотя половина шла через другое.
+
+    Сравниваются **имена и отпечаток значений**
+    (`provider_env_fingerprint`): одних имён мало — смена значения
+    `HTTPS_PROXY` набор имён не меняет. Значения секретных по имени переменных
+    в отпечаток не входят, поэтому смена ключа при том же имени дрейфом не
+    считается; почему так — в докстринге `provider_env_fingerprint`.
     """
     if previous is None:
         return []
@@ -1080,7 +1173,7 @@ def _provenance_drift(
             drift.append(f"kit.{key}")
     stored_tools = previous.get("tools")
     stored_tools = stored_tools if isinstance(stored_tools, Mapping) else {}
-    for name in sorted(_used_clients(previous.get("variants"), variants)):
+    for name in sorted(_used_clients(previous.get("variants"), variants) | {"git"}):
         was, now = stored_tools.get(name), tools.get(name)
         if was != now:
             drift.append(f"tools.{name} (было: {was}; стало: {now})")
@@ -1105,6 +1198,15 @@ def _provenance_drift(
         drift.append(
             f"provider_env_names (было: {', '.join(str(n) for n in stored_env) or '—'}; "
             f"стало: {', '.join(env_names) or '—'})"
+        )
+    stored_fingerprint = previous.get("provider_env_fingerprint")
+    if isinstance(stored_fingerprint, str) and stored_fingerprint != env_fingerprint:
+        # Имена совпали, значения — нет: смена прокси или аккаунта, выбранного
+        # несекретной переменной. Сами значения в сообщении не показываются —
+        # в манифесте их нет и быть не должно.
+        drift.append(
+            f"provider_env_fingerprint (было: {stored_fingerprint[:12]}; "
+            f"стало: {env_fingerprint[:12]})"
         )
     return drift
 

@@ -32,6 +32,7 @@ from steward.review_eval.runner import (
     kit_under_test,
     load_results,
     parse_variant,
+    provider_env_fingerprint,
     run_all,
     run_case,
     variant_label,
@@ -2138,20 +2139,24 @@ def _retool(out_dir: Path, name: str, version: str) -> bytes:
     return run_json.read_bytes()
 
 
-def test_run_all_resume_ignores_a_git_version_change(tmp_path: Path) -> None:
-    """Версия `git` записана для протокола, но доливку не ломает.
+def test_run_all_refuses_resume_when_the_git_version_changed(tmp_path: Path) -> None:
+    """Версия `git` — часть провенанса: она формирует **сам диф**, который читает модель.
 
-    Ревьюера она не выбирает: диапазон задаёт раннер по `base_sha`/`head_sha`,
-    а материал берётся из bare-кэша. Обновление системы не должно стоить
-    оператору всего прогона.
+    Прошлый раунд вывел `git` из сверки как «обстоятельство»; это была ошибка.
+    `local.sh` выбирает алгоритм подготовки дифа по возможностям git
+    (`check-attr --source`), то есть обновление git меняет вход ревьюера —
+    ровно то, что провенанс обязан фиксировать. Неиспользуемые клиенты
+    ревьюера из сверки по-прежнему исключены: они на вход не влияют.
     """
     resume = _resume_fixture(tmp_path)
-    _retool(resume.out_dir, "git", "git version 0.0.1-ancient")
+    before = _retool(resume.out_dir, "git", "git version 0.0.1-ancient")
 
-    resumed = resume.again()
+    with pytest.raises(RunnerError, match="tools.git") as excinfo:
+        resume.again()
 
-    assert resumed.run_id
-    assert resume.calls() == 1, "готовая тройка перезапуска не требует"
+    assert "0.0.1-ancient" in str(excinfo.value)
+    assert (resume.out_dir / "run.json").read_bytes() == before
+    assert resume.calls() == 1
 
 
 def test_run_all_resume_ignores_an_unused_client(tmp_path: Path) -> None:
@@ -2294,6 +2299,143 @@ def test_load_results_refuses_a_symlinked_result(tmp_path: Path) -> None:
 
     with pytest.raises(RunnerError, match="символическая ссылка"):
         load_results(out_dir)
+
+
+def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
+    """`finished: null` — прогон не завершён, даже если все `result.json` на месте.
+
+    Манифест пишется дважды: в начале с `finished: null`, в конце целиком.
+    Обрыв между последней тройкой и финальной записью оставлял полный набор
+    результатов при незакрытом манифесте — и такой каталог читался как
+    готовый прогон, хотя раннер до конца не дошёл (уборка scratch, финальные
+    поля манифеста).
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["finished"] = None
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="прогон не завершён"):
+        load_results(out_dir)
+
+
+def test_load_results_refuses_a_manifest_without_finished(tmp_path: Path) -> None:
+    """Отсутствующий ключ `finished` — то же самое, что `null`."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    del payload["finished"]
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="прогон не завершён"):
+        load_results(out_dir)
+
+
+def test_run_all_records_a_provider_env_fingerprint(tmp_path: Path) -> None:
+    """`run.json` несёт отпечаток **значений** provider-переменных, кроме секретных."""
+    resume = _resume_fixture(tmp_path)
+
+    payload = json.loads((resume.out_dir / "run.json").read_text(encoding="utf-8"))
+    fingerprint = payload["provider_env_fingerprint"]
+
+    assert isinstance(fingerprint, str)
+    assert len(fingerprint) == 64
+    assert all(char in "0123456789abcdef" for char in fingerprint)
+
+
+def _env_run(
+    tmp_path: Path, **extra: str
+) -> tuple[Case, Path, Path, KitUnderTest, Path, dict[str, str]]:
+    """Готовый прогон в окружении с переданными переменными; всё нужное для доливки."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    counter = tmp_path / "calls.txt"
+    env_base = _env_base(
+        tmp_path / "record.txt",
+        STUB_EXIT="0",
+        STUB_VERDICT_BODY=VALID_VERDICT,
+        STUB_COUNTER=str(counter),
+        **extra,
+    )
+    case = _make_case(base_sha=first, head_sha=second)
+    out_dir = tmp_path / "run"
+    run_all(
+        [case],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env_base,
+    )
+    return case, out_dir, cache_root, kit, counter, env_base
+
+
+def test_run_all_refuses_resume_when_a_proxy_value_changed(tmp_path: Path) -> None:
+    """Смена **значения** прокси — дрейф: запрос ушёл бы другим маршрутом.
+
+    Имена переменных при этом те же, поэтому `provider_env_names` такую смену
+    не видел вовсе: половина прогона могла уйти через один прокси, половина
+    через другой, а манифест утверждал бы одно окружение.
+    """
+    case, out_dir, cache_root, kit, counter, env_base = _env_run(
+        tmp_path, HTTPS_PROXY="http://one.invalid"
+    )
+    run_json = out_dir / "run.json"
+    before = run_json.read_bytes()
+
+    with pytest.raises(RunnerError, match="provider_env_fingerprint"):
+        run_all(
+            [case],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base={**env_base, "HTTPS_PROXY": "http://two.invalid"},
+        )
+
+    assert run_json.read_bytes() == before
+    assert _calls(counter) == 1
+
+
+def test_run_all_resume_ignores_a_secret_value_change(tmp_path: Path) -> None:
+    """Смена значения секретной переменной дрейфом не считается — принятый предел.
+
+    Значение ключа в отпечаток не входит: манифест публикуется (копируется в
+    `docs/evidence/`), а дайджест секрета — даже с солью в том же файле —
+    вскрывается словарём. Поэтому смена аккаунта при том же имени переменной
+    остаётся невидимой; ловит её только человек.
+    """
+    case, out_dir, cache_root, kit, counter, env_base = _env_run(
+        tmp_path, ANTHROPIC_API_KEY="sk-one"
+    )
+
+    resumed = run_all(
+        [case],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base={**env_base, "ANTHROPIC_API_KEY": "sk-two"},
+    )
+
+    assert resumed.provider_env_names == ["ANTHROPIC_API_KEY"]
+    assert _calls(counter) == 1, "готовая тройка перезапуска не требует"
+
+
+def test_provider_env_fingerprint_ignores_secret_values_only() -> None:
+    """Отпечаток меняется от несекретного значения и не меняется от секретного."""
+    base = {"HTTPS_PROXY": "http://one.invalid", "ANTHROPIC_API_KEY": "sk-one"}
+
+    same_secret_other_value = {**base, "ANTHROPIC_API_KEY": "sk-two"}
+    other_proxy = {**base, "HTTPS_PROXY": "http://two.invalid"}
+
+    assert provider_env_fingerprint(base) == provider_env_fingerprint(same_secret_other_value)
+    assert provider_env_fingerprint(base) != provider_env_fingerprint(other_proxy)
 
 
 def test_load_results_empty_run_dir(tmp_path: Path) -> None:
