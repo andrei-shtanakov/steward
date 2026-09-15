@@ -1096,6 +1096,12 @@ def _read_registry(directory: Path, *, git: str = "git") -> dict[str, _Registere
                 f"{path}: реестр повреждён: строка после надгробия для '{entry_id}' "
                 f"(строка {lineno}) — списанный id не возвращается, заведите новый"
             )
+        if _forgets_known_identity(previous, state):
+            raise CorpusError(
+                f"{path}: строка {lineno} — понижение формата: двухполевая строка "
+                f"после известного ядра '{entry_id}' стирала бы идентичность, "
+                f"чтобы затем сменить её без reidentified"
+            )
         if _unacknowledged_identity_change(previous, state):
             raise CorpusError(
                 f"{path}: строка {lineno} меняет идентичность '{entry_id}' без "
@@ -1104,6 +1110,19 @@ def _read_registry(directory: Path, *, git: str = "git") -> dict[str, _Registere
             )
         registry[entry_id] = state
     return registry
+
+
+def _forgets_known_identity(previous: _Registered | None, state: _Registered) -> bool:
+    """Двухполевая строка после строки с известным ядром живого id.
+
+    Обход метки в два шага: «забыть» ядро строкой старого формата, потом
+    дописать трёхполевую с новым — второй шаг прошёл бы по правилу «прежнее
+    ядро неизвестно». Старый формат допустим только пока ядро ещё не
+    известно; надгробие — своё правило.
+    """
+    if previous is None or previous.deleted or state.deleted:
+        return False
+    return previous.identity is not None and state.identity is None
 
 
 def _unacknowledged_identity_change(previous: _Registered | None, state: _Registered) -> bool:
@@ -1122,8 +1141,8 @@ def _unacknowledged_identity_change(previous: _Registered | None, state: _Regist
     - прежнее ядро неизвестно (строка старого, двухполевого формата) →
       сравнивать не с чем, остаётся правило раунда 5: первая же регистрация
       ядро дописывает, а изменившееся содержимое требует `--reidentify`;
-    - новая строка ядра не несёт (тоже двухполевая) → идентичность не
-      меняется, а забывается; это не подмена;
+    - новая строка ядра не несёт (двухполевая) при известном прежнем ядре →
+      понижение формата, отдельное правило (`_forgets_known_identity`);
     - ядро то же, содержимое другое → законная перерегистрация правки, метки
       не требует: иначе метка обесценилась бы.
     """

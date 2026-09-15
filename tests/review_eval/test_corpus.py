@@ -1298,6 +1298,27 @@ def test_handwritten_identity_change_with_the_marker_is_accepted(tmp_path: Path)
     check_registry([case], corpus_dir)  # не бросает
 
 
+def test_handwritten_format_downgrade_is_refused(tmp_path: Path) -> None:
+    """Двухполевая строка после трёхполевой — «забыть» ядро, чтобы обойти метку.
+
+    Обход в два шага: сначала строка старого формата стирает известное ядро,
+    затем трёхполевая с новым ядром проходит по правилу «прежнее ядро
+    неизвестно». Понижение формата у живого id с известным ядром запрещено.
+    """
+    corpus_dir = tmp_path
+    case, content, identity = _registered_case(corpus_dir)
+    _handwritten_registry(
+        corpus_dir,
+        case,
+        f"D-andrei-shtanakov.steward-155-1 {content} {'e' * 64}",
+        f"D-andrei-shtanakov.steward-155-1 {content}",
+        f"D-andrei-shtanakov.steward-155-1 {content} {identity}",
+    )
+
+    with pytest.raises(CorpusError, match="строка 3.*понижение формата"):
+        check_registry([case], corpus_dir)
+
+
 def test_handwritten_content_change_needs_no_marker(tmp_path: Path) -> None:
     """Смена только содержимого при том же ядре — законная перерегистрация.
 
