@@ -178,6 +178,43 @@ def test_parse_findings_refuses_an_unparsed_finding_heading(heading: str) -> Non
         parse_findings(body)
 
 
+def test_parse_findings_accepts_an_empty_title() -> None:
+    """``title: ""`` годен по схеме, и рендер печатает ``### [minor]  — `a.py:1```.
+
+    Регулярка с `.+` для title такой заголовок не разбирала, и весь черновик
+    (включая остальные находки) срывался отказом. Пустой title — не порча
+    формата, а пустое поле: ключевые слова берутся из scenario/expected_result.
+    """
+    body = (
+        "### [minor]  — `a.py:1`\n"
+        "- Сценарий: сценарий с ключевыми словами\n"
+        "- Наблюдаемое: n\n- Ожидаемое: e\n- Evidence: —\n- confidence: high → x\n"
+    )
+    (finding,) = parse_findings(body)
+    assert finding.title == ""
+    assert finding.file == "a.py"
+    assert finding.line == 1
+
+
+def test_draft_case_keeps_the_other_findings_when_a_title_is_empty() -> None:
+    """Пустой title одной находки не теряет остальные и не срывает черновик."""
+    body = (
+        f"{KIT_HEADER}\n\n"
+        "### [major] настоящая находка — `b.py:2`\n"
+        "- Сценарий: s\n- Наблюдаемое: o\n- Ожидаемое: e\n- Evidence: —\n"
+        "- confidence: high → БЛОКИРУЕТ\n\n"
+        "### [minor]  — `a.py:1`\n"
+        "- Сценарий: сценарий с ключевыми словами\n- Наблюдаемое: n\n"
+        "- Ожидаемое: e\n- Evidence: —\n- confidence: high → x\n"
+        f"\n<!-- codex-terminal-review head={HEAD} -->\n"
+    )
+    reviews = [{**REVIEWS[0], "body": body}]
+
+    draft = draft_case("andrei-shtanakov/steward", 155, PR_META, reviews, commits_after=[])
+    assert [d["file"] for d in draft["defects"]] == ["b.py", "a.py"]
+    assert draft["defects"][1]["match"]["keywords_any"]
+
+
 def test_draft_case_refuses_a_body_with_an_unparsed_finding() -> None:
     """Черновик с потерянным блоком находки не создаётся."""
     body = (
