@@ -876,6 +876,7 @@ def run_all(
             "для варианта claude (chmod +x)"
         )
     tools = _tool_versions(git_env, git=git)
+    tools["git_config_digest"] = _git_config_digest(cache_root, [case.repo for case in cases])
     env_names = provider_env_names(environment)
     env_fingerprint = provider_env_fingerprint(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1346,7 +1347,9 @@ def _provenance_drift(
             drift.append(f"kit.{key}")
     stored_tools = previous.get("tools")
     stored_tools = stored_tools if isinstance(stored_tools, Mapping) else {}
-    for name in sorted(_used_clients(previous.get("variants"), variants) | {"git"}):
+    for name in sorted(
+        _used_clients(previous.get("variants"), variants) | {"git", "git_config_digest"}
+    ):
         was, now = stored_tools.get(name), tools.get(name)
         if was != now:
             drift.append(f"tools.{name} (было: {was}; стало: {now})")
@@ -1665,21 +1668,32 @@ def pin_git(git: str, env_base: Mapping[str, str] | None) -> tuple[str, dict[str
     return resolved, env
 
 
+#: Обёртки `git`, уже созданные этим процессом: путь бинаря → путь обёртки.
+_GIT_ALIASES: dict[str, str] = {}
+
+
 def _git_alias(binary: str) -> str:
     """Обёртка с именем `git`, исполняющая `binary`: кит найдёт её по имени в PATH.
 
-    Каталог — временный на процесс (по пути бинаря он детерминирован, чтобы
-    повторные вызовы не плодили обёрток); символические ссылки не используются —
-    внутри каталога прогона они запрещены, а здесь просто не нужны.
+    Каталог — **непредсказуемый** приватный (`mkdtemp`, 0700), файл создаётся
+    эксклюзивно и без следования по ссылкам (`O_EXCL|O_NOFOLLOW`): детерминированное
+    имя в общем temp позволяло заранее подложить каталог с симлинком `git` на
+    чужой файл, и запись усекала бы его. Один процесс переиспользует свою обёртку.
     """
-    digest = hashlib.sha256(binary.encode("utf-8")).hexdigest()[:16]
-    alias_dir = Path(tempfile.gettempdir()) / f"review-eval-git-{digest}"
-    alias_dir.mkdir(mode=0o700, exist_ok=True)
+    cached = _GIT_ALIASES.get(binary)
+    if cached is not None and os.access(cached, os.X_OK):
+        return cached
+    alias_dir = Path(tempfile.mkdtemp(prefix="review-eval-git-"))
     alias = alias_dir / "git"
     body = f'#!/bin/sh\nexec "{binary}" "$@"\n'
-    if not alias.exists() or alias.read_text(encoding="utf-8") != body:
-        alias.write_text(body, encoding="utf-8")
-        alias.chmod(0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(alias, flags, 0o700)
+    except OSError as exc:
+        raise RunnerError(f"{alias}: не удалось создать обёртку git: {exc}") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(body)
+    _GIT_ALIASES[binary] = str(alias)
     return str(alias)
 
 
@@ -1697,7 +1711,23 @@ def scrubbed_git_env(env_base: Mapping[str, str] | None) -> dict[str, str]:
     отдельное окружение (`_run_env`), где вычищено и то, и другое.
     """
     source = os.environ if env_base is None else env_base
-    return {key: value for key, value in source.items() if not key.startswith("GIT_")}
+    env = {key: value for key, value in source.items() if not key.startswith("GIT_")}
+    return _pin_git_config(env)
+
+
+#: Переменные, которыми фиксируется конфигурация git: глобальный и системный
+#: конфиги выключены, действует только конфиг самого репозитория (кэша).
+GIT_CONFIG_PINS: dict[str, str] = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+
+def _pin_git_config(env: dict[str, str]) -> dict[str, str]:
+    """Зафиксировать конфигурацию git: `diff.context`/`diff.algorithm` из
+    глобального конфига меняли бы текст дифа при той же версии git — вход
+    ревьюера плыл бы под одним манифестом. Остаётся только конфиг репозитория
+    (кэша), и его дайджест входит в провенанс (`tools.git_config_digest`).
+    """
+    env.update(GIT_CONFIG_PINS)
+    return env
 
 
 def _run_env(
@@ -1719,6 +1749,7 @@ def _run_env(
     env = {
         key: value for key, value in env_base.items() if not key.startswith(_SCRUBBED_ENV_PREFIXES)
     }
+    _pin_git_config(env)
     env["REVIEW_KIT_DIR"] = str(kit.kit_dir)
     env["REVIEW_PROMPT"] = str(kit.prompt)
     env["REVIEW_SCHEMA"] = str(kit.schema)
@@ -2040,6 +2071,20 @@ def utc_now() -> str:
     времени в одном `metrics.json` читались бы как два разных источника.
     """
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _git_config_digest(cache_root: Path, repos: Sequence[str]) -> str:
+    """sha256 конфигов bare-кэшей прогона (единственная действующая конфигурация git
+    при `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`): смена `diff.*` в конфиге кэша меняет
+    диф при той же версии git.
+    """
+    digest = hashlib.sha256()
+    for repo in sorted(set(repos)):
+        config = repo_cache_dir(cache_root, repo) / "config"
+        digest.update(repo.encode("utf-8") + b"\0")
+        digest.update(config.read_bytes() if config.is_file() else b"")
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _tool_versions(env: Mapping[str, str], *, git: str) -> dict[str, str]:

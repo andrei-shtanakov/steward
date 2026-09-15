@@ -752,7 +752,7 @@ def test_run_all_writes_manifest_and_is_idempotent(tmp_path: Path) -> None:
     assert payload["finished"] == manifest.finished
     assert payload["kit"]["commit"] == kit.commit
     assert payload["kit"]["local_sh_sha256"] == "deadbeef"
-    assert set(payload["tools"]) == {"claude", "codex", "git"}
+    assert set(payload["tools"]) == {"claude", "codex", "git", "git_config_digest"}
     assert payload["variants"] == manifest.variants
     assert payload["cases"] == manifest.cases
 
@@ -1199,7 +1199,16 @@ def test_run_case_scrubs_git_env(tmp_path: Path) -> None:
     )
 
     text = record.read_text(encoding="utf-8")
-    assert "have:GIT_" not in text
+    inherited_git = [
+        line
+        for line in text.splitlines()
+        if line.startswith("have:GIT_")
+        and line not in ("have:GIT_CONFIG_GLOBAL", "have:GIT_CONFIG_SYSTEM")
+    ]
+    assert inherited_git == []
+    # Конфигурация git зафиксирована: глобальный и системный конфиги выключены.
+    assert "have:GIT_CONFIG_GLOBAL" in text
+    assert "have:GIT_CONFIG_SYSTEM" in text
     assert "have:REVIEW_KIT_DIR" in text  # наши переменные на месте
     assert "atxt:second" in text  # кит читал именно worktree кейса
 
@@ -2669,6 +2678,55 @@ def test_pin_git_aliases_an_explicit_binary_not_named_git(tmp_path: Path) -> Non
     assert env["PATH"].split(os.pathsep)[0] == str(Path(resolved).parent)
     version = subprocess.run([resolved, "--version"], capture_output=True, text=True, check=False)
     assert version.stdout.strip() == "git version 9.9.9-stub"
+
+
+def test_git_alias_never_writes_through_a_planted_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Подложенный каталог с симлинком `git` на чужой файл: обёртка не пишется
+    через ссылку (O_EXCL|O_NOFOLLOW), файл жертвы не тронут.
+    """
+    from steward.review_eval import runner as runner_module
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("important", encoding="utf-8")
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    (planted / "git").symlink_to(victim)
+    monkeypatch.setattr(runner_module.tempfile, "mkdtemp", lambda prefix="": str(planted))
+    gitdir = _stub_git_dir(tmp_path)
+    renamed = gitdir / "git-under-test"
+    (gitdir / "git").rename(renamed)
+    monkeypatch.setattr(runner_module, "_GIT_ALIASES", {})
+
+    with pytest.raises(RunnerError, match="обёртку git"):
+        pin_git(str(renamed), {"PATH": os.environ["PATH"]})
+
+    assert victim.read_text(encoding="utf-8") == "important"
+
+
+def test_resume_refuses_when_the_cache_git_config_changed(tmp_path: Path) -> None:
+    """Смена конфига кэша (`diff.context`) при той же версии git — дрейф: диф
+    ревьюера строился бы иначе под тем же манифестом.
+    """
+    case, out_dir, cache_root, kit, _counter, env_base = _env_run(tmp_path)
+    config = cache_root / "andrei-shtanakov" / "steward.git" / "config"
+    assert config.is_file()
+    subprocess.run(["git", "config", "-f", str(config), "diff.context", "7"], check=True)
+    before = (out_dir / "run.json").read_bytes()
+
+    with pytest.raises(RunnerError, match="git_config_digest"):
+        run_all(
+            [case],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=2,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+        )
+
+    assert (out_dir / "run.json").read_bytes() == before
 
 
 def test_full_rerun_works_with_a_relative_out_dir(
