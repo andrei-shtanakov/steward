@@ -40,6 +40,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -497,6 +498,7 @@ def run_case(
     """
     label = variant_label(variant)
     _require_safe_local_args(case)
+    out_dir = Path(os.path.abspath(out_dir))
     git, env_base = pin_git(git, env_base)
     # Собственные git-вызовы раннера идут без `GIT_*` окружения процесса:
     # унаследованный `GIT_DIR` увёл бы их в чужое репо (см. `scrubbed_git_env`).
@@ -834,6 +836,9 @@ def run_all(
         raise RunnerError(f"jobs must be >= 1, got {jobs}")
     for case in cases:
         _require_safe_local_args(case)
+    # Относительный `--out` (документированный `eval/runs/<id>`) сравнивался бы
+    # с абсолютными целями сброса лексически и делал все результаты «остатком».
+    out_dir = Path(os.path.abspath(out_dir))
     git, env_base = pin_git(git, env_base)
     git_env = scrubbed_git_env(env_base)
     _require_objects(cases, cache_root, git=git, env=git_env)
@@ -1102,6 +1107,7 @@ def load_results(out_dir: Path) -> list[RunResult]:
     вовсе — сверять не с чем, читаем как есть (сам этот случай ловит
     `run_all`).
     """
+    out_dir = Path(os.path.abspath(out_dir))
     cases_dir = out_dir / "cases"
     manifest = _previous_manifest(out_dir)
     results: list[RunResult] = []
@@ -1642,6 +1648,10 @@ def pin_git(git: str, env_base: Mapping[str, str] | None) -> tuple[str, dict[str
         resolved = os.path.abspath(git)
         if not os.access(resolved, os.X_OK):
             raise RunnerError(f"--git {git}: бинарь не найден или не исполняем")
+        if os.path.basename(resolved) != "git":
+            # Кит зовёт голое `git`: бинарь с другим именем в его PATH не найдётся.
+            # Обёртка `git` в отдельном каталоге делает его видимым под нужным именем.
+            resolved = _git_alias(resolved)
     else:
         found = shutil.which(git, path=source.get("PATH"))
         if found is None:
@@ -1653,6 +1663,24 @@ def pin_git(git: str, env_base: Mapping[str, str] | None) -> tuple[str, dict[str
     if path.split(os.pathsep)[0] != gitdir:
         env["PATH"] = gitdir + (os.pathsep + path if path else "")
     return resolved, env
+
+
+def _git_alias(binary: str) -> str:
+    """Обёртка с именем `git`, исполняющая `binary`: кит найдёт её по имени в PATH.
+
+    Каталог — временный на процесс (по пути бинаря он детерминирован, чтобы
+    повторные вызовы не плодили обёрток); символические ссылки не используются —
+    внутри каталога прогона они запрещены, а здесь просто не нужны.
+    """
+    digest = hashlib.sha256(binary.encode("utf-8")).hexdigest()[:16]
+    alias_dir = Path(tempfile.gettempdir()) / f"review-eval-git-{digest}"
+    alias_dir.mkdir(mode=0o700, exist_ok=True)
+    alias = alias_dir / "git"
+    body = f'#!/bin/sh\nexec "{binary}" "$@"\n'
+    if not alias.exists() or alias.read_text(encoding="utf-8") != body:
+        alias.write_text(body, encoding="utf-8")
+        alias.chmod(0o700)
+    return str(alias)
 
 
 def scrubbed_git_env(env_base: Mapping[str, str] | None) -> dict[str, str]:
@@ -1945,6 +1973,23 @@ def _previous_manifest(out_dir: Path) -> dict[str, object] | None:
                 f"{path}: манифест повреждён — поле '{field}' пусто; прогон без состава "
                 "не объявляет ни одного результата (новый --out или восстановите run.json)"
             )
+    for field in ("repetitions", "jobs"):
+        if isinstance(payload.get(field), int) and payload[field] < 1:
+            raise RunnerError(
+                f"{path}: манифест повреждён — {field} < 1; завершённый прогон объявляет "
+                "хотя бы одну тройку (новый --out или восстановите run.json)"
+            )
+    variants = payload["variants"]
+    if not all(
+        isinstance(record, Mapping) and isinstance(record.get("label"), str) and record["label"]
+        for record in variants
+    ):
+        # Негодный элемент молча отфильтровывался, список меток пустел, и проверка
+        # полноты отключалась — пустой каталог читался как завершённый прогон.
+        raise RunnerError(
+            f"{path}: манифест повреждён — элемент variants без строковой label; "
+            "результаты без объявления не читаются (новый --out или восстановите run.json)"
+        )
     return payload
 
 

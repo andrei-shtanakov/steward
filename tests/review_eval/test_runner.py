@@ -31,6 +31,7 @@ from steward.review_eval.runner import (
     classify,
     kit_under_test,
     load_results,
+    pin_git,
     parse_variant,
     provider_env_fingerprint,
     run_all,
@@ -2651,6 +2652,91 @@ def test_explicit_git_binary_is_the_one_the_kit_sees(tmp_path: Path) -> None:
 
     assert manifest.tools["git"] == "git version 9.9.9-stub"
     assert f"gitbin:{gitdir / 'git'}" in record.read_text(encoding="utf-8")
+
+
+def test_pin_git_aliases_an_explicit_binary_not_named_git(tmp_path: Path) -> None:
+    """`git=/opt/tools/git-under-test` кит зовёт как голое `git`: в PATH встаёт
+    обёртка с именем `git`, исполняющая ровно этот бинарь.
+    """
+    gitdir = _stub_git_dir(tmp_path)
+    renamed = gitdir / "git-under-test"
+    (gitdir / "git").rename(renamed)
+
+    resolved, env = pin_git(str(renamed), {"PATH": os.environ["PATH"]})
+
+    assert Path(resolved).name == "git"
+    assert str(renamed) in Path(resolved).read_text(encoding="utf-8")
+    assert env["PATH"].split(os.pathsep)[0] == str(Path(resolved).parent)
+    version = subprocess.run([resolved, "--version"], capture_output=True, text=True, check=False)
+    assert version.stdout.strip() == "git version 9.9.9-stub"
+
+
+def test_full_rerun_works_with_a_relative_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Документированный относительный `--out eval/runs/<id>` и полный `--rerun`
+    с новым китом: результаты не считаются «остатком» из-за формы пути.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    env = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    case = _make_case(base_sha=first, head_sha=second)
+    variants = [Variant("claude", "claude-opus-5", None)]
+    monkeypatch.chdir(tmp_path)
+    out_dir = Path("runs") / "R"
+
+    run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+    )
+    manifest = run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=_other_kit(kit),
+        cache_root=cache_root,
+        env_base=env,
+        rerun=True,
+    )
+
+    assert manifest.finished
+    assert [item.outcome for item in load_results(out_dir)] == ["verdict"]
+
+
+def test_load_results_refuses_a_manifest_with_zero_repetitions(tmp_path: Path) -> None:
+    """`repetitions: 0` при `finished` — не «пустой завершённый прогон», а порча."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["repetitions"] = 0
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="манифест.*repetitions"):
+        load_results(out_dir)
+
+
+@pytest.mark.parametrize("bad", [["corrupt"], [{"harness": "claude"}], [{"label": 7}]])
+def test_load_results_refuses_a_manifest_with_a_corrupt_variant(
+    tmp_path: Path, bad: list[object]
+) -> None:
+    """Элемент `variants` без строковой `label` — повреждённый манифест, а не
+    «вариантов нет»: иначе проверка полноты отключалась бы молча.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    run_json = out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["variants"] = bad
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="манифест.*variants"):
+        load_results(out_dir)
 
 
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
