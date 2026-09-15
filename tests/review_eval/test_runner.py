@@ -1983,6 +1983,147 @@ def test_load_results_refuses_a_result_of_an_unknown_variant(tmp_path: Path) -> 
         load_results(resume.out_dir)
 
 
+def test_run_case_refuses_a_symlinked_sidecar(tmp_path: Path) -> None:
+    """Симлинк на месте `verdict.json` уводит удаление и запись за пределы прогона.
+
+    Путь sidecar-а резолвился **до** удаления, поэтому `unlink` уносил цель
+    ссылки, а кит потом писал вердикт туда же: прогон правил файл вне `--out`.
+    Симлинка в каталоге тройки не бывает законной — раннер создаёт там только
+    настоящие файлы.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    external = tmp_path / "external.json"
+    external.write_text("не наше", encoding="utf-8")
+    rep_dir = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1"
+    rep_dir.mkdir(parents=True)
+    (rep_dir / "verdict.json").symlink_to(external)
+    record = tmp_path / "record.txt"
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        run_case(
+            _make_case(base_sha=first, head_sha=second),
+            Variant("claude", "claude-opus-5", None),
+            1,
+            kit=kit,
+            out_dir=out_dir,
+            cache_root=cache_root,
+            env_base=_env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT),
+        )
+
+    assert external.read_text(encoding="utf-8") == "не наше"
+    assert not record.exists(), "кит не должен был запускаться"
+
+
+def test_run_all_refuses_partial_rerun_without_a_manifest(tmp_path: Path) -> None:
+    """Без манифеста `--rerun` допустим только по всему каталогу.
+
+    Провенанс результатов неизвестен, поэтому переизмерить часть и записать
+    свой `run.json` значит выдать чужие результаты за свои. Прежде отказ стоял
+    под `if not rerun`, и частичный `--rerun` проходил.
+    """
+    cases, out_dir, cache_root, kit, counter, digest, env_base = _two_case_run(tmp_path)
+    (out_dir / "run.json").unlink()
+    kept = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
+    mine = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1" / "result.json"
+    before = (kept.read_bytes(), mine.read_bytes())
+
+    with pytest.raises(RunnerError, match="результаты без манифеста"):
+        run_all(
+            [cases[0]],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=digest,
+            rerun=True,
+        )
+
+    assert (kept.read_bytes(), mine.read_bytes()) == before
+    assert _calls(counter) == 2
+
+
+def test_run_all_rerun_of_everything_recovers_a_dir_without_a_manifest(
+    tmp_path: Path,
+) -> None:
+    """`--rerun` по всем кейсам и вариантам восстанавливает каталог без манифеста."""
+    cases, out_dir, cache_root, kit, counter, digest, env_base = _two_case_run(tmp_path)
+    (out_dir / "run.json").unlink()
+
+    manifest = run_all(
+        cases,
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env_base,
+        corpus_digest_override=digest,
+        rerun=True,
+    )
+
+    assert manifest.cases == ["steward-155", "steward-157"]
+    assert _calls(counter) == 4
+
+
+def test_load_results_refuses_a_path_that_disagrees_with_the_payload(
+    tmp_path: Path,
+) -> None:
+    """Путь — тоже утверждение о прогоне, и оно обязано совпасть с содержимым.
+
+    `load_results` верил только полям `result.json`, поэтому файл, положенный
+    в каталог чужого кейса, читался по своему содержимому: тройка, которую
+    объявляет дерево каталогов, и тройка внутри файла расходились молча.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    source = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1" / "result.json"
+    alien = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
+    alien.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="путь не совпадает") as excinfo:
+        load_results(out_dir)
+
+    assert "steward-157" in str(excinfo.value)
+
+
+def test_load_results_refuses_a_duplicate_of_a_result(tmp_path: Path) -> None:
+    """Копия результата под другим именем каталога — отказ, а не вторая тройка."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    source = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1" / "result.json"
+    copy_dir = source.parent.parent / "copy"
+    copy_dir.mkdir()
+    (copy_dir / "result.json").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="путь не совпадает"):
+        load_results(out_dir)
+
+
+def test_run_all_refuses_resume_when_a_tool_version_changed(tmp_path: Path) -> None:
+    """Версия инструмента — часть провенанса: доливка после обновления запрещена.
+
+    `run.json` называет версии `claude`/`codex`/`git` — одну на прогон. Прежде
+    они не сравнивались («обстоятельство прогона»), и половина результатов
+    оказывалась от прежней версии CLI, а манифест — от новой.
+    """
+    resume = _resume_fixture(tmp_path)
+    run_json = resume.out_dir / "run.json"
+    payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload["tools"]["claude"] = "claude 0.0.1-ancient"
+    run_json.write_text(json.dumps(payload), encoding="utf-8")
+    before = run_json.read_bytes()
+
+    with pytest.raises(RunnerError, match="tools.claude") as excinfo:
+        resume.again()
+
+    assert "0.0.1-ancient" in str(excinfo.value)
+    assert run_json.read_bytes() == before
+    assert resume.calls() == 1
+
+
 def test_load_results_empty_run_dir(tmp_path: Path) -> None:
     assert load_results(tmp_path / "empty") == []
 

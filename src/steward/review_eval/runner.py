@@ -417,16 +417,20 @@ def run_case(
             "(run is offline)"
         )
 
-    rep_dir = _require_inside(
-        out_dir,
-        out_dir / "cases" / case.case_id / label / str(rep),
-        what=f"{case.case_id}/{label}/{rep}",
+    triple = f"{case.case_id}/{label}/{rep}"
+    rep_dir = _require_run_path(
+        out_dir, out_dir / "cases" / case.case_id / label / str(rep), what=triple
     )
     rep_dir.mkdir(parents=True, exist_ok=True)
-    verdict_out = (rep_dir / "verdict.json").resolve()
-    usage_out = (rep_dir / "usage.json").resolve()
-    stdout_file = rep_dir / "stdout.txt"
-    stderr_file = rep_dir / "stderr.txt"
+    # `resolve()` у листа артефакта был дырой: симлинк, положенный на место
+    # `verdict.json`, резолвился в свою цель — `_unlink` уносил **её**, а кит
+    # потом писал вердикт туда же, за пределы прогона. `rep_dir` уже абсолютен
+    # и проверен на симлинки, поэтому лист достаточно присоединить и проверить.
+    verdict_out = _require_artifact(rep_dir, "verdict.json", what=triple)
+    usage_out = _require_artifact(rep_dir, "usage.json", what=triple)
+    stdout_file = _require_artifact(rep_dir, "stdout.txt", what=triple)
+    stderr_file = _require_artifact(rep_dir, "stderr.txt", what=triple)
+    result_file = _require_artifact(rep_dir, "result.json", what=triple)
     # Sidecar-ы прошлого прогона этой тройки — не факты нового: кит их тоже
     # инвалидирует, но раннер не вправе зависеть от этого при `--rerun`.
     _unlink(verdict_out)
@@ -481,7 +485,7 @@ def run_case(
                     stderr_path=_relative(stderr_file, out_dir),
                     unexpected=EMPTY_RANGE_OUTCOME != case.expected_outcome,
                 )
-                _write_json(rep_dir / "result.json", dataclasses.asdict(result))
+                _write_json(result_file, dataclasses.asdict(result))
                 return result
             try:
                 completed = subprocess.run(
@@ -524,7 +528,7 @@ def run_case(
                 stderr_path=_relative(stderr_file, out_dir),
                 unexpected=outcome != case.expected_outcome,
             )
-            _write_json(rep_dir / "result.json", dataclasses.asdict(result))
+            _write_json(result_file, dataclasses.asdict(result))
     except CacheError as error:
         if result is None:
             raise RunnerError(
@@ -536,7 +540,7 @@ def run_case(
         raise RunnerError(f"{case.case_id}: run produced no result")
     if teardown_error is not None:
         result = dataclasses.replace(result, teardown_error=teardown_error)
-        _write_json(rep_dir / "result.json", dataclasses.asdict(result))
+        _write_json(result_file, dataclasses.asdict(result))
     return result
 
 
@@ -628,6 +632,12 @@ def run_all(
     выбранных, — и метрики публиковали такой прогон как `ok`. Число повторений
     описывает прогон целиком.
 
+    **Результаты без манифеста — отказ,** и `--rerun` спасает только целиком:
+    он допустим лишь когда сброс накрывает **все** существующие результаты
+    (после него в каталоге не осталось бы ничего чужого). Частичный перезапуск
+    переизмерил бы часть, а `run.json` объявил бы своими и остальные — чужие
+    результаты получили бы чужой провенанс.
+
     **Результаты без манифеста — отказ.** Если в каталоге есть `result.json`, а
     `run.json` отсутствует или не читается, провенанс этих результатов
     неизвестен: прежде отсутствующий манифест читался как «каталог пуст», и
@@ -699,7 +709,9 @@ def run_all(
             "повторения появятся лишь у части кейсов, а манифест объявит их у всех"
         )
     run_id = _resolve_run_id(out_dir, previous, labels, digest)
-    drift = _provenance_drift(previous, kit_payload, digest, variant_records, env_names, case_ids)
+    drift = _provenance_drift(
+        previous, kit_payload, digest, variant_records, env_names, case_ids, tools
+    )
     if drift and not rerun:
         raise RunnerError(
             f"{out_dir / 'run.json'}: доливка невозможна — провенанс прогона "
@@ -712,18 +724,26 @@ def run_all(
         # проверки остатка, и команда, завершившаяся отказом, успевала
         # уничтожить оплаченные результаты.
         targets = _reset_targets(out_dir, cases, variants, repetitions)
-        if drift:
-            leftover = [
-                path
-                for path in _remaining_results(out_dir)
-                if not any(path.is_relative_to(target) for target in targets)
-            ]
-            if leftover:
-                raise RunnerError(
-                    f"{out_dir}: провенанс разошёлся ({', '.join(drift)}), а в каталоге "
-                    f"остались результаты прошлого прогона ({len(leftover)}) вне текущей "
-                    "выборки — начните прогон в другом --out, чтобы не смешивать"
-                )
+        leftover = [
+            path
+            for path in _remaining_results(out_dir)
+            if not any(path.is_relative_to(target) for target in targets)
+        ]
+        if previous is None and leftover:
+            # Провенанс остающихся результатов неизвестен: записать свой
+            # `run.json` значит выдать чужие результаты за свои. Частичный
+            # `--rerun` тут проходил, потому что отказ стоял под `if not rerun`.
+            raise RunnerError(
+                f"{out_dir}: результаты без манифеста: перезапуск только всего "
+                f"каталога — --cases со всеми кейсами и всеми вариантами, или новый "
+                f"--out (вне выборки осталось бы {len(leftover)})"
+            )
+        if drift and leftover:
+            raise RunnerError(
+                f"{out_dir}: провенанс разошёлся ({', '.join(drift)}), а в каталоге "
+                f"остались результаты прошлого прогона ({len(leftover)}) вне текущей "
+                "выборки — начните прогон в другом --out, чтобы не смешивать"
+            )
         _reset_results(
             out_dir,
             targets,
@@ -828,6 +848,11 @@ def load_results(out_dir: Path) -> list[RunResult]:
     от обхода файловой системы. Битый или неполный `result.json` — `RunnerError`
     с именем файла: молча потерять исход прогона нельзя.
 
+    **Путь сверяется с содержимым** (`_require_path_matches_payload`), и каждая
+    тройка обязана встретиться ровно один раз (`_require_unique`): артефакт
+    называет тройку дважды — деревом каталогов и полями внутри, — и оба
+    утверждения должны совпадать.
+
     **Результат вне манифеста — тоже `RunnerError`.** Каталог прогона может
     нести остаток прогона с другим `repetitions`, другим набором вариантов или
     другими кейсами. Тихо включить такой результат в метрики нельзя (числа
@@ -840,12 +865,52 @@ def load_results(out_dir: Path) -> list[RunResult]:
     cases_dir = out_dir / "cases"
     manifest = _previous_manifest(out_dir)
     results: list[RunResult] = []
+    seen: dict[tuple[str, str, int], Path] = {}
     for path in sorted(cases_dir.glob("*/*/*/result.json")):
         result = _result_from_file(path)
+        _require_path_matches_payload(result, path, cases_dir=cases_dir)
+        _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
         results.append(result)
     _require_complete(results, manifest, out_dir=out_dir)
     return sorted(results, key=lambda item: (item.case_id, item.variant, item.repetition_id))
+
+
+def _require_path_matches_payload(result: RunResult, path: Path, *, cases_dir: Path) -> None:
+    """Путь обязан утверждать ту же тройку, что и содержимое файла.
+
+    Артефакт называет тройку дважды: деревом каталогов
+    (`cases/<case_id>/<variant>/<rep>/result.json`) и полями внутри. Прежде
+    читались только поля, поэтому файл, положенный в каталог чужого кейса,
+    входил в прогон по своему содержимому — и два утверждения о том, что
+    измерено, расходились молча. Расхождение — `RunnerError`: чинить надо
+    каталог, а не выбирать, какому из двух верить.
+    """
+    case_dir, variant_dir, rep_dir = path.relative_to(cases_dir).parts[:3]
+    rep = int(rep_dir) if rep_dir.isdigit() and not rep_dir.startswith("0") else None
+    if (case_dir, variant_dir, rep) != (result.case_id, result.variant, result.repetition_id):
+        raise RunnerError(
+            f"{path}: путь не совпадает с содержимым result.json — "
+            f"по пути {case_dir}/{variant_dir}/{rep_dir}, в файле "
+            f"{result.case_id}/{result.variant}/{result.repetition_id}"
+        )
+
+
+def _require_unique(result: RunResult, path: Path, seen: dict[tuple[str, str, int], Path]) -> None:
+    """Каждая тройка встречается ровно один раз.
+
+    Копия результата под другим именем каталога удвоила бы прогон в
+    знаменателях, а какая из двух копий «настоящая» — вопрос без ответа.
+    Сообщение называет **оба** пути: выбирать за оператора нечего.
+    """
+    key = (result.case_id, result.variant, result.repetition_id)
+    first = seen.get(key)
+    if first is not None:
+        raise RunnerError(
+            f"{path}: тройка {result.case_id}/{result.variant}/{result.repetition_id} "
+            f"встречается дважды — она же в {first}; уберите лишнюю копию"
+        )
+    seen[key] = path
 
 
 def _require_complete(
@@ -935,14 +1000,20 @@ def _provenance_drift(
     variants: Sequence[Mapping[str, str | None]],
     env_names: Sequence[str],
     case_ids: Sequence[str],
+    tools: Mapping[str, str],
 ) -> list[str]:
     """Поля, в которых прежний `run.json` расходится с текущим прогоном.
 
     Сравнивается то, что отвечает на вопрос **что измерено**: кит (commit и
-    каждый дайджест), корпус, матчер, набор вариантов, **набор кейсов** и
-    **набор имён provider-переменных**. `tools`, `jobs`, `repetitions`
-    намеренно не сравниваются: версия git на машине или добавленное повторение
-    доливку ломать не должны.
+    каждый дайджест), корпус, матчер, набор вариантов, набор кейсов, набор
+    имён provider-переменных и **версии инструментов** (`tools`). `jobs` и
+    `repetitions` не сравниваются: это объём работы, а не её объект.
+
+    `tools` попали сюда не как «обстоятельство»: версия `claude`/`codex` — это
+    и есть измеряемый ревьюер снаружи кита, а версия `git` определяет диф.
+    Доливка после обновления CLI давала половину результатов от прежней версии
+    под манифестом от новой. Обновили инструмент — новый `--out` либо полный
+    `--rerun`.
 
     Набор кейсов сравнивается на **вхождение**, а не на равенство: выборка
     внутри списка манифеста законна (`--cases <подмножество>` — штатный
@@ -970,6 +1041,12 @@ def _provenance_drift(
     for key in sorted(set(kit) | set(stored_kit)):
         if stored_kit.get(key) != kit.get(key):
             drift.append(f"kit.{key}")
+    stored_tools = previous.get("tools")
+    stored_tools = stored_tools if isinstance(stored_tools, Mapping) else {}
+    for name in sorted(set(tools) | set(stored_tools)):
+        was, now = stored_tools.get(name), tools.get(name)
+        if was != now:
+            drift.append(f"tools.{name} (было: {was}; стало: {now})")
     if previous.get("corpus_digest") != digest:
         drift.append("corpus_digest")
     if previous.get("matcher_version") != MATCHER_VERSION:
@@ -1132,8 +1209,37 @@ def _result_from_file(path: Path) -> RunResult:
 
 
 def _unlink(path: Path) -> None:
-    """Удалить файл, если он есть (остаток прошлого прогона этой тройки)."""
+    """Удалить файл, если он есть (остаток прошлого прогона этой тройки).
+
+    Симлинк не удаляется, а отвергается: путь вида «ссылка наружу» на месте
+    артефакта — не остаток прошлого прогона, а подмена, и `unlink` по нему
+    унёс бы чужой файл. Вторая линия обороны к `_require_artifact`: она
+    проверяет лист перед созданием, эта — перед удалением.
+    """
+    if path.is_symlink():
+        raise RunnerError(
+            f"{path}: символическая ссылка на месте артефакта прогона — "
+            "раннер такие пути не создаёт и удалять по ним отказывается"
+        )
     path.unlink(missing_ok=True)
+
+
+def _require_artifact(rep_dir: Path, name: Path | str, *, what: str) -> Path:
+    """Путь артефакта внутри каталога тройки; симлинк — `RunnerError`.
+
+    `rep_dir` уже проверен `_require_run_path` (внутри `--out`, без симлинков
+    по всему участку), поэтому остаётся сам лист: `verdict.json` и остальные
+    файлы раннер создаёт сам, и ссылка на их месте означает подмену.
+    Отказ — **до** удаления и записи: путь, уводящий наружу, нельзя «почти
+    создать».
+    """
+    path = rep_dir / name
+    if path.is_symlink():
+        raise RunnerError(
+            f"{what}: {path} — символическая ссылка на месте артефакта прогона; "
+            "раннер такие пути не создаёт и писать по ним отказывается"
+        )
+    return path
 
 
 def _run_env(
@@ -1276,6 +1382,15 @@ def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2)
     tmp = path.with_name(f".{path.name}.tmp")
+    # Оба пути — и цель, и временный файл рядом — обязаны быть настоящими
+    # файлами: `write_text` по симлинку пишет в его цель, а `os.replace`
+    # заменил бы саму ссылку, оставив цель испорченной.
+    for candidate in (path, tmp):
+        if candidate.is_symlink():
+            raise RunnerError(
+                f"{candidate}: символическая ссылка на месте файла прогона — "
+                "раннер такие пути не создаёт и писать по ним отказывается"
+            )
     tmp.write_text(text + "\n", encoding="utf-8")
     os.replace(tmp, path)
 

@@ -169,6 +169,9 @@ def is_structural_verdict(payload: object) -> bool:
     `verdict`, а метрики — вправе ли они читать такой sidecar. Разойдись они,
     прогон, объявленный вердиктом, метрики читали бы по своему правилу и молча
     выбрасывали часть находок.
+
+    **Лишние ключи допустимы** — см. `is_schema_valid_finding` про то, чьё
+    именно решение зеркалит этот модуль.
     """
     if not isinstance(payload, Mapping):
         return False
@@ -191,6 +194,11 @@ def is_schema_valid_verdict(payload: object) -> bool:
 
     Раздельно `is_structural_verdict` нужен там, где вопрос именно «это вообще
     вердикт» (чтение sidecar-а прогона с любым исходом).
+
+    «Схемно годен» здесь и ниже значит **«то, что принимает
+    `apply-threshold.sh`»**, а не «то, что разрешает `review-schema.json`»:
+    решение выносит скрипт, и зеркало обязано совпадать с ним, а не с файлом
+    схемы (см. `is_schema_valid_finding`).
     """
     if not is_structural_verdict(payload):
         return False
@@ -216,8 +224,19 @@ def is_schema_valid_finding(finding: Mapping[str, object]) -> bool:
     объектов со строковыми ``file``/``reason`` и целым ``line`` ≥ 0.
 
     Чего здесь нет: проверки ``note`` и типа ``findings`` — они уровня
-    вердикта, а не находки, и живут у вызывающего (`metrics._findings`,
-    `runner._verdict_is_structural`).
+    вердикта, а не находки, и живут у вызывающего (`is_structural_verdict`).
+
+    **Лишние ключи не проверяются — и не должны.** Файл схемы
+    (`.github/codex/review-schema.json`) запрещает `additionalProperties`, но
+    решение выносит **не он**: jq-проверка в `apply-threshold.sh` смотрит
+    только на известные поля, и вердикт с лишним ключом для гейта — обычный
+    вердикт (код 0/1). Зеркало обязано совпадать с гейтом: ужесточи его по
+    файлу схемы — и прогон, который в проде считается измеренным, уходил бы в
+    `invalid_verdict`, то есть выпадал из метрик качества.
+    `additionalProperties` обеспечивает structured output провайдера на этапе
+    генерации, а не гейт при проверке. Контрактный тест
+    (`test_contract_extra_keys_are_accepted_by_the_gate`) держит это
+    утверждение на настоящем скрипте.
     """
     if not isinstance(finding, Mapping):
         return False
