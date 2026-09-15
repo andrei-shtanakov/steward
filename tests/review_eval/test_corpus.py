@@ -1353,8 +1353,12 @@ def test_append_registry_refuses_to_retire_everything_on_an_empty_corpus(
     before = registry_path(corpus_dir).read_text(encoding="utf-8")
 
     for retire in (True, False):
-        with pytest.raises(CorpusError, match="корпус пуст"):
+        with pytest.raises(CorpusError, match="корпус пуст") as excinfo:
             append_registry([], corpus_dir, retire_deleted=retire)
+        # Совет в отказе обязан быть выполнимым: удаление файла сторож истории
+        # отвергает, поэтому предлагается ручное надгробие, а не удаление.
+        assert "deleted" in str(excinfo.value)
+        assert "удалите реестр" not in str(excinfo.value)
 
     assert registry_path(corpus_dir).read_text(encoding="utf-8") == before
 

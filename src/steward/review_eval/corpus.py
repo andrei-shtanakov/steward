@@ -594,7 +594,8 @@ def append_registry(
     if not present and live:
         raise CorpusError(
             f"корпус пуст, а реестр — нет: списание всех id запрещено "
-            f"(укажите каталог корпуса или удалите реестр явно); "
+            f"(укажите каталог корпуса; последние живые id списываются вручную — "
+            f"допишите строки '<id> deleted' под ревью PR, файл не удалять); "
             f"живых id в {registry_path(directory)}: {len(live)}"
         )
     retiring = [entry_id for entry_id in live if entry_id not in present]
