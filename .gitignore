@@ -27,3 +27,8 @@ build/
 
 # SDD-рабочая директория (леджер, брифы, пакеты ревью) — локальный скрэтч
 .superpowers/
+
+# review-eval: прогоны и материализованный git-кэш — не корпус, не в git
+# (design §4/§10: eval/corpus/ остаётся в git, eval/runs/ и eval/cache/ — нет)
+eval/runs/
+eval/cache/
