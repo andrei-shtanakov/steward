@@ -435,6 +435,31 @@ def test_usage_out_directory_is_config_error(tmp_path: Path) -> None:
     assert not s.argv.exists()  # claude не вызван
 
 
+def test_usage_out_stale_file_removed_when_claude_missing(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): наличие sidecar-файла
+    обязано означать результат ИМЕННО этого прогона (контракт eval), и это
+    верно даже когда адаптер обрывается раньше на отсутствующем бинаре —
+    инвалидация REVIEW_USAGE_OUT стоит впереди префлайтов claude/jq, а не
+    после них."""
+    s = Stand(tmp_path)
+    out_dir = tmp_path / "side"
+    out_dir.mkdir()
+    stale = out_dir / "usage.json"
+    stale.write_text('{"stale": true}', encoding="utf-8")
+    # PATH несёт jq и обычные coreutils (rm/mkdir/mktemp/dirname нужны самому
+    # REVIEW_USAGE_OUT-префлайту, который теперь идёт ДО проверки claude), но
+    # НЕ несёт `s.bin` — каталог подставного claude.
+    jq_dir = Path(shutil.which("jq") or "").parent
+    res = s.run(
+        *s.codex_args(),
+        path=f"{jq_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        extra_env={"REVIEW_USAGE_OUT": str(stale)},
+    )
+    assert res.returncode == 2, res.stderr
+    assert "claude не найден в PATH" in res.stderr
+    assert not stale.exists()
+
+
 def test_usage_out_unwritable_dir_fails_before_claude(tmp_path: Path) -> None:
     """Важное #2: валидация REVIEW_USAGE_OUT — целиком в префлайте, ДО
     платного вызова claude. Неписуемый каталог ловится на `mktemp` временного

@@ -2102,6 +2102,38 @@ def test_verdict_out_directory_is_config_error(tmp_path: Path) -> None:
     assert list(tmp_path.glob(".verdict.*")) == []
 
 
+def test_verdict_out_stale_file_removed_on_reviewer_failure(tmp_path: Path) -> None:
+    """Гейт финального ревью этой ветки (major): провал ревьюера (код 3)
+    выходит ДО копирующего блока, и без явной инвалидации файл прошлого
+    успешного прогона остался бы на месте — eval читает наличие sidecar как
+    `reviewer_ran: true` и принял бы устаревший вердикт за результат текущего
+    провала."""
+    repo = make_repo_with_diff(tmp_path)
+    out = tmp_path / "verdict.json"
+    out.write_text('{"findings":[],"note":"stale"}', encoding="utf-8")
+    stub = make_stub(tmp_path, STUB_BROKEN)
+    res = run_local(repo, stub, env_overrides={"REVIEW_VERDICT_OUT": str(out)})
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert not out.exists()
+
+
+def test_usage_out_empty_is_config_error_on_codex_path(tmp_path: Path) -> None:
+    """Minor: README обещает код 2 на пустой REVIEW_USAGE_OUT независимо от
+    харнесса, но только адаптер claude её проверял — на codex-пути (умолчание)
+    переменная раньше вообще не читалась local.sh."""
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, "--print-review-cmd", env={"REVIEW_USAGE_OUT": ""})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "REVIEW_USAGE_OUT" in res.stderr
+
+
+def test_usage_out_directory_is_config_error_on_codex_path(tmp_path: Path) -> None:
+    repo = make_repo_with_diff(tmp_path)
+    res = run_local_env(repo, env={"REVIEW_USAGE_OUT": str(tmp_path)})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "каталог" in res.stderr
+
+
 def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
     repo = make_repo_with_diff(tmp_path)
     assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})
