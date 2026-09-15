@@ -499,7 +499,7 @@ def run_case(
     """
     label = variant_label(variant)
     _require_safe_local_args(case)
-    out_dir = Path(os.path.abspath(out_dir))
+    out_dir = Path(os.path.abspath(out_dir)).resolve()
     git, env_base = pin_git(git, env_base)
     # Собственные git-вызовы раннера идут без `GIT_*` окружения процесса:
     # унаследованный `GIT_DIR` увёл бы их в чужое репо (см. `scrubbed_git_env`).
@@ -609,6 +609,8 @@ def run_case(
                     env=dict(env),
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",  # байт вне UTF-8 в выводе кита не роняет оплаченный прогон
                     check=False,
                 )
             except OSError as error:
@@ -844,7 +846,7 @@ def run_all(
         _require_safe_local_args(case)
     # Относительный `--out` (документированный `eval/runs/<id>`) сравнивался бы
     # с абсолютными целями сброса лексически и делал все результаты «остатком».
-    out_dir = Path(os.path.abspath(out_dir))
+    out_dir = Path(os.path.abspath(out_dir)).resolve()
     git, env_base = pin_git(git, env_base)
     git_env = scrubbed_git_env(env_base)
     _require_objects(cases, cache_root, git=git, env=git_env)
@@ -904,12 +906,10 @@ def run_all(
     # набором оказалась бы «выходом за манифест», а результаты кейсов вне
     # выборки — «необъявленными» для `load_results`.
     manifest_cases = _manifest_cases(previous) or case_ids
-    if (
-        isinstance(stored_reps, int)
-        and repetitions != stored_reps
-        and set(case_ids) != set(manifest_cases)
-    ):
-        missing = sorted(set(manifest_cases) - set(case_ids))
+    missing = sorted(set(manifest_cases) - set(case_ids))
+    if isinstance(stored_reps, int) and repetitions != stored_reps and missing:
+        # Отказ только когда кейсы манифеста **не запрошены**: надмножество с
+        # полным сбросом — законный путь (дрейф и сброс разбираются ниже).
         raise RunnerError(
             f"{out_dir / 'run.json'}: менять repetitions ({stored_reps} → "
             f"{repetitions}) можно только запросом по полному набору кейсов "
@@ -1127,7 +1127,7 @@ def load_results(out_dir: Path) -> list[RunResult]:
     вовсе — сверять не с чем, читаем как есть (сам этот случай ловит
     `run_all`).
     """
-    out_dir = Path(os.path.abspath(out_dir))
+    out_dir = Path(os.path.abspath(out_dir)).resolve()
     cases_dir = out_dir / "cases"
     manifest = _previous_manifest(out_dir)
     results: list[RunResult] = []
