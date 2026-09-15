@@ -902,6 +902,7 @@ def run_all(
             [case.repo for case in cases],
             cache_root=cache_root,
             git=git,
+            env=git_env,
         )
     started = utc_now() if rerun else (_previous_string(previous, "started") or utc_now())
 
@@ -1360,6 +1361,7 @@ def _reset_results(
     *,
     cache_root: Path,
     git: str,
+    env: Mapping[str, str],
 ) -> None:
     """`--rerun`: снести посчитанные `_reset_targets` каталоги и `scratch/`.
 
@@ -1373,21 +1375,30 @@ def _reset_results(
     `worktree add` упрётся в прежнюю регистрацию (тот же контракт, что у
     `_clear_scratch`).
     """
-    for target in targets:
-        shutil.rmtree(target, ignore_errors=True)
     scratch = _require_inside(out_dir, out_dir / "scratch", what="--rerun scratch")
-    if not scratch.exists():
-        return
-    shutil.rmtree(scratch, ignore_errors=True)
+    if scratch.exists():
+        shutil.rmtree(scratch, ignore_errors=True)
+    # prune — **до** удаления результатов и с вычищенным окружением: с
+    # унаследованным `GIT_DIR` он молча падал, регистрация worktree оставалась,
+    # и следующий `worktree add` отказывал уже после потери оплаченного результата.
     for repo in dict.fromkeys(repos):
         cache = repo_cache_dir(cache_root, repo)
-        if cache.exists():
-            subprocess.run(
-                [git, "-C", str(cache), "worktree", "prune"],
-                capture_output=True,
-                text=True,
-                check=False,
+        if not cache.exists():
+            continue
+        pruned = subprocess.run(
+            [git, "-C", str(cache), "worktree", "prune"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=dict(env),
+        )
+        if pruned.returncode != 0:
+            raise RunnerError(
+                f"{cache}: worktree prune не удался (код {pruned.returncode}): "
+                f"{pruned.stderr.strip()} — результаты не тронуты"
             )
+    for target in targets:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def _remaining_results(out_dir: Path) -> list[Path]:
@@ -1833,6 +1844,7 @@ def _head_commit(root: Path, *, git: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            env=scrubbed_git_env(None),
         )
     except OSError as error:
         raise RunnerError(f"cannot run '{git}': {error}") from error

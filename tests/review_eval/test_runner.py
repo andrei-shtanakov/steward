@@ -2557,6 +2557,81 @@ def test_run_all_scrubs_git_env_for_its_own_git_calls(
     assert [item.outcome for item in results] == ["verdict"]
 
 
+def test_rerun_after_kept_worktrees_survives_a_process_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--rerun` после `--keep-worktrees` при `GIT_DIR` в окружении процесса.
+
+    prune выполнялся с унаследованным `GIT_DIR` и молча падал: регистрация
+    worktree оставалась, и следующий `worktree add` отказывал уже после того,
+    как оплаченный результат был удалён.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    env = _env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT)
+    case = _make_case(base_sha=first, head_sha=second)
+    variants = [Variant("claude", "claude-opus-5", None)]
+
+    run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        keep_worktrees=True,
+    )
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere.git"))
+
+    manifest = run_all(
+        [case],
+        variants,
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=env,
+        rerun=True,
+    )
+
+    assert manifest.finished
+    assert [item.outcome for item in load_results(out_dir)] == ["verdict"]
+
+
+def test_kit_under_test_commit_ignores_a_process_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GIT_DIR` на чужой репозиторий не подменяет commit кита в провенансе."""
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "-C", str(other), "init", "-q"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(other),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+        check=True,
+    )
+    root = _steward_root()
+    expected = _rev_parse(root, "HEAD")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+
+    assert kit_under_test(root).commit == expected
+
+
 def test_load_results_refuses_results_without_a_manifest(tmp_path: Path) -> None:
     """Результаты есть, `run.json` нет — читать нечего: провенанс неизвестен.
 
