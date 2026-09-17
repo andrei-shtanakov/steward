@@ -1230,6 +1230,36 @@ def test_write_inside_recovers_from_a_stale_regular_tmp_file(tmp_path: Path) -> 
     assert not (run_dir / ".metrics.json.tmp").exists()
 
 
+def test_write_inside_reports_a_report_error_when_the_stale_tmp_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Обычный (не symlink) `.tmp`, который снять не удаётся (чужой uid,
+    sticky-бит каталога, права на общей машине) — `ReportError` (у
+    вызывающего это конфигурация каталога, код 2), не сырой `OSError`:
+    необёрнутый `OSError` уходил бы мимо `except ReportError` в `_report` и
+    ловился бы только как «internal error» кодом 3 — уже ПОСЛЕ того, как
+    соседний writer успел заменить свой артефакт (ревью-находка части 3,
+    minor).
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    stale = run_dir / ".metrics.json.tmp"
+    stale.write_text("огрызок прежнего прогона", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def failing_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == stale:
+            raise PermissionError("permission denied (test)")
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(ReportError, match="не удалось снять"):
+        write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert stale.read_text(encoding="utf-8") == "огрызок прежнего прогона"
+
+
 def test_write_inside_refuses_a_symlinked_stale_tmp_file(tmp_path: Path) -> None:
     """Симлинк на месте `.tmp` — не «обычный оставшийся файл»: тот же периметр,
     что и у цели записи, — отказ, а не молчаливое снятие чужой ссылки.

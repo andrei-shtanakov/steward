@@ -129,7 +129,19 @@ def write_inside(run_dir: Path, name: str, text: str) -> Path:
             raise ReportError(
                 f"{tmp}: временный файл отчёта — символическая ссылка, не трогаем"
             ) from None
-        tmp.unlink()
+        try:
+            tmp.unlink()
+        except OSError as exc:
+            # Не снимается — чужой uid, sticky-бит каталога, права. Это
+            # препятствие в каталоге прогона (конфигурация, код 2), а не
+            # дефект review-eval: необёрнутый `OSError` уходил бы мимо
+            # `except ReportError` в `_report` и ловился бы только `_guarded`
+            # как «internal error» кодом 3 — уже ПОСЛЕ того, как соседний
+            # writer успел заменить свой артефакт (ревью-находка части 3,
+            # minor).
+            raise ReportError(
+                f"{tmp}: не удалось снять оставшийся временный файл отчёта: {exc}"
+            ) from exc
         try:
             descriptor = os.open(tmp, flags, 0o644)
         except OSError as exc:
