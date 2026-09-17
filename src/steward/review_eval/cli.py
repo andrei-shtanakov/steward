@@ -140,10 +140,32 @@ def _require_same_case_material(
     дереву (файлы, номера строк) значило бы публиковать TP/FP по чужому
     материалу. Разметка (`defects`, `non_defects`, `annotation`) в дайджест не
     входит — её менять после прогона и есть смысл пересчёта.
+
+    **Покрытие проверяется первым, отдельно от сравнения.** Раньше цикл шёл
+    только по ключам, которые в `case_digests` реально есть: пустая карта или
+    карта без записи для одного из объявленных `manifest["cases"]` не находила
+    несовпадений вовсе — не потому что материал не менялся, а потому что
+    сравнивать было не с чем. Отсутствие дайджеста означало бы «пересчитывать
+    против чего угодно», а не «менялось — можно».
     """
     stored = manifest.get("case_digests")
     if not isinstance(stored, Mapping):
         return
+    declared = manifest.get("cases")
+    declared_ids = declared if isinstance(declared, list) else []
+    missing = sorted(
+        case_id
+        for case_id in declared_ids
+        if isinstance(case_id, str) and not isinstance(stored.get(case_id), str)
+    )
+    if missing:
+        typer.echo(
+            f"config error: {where} — case_digests не покрывает объявленные кейсы прогона "
+            f"({', '.join(missing)}): без дайджеста материал не проверить; восстановите "
+            "run.json или перемерьте прогон",
+            err=True,
+        )
+        raise typer.Exit(_EXIT_CONFIG)
     current = {case.case_id: case_material_digest(case) for case in cases}
     changed = sorted(
         case_id
@@ -402,6 +424,11 @@ def corpus_materialize(
                 local_checkout=local,
                 remote_url=f"https://github.com/{repo}.git",
                 git=git,
+                # Без вычищенного окружения `clone`/`fetch`/`has_object`
+                # наследуют GIT_DIR/GIT_WORK_TREE процесса и работают с чужим
+                # репозиторием вместо заявленного bare-кэша (§6, тот же
+                # периметр, что и у `_file_lines_at`).
+                env=scrubbed_git_env(None),
             )
         except CacheError as error:
             typer.echo(f"materialize: {error}", err=True)
@@ -532,6 +559,11 @@ def compare_runs(
     Единица парности — `(case_id, повторение)`: сравниваются те же кейсы на
     тех же повторениях, иначе «парность» была бы мнимой. Вариант, которого нет
     в обоих прогонах, называется в выводе и не сравнивается.
+
+    Код 1 (§11), если хотя бы одна из сторон (A или B) хотя бы одного
+    сравниваемого варианта не измерена по-настоящему: открытая очередь
+    adjudication (`pending_adjudication`) или `unexpected_outcome`, — иначе
+    незавершённое сравнение выходило бы кодом 0.
     """
     try:
         _require_git(git)
@@ -582,15 +614,35 @@ def compare_runs(
     if only:
         typer.echo(f"варианты вне сравнения (есть только в одном прогоне): {', '.join(only)}")
 
+    # Код 1 — тот же контракт §11, что у `metrics`/`run`: сравнение чисел,
+    # хотя бы одна сторона которых не измерена (открытая очередь adjudication
+    # прячет precision) или получила не тот исход, что объявлен в кейсе, было
+    # бы зелёным кодом выхода над незавершённым измерением.
+    pending: list[str] = []
+    unexpected: list[str] = []
     for label in common:
         summary_a = summarize_variant(evals_a[label])
         summary_b = summarize_variant(evals_b[label])
+        if summary_a.get("status") == _PENDING:
+            pending.append(f"{label} (A)")
+        if summary_b.get("status") == _PENDING:
+            pending.append(f"{label} (B)")
+        unexpected.extend(
+            f"{run_label}/{ev.case.case_id}/{label}/{ev.result.repetition_id}: {ev.result.outcome}"
+            for run_label, evs in (("A", evals_a[label]), ("B", evals_b[label]))
+            for ev in evs
+            if ev.result.unexpected
+        )
         paired = _pairs(evals_a[label], evals_b[label])
         typer.echo("")
         typer.echo(f"## {label}")
         typer.echo("")
         typer.echo(render_compare(compare(summary_a, summary_b, paired)))
-    raise typer.Exit(_EXIT_OK)
+    for label in pending:
+        typer.echo(f"{label}: очередь adjudication непуста — precision не публикуется", err=True)
+    for line in unexpected:
+        typer.echo(f"unexpected_outcome — {line}", err=True)
+    raise typer.Exit(_EXIT_ATTENTION if (pending or unexpected) else _EXIT_OK)
 
 
 # ---------------------------------------------------------------------------

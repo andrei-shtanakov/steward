@@ -20,7 +20,7 @@ import pytest
 
 from steward.review_eval.cache import CacheUnavailable
 from steward.review_eval.corpus import Annotation, Case, Defect, Match, NonDefect
-from steward.review_eval.matcher import Prediction, match
+from steward.review_eval.matcher import Prediction, match, normalize_path
 from steward.review_eval.metrics import (
     CI_METRICS,
     CaseEval,
@@ -335,6 +335,30 @@ def test_evaluate_case_refutes_file_missing_when_the_file_exists(tmp_path: Path)
     assert ev.refuted == (0,)
 
 
+def test_evaluate_case_passes_the_raw_path_to_file_lines_unnormalized(tmp_path: Path) -> None:
+    """`evaluate_case` не нормализует путь перед `file_lines`.
+
+    Литеральный backslash в имени — настоящий git-путь. `file_lines`
+    (`_file_lines_at` в проде) сам решает, пробовать ли сырой путь первым, а
+    нормализация здесь стирала бы `\\` раньше, чем до неё дошло бы дело:
+    `back\\slash.md` навсегда стал бы `back/slash.md`, и сырой поиск по
+    дереву уже не мог бы сработать.
+    """
+    case = make_case(defects=[make_defect()])
+    raw_path = "back\\slash.md"
+    write_run(tmp_path, verdict={"findings": [file_missing_finding(file=raw_path)], "note": "ok"})
+    seen: list[str] = []
+
+    def file_lines(path: str) -> int | None:
+        seen.append(path)
+        return None  # файла нет ни в каком виде — опровержение не суть теста
+
+    evaluate_case(case, result_for(case), tmp_path, file_lines=file_lines)
+
+    assert raw_path in seen
+    assert "back/slash.md" not in seen
+
+
 def test_evaluate_case_keeps_file_missing_unlabeled_when_the_file_is_absent(
     tmp_path: Path,
 ) -> None:
@@ -434,7 +458,7 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
         evidence=[
             {"file": "app/a.py", "line": 7, "reason": "в файле"},
             {"file": "app/a.py", "line": 8.0, "reason": "целое JSON-число в дробной записи"},
-            {"file": "./app/a.py", "line": 9, "reason": "путь нормализуется, как в матчере"},
+            {"file": "./app/a.py", "line": 9, "reason": "путь нормализует file_lines, не metrics"},
             {"file": "app/a.py", "line": 0, "reason": "указатель уровня файла"},
             {"file": "app/a.py", "line": 99, "reason": "за концом файла"},
             {"file": "app/gone.py", "line": 1, "reason": "файла нет на head"},
@@ -447,11 +471,15 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
     write_run(tmp_path, verdict={"findings": [blocking, quiet], "note": "ok"})
     sizes = {"app/a.py": 10}
 
+    # metrics.py передаёт путь сырым (не нормализует): нормализация здесь
+    # стоит на месте настоящего `_file_lines_at`, чтобы `./app/a.py` всё ещё
+    # резолвился — тем самым правилом, что и в матчере, только теперь
+    # ответственность за него у file_lines, а не у вызывающего кода.
     ev = evaluate_case(
         case,
         result_for(case),
         tmp_path,
-        file_lines=lambda path: sizes.get(path),
+        file_lines=lambda path: sizes.get(normalize_path(path)),
     )
 
     assert ev.resolvable_evidence == (True, True, True, True, False, False)

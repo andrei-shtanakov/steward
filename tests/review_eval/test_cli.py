@@ -510,6 +510,29 @@ def test_corpus_materialize_prefers_a_local_checkout(
     assert sorted(calls[0]["args"][2]) == [BASE, HEAD]
 
 
+def test_corpus_materialize_scrubs_an_inherited_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GIT_DIR` унаследованный процессом не должен уйти в `clone`/`fetch`.
+
+    Без вычищенного окружения git-вызовы `materialize` работали бы с чужим
+    репозиторием, на который указывает `GIT_DIR`, вместо заявленного bare-кэша
+    — кэш выглядел бы готовым, хотя объекты легли не туда.
+    """
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "чужой" / ".git"))
+    corpus = _corpus(tmp_path, 155)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cli, "materialize", lambda *args, **kwargs: calls.append({"args": args, **kwargs})
+    )
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "materialize", "--corpus", str(corpus), "--workspace-root", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "GIT_DIR" not in calls[0]["env"]
+
+
 def test_corpus_materialize_without_a_local_checkout_goes_to_github(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1688,6 +1711,38 @@ def test_metrics_refuses_when_the_case_material_changed_since_the_run(tmp_path: 
     assert "andrei-shtanakov.steward-155" in result.output
 
 
+def test_metrics_refuses_a_manifest_whose_case_digests_do_not_cover_declared_cases(
+    tmp_path: Path,
+) -> None:
+    """`case_digests` без записи для объявленного кейса — отказ, не «совпало».
+
+    Пустая или неполная карта раньше проходила молча: цикл сравнения идёт
+    только по присутствующим ключам, и отсутствие дайджеста не отличалось бы
+    от материала, который не менялся. Здесь `head_sha` кейса и правда
+    изменился — но проверка обязана отказать по отсутствию покрытия, а не по
+    случайно не сработавшему сравнению.
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    manifest_path = out / "run.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["case_digests"] = {}
+    manifest_path.write_text(json.dumps(manifest), "utf-8")
+
+    payload = _case_payload(155)
+    payload["head_sha"] = "f" * 40
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
+    )
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "не покрывает" in result.output
+    assert "andrei-shtanakov.steward-155" in result.output
+
+
 def test_metrics_allow_matcher_drift_records_the_recompute(tmp_path: Path) -> None:
     """С флагом пересчёт разрешён, но **назван**: оба провенанса рядом.
 
@@ -1806,6 +1861,45 @@ def test_compare_exits_2_without_a_common_variant(tmp_path: Path) -> None:
     result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
     assert result.exit_code == 2
     assert "общих вариантов" in result.output
+
+
+def test_compare_exits_1_when_a_side_has_an_open_adjudication_queue(tmp_path: Path) -> None:
+    """Одна из сторон не измерена (очередь открыта) — сравнение не зелёное.
+
+    Печать таблицы с числами не заменяет проверку: `pending_adjudication`
+    убирает `precision` из сводки, и без явного кода 1 автоматизация не
+    отличила бы посчитанное сравнение от незавершённого измерения (§11, тот
+    же контракт, что у `metrics`).
+    """
+    corpus = _corpus(tmp_path, 155)
+    run_a = tmp_path / "a"
+    run_b = tmp_path / "b"
+    unlabeled = _finding()
+    unlabeled["file"] = "scripts/review/other.sh"
+    unlabeled["evidence"] = [{"file": "scripts/review/other.sh", "line": 1, "reason": "r"}]
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], findings=[unlabeled])
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], findings=[])
+
+    result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
+
+    assert result.exit_code == 1, result.output
+    assert f"{VARIANT} (A)" in result.output
+    assert "не публикуется" in result.output
+
+
+def test_compare_exits_1_on_an_unexpected_outcome(tmp_path: Path) -> None:
+    """Один из прогонов получил не тот исход, что объявлен в кейсе — код 1."""
+    corpus = _corpus(tmp_path, 155)
+    run_a = tmp_path / "a"
+    run_b = tmp_path / "b"
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], outcome="config_failure")
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+
+    result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
+
+    assert result.exit_code == 1, result.output
+    assert "unexpected_outcome" in result.output
+    assert "A/andrei-shtanakov.steward-155" in result.output
 
 
 # ---------------------------------------------------------------------------
