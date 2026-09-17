@@ -218,10 +218,16 @@ def parse_variant(text: str) -> Variant:
     **Разбор — по всем `:` без экранирования**, поэтому у модели и effort
     не может быть двоеточия в имени: оно неотличимо от разделителя
     следующего сегмента. `codex:vendor:model`, задуманное как модель
-    `vendor:model` без effort, разобралось бы как `model=vendor,
-    effort=model` — не отказом, а молча неверно. Единственная защита от
-    этого — запрет двоеточия в самом имени; закрытого набора реальных имён
-    моделей `codex`/`claude` с `:` внутри на практике нет.
+    `vendor:model` без effort, разбирается как `model=vendor,
+    effort=model` — молча, не отказом: **защиты от этого нет**, и класс
+    символов ниже её не создаёт — двоеточие убрано из класса не потому, что
+    так отвергается неоднозначный ввод (сегмент, дошедший до валидации,
+    физически не может содержать `:` — split его уже снял, так что запрет
+    здесь ничего не ловит), а чтобы код и документация не заявляли
+    поддержку, которой на самом деле нет. Настоящая поддержка потребовала бы
+    экранирования или отдельных флагов `--model`/`--effort` — не сделано; у
+    harness `codex`/`claude` реальных имён моделей с `:` внутри на практике
+    нет.
 
     Класс символов модели и effort — `[A-Za-z0-9._@+-]` (без слеша и без
     двоеточия — оба зарезервированы: слеш `--rerun`-у, двоеточие —
@@ -1154,13 +1160,18 @@ def load_results(out_dir: Path) -> list[RunResult]:
     Симлинк на месте `result.json` или любого каталога выше — `RunnerError`
     (`_require_result_file`): содержимое пришло бы извне прогона.
 
-    **Объявленный, но пропавший sidecar (`verdict_path`/`usage_path`) —
-    тоже `RunnerError`.** `_require_result_file` сам по себе — только
-    периметр симлинков и не гарантирует существование: путь пришёл из
-    содержимого `result.json`, не из обхода каталога. `None` уже отличает
-    «sidecar не был обещан» от «обещан, но потерян» — второе означает, что
-    evidence прогона механически повреждена, а не что метрику по нему
-    просто не с чем посчитать.
+    **Объявленный, но пропавший sidecar (`verdict_path`/`usage_path`) — тоже
+    `RunnerError`, но только там, где `metrics.evaluate_case` не сочтёт его
+    обязательным сама** (`verdict_path` при `outcome != "verdict"`,
+    `usage_path` при `cost_status != "available"`) — иначе пропажа осталась
+    бы незамеченной вовсе, а `result.json` всё равно обещал файл.
+    `_require_result_file` сам по себе — только периметр симлинков и не
+    гарантирует существование: путь пришёл из содержимого `result.json`, не
+    из обхода каталога. `None` уже отличает «sidecar не был обещан» от
+    «обещан, но потерян». Когда sidecar обязателен для `metrics.py`, его
+    пропажа или порча — уже её `MetricsError` (код 3) вместо `RunnerError`
+    здесь (код 2): та же порча не должна получать два разных кода в
+    зависимости от того, какая проверка успела её заметить первой.
 
     **Незакрытый манифест — тоже отказ** (`_require_finished`): полный набор
     результатов при ``finished: null`` значит, что раннер оборвался между
@@ -1199,21 +1210,36 @@ def load_results(out_dir: Path) -> list[RunResult]:
         _require_path_matches_payload(result, path, cases_dir=cases_dir)
         _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
-        # Существование sidecar-ов проверяется последней, **после** личности
-        # результата (уникальность, принадлежность манифесту): чужой или
-        # необъявленный result.json без своих sidecar-файлов рядом — обычный
-        # тестовый/подложенный фикстур, и должен отвергаться по личности, а
-        # не «внезапно» по пропавшему sidecar раньше, чем до личности дошла
-        # очередь.
-        for relative in (result.verdict_path, result.usage_path):
+        # Периметр симлинков — **всегда**, для обоих sidecar-ов независимо от
+        # required/not-required у metrics.py: это отдельная гарантия
+        # (`_require_result_file`), не про существование.
+        sidecars = (result.verdict_path, result.usage_path)
+        for relative in sidecars:
             if relative is not None:
-                # `_require_result_file` — только периметр симлинков; путь из
-                # `result.json` не пришёл из `rglob`, и существование не
-                # гарантировано. Объявленный sidecar, которого нет на диске —
-                # механическая порча прогона (эвиденс-файл потерян после
-                # записи), а не «sidecar не был обещан» — `None` уже отличает
-                # этот случай отдельно.
-                sidecar = _require_result_file(out_dir, out_dir / relative)
+                _require_result_file(out_dir, out_dir / relative)
+        # Существование проверяется отдельно, и только для тех sidecar-ов,
+        # которых `metrics.evaluate_case`/`_load_sidecar` НЕ потребует сама
+        # (`required=False` там: `verdict_path` при `outcome != "verdict"`,
+        # `usage_path` при `cost_status != "available"`) — иначе она
+        # молча вернула бы `None` и не заметила бы пропажу вовсе, а
+        # `result.json` всё равно обещал файл. Когда metrics.py сама сочтёт
+        # sidecar обязательным, пропавший или нечитаемый файл — её
+        # `MetricsError` (код 3, тот же класс, что у соседнего «sidecar есть,
+        # но не JSON»): дублировать проверку здесь другим кодом означало бы
+        # различать два вида одной и той же порчи произвольно (ревью-находка
+        # части 3, minor — тот самый разнобой кодов, которого правка
+        # избегает).
+        sidecars_not_required_by_metrics = (
+            result.verdict_path if result.outcome != "verdict" else None,
+            result.usage_path if result.cost_status != "available" else None,
+        )
+        for relative in sidecars_not_required_by_metrics:
+            if relative is not None:
+                # Объявленный sidecar, которого нет на диске — механическая
+                # порча прогона (эвиденс-файл потерян после записи), а не
+                # «sidecar не был обещан» — `None` уже отличает этот случай
+                # отдельно. Симлинк на этом пути уже отвергнут циклом выше.
+                sidecar = out_dir / relative
                 if not sidecar.is_file():
                     raise RunnerError(
                         f"{sidecar}: объявленный sidecar результата {path} не найден — "

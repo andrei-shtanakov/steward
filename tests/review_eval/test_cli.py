@@ -2080,6 +2080,35 @@ def test_metrics_exits_2_when_a_result_has_no_case_in_the_corpus(tmp_path: Path)
     assert "кейса в корпусе нет" in result.output
 
 
+def test_metrics_exits_3_when_a_required_usage_sidecar_is_missing(tmp_path: Path) -> None:
+    """`cost_status: available`, но `usage.json` не существует вовсе — код 3,
+    тем же классом, что и «usage.json есть, но без числа» (D6).
+
+    `load_results` (`runner.py`) не проверяет существование sidecar-ов,
+    которые `metrics.evaluate_case` сама сочтёт обязательными
+    (`usage_path` при `cost_status == "available"`) — иначе одна и та же
+    порча («result.json обещал usage, читать нечем») давала бы разный код в
+    зависимости от того, отсутствует ли файл целиком или у него просто нет
+    числа: первое иначе шло бы кодом 2 (`RunnerError` из `load_results`),
+    второе — кодом 3 (`MetricsError` из `evaluate_case`), хотя обе — одна и
+    та же механическая порча прогона (ревью-находка части 3, minor).
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    result_path = out / "cases" / "andrei-shtanakov.steward-155" / VARIANT / "1" / "result.json"
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["usage_path"] is None  # _write_run не пишет usage.json вовсе
+    payload["cost_status"] = "available"
+    payload["usage_path"] = "cases/andrei-shtanakov.steward-155/" + VARIANT + "/1/usage.json"
+    result_path.write_text(json.dumps(payload), "utf-8")
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 3, result.output
+    assert "usage.json" in result.output
+
+
 # ---------------------------------------------------------------------------
 # compare
 # ---------------------------------------------------------------------------
