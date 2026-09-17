@@ -1263,6 +1263,27 @@ def test_writers_accept_a_symlinked_prefix_above_the_run_dir(tmp_path: Path) -> 
     assert (real / "sub" / "metrics.json").is_file()
 
 
+def test_writers_accept_run_dir_itself_being_a_symlink(tmp_path: Path) -> None:
+    """`run_dir` (`--out`) сам — симлинк на настоящий каталог: не нарушение.
+
+    `run_all` резолвит симлинк `--out` и работает с целью (`_require_no_symlinks`
+    проверяет только компоненты ПУТИ ВНУТРИ каталога прогона, никогда сам
+    корень) — раньше `write_inside` требовал строже и отказывал на ровно том
+    пути, который раннер уже принял: оплаченный `run --out eval/runs/latest`
+    (симлинк на настоящий каталог прогона) отрабатывал целиком, а `_report`
+    в конце проваливался кодом 2 без единого артефакта.
+    """
+    real = tmp_path / "real-run"
+    real.mkdir()
+    run_dir = tmp_path / "latest"
+    run_dir.symlink_to(real, target_is_directory=True)
+
+    path = write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert path == run_dir / "metrics.json"
+    assert (real / "metrics.json").is_file()
+
+
 def test_write_queue_writes_render_queue_output(tmp_path: Path) -> None:
     """`write_queue` пишет ровно то, что вернул бы `render_queue`."""
     case = make_case(defects=[make_defect()])
