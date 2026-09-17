@@ -12,7 +12,7 @@
 
 ```
 review-eval corpus validate [--corpus DIR] [--register [--retire-deleted] [--reidentify ID,…]]
-review-eval corpus candidates --repo R --pr N [--corpus DIR] [--out PATH]   # сеть
+review-eval corpus candidates --repo R --pr N [--corpus DIR] [--out PATH] [--force]   # сеть
 review-eval corpus materialize [--corpus DIR] [--cache DIR] [--workspace-root DIR]  # сеть
 review-eval run --corpus DIR --variant H:M[:E] --out DIR [...]              # всегда офлайн
 review-eval metrics <run_dir> [--corpus DIR] [--cache DIR] [--allow-matcher-drift]
@@ -30,13 +30,13 @@ review-eval compare <run_a> <run_b> [--corpus DIR] [--cache DIR] [--allow-matche
 
 ## 1. Разметка кейса
 
-Кейс — один PR-диапазон, один файл `eval/corpus/<repo>-<pr>.yaml`, схема
+Кейс — один PR-диапазон, один файл `eval/corpus/<owner>.<name>-<pr>.yaml`, схема
 `review-eval-case/v1`. Единица ground truth — **дефект с устойчивым id**, а не
 текст исторического комментария.
 
 ```yaml
 schema: review-eval-case/v1
-case_id: steward-155                  # <короткое имя репо>-<pr>, проверяется
+case_id: andrei-shtanakov.steward-155 # <owner.name>-<pr>, слаг репо инъективный (§ id ниже)
 repo: andrei-shtanakov/steward
 pr: 155
 base_sha: 496e1b2…                    # 40 hex, merge-base диапазона ревью
@@ -51,7 +51,7 @@ annotation:
   adjudicated_at: 2026-09-15
   source: history-proxy | manual
 defects:
-  - id: D-steward-155-1               # D-<репо>-<pr>-<n>, никогда не переиспользуется
+  - id: D-andrei-shtanakov.steward-155-1   # D-<owner.name>-<pr>-<n>, никогда не переиспользуется
     severity: blocker | major | minor # gold-severity
     file: scripts/review/local.sh
     line_hint: 644
@@ -62,7 +62,7 @@ defects:
       line_window: 40                           # ± строк от line_hint
       keywords_any: [PATH, подмен, hijack]      # непустой; «любое из»
 non_defects:
-  - id: NF-steward-155-1              # исторические находки, признанные ложными
+  - id: NF-andrei-shtanakov.steward-155-1  # исторические находки, признанные ложными
     file: docs/…
     line_hint: 151
     scenario: "…"
@@ -191,6 +191,14 @@ uv run review-eval corpus candidates --repo andrei-shtanakov/steward --pr 155
 раннего другой `head` — его номера строк указывали бы не в то дерево),
 достаёт `head_sha` из маркера `codex-terminal-review head=…` и пишет кейс со
 `annotation.status: draft`, `source: history-proxy`.
+
+Путь назначения по умолчанию — `eval/corpus/<case_id>.yaml`, детерминирован
+`--repo`+`--pr`. Повторный запуск для того же PR **без `--force` отказывается
+кодом 2**, если файл там уже есть: путь по умолчанию совпадает с уже
+размеченным кейсом, и без этой защиты `adjudicated`-разметка (найденные
+дефекты, снятые ложные находки, `blocking_complete`) заменялась бы свежим
+`draft`-черновиком молча. `--force` — явный оверрайд (перезапишет файл);
+симлинк на месте назначения отказывает независимо от `--force`.
 
 `base_sha` при этом **не** копируется из `base.sha` PR: после мержа голова базы
 содержит сам PR и может быть потомком `head_sha` из маркера — `local.sh`

@@ -319,11 +319,23 @@ def corpus_validate(
             # `--retire-deleted`. Порядок важен: надгробие терминально, и запись
             # его до `duplicate case_id` превращала бы отказ кодом 2 в порчу реестра.
             drafts = load_cases(corpus)
-            appended = append_registry(
+            # `append_registry` возвращает id БЕЗ кейса (docstring corpus.py),
+            # не то, что дописалось в файл: без `--retire-deleted` это только
+            # кандидаты — реестр не менялся вовсе, и «+» здесь читался бы как
+            # добавление, хотя это единственный случай, когда речь идёт об
+            # УДАЛЕНИИ (надгробием). Реально дописанные новые/переидентифи-
+            # цированные строки этот список не называет вовсе — у append_registry
+            # нет для них отдельного канала, и здесь это не восполняется.
+            retiring = append_registry(
                 drafts, corpus, retire_deleted=retire_deleted, reidentify=ids
             )
-            for line in appended:
-                typer.echo(f"реестр: + {line}")
+            if retiring:
+                verb = (
+                    "списаны надгробием"
+                    if retire_deleted
+                    else "без кейса, кандидаты на списание (--retire-deleted)"
+                )
+                typer.echo(f"реестр: {verb}: {', '.join(retiring)}")
         cases = load_corpus(corpus)
     except CorpusError as error:
         typer.echo(f"corpus invalid: {error}", err=True)

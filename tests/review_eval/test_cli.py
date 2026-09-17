@@ -389,6 +389,36 @@ def test_corpus_validate_retire_deleted_tombstones_a_removed_case(tmp_path: Path
     registry = (corpus / "_ids.txt").read_text(encoding="utf-8")
     assert "D-andrei-shtanakov.steward-157-1 deleted" in registry
     assert load_corpus(corpus)[0].case_id == "andrei-shtanakov.steward-155"
+    assert "списаны надгробием" in result.output
+    assert "D-andrei-shtanakov.steward-157-1" in result.output
+
+
+def test_corpus_validate_register_without_retire_deleted_names_candidates_not_additions(
+    tmp_path: Path,
+) -> None:
+    """Без `--retire-deleted` пропавший id — кандидат, а не «дописанная» строка.
+
+    `append_registry` возвращает id без кейса независимо от флага; без него
+    реестр не меняется вовсе — печатать это как `реестр: + <id>` читалось бы
+    добавлением, хотя единственный смысл, который несёт этот список без
+    флага, — «спишите --retire-deleted» (docstring `append_registry`).
+    """
+    corpus = _corpus(tmp_path, 155, 157)
+    (corpus / "andrei-shtanakov.steward-157.yaml").unlink()
+
+    result = runner.invoke(cli.app, ["corpus", "validate", "--corpus", str(corpus), "--register"])
+
+    # Без --retire-deleted живой id без кейса всё равно отказывает при
+    # последующей загрузке корпуса (check_registry) — тот же контракт, что
+    # у обычного `corpus validate` без --register. Здесь важно только, что
+    # напечатанное перед этим отказом сообщение не лжёт про запись в реестр.
+    assert result.exit_code == 2, result.output
+    registry = (corpus / "_ids.txt").read_text(encoding="utf-8")
+    assert "deleted" not in registry
+    assert "кандидаты на списание" in result.output
+    assert "--retire-deleted" in result.output
+    assert "D-andrei-shtanakov.steward-157-1" in result.output
+    assert "реестр: +" not in result.output
 
 
 def test_corpus_validate_register_leaves_the_registry_untouched_on_a_corpus_error(
