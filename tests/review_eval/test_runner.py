@@ -307,6 +307,20 @@ def test_parse_variant_table(text: str, expected: Variant) -> None:
     assert parse_variant(text) == expected
 
 
+def test_parse_variant_treats_every_colon_as_a_segment_separator() -> None:
+    """`:` внутри model/effort никогда не переживает разбор — это разделитель
+    следующего сегмента, а не символ имени, и разбор его не экранирует.
+
+    `codex:vendor:model`, задуманное как модель `vendor:model` без effort,
+    разбирается как `model=vendor, effort=model` — единственно возможная (хоть
+    и не то, что мог иметь в виду вызывающий) трактовка простого
+    `text.split(":")`; экранирования или отдельных флагов под harness/model/
+    effort нет (ревью-находка части 3, major). `_TOKEN_RE` двоеточие в
+    алфавите модели/effort не пропускает именно поэтому.
+    """
+    assert parse_variant("codex:vendor:model") == Variant("codex", "vendor", "model")
+
+
 @pytest.mark.parametrize(
     "text",
     [

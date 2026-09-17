@@ -112,9 +112,23 @@ OUTCOMES: frozenset[str] = frozenset(
 #: **Слеша здесь нет намеренно.** Метка варианта (`variant_label`) — имя
 #: каталога артефактов, а `--rerun` этот каталог `rmtree`-ит. `codex:x/../../../outside`
 #: раньше проходил разбор, уводил запись за пределы `--out` и позволял удалить
-#: чужое дерево. Двоеточие в классе безвредно (сегменты разделены им же, внутрь
-#: оно не попадает) и оставлено, чтобы класс совпадал с объявленным в спеке.
-_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:@+-]+$")
+#: чужое дерево.
+#:
+#: **Двоеточия здесь тоже нет — уже не намеренно оставлено, а намеренно
+#: убрано** (ревью-находка части 3, major): `parse_variant` разбирает строку
+#: `text.split(":")` целиком, поэтому двоеточие внутри `model`/`effort` в
+#: принципе не может пережить разбор — оно неотличимо от разделителя
+#: следующего сегмента. `codex:vendor:model`, задуманное как модель
+#: `vendor:model` без effort, разбиралось бы как `model=vendor,
+#: effort=model` молча, без ошибки: колонка в классе была безвредной ровно
+#: в этом смысле (сегмент, реально дошедший до валидации, физически не
+#: может содержать `:` — split его уже снял), но эта безвредность и
+#: создавала ложное впечатление, что двоеточие в имени модели поддержано.
+#: Кит (`local.sh`/`harness-claude`) валидирует уже РАЗРЕШЁННОЕ значение
+#: `REVIEW_MODEL`/`REVIEW_EFFORT` своим алфавитом с двоеточием — это другой
+#: слой (безопасность для word-splitting shell-команды), а не контракт
+#: разбора `--variant`, и его алфавит здесь не переиспользуется целиком.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._@+-]+$")
 
 #: Компоненты пути, которые нельзя допускать в метку варианта ни под каким
 #: видом: точка и две точки — это «здесь» и «уровнем выше», а не имена.
@@ -201,10 +215,20 @@ def parse_variant(text: str) -> Variant:
     Отсутствующий сегмент effort — это «переменная не задаётся», а не пустое
     значение (пустое кит отвергает кодом 2). `ValueError` называет причину.
 
-    Класс символов модели и effort — `[A-Za-z0-9._:@+-]`, **без слеша**, и ни
-    один сегмент не может быть `.` или `..`: метка варианта идёт в путь
-    артефактов, а `--rerun` этот путь удаляет. Вторая линия обороны — `_inside`
-    перед каждой записью, потому что `Variant` собирают и в коде.
+    **Разбор — по всем `:` без экранирования**, поэтому у модели и effort
+    не может быть двоеточия в имени: оно неотличимо от разделителя
+    следующего сегмента. `codex:vendor:model`, задуманное как модель
+    `vendor:model` без effort, разобралось бы как `model=vendor,
+    effort=model` — не отказом, а молча неверно. Единственная защита от
+    этого — запрет двоеточия в самом имени; закрытого набора реальных имён
+    моделей `codex`/`claude` с `:` внутри на практике нет.
+
+    Класс символов модели и effort — `[A-Za-z0-9._@+-]` (без слеша и без
+    двоеточия — оба зарезервированы: слеш `--rerun`-у, двоеточие —
+    разделителю сегментов), и ни один сегмент не может быть `.` или `..`:
+    метка варианта идёт в путь артефактов, а `--rerun` этот путь удаляет.
+    Вторая линия обороны — `_inside` перед каждой записью, потому что
+    `Variant` собирают и в коде.
     """
     if not text or text.strip() != text:
         raise ValueError(f"variant must be '<harness>:<model>[:<effort>]', got '{text}'")
@@ -218,9 +242,9 @@ def parse_variant(text: str) -> Variant:
     if harness not in HARNESSES:
         raise ValueError(f"unsupported harness '{harness}', expected one of {HARNESSES}")
     if not _TOKEN_RE.fullmatch(model):
-        raise ValueError(f"model must be one word of [A-Za-z0-9._:@+-], got '{model}'")
+        raise ValueError(f"model must be one word of [A-Za-z0-9._@+-], got '{model}'")
     if effort is not None and not _TOKEN_RE.fullmatch(effort):
-        raise ValueError(f"effort must be one word of [A-Za-z0-9._:@+-], got '{effort}'")
+        raise ValueError(f"effort must be one word of [A-Za-z0-9._@+-], got '{effort}'")
     for name, value in (("model", model), ("effort", effort)):
         if value in _PATH_TRAVERSAL:
             raise ValueError(f"{name} must not be a path component like '.' or '..', got '{value}'")
