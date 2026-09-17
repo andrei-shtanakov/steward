@@ -1710,6 +1710,36 @@ def test_metrics_exits_2_on_a_missing_git_binary(tmp_path: Path) -> None:
     assert "/nonexistent/git" in result.output
 
 
+def test_metrics_passes_git_through_to_load_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--git` пред-проверен `_require_git`, но раньше не доходил до
+    `load_corpus`/`check_registry`: реестр `_ids.txt` сверялся на append-only
+    непроверенным умолчанием `"git"` из PATH независимо от `--git` — на
+    машине без `git` в PATH это тихо выключало проверку истории реестра.
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    git_path = shutil.which("git")
+    assert git_path is not None
+    real_load_corpus = cli.load_corpus
+    calls: list[dict[str, Any]] = []
+
+    def spy(directory: Path, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real_load_corpus(directory, **kwargs)
+
+    monkeypatch.setattr(cli, "load_corpus", spy)
+
+    result = runner.invoke(
+        cli.app, ["metrics", str(out), "--corpus", str(corpus), "--git", git_path]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls and calls[0].get("git") == git_path
+
+
 def test_compare_exits_2_on_a_missing_git_binary(tmp_path: Path) -> None:
     """Та же пред-проверка у `compare`: он читает кэш теми же средствами."""
     corpus = _corpus(tmp_path, 155)

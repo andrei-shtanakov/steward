@@ -453,7 +453,7 @@ def corpus_materialize(
     """
     try:
         _require_git(git)
-        cases = load_corpus(corpus)
+        cases = load_corpus(corpus, git=git)
     except RunnerError as error:
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
@@ -519,7 +519,7 @@ def run(
         variants = _parse_variants(variant)
         root = steward_root if steward_root is not None else _steward_root()
         kit = kit_under_test(root, git=git)
-        all_cases = load_corpus(corpus)
+        all_cases = load_corpus(corpus, git=git)
         digest = corpus_digest(all_cases)
         selected = _select_cases(all_cases, cases)
     except (CorpusError, RunnerError, CacheError, ValueError) as error:
@@ -577,7 +577,7 @@ def metrics(
     """
     try:
         _require_git(git)
-        cases = load_corpus(corpus)
+        cases = load_corpus(corpus, git=git)
     except RunnerError as error:
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
@@ -622,7 +622,7 @@ def compare_runs(
     """
     try:
         _require_git(git)
-        cases = load_corpus(corpus)
+        cases = load_corpus(corpus, git=git)
     except RunnerError as error:
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
