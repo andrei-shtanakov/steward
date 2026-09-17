@@ -2305,6 +2305,65 @@ def test_metrics_exits_2_on_a_symlinked_report_artifact(tmp_path: Path) -> None:
     assert external.read_text(encoding="utf-8") == "important"
 
 
+def test_metrics_leaves_metrics_json_untouched_when_report_md_is_symlinked(
+    tmp_path: Path,
+) -> None:
+    """Отказ на `report.md` не должен успеть перезаписать `metrics.json`.
+
+    Раньше три писателя шли одним `try` без общей пред-проверки:
+    `write_metrics_json` (первый) успевал заменить `metrics.json` новыми
+    числами атомарным `os.replace` ДО того, как второй писатель наткнётся
+    на симлинк и оборвёт остальное — каталог прогона (единица копирования
+    в `docs/evidence/`, §7) оставался с артефактами от разных пересчётов,
+    хотя код 2 читается как «ничего не тронуто» (ревью-находка части 3,
+    minor). Очередь между двумя вызовами закрывается нарочно — иначе
+    пересчёт дал бы байт-идентичный `metrics.json`, и тест не отличил бы
+    «не записано» от «записано, но не изменилось».
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    unlabeled = _finding()
+    unlabeled["file"] = "scripts/review/other.sh"
+    unlabeled["evidence"] = [{"file": "scripts/review/other.sh", "line": 1, "reason": "r"}]
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[unlabeled])
+
+    open_queue = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+    assert open_queue.exit_code == 1, open_queue.output
+    before = (out / "metrics.json").read_bytes()
+    assert b'"pending_adjudication"' in before
+
+    # Разметчик признал находку ложной: non_defect закрывает очередь, и
+    # следующий пересчёт дал бы другой metrics.json (status: ok).
+    payload = _case_payload(155)
+    payload["non_defects"] = [
+        {
+            "id": "NF-andrei-shtanakov.steward-155-1",
+            "file": "scripts/review/other.sh",
+            "line_hint": 644,
+            "scenario": "историческая ложная находка",
+            "match": {
+                "files": ["scripts/review/other.sh"],
+                "line_window": 40,
+                "keywords_any": ["path", "расширяется"],
+            },
+        }
+    ]
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
+    )
+    append_registry([load_case(corpus / "andrei-shtanakov.steward-155.yaml")], corpus)
+    external = tmp_path / "victim.md"
+    external.write_text("important", encoding="utf-8")
+    (out / "report.md").unlink()
+    (out / "report.md").symlink_to(external)
+
+    second = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert second.exit_code == 2, second.output
+    assert "символическая ссылка" in second.output
+    assert (out / "metrics.json").read_bytes() == before
+
+
 def test_file_lines_at_pins_git_config_and_scrubs_git_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

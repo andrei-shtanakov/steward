@@ -58,6 +58,7 @@ from steward.review_eval.metrics import CaseEval, MetricsError, compare, evaluat
 from steward.review_eval.metrics import metrics_for_variant as summarize_variant
 from steward.review_eval.report import (
     ReportError,
+    check_writable,
     render_compare,
     write_inside,
     write_metrics_json,
@@ -96,6 +97,11 @@ _DEFAULT_WORKSPACE_ROOT = Path("..")
 
 #: Статус варианта, требующий разбора очереди перед публикацией precision (D9).
 _PENDING = "pending_adjudication"
+
+#: Три артефакта отчёта прогона, в порядке записи. Общий список для
+#: пред-проверки записываемости (`check_writable`, до первой записи) и для
+#: печати путей после — расхождение между списками само стало бы находкой.
+_REPORT_ARTIFACT_NAMES: tuple[str, ...] = ("metrics.json", "report.md", "adjudication-queue.md")
 
 
 #: Подписи отказа git, означающие «объекта/пути в дереве нет» (код 128). Всё
@@ -801,6 +807,13 @@ def _report(
     comparisons = _comparisons(labels, summaries, evals_by_variant)
 
     try:
+        # Все три пути проверяются до первой записи: иначе отказ второго или
+        # третьего писателя (симлинк, ENOSPC — что угодно после первого
+        # `os.replace`) оставлял бы каталог с артефактами от РАЗНЫХ
+        # пересчётов — metrics.json уже новый, report.md ещё старый, — а код
+        # 2 должен означать «ничего не тронуто» (ревью-находка части 3, minor).
+        for name in _REPORT_ARTIFACT_NAMES:
+            check_writable(run_dir, name)
         write_metrics_json(
             run_dir, summaries, comparisons=comparisons, recomputed_with=recomputed_with
         )
@@ -821,7 +834,7 @@ def _report(
         # дефект review-eval.
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
-    for name in ("metrics.json", "report.md", "adjudication-queue.md"):
+    for name in _REPORT_ARTIFACT_NAMES:
         typer.echo(f"артефакт: {run_dir / name}")
 
     pending = [label for label, summary in summaries.items() if summary.get("status") == _PENDING]

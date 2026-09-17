@@ -551,9 +551,14 @@ uv run review-eval compare eval/runs/<A> eval/runs/<B>
 
 `eval/runs/` в git не попадает. Прогон, на котором принимается решение
 (выбор модели, промоция гейта), копируется целиком в
-`docs/evidence/<дата>-review-eval-<тема>/` — вместе с `run.json`,
-`verdict.json` каждого прогона, `metrics.json`, `report.md` и разобранной
-очередью; без каталога `scratch/` с worktree.
+`docs/evidence/<дата>-review-eval-<тема>/`: `run.json`, каталог `cases/`
+**целиком** (по каждой тройке — `result.json`, `verdict.json`, `usage.json`,
+`stdout.txt`, `stderr.txt`, если они там есть), `metrics.json`, `report.md`
+и разобранная очередь; без каталога `scratch/` с worktree. «Целиком, а не
+по списку имён» — намеренно: `result.json` обязателен всегда
+(`_require_complete`), а объявленный `usage_path`/`verdict_path` без файла
+на диске — механический отказ (§3), и перечисление файлов по имени здесь
+уже расходилось с составом, который команда фактически требует.
 
 Копия нужна ровно потому, что `run.json` называет кит по commit и
 дайджестам: без неё через месяц нельзя будет сказать, какой именно кит
