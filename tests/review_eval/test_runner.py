@@ -3119,17 +3119,17 @@ def test_load_results_refuses_a_symlinked_sidecar(tmp_path: Path) -> None:
         load_results(out_dir)
 
 
-def test_load_results_refuses_a_missing_declared_sidecar(tmp_path: Path) -> None:
-    """`result.json` объявляет `usage_path`, а файла на диске нет — отказ.
-
-    `_require_result_file` сам по себе — только периметр симлинков, не
-    существования: путь пришёл из содержимого `result.json`, не из обхода
-    каталога (`rglob`, где существование гарантировано конструкцией).
-    Пропавший объявленный sidecar — механическая порча прогона, а не
-    непосчитанная метрика: `usage.json` без числовой стоимости легитимно
-    даёт `cost_status: unavailable`, но при `usage_path is not None` сам
-    файл всё равно обязан существовать — раннер объявляет путь только
-    когда sidecar непуст (`_is_non_empty`) на момент записи `result.json`.
+def test_load_results_does_not_check_sidecar_existence_itself(tmp_path: Path) -> None:
+    """`load_results` не проверяет существование объявленного sidecar-а — это
+    забота `metrics.evaluate_case`/`_load_sidecar`, безусловная (не только
+    когда `required`), и **одна**: раньше та же проверка дублировалась и
+    здесь тоже (только для «не обязательных» metrics.py sidecar-ов), и одна
+    и та же порча («result.json обещал файл, файла нет») давала разный код
+    выхода в зависимости от `cost_status`/`outcome` — поля, к факту потери
+    файла отношения не имеющего (ревью-находка части 3, minor). Периметр
+    симлинков (`_require_result_file`) при этом остаётся: `load_results`
+    по-прежнему отказывает, если на месте объявленного sidecar — ссылка
+    (`test_load_results_refuses_a_symlinked_sidecar`).
     """
     repo, first, second = _make_fixture_repo(tmp_path)
     cache_root = _make_cache(tmp_path, repo, [first, second])
@@ -3159,8 +3159,10 @@ def test_load_results_refuses_a_missing_declared_sidecar(tmp_path: Path) -> None
     assert result_payload["cost_status"] == "unavailable"
     (rep_dir / "usage.json").unlink()
 
-    with pytest.raises(RunnerError, match="не найден"):
-        load_results(out_dir)
+    results = load_results(out_dir)
+
+    assert len(results) == 1
+    assert results[0].usage_path is not None
 
 
 def test_run_all_refuses_resume_when_case_material_changed(tmp_path: Path) -> None:

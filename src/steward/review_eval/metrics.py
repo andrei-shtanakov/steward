@@ -507,11 +507,26 @@ def _load_sidecar(
     what: str,
     where: str,
 ) -> Mapping[str, object] | None:
-    """Sidecar-JSON как объект; ``None``, если пути нет или он не читается.
+    """Sidecar-JSON как объект; ``None`` только если путь не был объявлен.
 
-    `required` — исход прогона обещает этот файл (`verdict` обещает вердикт,
-    `cost_status: available` обещает usage): тогда отсутствие или битый JSON
-    это `MetricsError`, а не «метрика по этому прогону просто не считается».
+    `required` — исход прогона обещает **содержимое** этого файла (`verdict`
+    обещает вердикт, `cost_status: available` обещает usage с числом): при
+    `relative is None` (путь не объявлен вовсе) непредоставленное содержимое
+    — `MetricsError`, а без `required` — легитимное «метрика не считается».
+
+    **Объявленный путь (`relative is not None`) обязан читаться всегда,
+    независимо от `required`.** Раннер выставляет `verdict_path`/`usage_path`
+    только когда файл на момент записи `result.json` был непуст
+    (`_is_non_empty`); отсутствие или порча файла позже — рассогласование
+    `result.json` с диском (данные потеряны или подменены), а не «метрика
+    просто не считается». Раньше это давало разные коды выхода в
+    зависимости от `required` — то есть от значения `cost_status`/`outcome`,
+    к самому факту потери файла отношения не имеющего (ревью-находка части
+    3, minor): `usage_path` без файла при `cost_status: available` шёл
+    кодом 3 отсюда, а тот же самый пропавший файл при `cost_status:
+    unavailable` — кодом 2 из отдельной проверки в `runner.load_results`.
+    Теперь потеря объявленного sidecar — всегда `MetricsError` здесь,
+    `load_results` эту проверку не дублирует вовсе.
     """
     if relative is None:
         if required:
@@ -520,9 +535,7 @@ def _load_sidecar(
     path = out_dir / relative
     payload = _read_json(path)
     if not isinstance(payload, Mapping):
-        if required:
-            raise MetricsError(f"{where}: {path} не читается как JSON-объект")
-        return None
+        raise MetricsError(f"{where}: {path} не читается как JSON-объект")
     return payload
 
 

@@ -511,17 +511,34 @@ def test_evaluate_case_raises_when_cost_promised_but_absent(tmp_path: Path) -> N
 def test_evaluate_case_raises_when_a_required_usage_sidecar_is_missing(tmp_path: Path) -> None:
     """`cost_status: available` c `usage_path`, файла которого нет вовсе — та
     же `MetricsError` (D6), что и у соседнего «файл есть, но без числа».
-
-    Оба случая — одна и та же порча (`result.json` обещал usage, а прочитать
-    его нечем), и она обязана давать один и тот же код выхода у CLI (3), а
-    не разный в зависимости от того, отсутствует файл целиком или у него
-    просто нет числа: `load_results` (`runner.py`) не дублирует эту проверку
-    для sidecar-ов, которые здесь и так `required=True` — иначе одна порча
-    получала бы два разных кода (ревью-находка части 3, minor).
     """
     case = make_case()
     write_run(tmp_path, verdict={"findings": [], "note": "ok"})  # без usage.json вовсе
     result = result_for(case, usage_path="usage.json", cost_status="available")
+
+    with pytest.raises(MetricsError, match="usage.json"):
+        evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
+
+
+def test_evaluate_case_raises_when_a_not_required_usage_sidecar_is_missing_too(
+    tmp_path: Path,
+) -> None:
+    """Тот же пропавший объявленный `usage_path`, но при `cost_status:
+    unavailable` (metrics.py не сочла бы содержимое обязательным для
+    расчёта числа) — тоже `MetricsError`, тем же классом.
+
+    `_load_sidecar` проверяет существование объявленного (не-`None`) пути
+    безусловно, независимо от `required`: `required` описывает, нужно ли
+    metrics.py содержимое sidecar-а для расчёта, а не может ли результат
+    вообще разойтись с тем, что он сам заявил о себе в `result.json`. Раньше
+    при `required=False` пропажа возвращалась молча (`None`), и отдельная
+    проверка в `runner.load_results` ловила её отдельным кодом выхода (2) —
+    одна и та же порча получала два разных кода в зависимости от
+    `cost_status` (ревью-находка части 3, minor).
+    """
+    case = make_case()
+    write_run(tmp_path, verdict={"findings": [], "note": "ok"})  # без usage.json вовсе
+    result = result_for(case, usage_path="usage.json", cost_status="unavailable")
 
     with pytest.raises(MetricsError, match="usage.json"):
         evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
