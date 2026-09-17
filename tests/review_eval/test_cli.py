@@ -699,6 +699,71 @@ def test_corpus_candidates_refuses_a_symlinked_destination(
     assert victim.read_text(encoding="utf-8") == "important"
 
 
+def test_corpus_candidates_refuses_to_overwrite_an_existing_case_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Путь назначения по умолчанию детерминирован (repo+PR) — повторный запуск
+    без `--force` не должен молча стереть уже размеченный кейс.
+
+    Раньше `write_inside` заменял существующий файл безоговорочно
+    (`os.replace`): adjudicated-разметка (найденные дефекты, снятые ложные
+    находки, `blocking_complete`) терялась бы под свежим `draft`-черновиком.
+    """
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    existing = corpus / "andrei-shtanakov.steward-155.yaml"
+    existing.write_text("adjudicated: не трогать\n", encoding="utf-8")
+    _patch_candidate_sources(monkeypatch, {})
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "corpus",
+            "candidates",
+            "--repo",
+            "andrei-shtanakov/steward",
+            "--pr",
+            "155",
+            "--corpus",
+            str(corpus),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "уже существует" in result.output
+    assert existing.read_text(encoding="utf-8") == "adjudicated: не трогать\n"
+
+
+def test_corpus_candidates_force_overwrites_an_existing_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--force` — явный, осознанный оверрайд той же защиты."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    existing = corpus / "andrei-shtanakov.steward-155.yaml"
+    existing.write_text("adjudicated: не трогать\n", encoding="utf-8")
+    _patch_candidate_sources(monkeypatch, {})
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "corpus",
+            "candidates",
+            "--repo",
+            "andrei-shtanakov/steward",
+            "--pr",
+            "155",
+            "--corpus",
+            str(corpus),
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    draft = load_case(existing)
+    assert draft.annotation.status == "draft"
+
+
 def test_corpus_candidates_writes_a_draft_into_the_corpus(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -913,6 +978,34 @@ def test_corpus_candidates_exits_2_without_an_ai_prosto_review(
     )
     assert result.exit_code == 2
     assert "нет ревью" in result.output
+
+
+def test_last_ai_prosto_submitted_at_ignores_a_later_empty_review() -> None:
+    """Точка отсчёта `commits_after` — то же ревью, что выбрал бы `draft_case`.
+
+    Пустое (например approve без находок) ревью ai-prosto, опубликованное
+    позже содержательного, не в счёт: `draft_case`/`ai_prosto_reviews`
+    отбрасывают пустое тело и строят кейс по содержательному ревью, и точка
+    отсчёта коммитов обязана совпасть — иначе коммит между ними выпал бы из
+    `commits_after`, а notes называли бы одно ревью последним, использовав
+    время другого.
+    """
+    reviews = [
+        {
+            "id": 1,
+            "user": {"login": "ai-prosto"},
+            "submitted_at": "2026-09-14T08:00:00Z",
+            "body": f"{KIT_HEADER}\n\nНаходок нет.\n",
+        },
+        {
+            "id": 2,
+            "user": {"login": "ai-prosto"},
+            "submitted_at": "2026-09-14T09:00:00Z",
+            "body": "",
+        },
+    ]
+
+    assert cli._last_ai_prosto_submitted_at(reviews) == "2026-09-14T08:00:00Z"
 
 
 # ---------------------------------------------------------------------------

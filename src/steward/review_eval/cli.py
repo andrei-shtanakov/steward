@@ -337,11 +337,19 @@ def corpus_candidates(
     corpus: Path = typer.Option(_DEFAULT_CORPUS, "--corpus", help="каталог кейсов"),
     out: Path | None = typer.Option(None, "--out", help="файл черновика (по умолчанию в корпусе)"),
     gh: str = typer.Option("gh", "--gh", help="бинарь gh"),
+    force: bool = typer.Option(
+        False, "--force", help="перезаписать существующий файл по пути назначения"
+    ),
 ) -> None:
     """Черновик кейса из истории ревью ai-prosto на PR (**сеть**: чтение `gh api`).
 
     Пишет кейс с `annotation.status: draft` — прокси, а не ground truth: в
     метрики он не входит, пока разметчик не переведёт его в `adjudicated`.
+
+    Путь назначения по умолчанию детерминирован (`repo` + `pr`): повторный
+    запуск для того же PR без `--force` отказывается, если файл там уже есть
+    — иначе ручная разметка (`adjudicated`, найденные/снятые дефекты) молча
+    заменялась бы свежим `draft` без предупреждения.
     """
     try:
         pr_meta = fetch_pr(repo, pr, gh=gh)
@@ -367,6 +375,23 @@ def corpus_candidates(
         raise typer.Exit(_EXIT_CONFIG) from error
 
     destination = out if out is not None else corpus / f"{case['case_id']}.yaml"
+    # Симлинк на месте назначения — не «уже размеченный кейс», а отдельный
+    # периметр (запись за пределы корпуса): его закрывает исключительно
+    # `write_inside` ниже, безусловно, даже с `--force` — force снимает только
+    # эту проверку существования обычного файла.
+    if destination.exists() and not destination.is_symlink() and not force:
+        # `write_inside` пишет атомарно и заменяет обычный файл на месте
+        # (`os.replace`) без вопросов — здесь, а не там, единственное место,
+        # где решается, можно ли вообще писать: путь по умолчанию совпадает
+        # детерминированно с уже размеченным кейсом того же repo/PR, и без
+        # этой проверки повторный запуск стирал бы adjudicated-разметку
+        # свежим history-proxy черновиком молча.
+        typer.echo(
+            f"config error: {destination} уже существует — перезаписывать разметку "
+            "молча нельзя; повторите с --force (сотрёт файл) или укажите другой --out",
+            err=True,
+        )
+        raise typer.Exit(_EXIT_CONFIG)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         # Без `write_text` по возможной ссылке: симлинк на месте черновика
@@ -1042,18 +1067,18 @@ def _review_head_sha(
 
 
 def _last_ai_prosto_submitted_at(reviews: Sequence[Mapping[str, object]]) -> str | None:
-    """`submitted_at` последнего ревью ai-prosto — точка отсчёта `commits_after`."""
-    stamps = [
-        review.get("submitted_at")
-        for review in reviews
-        if isinstance(review.get("user"), Mapping)
-        and _login(review) == AI_PROSTO
-        and isinstance(review.get("submitted_at"), str)
-    ]
-    strings = [stamp for stamp in stamps if isinstance(stamp, str)]
-    return max(strings) if strings else None
+    """`submitted_at` последнего ревью ai-prosto — точка отсчёта `commits_after`.
 
-
-def _login(review: Mapping[str, object]) -> object:
-    user = review.get("user")
-    return user.get("login") if isinstance(user, Mapping) else None
+    Тем же отбором и той же сортировкой, что `draft_case` (`ai_prosto_reviews`:
+    непустое тело, `(submitted_at, id)`) — не отдельным фильтром «любое ревью
+    автора». Пустое (например approve без находок) ревью **позже** того, что
+    реально легло в черновик, иначе сдвигало бы точку отсчёта вперёд: коммит
+    между содержательным ревью и последующим пустым approve выпадал бы из
+    `commits_after`, и notes указывали бы на другое `submitted_at`, чем ревью,
+    из которого черновик собран.
+    """
+    ai_reviews = ai_prosto_reviews(reviews)
+    if not ai_reviews:
+        return None
+    stamp = ai_reviews[-1].get("submitted_at")
+    return stamp if isinstance(stamp, str) else None
