@@ -753,15 +753,27 @@ def _report(
     summaries = {label: summarize_variant(evals_by_variant[label]) for label in labels}
     comparisons = _comparisons(labels, summaries, evals_by_variant)
 
-    write_metrics_json(run_dir, summaries, comparisons=comparisons, recomputed_with=recomputed_with)
-    write_report(
-        run_dir,
-        summaries,
-        {label: evals_by_variant[label] for label in labels},
-        manifest,
-        recomputed_with=recomputed_with,
-    )
-    write_queue(run_dir, {label: evals_by_variant[label] for label in labels})
+    try:
+        write_metrics_json(
+            run_dir, summaries, comparisons=comparisons, recomputed_with=recomputed_with
+        )
+        write_report(
+            run_dir,
+            summaries,
+            {label: evals_by_variant[label] for label in labels},
+            manifest,
+            recomputed_with=recomputed_with,
+        )
+        write_queue(run_dir, {label: evals_by_variant[label] for label in labels})
+    except ReportError as error:
+        # Симлинк на месте одного из трёх артефактов — конфигурация каталога
+        # (код 2), тот же класс, что уже даёт `corpus candidates` для того же
+        # `ReportError`. Без этого `_guarded` ловил бы исключение как
+        # непредусмотренное и выдавал бы код 3 «internal error» — механический
+        # сбой самого инструмента, хотя проблема — подложенная ссылка, а не
+        # дефект review-eval.
+        typer.echo(f"config error: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
     for name in ("metrics.json", "report.md", "adjudication-queue.md"):
         typer.echo(f"артефакт: {run_dir / name}")
 

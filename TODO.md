@@ -819,6 +819,18 @@ product decision record (и наоборот). Как approved proposal стан
       этого часть gold-кейсов придётся пинить руками
 - [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
       модели × два уровня), не по рассуждению в комментарии workflow
+- [ ] `corpus materialize` без локального чекаута соседа уходит в сеть с @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-materialize-network-git-config
+      `scrubbed_git_env(None)` — тот же пин `GIT_CONFIG_GLOBAL`/
+      `GIT_CONFIG_SYSTEM=/dev/null`, что и у чтения дерева ради
+      воспроизводимости диффа (`diff.context`/`diff.algorithm`), но здесь он
+      попадает и на сетевые `git clone --bare`/`git fetch` (ревью-находка
+      части 3, minor). Выключает `credential.helper`, `url.<…>.insteadOf` и
+      `http.proxy` пользователя: материализация из GitHub у репозиториев,
+      требующих аутентификации или сетевого сетапа через `~/.gitconfig`,
+      отказывает кодом 2, хотя обычный `git clone` того же пользователя
+      работает. ОТКРЫТЫЙ ВОПРОС ВЛАДЕЛЬЦУ: пин конфига для сетевого пути —
+      осознанный периметр («материализация только для анонимного HTTPS») или
+      недосмотр, который надо развести от пина для чтения дерева
 - [x] Экономный триггер ревью: драфты без лейбла `codex-review` не ревьюятся @owner:github:andrei-shtanakov @id:review-kit-on-demand-trigger
       (итерация бесплатна); запрос = снятие драфта (автозапуск) или лейбл
       `codex-review` (действует на следующие пуши драфта). Форма отказа —

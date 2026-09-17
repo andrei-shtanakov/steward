@@ -2072,6 +2072,30 @@ def test_metrics_exits_2_without_a_manifest(tmp_path: Path) -> None:
     assert result.exit_code == 2, result.output
 
 
+def test_metrics_exits_2_on_a_symlinked_report_artifact(tmp_path: Path) -> None:
+    """Симлинк на месте `report.md` — конфигурация каталога (код 2), не
+    «internal error».
+
+    `write_metrics_json`/`write_report`/`write_queue` в `_report` не были
+    обёрнуты ни одним `except`, поэтому `ReportError` от подложенной ссылки
+    ловил только `_guarded` и выдавал код 3 — тот же класс ошибки, что
+    `corpus candidates` уже отображает в код 2 для точно такого же
+    `ReportError`.
+    """
+    corpus = _corpus(tmp_path, 155)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    external = tmp_path / "victim.md"
+    external.write_text("important", encoding="utf-8")
+    (out / "report.md").symlink_to(external)
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "символическая ссылка" in result.output
+    assert external.read_text(encoding="utf-8") == "important"
+
+
 def test_file_lines_at_pins_git_config_and_scrubs_git_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
