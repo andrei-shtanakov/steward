@@ -2064,18 +2064,39 @@ def test_metrics_exits_2_without_a_run_manifest(tmp_path: Path) -> None:
     assert "не читается" in result.output
 
 
-def test_metrics_exits_3_when_a_result_has_no_case_in_the_corpus(tmp_path: Path) -> None:
+def test_metrics_exits_2_when_a_result_has_no_case_in_the_corpus(tmp_path: Path) -> None:
+    """Кейс удалён из корпуса, а его результат в прогоне остался — код 2,
+    не 3: артефакты прогона целы и сходятся сами с собой, разошёлся корпус,
+    а не что-то, что поломало бы сам инструмент (ревью-находка части 3,
+    minor). Раньше `_evaluate` поднимал `MetricsError`, и это читалось как
+    механический сбой review-eval, хотя правка корпуса — обычная
+    конфигурация.
+    """
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
     _write_run(out, ["steward-999"])
     result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
-    assert result.exit_code == 3
+    assert result.exit_code == 2, result.output
     assert "кейса в корпусе нет" in result.output
 
 
 # ---------------------------------------------------------------------------
 # compare
 # ---------------------------------------------------------------------------
+
+
+def test_compare_exits_2_when_a_result_has_no_case_in_the_corpus(tmp_path: Path) -> None:
+    """Тот же случай, что у `metrics`, но через `compare`: код 2, не 3."""
+    corpus = _corpus(tmp_path, 155)
+    run_a = tmp_path / "a"
+    run_b = tmp_path / "b"
+    _write_run(run_a, ["steward-999"])
+    _write_run(run_b, ["steward-999"])
+
+    result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "кейса в корпусе нет" in result.output
 
 
 def test_compare_prints_a_table_per_common_variant(tmp_path: Path) -> None:

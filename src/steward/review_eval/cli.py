@@ -679,6 +679,11 @@ def compare_runs(
         # `review-eval` и в CI читался бы как «инструмент сломался».
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
+    except CorpusError as error:
+        # Результат называет кейс, которого корпус больше не содержит:
+        # разошёлся корпус, не сами артефакты прогона — тоже конфигурация.
+        typer.echo(f"corpus invalid: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
     except MetricsError as error:
         # А расхождение артефактов с `result.json` — механический сбой (§11):
         # прогон обещал вердикт, которого нет или который не читается.
@@ -779,6 +784,12 @@ def _report(
         # `review-eval` и в CI читался бы как «инструмент сломался».
         typer.echo(f"config error: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
+    except CorpusError as error:
+        # Результат называет кейс, которого корпус больше не содержит:
+        # разошёлся корпус, не сами артефакты прогона (они друг с другом
+        # сходятся) — тоже конфигурация, а не механический сбой инструмента.
+        typer.echo(f"corpus invalid: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
     except MetricsError as error:
         # А расхождение артефактов с `result.json` — механический сбой (§11):
         # прогон обещал вердикт, которого нет или который не читается.
@@ -838,16 +849,20 @@ def _evaluate(
 ) -> dict[str, list[CaseEval]]:
     """Разобрать артефакты прогона в `CaseEval` по вариантам.
 
-    Результат по кейсу, которого в корпусе больше нет, — `MetricsError`:
-    считать метрики по прогону, чей ground truth удалён, значит публиковать
-    число без знаменателя.
+    Результат по кейсу, которого в корпусе больше нет, — `CorpusError`, не
+    `MetricsError`: считать метрики по прогону, чей ground truth удалён,
+    значит публиковать число без знаменателя, но сами артефакты прогона
+    (`result.json`, sidecar-файлы) при этом целы и никак не разошлись с
+    собой — расхождение в корпусе, а не в них. `MetricsError` здесь давал
+    код 3 «инструмент сломался» (§11) на правку корпуса, а не на дефект
+    review-eval (ревью-находка части 3, minor).
     """
     by_id = {case.case_id: case for case in cases}
     evals: dict[str, list[CaseEval]] = {}
     for result in load_results(run_dir):
         case = by_id.get(result.case_id)
         if case is None:
-            raise MetricsError(
+            raise CorpusError(
                 f"{run_dir}: результат кейса '{result.case_id}' есть, а кейса в корпусе нет"
             )
         evals.setdefault(result.variant, []).append(
