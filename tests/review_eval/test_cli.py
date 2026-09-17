@@ -1199,6 +1199,34 @@ def test_run_exits_2_on_an_unsupported_harness_and_on_no_variant(
     assert "хотя бы один --variant" in none.output
 
 
+def test_run_exits_2_on_an_empty_but_legitimate_corpus_dir_without_writing_a_manifest(
+    tmp_path: Path,
+) -> None:
+    """Пустой (но существующий) каталог `--corpus` — код 2 до записи манифеста,
+    не «повреждённый run.json», который инструмент сам же и написал бы.
+
+    `load_corpus` объявляет пустой каталог законным начальным состоянием
+    (её докстринг), но `run_all` отдельно отвергает пустой список кейсов
+    («cases must not be empty») в самом начале — до worktree, до записи
+    `run.json`. Ревью-заход части 3 заподозрил здесь обратное (манифест с
+    `cases: []` пишется, а потом `_previous_manifest` отвергает его же как
+    повреждённый), но проверка кодом не подтвердилась: guard уже стоит.
+    Тест фиксирует фактическое поведение, чтобы предположение не повторялось.
+    """
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    out = tmp_path / "run"
+
+    result = runner.invoke(
+        cli.app,
+        ["run", "--corpus", str(corpus), "--variant", VARIANT, "--out", str(out)],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "cases must not be empty" in result.output
+    assert not (out / "run.json").exists()
+
+
 def test_run_exits_2_on_a_non_positive_repetitions_or_jobs(tmp_path: Path) -> None:
     """`--repetitions 0`/`--jobs 0` — конфигурация (код 2), не пустой прогон.
 
