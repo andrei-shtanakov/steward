@@ -1956,6 +1956,25 @@ def test_compare_exits_2_without_a_common_variant(tmp_path: Path) -> None:
     assert "общих вариантов" in result.output
 
 
+def test_compare_exits_2_when_the_common_variant_has_no_overlapping_cases(
+    tmp_path: Path,
+) -> None:
+    """Общая метка варианта не значит общие кейсы: пустая парная популяция —
+    отказ (код 2), а не сравнение из нуля пар с кодом 0.
+    """
+    corpus = _corpus(tmp_path, 155, 157)
+    run_a = tmp_path / "a"
+    run_b = tmp_path / "b"
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], labels=[VARIANT])
+    _write_run(run_b, ["andrei-shtanakov.steward-157"], labels=[VARIANT])
+
+    result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "общих пар" in result.output
+    assert VARIANT in result.output
+
+
 def test_compare_exits_1_when_a_side_has_an_open_adjudication_queue(tmp_path: Path) -> None:
     """Одна из сторон не измерена (очередь открыта) — сравнение не зелёное.
 
@@ -2157,6 +2176,11 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
     # Каталог — не адрес строки: `git show <sha>:dir` печатает листинг дерева,
     # и evidence на каталог иначе считалась бы разрешимой (§9, D11).
     assert lines("nested") is None
+    # Схемно допустимый, но не git-путь: `..` не запрещён схемой evidence, а
+    # git отказывает не «does not exist»/«not a valid object name», а «is
+    # outside repository» — без этой подписи в _MISSING_OBJECT_SIGNATURES
+    # такая ссылка поднимала бы CacheError и роняла отчёт всего прогона.
+    assert lines("../outside.py") is None
 
     # Нет кэша (или негоден слаг репо) — спрашивать некого: это `CacheUnavailable`,
     # а не «файла нет». Метрики превращают его в непосчитанную метрику с
@@ -2165,6 +2189,15 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
         cli._file_lines_at(tmp_path / "nope", "org/repo", sha)("a.txt")
     with pytest.raises(cli.CacheUnavailable, match="org/repo|not-a-slug"):
         cli._file_lines_at(cache_root, "not-a-slug", sha)("a.txt")
+
+    # Кэш существует (клон на месте), но именно этого коммита в нём нет —
+    # не материализован, а не «удалён из дерева». `None` здесь означал бы
+    # «файла нет на head», хотя дерево этого head вообще не проверялось:
+    # находка `file-missing` осталась бы неопровергнутой как TP, а не
+    # `evidence_unchecked`.
+    unmaterialized_sha = "f" * 40
+    with pytest.raises(cli.CacheUnavailable, match="не материализован"):
+        cli._file_lines_at(cache_root, "org/repo", unmaterialized_sha)("a.txt")
 
 
 def test_file_lines_at_raises_when_git_itself_fails(tmp_path: Path) -> None:

@@ -101,7 +101,22 @@ _PENDING = "pending_adjudication"
 #: Подписи отказа git, означающие «объекта/пути в дереве нет» (код 128). Всё
 #: остальное — отказ самого git (нет бинаря, кэш не репозиторий, падение), и
 #: путать эти два случая нельзя: первое — факт о данных, второе — о конфигурации.
-_MISSING_OBJECT_SIGNATURES: tuple[bytes, ...] = (b"does not exist", b"not a valid object name")
+#:
+#: `outside working tree` / `is outside repository` — путь со схемно
+#: допустимым `..` (`../x` в частности): evidence/gold в вердикте — текст
+#: модели, не git pathspec, и схема не запрещает `..`. У bare-кэша (это всегда
+#: bare) git на такой путь отвечает «relative path syntax can't be used
+#: outside working tree», у обычного репозитория — «is outside repository»;
+#: ни то, ни другое не совпадает с `does not exist`/`not a valid object name`.
+#: Без этих подписей такая ссылка поднимала бы `CacheError` и роняла отчёт
+#: **всего** прогона кодом 2 вместо того, чтобы просто остаться неразрешимой
+#: evidence-ссылкой (§9).
+_MISSING_OBJECT_SIGNATURES: tuple[bytes, ...] = (
+    b"does not exist",
+    b"not a valid object name",
+    b"outside working tree",
+    b"is outside repository",
+)
 
 #: Форма sha коммита — та же, что требует корпус: 40 строчных hex.
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -583,7 +598,10 @@ def compare_runs(
 
     Единица парности — `(case_id, повторение)`: сравниваются те же кейсы на
     тех же повторениях, иначе «парность» была бы мнимой. Вариант, которого нет
-    в обоих прогонах, называется в выводе и не сравнивается.
+    в обоих прогонах, называется в выводе и не сравнивается. Общая метка без
+    единой общей пары (кейсы прогонов не пересеклись) — тоже не сравнивается
+    и называется отдельно; если так вышло у всех общих меток — код 2, а не 0
+    над пустой парной популяцией.
 
     Код 1 (§11), если хотя бы одна из сторон (A или B) хотя бы одного
     сравниваемого варианта не измерена по-настоящему: открытая очередь
@@ -645,7 +663,18 @@ def compare_runs(
     # бы зелёным кодом выхода над незавершённым измерением.
     pending: list[str] = []
     unexpected: list[str] = []
+    # Общая метка варианта не значит общие кейсы: два прогона той же метки
+    # на непересекающихся наборах кейсов дают пустую парную популяцию —
+    # `compare` посчитал бы (и напечатал) сравнение из нуля пар, а без этой
+    # проверки команда молча вышла бы кодом 0 над несуществующим измерением.
+    empty_pairs: list[str] = []
+    compared: list[str] = []
     for label in common:
+        paired = _pairs(evals_a[label], evals_b[label])
+        if not paired:
+            empty_pairs.append(label)
+            continue
+        compared.append(label)
         summary_a = summarize_variant(evals_a[label])
         summary_b = summarize_variant(evals_b[label])
         if summary_a.get("status") == _PENDING:
@@ -658,11 +687,21 @@ def compare_runs(
             for ev in evs
             if ev.result.unexpected
         )
-        paired = _pairs(evals_a[label], evals_b[label])
         typer.echo("")
         typer.echo(f"## {label}")
         typer.echo("")
         typer.echo(render_compare(compare(summary_a, summary_b, paired)))
+    if not compared:
+        typer.echo(
+            "общих пар (case_id, повторение) у прогонов нет — сравнивать нечего "
+            f"({', '.join(empty_pairs)})",
+            err=True,
+        )
+        raise typer.Exit(_EXIT_CONFIG)
+    if empty_pairs:
+        typer.echo(
+            f"варианты вне сравнения (общая метка, но нет общих пар): {', '.join(empty_pairs)}"
+        )
     for label in pending:
         typer.echo(f"{label}: очередь adjudication непуста — precision не публикуется", err=True)
     for line in unexpected:
@@ -836,7 +875,46 @@ def _file_lines_at(
         except OSError as error:
             raise CacheError(f"--git '{git}' не запускается: {error}") from error
 
+    # Кэш существует, но нужного коммита в нём может не быть (частичный клон,
+    # ещё не материализованный sha) — тогда `cat-file -t <sha>:<path>` ниже
+    # отказывает той же missing-object подписью, что и «файла на месте нет»,
+    # и без этой явной проверки «дерева не проверить» читалось бы как «файла
+    # нет» — находка `file-missing` осталась бы неопровергнутой, а gold того
+    # же вида — непротиворечащим, хотя дерево попросту не проверялось. Тем же
+    # `run_git`/`_is_missing_object`, что и путь ниже (не отдельным `has_object`
+    # из `cache.py`): тот предикат булев и не отличает «объекта нет» от
+    # «git сам сломался», а здесь это различие обязано остаться — сломанный
+    # `--git` бросает `CacheError`, а не «данные не проверены».
+    #
+    # Проверка ленивая (при первом обращении к `file_lines`, не здесь): бинарь
+    # уже резолвлен `pin_git` выше и падает сразу, а фактический вызов git —
+    # тот же принцип, что у остальной функции, где до первого пути дело не
+    # доходит вовсе, если evidence не потребовалось.
+    commit_error: dict[str, Exception | None] = {}
+
+    def ensure_commit_materialized() -> None:
+        if "checked" in commit_error:
+            error = commit_error["checked"]
+            if error is not None:
+                raise error
+            return
+        commit_check = run_git(["cat-file", "-e", f"{sha}^{{commit}}"])
+        if commit_check.returncode == 0:
+            commit_error["checked"] = None
+            return
+        if _is_missing_object(commit_check):
+            error = CacheUnavailable(
+                f"{cache}: коммит {sha} не материализован в кэше — evidence проверить нечем"
+            )
+        else:
+            error = CacheError(
+                f"git cat-file -e {sha}^{{commit}} в {cache} отказал: {_git_error(commit_check)}"
+            )
+        commit_error["checked"] = error
+        raise error
+
     def file_lines(raw_path: str) -> int | None:
+        ensure_commit_materialized()
         # Сначала **сырой** путь: литеральный backslash в имени — настоящий
         # git-путь, и нормализация матчера (`\\` → `/`) уничтожила бы его.
         # Нормализованный (`./app/a.py` → `app/a.py`) — запасной вариант.
