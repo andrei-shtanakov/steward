@@ -3119,6 +3119,50 @@ def test_load_results_refuses_a_symlinked_sidecar(tmp_path: Path) -> None:
         load_results(out_dir)
 
 
+def test_load_results_refuses_a_missing_declared_sidecar(tmp_path: Path) -> None:
+    """`result.json` объявляет `usage_path`, а файла на диске нет — отказ.
+
+    `_require_result_file` сам по себе — только периметр симлинков, не
+    существования: путь пришёл из содержимого `result.json`, не из обхода
+    каталога (`rglob`, где существование гарантировано конструкцией).
+    Пропавший объявленный sidecar — механическая порча прогона, а не
+    непосчитанная метрика: `usage.json` без числовой стоимости легитимно
+    даёт `cost_status: unavailable`, но при `usage_path is not None` сам
+    файл всё равно обязан существовать — раннер объявляет путь только
+    когда sidecar непуст (`_is_non_empty`) на момент записи `result.json`.
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    cases = [_make_case(base_sha=first, head_sha=second, case_id="steward-155")]
+    run_all(
+        cases,
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=_env_base(
+            tmp_path / "record.txt",
+            STUB_EXIT="0",
+            STUB_VERDICT_BODY=VALID_VERDICT,
+            # Непустой usage без числа — легитимный cost_status: unavailable
+            # (та же комбинация, что в test_run_case_cost_status), и раннер
+            # всё равно объявляет usage_path непустым sidecar-ом.
+            STUB_USAGE_BODY=json.dumps({"total_cost_usd": None}),
+        ),
+    )
+    rep_dir = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1"
+    result_payload = json.loads((rep_dir / "result.json").read_text(encoding="utf-8"))
+    assert result_payload["usage_path"] is not None
+    assert result_payload["cost_status"] == "unavailable"
+    (rep_dir / "usage.json").unlink()
+
+    with pytest.raises(RunnerError, match="не найден"):
+        load_results(out_dir)
+
+
 def test_run_all_refuses_resume_when_case_material_changed(tmp_path: Path) -> None:
     """Тот же case_id с другим материалом (здесь — `expected_outcome`; `head_sha`
     остановил бы уже оффлайн-проверка объектов) — доливка отвергается."""
@@ -3130,6 +3174,28 @@ def test_run_all_refuses_resume_when_case_material_changed(tmp_path: Path) -> No
         resume.again(cases=[changed], corpus_digest_override=corpus_digest([changed]))
 
     assert (resume.out_dir / "run.json").read_bytes() == before
+
+
+def test_run_all_refuses_resume_when_a_case_digest_is_missing_from_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Кейс уже был в прежнем `cases` (и у него уже есть result.json), а
+    записи для него в `case_digests` нет — потерянная/повреждённая запись,
+    не «прогон впервые видит кейс». Доливка отвергается, а не тихо
+    накладывает текущий дайджест на старый result.json без переизмерения —
+    тот же инвариант полноты, что у `cli.py::_require_same_case_material`.
+    """
+    resume = _resume_fixture(tmp_path)
+    manifest_path = resume.out_dir / "run.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest["case_digests"]["steward-155"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    corrupted = manifest_path.read_bytes()
+
+    with pytest.raises(RunnerError, match="case_digests"):
+        resume.again()
+
+    assert manifest_path.read_bytes() == corrupted
 
 
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:

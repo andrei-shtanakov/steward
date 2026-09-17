@@ -1149,6 +1149,14 @@ def load_results(out_dir: Path) -> list[RunResult]:
     Симлинк на месте `result.json` или любого каталога выше — `RunnerError`
     (`_require_result_file`): содержимое пришло бы извне прогона.
 
+    **Объявленный, но пропавший sidecar (`verdict_path`/`usage_path`) —
+    тоже `RunnerError`.** `_require_result_file` сам по себе — только
+    периметр симлинков и не гарантирует существование: путь пришёл из
+    содержимого `result.json`, не из обхода каталога. `None` уже отличает
+    «sidecar не был обещан» от «обещан, но потерян» — второе означает, что
+    evidence прогона механически повреждена, а не что метрику по нему
+    просто не с чем посчитать.
+
     **Незакрытый манифест — тоже отказ** (`_require_finished`): полный набор
     результатов при ``finished: null`` значит, что раннер оборвался между
     последней тройкой и финальной записью, а не что прогон готов.
@@ -1184,11 +1192,28 @@ def load_results(out_dir: Path) -> list[RunResult]:
         _require_result_file(out_dir, path)
         result = _result_from_file(path)
         _require_path_matches_payload(result, path, cases_dir=cases_dir)
-        for relative in (result.verdict_path, result.usage_path):
-            if relative is not None:
-                _require_result_file(out_dir, out_dir / relative)
         _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
+        # Существование sidecar-ов проверяется последней, **после** личности
+        # результата (уникальность, принадлежность манифесту): чужой или
+        # необъявленный result.json без своих sidecar-файлов рядом — обычный
+        # тестовый/подложенный фикстур, и должен отвергаться по личности, а
+        # не «внезапно» по пропавшему sidecar раньше, чем до личности дошла
+        # очередь.
+        for relative in (result.verdict_path, result.usage_path):
+            if relative is not None:
+                # `_require_result_file` — только периметр симлинков; путь из
+                # `result.json` не пришёл из `rglob`, и существование не
+                # гарантировано. Объявленный sidecar, которого нет на диске —
+                # механическая порча прогона (эвиденс-файл потерян после
+                # записи), а не «sidecar не был обещан» — `None` уже отличает
+                # этот случай отдельно.
+                sidecar = _require_result_file(out_dir, out_dir / relative)
+                if not sidecar.is_file():
+                    raise RunnerError(
+                        f"{sidecar}: объявленный sidecar результата {path} не найден — "
+                        "прогон механически повреждён (--rerun этой тройки или новый --out)"
+                    )
         results.append(result)
     if manifest is None and results:
         raise RunnerError(
@@ -1389,6 +1414,12 @@ def _provenance_drift(
     Сам список манифеста от выборки не меняется (см. `run_all`): он описывает
     прогон целиком, а не последнюю выборку.
 
+    **`case_digests` без записи для кейса, уже бывшего в прежнем `cases` —
+    дрейф**, а не «новый кейс»: у уже измеренного кейса дайджест обязан
+    быть, и его отсутствие значит потерю/повреждение записи, а не то, что
+    прогон впервые его видит (это отличают по прежнему `cases`, не по
+    самому `case_digests`).
+
     Окружение попало сюда не как «обстоятельство»: имена provider-переменных
     отвечают, к какому аккаунту и через какой прокси ушёл вызов. Прежде
     повторение 2 с другим набором доливалось молча, а `run.json`
@@ -1426,11 +1457,27 @@ def _provenance_drift(
     stored_cases_material = (
         stored_cases_material if isinstance(stored_cases_material, Mapping) else {}
     )
+    stored_case_ids = previous.get("cases")
+    stored_case_ids = set(stored_case_ids) if isinstance(stored_case_ids, list) else set()
     for case_id, now in sorted((case_digests or {}).items()):
-        # Сверяются только кейсы текущей выборки, и только те, что прогон уже
-        # видел: новый кейс — вопрос списка `cases`, а не материала.
+        # Сверяются только кейсы текущей выборки. Кейса не было в прежнем
+        # `cases` вовсе — это новый кейс, дайджеста для сравнения нет, и это
+        # не дрейф (та ветка, для которой и написан комментарий ниже).
         was = stored_cases_material.get(case_id)
-        if was is not None and was != now:
+        if was is None:
+            if case_id in stored_case_ids:
+                # Кейс УЖЕ БЫЛ в прежнем `cases` (значит и у него уже есть
+                # result.json — прогон его видел), а записи в case_digests
+                # нет — потерянная или повреждённая запись, а не «прогон не
+                # видел кейс». Тихая доливка текущего дайджеста здесь
+                # задним числом утверждала бы, что старый result.json
+                # получен на текущем материале, хотя переизмерения не было
+                # (тот же инвариант полноты, что в
+                # cli.py::_require_same_case_material) — только `--rerun`
+                # чинит эту связь.
+                drift.append(f"case_digests.{case_id} (дайджест материала отсутствует в манифесте)")
+            continue
+        if was != now:
             drift.append(f"case_digests.{case_id} (материал кейса изменился)")
     if previous.get("corpus_digest") != digest:
         drift.append("corpus_digest")
