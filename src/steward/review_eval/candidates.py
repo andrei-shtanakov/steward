@@ -440,7 +440,7 @@ def draft_case(
     `CandidatesError`: это не пропуск, это решение разметчика.
     """
     slug = _repo_slug(repo)
-    ai_reviews = _ai_prosto_reviews(reviews)
+    ai_reviews = ai_prosto_reviews(reviews)
     if not ai_reviews:
         raise CandidatesError(f"{repo}#{pr}: нет ревью от {AI_PROSTO} — черновик не из чего делать")
     last = ai_reviews[-1]
@@ -799,8 +799,15 @@ def _covers_everything(matches: Sequence[re.Match[str]], text: str) -> bool:
     )
 
 
-def _ai_prosto_reviews(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """Ревью ai-prosto в порядке публикации (по `submitted_at`, затем `id`)."""
+def ai_prosto_reviews(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Ревью ai-prosto в порядке публикации (по `submitted_at`, затем `id`).
+
+    Публичная (не только для `draft_case`): `cli.py::_review_head_sha`
+    резолвит голову ревью от того же **последнего** элемента этой сортировки
+    — раздельные фильтр-и-сортировка в двух местах разошлись бы молча, если
+    порядок `reviews` от API не совпал с порядком публикации (находка
+    ревью-гейта на этой ветке).
+    """
     selected = [
         review
         for review in reviews

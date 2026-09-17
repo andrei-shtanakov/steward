@@ -455,16 +455,24 @@ def corpus_digest(cases: Sequence[Case]) -> str:
 
 def case_material_digest(case: Case) -> str:
     """``sha256:<hex>`` **неизменяемого материала** кейса: репо, PR, диапазон,
-    класс, `local_args`, ожидаемый исход. Разметка (defects/non_defects,
-    annotation, notes) сюда не входит: её менять после прогона можно и нужно,
-    а вот вердикт, полученный на `head_sha=H1`, нельзя пересчитывать по H2.
+    `local_args`, ожидаемый исход. Разметка (defects/non_defects, annotation,
+    notes) сюда не входит: её менять после прогона можно и нужно, а вот
+    вердикт, полученный на `head_sha=H1`, нельзя пересчитывать по H2.
+
+    ``class`` тоже не входит, хоть и не разметка: для `defective`/`clean` это
+    произведение от наличия дефектов, а документированный цикл adjudication
+    (§5) прямо разрешает дописывать пропущенный дефект в уже прогнанный кейс
+    без повторного вызова модели — ровно тот случай, где `clean` становится
+    `defective`. Пинать его в дайджесте значило бы запрещать этот переход
+    задним числом. Диапазон и `local_args`/`expected_outcome` уже пинуют всё,
+    что у `class: large` материально: непустой `local_args` допустим только
+    там, а гвардрейл держит `expected_outcome`.
     """
     material = {
         "repo": case.repo,
         "pr": case.pr,
         "base_sha": case.base_sha,
         "head_sha": case.head_sha,
-        "cls": case.cls,
         "local_args": list(case.local_args),
         "expected_outcome": case.expected_outcome,
     }

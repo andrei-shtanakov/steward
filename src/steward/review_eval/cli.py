@@ -32,6 +32,7 @@ from steward.review_eval.cache import CacheError, CacheUnavailable, materialize,
 from steward.review_eval.candidates import (
     AI_PROSTO,
     CandidatesError,
+    ai_prosto_reviews,
     commits_after,
     draft_case,
     fetch_commits,
@@ -152,8 +153,9 @@ def _require_same_case_material(
     if changed:
         typer.echo(
             f"config error: {where} — материал кейса изменился с момента прогона "
-            f"({', '.join(changed)}): repo/base_sha/head_sha/class/local_args пинуются "
-            "прогоном; перемерьте кейс (--rerun) или пересчитывайте прежнюю версию корпуса",
+            f"({', '.join(changed)}): repo/base_sha/head_sha/local_args/expected_outcome "
+            "пинуются прогоном; перемерьте кейс (--rerun) или пересчитывайте прежнюю версию "
+            "корпуса",
             err=True,
         )
         raise typer.Exit(_EXIT_CONFIG)
@@ -969,16 +971,15 @@ def _review_head_sha(
     которое ревьюер видел, и `head.sha` нужен только там, где маркера нет.
     Здесь оно повторено потому, что база (`resolve_review_base`) считается
     **до** черновика и от той же головы; разойдись эти два выбора — кейс
-    получил бы базу от одной головы и `head_sha` от другой.
+    получил бы базу от одной головы и `head_sha` от другой. Выбор головы
+    обязан идти через `ai_prosto_reviews` — ту же фильтрацию и сортировку
+    по `(submitted_at, id)`, что и `draft_case`, а не собственный порядок
+    `reviews`: GitHub не гарантирует его совпадения с порядком публикации.
     """
-    bodies = [
-        review.get("body")
-        for review in reviews
-        if _login(review) == AI_PROSTO and isinstance(review.get("body"), str)
-    ]
-    if not bodies:
+    ai_reviews = ai_prosto_reviews(reviews)
+    if not ai_reviews:
         raise CandidatesError(f"{repo}#{pr}: нет ревью от {AI_PROSTO} — черновик не из чего делать")
-    marker = review_head(str(bodies[-1]))
+    marker = review_head(str(ai_reviews[-1].get("body") or ""))
     if marker is not None:
         return marker
     head = pr_meta.get("head")

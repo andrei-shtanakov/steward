@@ -122,10 +122,14 @@ def _finding(*, severity: str = "major", line: int = 644) -> dict[str, Any]:
     }
 
 
-def _case_for(case_id: str) -> Any:
-    """`Case` по case_id тестового корпуса (материал совпадает с `_case_payload`)."""
+def _case_for(case_id: str, *, defects: bool = True) -> Any:
+    """`Case` по case_id тестового корпуса (материал совпадает с `_case_payload`).
+
+    `defects` выбирает исходный (на момент прогона) класс материала —
+    `defects=False` даёт `class: clean`, как и в `_case_payload`/`_corpus`.
+    """
     pr = int(case_id.rsplit("-", 1)[1])
-    payload = _case_payload(pr)
+    payload = _case_payload(pr, defects=defects)
     path = Path(tempfile.mkdtemp()) / f"{case_id}.yaml"
     path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8")
     return load_case(path)
@@ -141,12 +145,18 @@ def _write_run(
     repetitions: int = 1,
     matcher_version: int = MATCHER_VERSION,
     matcher_rules_digest: str | None = None,
+    case_material_defects: bool = True,
 ) -> RunManifest:
     """Артефакты прогона: `run.json`, `result.json` и sidecar-вердикты.
 
     Провенанс матчера по умолчанию — **настоящий** (`MATCHER_VERSION`,
     `rules_digest()`): иначе каждый пересчёт упирался бы в проверку дрейфа, и
     тесты проверяли бы её вместо того, что им нужно. Дрейф задаётся явно.
+
+    `case_material_defects` — исходный (на момент прогона) класс материала,
+    зашитый в `case_digests` манифеста; по умолчанию `True` (`defective`), как
+    и раньше. Тест перехода `clean` → `defective` ставит `False`, чтобы
+    манифест нёс дайджест ЧИСТОГО кейса, а корпус потом правился разметчиком.
     """
     labels = labels or [VARIANT]
     for case_id in case_ids:
@@ -192,7 +202,10 @@ def _write_run(
         kit={"commit": "c" * 40, "local_sh_sha256": "a" * 64},
         tools={"git": "git version 2.0", "claude": "claude 1.0", "codex": "unavailable"},
         git_config_digests={"andrei-shtanakov/steward": "sha256:" + "b" * 64},
-        case_digests={case_id: case_material_digest(_case_for(case_id)) for case_id in case_ids},
+        case_digests={
+            case_id: case_material_digest(_case_for(case_id, defects=case_material_defects))
+            for case_id in case_ids
+        },
         variants=[
             {
                 "label": label,
@@ -725,6 +738,73 @@ def test_corpus_candidates_writes_a_draft_into_the_corpus(
         "head_sha": HEAD,
         "pr_meta": {"base": {"sha": BASE}, "head": {"sha": HEAD}},
     }
+
+
+def test_corpus_candidates_picks_the_head_of_the_last_review_by_time_not_by_list_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Голова резолвится по последнему ревью **по времени публикации**, а не
+    по последнему элементу списка, который вернул `gh api` — тот порядок не
+    гарантирован. `_review_head_sha` и `draft_case` обязаны сойтись на одном и
+    том же ревью: разные головы дали бы кейсу базу от одного ревью и
+    `head_sha` от другого.
+    """
+    old_head = "6" * 40
+    new_head = "7" * 40
+
+    def body_of(head: str) -> str:
+        return f"{KIT_HEADER}\n\nНаходок нет.\n\n<!-- codex-terminal-review head={head} -->\n"
+
+    corpus = tmp_path / "corpus"
+    resolved: dict[str, Any] = {}
+
+    def fake_resolve(repo: str, pr_meta: Any, head_sha: str, *_a: Any, **_k: Any) -> str:
+        resolved.update(head_sha=head_sha)
+        return MERGE_BASE
+
+    monkeypatch.setattr(cli, "resolve_review_base", fake_resolve)
+    monkeypatch.setattr(
+        cli, "fetch_pr", lambda *_a, **_k: {"base": {"sha": BASE}, "head": {"sha": HEAD}}
+    )
+    monkeypatch.setattr(
+        cli,
+        "fetch_reviews",
+        # Порядок списка — обратный порядку публикации: новое (по времени)
+        # ревью стоит ПЕРВЫМ, старое — ПОСЛЕДНИМ. Раздельная сортировка в
+        # `_review_head_sha`/`draft_case` не заметила бы расхождения.
+        lambda *_a, **_k: [
+            {
+                "id": 2,
+                "user": {"login": "ai-prosto"},
+                "submitted_at": "2026-09-14T09:00:00Z",
+                "body": body_of(new_head),
+            },
+            {
+                "id": 1,
+                "user": {"login": "ai-prosto"},
+                "submitted_at": "2026-09-14T08:00:00Z",
+                "body": body_of(old_head),
+            },
+        ],
+    )
+    monkeypatch.setattr(cli, "fetch_commits", lambda *_a, **_k: [])
+    result = runner.invoke(
+        cli.app,
+        [
+            "corpus",
+            "candidates",
+            "--repo",
+            "andrei-shtanakov/steward",
+            "--pr",
+            "155",
+            "--corpus",
+            str(corpus),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    draft = load_case(corpus / "andrei-shtanakov.steward-155.yaml")
+    assert resolved["head_sha"] == new_head
+    assert draft.head_sha == new_head
 
 
 def test_corpus_candidates_resolves_the_base_from_the_pr_head_without_a_marker(
@@ -1410,6 +1490,57 @@ def test_metrics_recomputes_from_artifacts_after_annotation(tmp_path: Path) -> N
     metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["variants"][VARIANT]["status"] == "ok"
     assert "precision" in metrics["variants"][VARIANT]["metrics"]
+
+
+def test_metrics_recomputes_across_a_class_change_from_clean_to_defective(
+    tmp_path: Path,
+) -> None:
+    """Adjudication дописывает пропущенный дефект в `clean`-кейс — `class`
+    становится `defective` — и пересчёт по-прежнему разрешён (§5): `class` не
+    входит в неизменяемый материал, потому что для `clean`/`defective` он сам
+    произведение от наличия дефектов, а не независимый факт о диапазоне.
+    """
+    corpus = _corpus(tmp_path, 155, defects=False)
+    out = tmp_path / "run"
+    # Модель дефект пропустила: verdict без находок — обычный false negative,
+    # не «неразмеченная находка», поэтому очередь adjudication пуста с начала.
+    _write_run(out, ["andrei-shtanakov.steward-155"], findings=[], case_material_defects=False)
+
+    before = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+    assert before.exit_code == 0, before.output
+
+    # Разметчик находит пропущенный major-дефект руками и переводит кейс из
+    # `clean` в `defective` — ровно переход, который цикл §5 разрешает без
+    # повторного прогона.
+    payload = _case_payload(155)
+    payload["class"] = "defective"
+    payload["defects"] = [
+        {
+            "id": "D-andrei-shtanakov.steward-155-1",
+            "severity": "major",
+            "file": "scripts/review/local.sh",
+            "line_hint": 644,
+            "scenario": "PATH расширяется для умолчания",
+            "evidence": ["scripts/review/local.sh:644"],
+            "match": {
+                "files": ["scripts/review/local.sh"],
+                "line_window": 40,
+                "keywords_any": ["path", "расширяется"],
+            },
+        }
+    ]
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
+    )
+    append_registry([load_case(corpus / "andrei-shtanakov.steward-155.yaml")], corpus)
+
+    after = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+    assert after.exit_code == 0, after.output
+    metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+    # Дефект остался необнаруженным (модель ничего не находила) — recall = 0,
+    # а не отказ пересчёта: сам факт посчитанной метрики и есть проверка.
+    assert metrics["variants"][VARIANT]["status"] == "ok"
+    assert metrics["variants"][VARIANT]["metrics"]["blocking_recall"]["value"] == 0.0
 
 
 def test_metrics_exits_2_on_a_missing_git_binary(tmp_path: Path) -> None:

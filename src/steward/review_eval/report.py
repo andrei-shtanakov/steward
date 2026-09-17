@@ -53,7 +53,11 @@ def write_inside(run_dir: Path, name: str, text: str) -> Path:
     Ни один компонент от `run_dir` (включая его самого) до цели не симлинк, и
     сам файл не симлинк: `write_text` по ссылке пишет в её цель, и подготовленный
     каталог прогона портил бы произвольный файл вне него. Запись атомарна:
-    временный файл рядом, созданный эксклюзивно, затем `os.replace`.
+    временный файл рядом, созданный эксклюзивно, затем `os.replace`. Обычный
+    (не symlink) temp-файл, оставшийся от прогона, прерванного между
+    созданием temp-файла и `os.replace`, снимается и попытка создания
+    повторяется один раз — иначе то же детерминированное имя отказывало бы
+    навсегда после любого сбоя посередине записи.
     """
     root = Path(os.path.normpath(os.path.abspath(run_dir)))
     current = root.parent
@@ -69,6 +73,23 @@ def write_inside(run_dir: Path, name: str, text: str) -> Path:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(tmp, flags, 0o644)
+    except FileExistsError:
+        # Имя временного файла детерминировано (по `name`), поэтому обычный
+        # regular-файл, оставшийся после прежнего прогона, прерванного между
+        # `os.open` и `os.replace`, отказывал бы здесь вечно — до ручной
+        # уборки. `O_EXCL` даёт EEXIST по самому факту существования пути —
+        # для symlink на месте `tmp` тоже (в т.ч. висящего), цель значения не
+        # имеет. Убрать можно только regular-файл: symlink на месте `tmp` —
+        # тот же периметр, что и остальной `write_inside`, его не трогаем.
+        if tmp.is_symlink():
+            raise ReportError(
+                f"{tmp}: временный файл отчёта — символическая ссылка, не трогаем"
+            ) from None
+        tmp.unlink()
+        try:
+            descriptor = os.open(tmp, flags, 0o644)
+        except OSError as exc:
+            raise ReportError(f"{tmp}: не удалось создать временный файл отчёта: {exc}") from exc
     except OSError as exc:
         raise ReportError(f"{tmp}: не удалось создать временный файл отчёта: {exc}") from exc
     try:

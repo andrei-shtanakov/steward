@@ -1213,6 +1213,39 @@ def test_writers_refuse_a_symlinked_output_and_keep_the_target(tmp_path: Path, n
     assert external.read_text(encoding="utf-8") == "important"
 
 
+def test_write_inside_recovers_from_a_stale_regular_tmp_file(tmp_path: Path) -> None:
+    """Обычный (не symlink) `.metrics.json.tmp`, оставшийся после прогона,
+    прерванного между созданием temp-файла и `os.replace`, не блокирует
+    следующую запись навсегда: имя детерминировано (по имени цели), и без
+    восстановления `O_EXCL` отказывал бы на нём при каждой попытке.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".metrics.json.tmp").write_text("огрызок прежнего прогона", encoding="utf-8")
+
+    path = write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert path == run_dir / "metrics.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["variants"] == {"v": {"status": "no_gold"}}
+    assert not (run_dir / ".metrics.json.tmp").exists()
+
+
+def test_write_inside_refuses_a_symlinked_stale_tmp_file(tmp_path: Path) -> None:
+    """Симлинк на месте `.tmp` — не «обычный оставшийся файл»: тот же периметр,
+    что и у цели записи, — отказ, а не молчаливое снятие чужой ссылки.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    external = tmp_path / "victim.txt"
+    external.write_text("important", encoding="utf-8")
+    (run_dir / ".metrics.json.tmp").symlink_to(external)
+
+    with pytest.raises(ReportError, match="символическая ссылка"):
+        write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert external.read_text(encoding="utf-8") == "important"
+
+
 def test_writers_accept_a_symlinked_prefix_above_the_run_dir(tmp_path: Path) -> None:
     """Симлинк **выше** `run_dir` (macOS `/tmp` → `/private/tmp`) — не нарушение:
     та же политика, что у раннера — ссылки запрещены внутри каталога прогона.
