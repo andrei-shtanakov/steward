@@ -2173,6 +2173,10 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
     # путь, и только потом Windows-нормализация как запасной вариант.
     assert lines("back\\slash.md") == 2
     assert lines("./a.txt") == 3
+    # Композиция: `./` снят, backslash цел. Раньше `./`-префикс отключал
+    # сырой вариант целиком, а нормализованный уже терял backslash — ни один
+    # кандидат не находил существующий файл (ревью-находка minor, часть 3).
+    assert lines("./back\\slash.md") == 2
     # Каталог — не адрес строки: `git show <sha>:dir` печатает листинг дерева,
     # и evidence на каталог иначе считалась бы разрешимой (§9, D11).
     assert lines("nested") is None
@@ -2181,6 +2185,10 @@ def test_file_lines_at_counts_lines_and_reports_a_missing_object(tmp_path: Path)
     # outside repository» — без этой подписи в _MISSING_OBJECT_SIGNATURES
     # такая ссылка поднимала бы CacheError и роняла отчёт всего прогона.
     assert lines("../outside.py") is None
+    # NUL в пути — схемно допустимая строка, но `subprocess` не передаёт её
+    # в argv вовсе (`ValueError` до всякого exec, до git). Валидного
+    # git-пути с NUL не бывает — неразрешимая ссылка, не сбой инструмента.
+    assert lines("a\x00b.py") is None
 
     # Нет кэша (или негоден слаг репо) — спрашивать некого: это `CacheUnavailable`,
     # а не «файла нет». Метрики превращают его в непосчитанную метрику с

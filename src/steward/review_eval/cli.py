@@ -915,17 +915,42 @@ def _file_lines_at(
 
     def file_lines(raw_path: str) -> int | None:
         ensure_commit_materialized()
+        # NUL в argv `subprocess` не передаёт вовсе (`ValueError` до всякого
+        # exec): валидный по схеме путь ссылки — не факт, что представим как
+        # аргумент git. Валидного git-пути с NUL не бывает (NUL — разделитель
+        # записи в сыром формате tree), так что это неразрешимая ссылка,
+        # а не отказ инструмента.
+        if "\x00" in raw_path:
+            return None
         # Сначала **сырой** путь: литеральный backslash в имени — настоящий
-        # git-путь, и нормализация матчера (`\\` → `/`) уничтожила бы его.
-        # Нормализованный (`./app/a.py` → `app/a.py`) — запасной вариант.
+        # git-путь, и полная нормализация матчера (`\\` → `/`, снятый `./`)
+        # уничтожила бы его. Между сырым и полностью нормализованным — путь
+        # со снятым только `./` (backslash ещё цел): `./back\slash.md`
+        # иначе не находил бы существующий `back\slash.md` вовсе — сырой
+        # вариант целиком отключён префиксом `./`, а нормализованный уже
+        # потерял backslash. Три попытки по убыванию похожести на вход:
+        # сырой (если правдоподобен) → без `./` → полностью нормализованный.
         normalized = normalize_path(raw_path)
-        # `./x` и `a//b` git-путями не бывают (`relative path syntax` вне worktree),
-        # так что для них сырой запрос бессмыслен; backslash — бывает.
-        raw_is_plausible = not raw_path.startswith(("./", "../")) and "//" not in raw_path
-        path = raw_path if raw_is_plausible else normalized
+        dot_stripped = raw_path
+        while dot_stripped.startswith("./"):
+            dot_stripped = dot_stripped[2:]
+
+        # `./x`, `../x` и `a//b` git-путями не бывают (`relative path syntax`
+        # вне worktree) — запрос в такой форме заведомо бессмыслен, кроме
+        # самого последнего кандидата: тот всегда пробуется, даже
+        # неправдоподобным, чтобы отказ git (а не пропуск) назвал причину.
+        candidates: list[str] = []
+        for candidate in (raw_path, dot_stripped, normalized):
+            plausible = candidate == normalized or _plausible_git_path(candidate)
+            if candidate not in candidates and plausible:
+                candidates.append(candidate)
+
+        path = candidates[0]
         kind = run_git(["cat-file", "-t", f"{sha}:{path}"])
-        if kind.returncode != 0 and _is_missing_object(kind) and path != normalized:
-            path = normalized
+        for fallback in candidates[1:]:
+            if kind.returncode == 0 or not _is_missing_object(kind):
+                break
+            path = fallback
             kind = run_git(["cat-file", "-t", f"{sha}:{path}"])
         if kind.returncode != 0:
             if _is_missing_object(kind):
@@ -960,6 +985,17 @@ def _is_missing_object(result: subprocess.CompletedProcess[bytes]) -> bool:
         return False
     stderr = result.stderr.lower()
     return any(signature in stderr for signature in _MISSING_OBJECT_SIGNATURES)
+
+
+def _plausible_git_path(path: str) -> bool:
+    """Похож ли путь на настоящий git-pathspec, а не на заведомо мёртвый запрос.
+
+    `./x`, `../x` — «relative path syntax can't be used outside working
+    tree» вне worktree (наш кэш всегда bare); `a//b` — тоже не форма, которую
+    стоит спрашивать сырой. Ложноотрицательный ответ здесь не страшен: он
+    только пропускает бессмысленную попытку, а не путь как таковой.
+    """
+    return not path.startswith(("./", "../")) and "//" not in path
 
 
 def _git_error(result: subprocess.CompletedProcess[bytes]) -> str:
