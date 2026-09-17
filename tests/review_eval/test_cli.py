@@ -2305,20 +2305,14 @@ def test_metrics_exits_2_on_a_symlinked_report_artifact(tmp_path: Path) -> None:
     assert external.read_text(encoding="utf-8") == "important"
 
 
-def test_metrics_leaves_metrics_json_untouched_when_report_md_is_symlinked(
-    tmp_path: Path,
-) -> None:
-    """Отказ на `report.md` не должен успеть перезаписать `metrics.json`.
+def _run_with_a_recomputable_queue(tmp_path: Path) -> tuple[Path, Path, bytes]:
+    """Прогон с открытой очередью и уже зарегистрированным закрывающим
+    `non_defect` в корпусе (но метрики после него ещё не пересчитывались).
 
-    Раньше три писателя шли одним `try` без общей пред-проверки:
-    `write_metrics_json` (первый) успевал заменить `metrics.json` новыми
-    числами атомарным `os.replace` ДО того, как второй писатель наткнётся
-    на симлинк и оборвёт остальное — каталог прогона (единица копирования
-    в `docs/evidence/`, §7) оставался с артефактами от разных пересчётов,
-    хотя код 2 читается как «ничего не тронуто» (ревью-находка части 3,
-    minor). Очередь между двумя вызовами закрывается нарочно — иначе
-    пересчёт дал бы байт-идентичный `metrics.json`, и тест не отличил бы
-    «не записано» от «записано, но не изменилось».
+    Возвращает `(out, corpus, старый metrics.json)`: следующий пересчёт
+    закрыл бы очередь и дал бы другой `metrics.json` (status: `ok`), не
+    байт-идентичный `before`, — тесты атомарности комплекта записи иначе не
+    отличили бы «не записано» от «записано, но не изменилось».
     """
     corpus = _corpus(tmp_path, 155)
     out = tmp_path / "run"
@@ -2352,10 +2346,49 @@ def test_metrics_leaves_metrics_json_untouched_when_report_md_is_symlinked(
         yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
     )
     append_registry([load_case(corpus / "andrei-shtanakov.steward-155.yaml")], corpus)
+    return out, corpus, before
+
+
+def test_metrics_leaves_metrics_json_untouched_when_report_md_is_symlinked(
+    tmp_path: Path,
+) -> None:
+    """Отказ на `report.md` не должен успеть перезаписать `metrics.json`.
+
+    Раньше три писателя шли одним `try` без общей пред-проверки:
+    `write_metrics_json` (первый) успевал заменить `metrics.json` новыми
+    числами атомарным `os.replace` ДО того, как второй писатель наткнётся
+    на симлинк и оборвёт остальное — каталог прогона (единица копирования
+    в `docs/evidence/`, §7) оставался с артефактами от разных пересчётов,
+    хотя код 2 читается как «ничего не тронуто» (ревью-находка части 3,
+    minor).
+    """
+    out, corpus, before = _run_with_a_recomputable_queue(tmp_path)
     external = tmp_path / "victim.md"
     external.write_text("important", encoding="utf-8")
     (out / "report.md").unlink()
     (out / "report.md").symlink_to(external)
+
+    second = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert second.exit_code == 2, second.output
+    assert "символическая ссылка" in second.output
+    assert (out / "metrics.json").read_bytes() == before
+
+
+def test_metrics_leaves_metrics_json_untouched_when_the_report_md_tmp_file_is_symlinked(
+    tmp_path: Path,
+) -> None:
+    """Тот же инвариант, но симлинк — на месте `.report.md.tmp`, не самого
+    `report.md`: первая версия пред-проверки (`check_writable`) проверяла
+    только конечную цель, и симлинк на temp-пути `write_inside` проходил
+    незамеченным — отказ на нём происходил уже ПОСЛЕ `os.replace`
+    `metrics.json`, то самое смешанное состояние, которое пред-проверка
+    должна предотвращать (ревью-находка части 3, minor).
+    """
+    out, corpus, before = _run_with_a_recomputable_queue(tmp_path)
+    external = tmp_path / "victim.md"
+    external.write_text("important", encoding="utf-8")
+    (out / ".report.md.tmp").symlink_to(external)
 
     second = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
 

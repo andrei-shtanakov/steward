@@ -47,8 +47,20 @@ class ReportError(RuntimeError):
     """Отчёт не может быть записан: путь выводит запись за пределы каталога прогона."""
 
 
+def _check_no_symlink_on_path(root: Path, relative: str) -> None:
+    """Отказать, если `root/relative` (или что-то по пути к нему) — симлинк."""
+    current = root
+    for part in Path(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ReportError(
+                f"{current}: символическая ссылка на пути отчёта — запись только "
+                "внутри каталога прогона, по ссылкам отчёт не пишется"
+            )
+
+
 def check_writable(run_dir: Path, name: str) -> None:
-    """Отказать, если `run_dir/name` (или что-то по пути к нему) — симлинк.
+    """Отказать, если `run_dir/name` или его temp-путь — симлинк.
 
     Ровно проверка, которую `write_inside` делает перед записью, вынесенная
     отдельно: комплект из трёх артефактов отчёта (`metrics.json`, `report.md`,
@@ -61,19 +73,22 @@ def check_writable(run_dir: Path, name: str) -> None:
     них — тогда отказ происходит раньше первой записи, и код 2 действительно
     означает «ничего не тронуто», а не «половина перезаписана».
 
+    **Проверяется и `.{name}.tmp`, не только `name`.** Первая версия этой
+    функции проверяла только конечную цель — симлинк на месте
+    детерминированного temp-файла `write_inside` (тот, через который идёт
+    сама запись, `os.open(..., O_CREAT|O_EXCL)`) проходил незамеченным, и
+    отказ на нём случался уже ПОСЛЕ `os.replace` предыдущего артефакта — то
+    самое смешанное состояние, которое эта функция должна предотвращать
+    (ревью-находка части 3, minor: пред-проверка предыдущего раунда сама не
+    покрывала temp-путь).
+
     Не панацея от TOCTOU (симлинк может появиться после проверки, до записи)
     — тот же остаточный риск несёт и сам `write_inside`; это про упорядоченный
     отказ, а не про атомарность всех трёх файлов вместе.
     """
     root = Path(os.path.normpath(os.path.abspath(run_dir)))
-    current = root
-    for part in Path(name).parts:
-        current = current / part
-        if current.is_symlink():
-            raise ReportError(
-                f"{current}: символическая ссылка на пути отчёта — запись только "
-                "внутри каталога прогона, по ссылкам отчёт не пишется"
-            )
+    _check_no_symlink_on_path(root, name)
+    _check_no_symlink_on_path(root, f".{name}.tmp")
 
 
 def write_inside(run_dir: Path, name: str, text: str) -> Path:
