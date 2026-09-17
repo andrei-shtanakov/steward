@@ -295,6 +295,7 @@ def corpus_validate(
         "--reidentify",
         help="id через запятую, у которых смена ядра идентичности подтверждена",
     ),
+    git: str = typer.Option("git", "--git", help="бинарь git (проверка append-only реестра)"),
 ) -> None:
     """Проверить схему, уникальность id и реестр корпуса (код 2 при нарушении).
 
@@ -302,6 +303,12 @@ def corpus_validate(
     те, что ушли из корпуса (необратимо — id больше никому не достанется);
     `--reidentify` подтверждает, что под перечисленными id теперь другой
     дефект (сменилось ядро `kind` + `file` + `scenario`).
+
+    `--git` пред-проверяется и уходит в проверку append-only истории
+    `_ids.txt` (`check_registry`): без него на машине без `git` в PATH эта
+    проверка тихо выключается (`_git_text` не отличает «бинаря нет» от
+    «git тут ни при чём»), и испорченный реестр проходит кодом 0 — ровно
+    в той команде, которая для этого существует (ревью-находка части 3).
     """
     ids = _reidentify_ids(reidentify)
     if (retire_deleted or ids) and not register:
@@ -311,6 +318,7 @@ def corpus_validate(
         )
         raise typer.Exit(_EXIT_CONFIG)
     try:
+        _require_git(git)
         if register:
             # Регистрация идёт по корпусу, прошедшему **все** межфайловые
             # проверки (`load_cases`: дубликаты case_id и id записей), но **без**
@@ -327,7 +335,7 @@ def corpus_validate(
             # цированные строки этот список не называет вовсе — у append_registry
             # нет для них отдельного канала, и здесь это не восполняется.
             retiring = append_registry(
-                drafts, corpus, retire_deleted=retire_deleted, reidentify=ids
+                drafts, corpus, retire_deleted=retire_deleted, reidentify=ids, git=git
             )
             if retiring:
                 verb = (
@@ -336,7 +344,10 @@ def corpus_validate(
                     else "без кейса, кандидаты на списание (--retire-deleted)"
                 )
                 typer.echo(f"реестр: {verb}: {', '.join(retiring)}")
-        cases = load_corpus(corpus)
+        cases = load_corpus(corpus, git=git)
+    except RunnerError as error:
+        typer.echo(f"config error: {error}", err=True)
+        raise typer.Exit(_EXIT_CONFIG) from error
     except CorpusError as error:
         typer.echo(f"corpus invalid: {error}", err=True)
         raise typer.Exit(_EXIT_CONFIG) from error
@@ -619,6 +630,15 @@ def compare_runs(
     сравниваемого варианта не измерена по-настоящему: открытая очередь
     adjudication (`pending_adjudication`) или `unexpected_outcome`, — иначе
     незавершённое сравнение выходило бы кодом 0.
+
+    **Провенанс обоих прогонов печатается до чисел** (кит, `corpus_digest`) —
+    как это уже делает шапка `report.md` для одного прогона. Разница в
+    `kit.commit`/`corpus_digest` между A и B не отвергается (сравнение кита
+    поверх прогонов — легитимный сценарий сам по себе), но именуется явным
+    предупреждением: без этого разница, вызванная правкой промпта кита между
+    двумя прогонами, читалась бы как разница между моделями — то самое
+    решение, которое `review-kit-model-selection` требует принимать «только
+    по eval», а не по догадке.
     """
     try:
         _require_git(git)
@@ -632,15 +652,19 @@ def compare_runs(
 
     # Сравнение — такой же пересчёт, как `metrics`, только по двум прогонам:
     # дрейф матчера на любой стороне делает числа несравнимыми с их шапками.
+    manifests: dict[str, Mapping[str, object]] = {}
     for label, run_dir in (("A", run_a), ("B", run_b)):
+        manifest = _load_manifest(run_dir)
+        manifests[label] = manifest
         _require_same_case_material(
-            _load_manifest(run_dir), cases, where=f"прогон {label} ({run_dir / 'run.json'})"
+            manifest, cases, where=f"прогон {label} ({run_dir / 'run.json'})"
         )
         _recompute_provenance(
-            _load_manifest(run_dir),
+            manifest,
             allow_drift=allow_matcher_drift,
             where=f"прогон {label} ({run_dir / 'run.json'})",
         )
+    _echo_compare_provenance(manifests["A"], manifests["B"])
 
     try:
         evals_a = _evaluate(run_a, cases, cache_root=cache, git=git)
@@ -1046,6 +1070,38 @@ def _comparisons(
     return {
         f"{second} vs {first}": compare(dict(summaries[first]), dict(summaries[second]), paired)
     }
+
+
+def _echo_compare_provenance(
+    manifest_a: Mapping[str, object], manifest_b: Mapping[str, object]
+) -> None:
+    """Печатает кит/`corpus_digest` A и B до чисел; предупреждает при расхождении.
+
+    Ни `_require_same_case_material`, ни `_recompute_provenance` не читают
+    `kit`/`corpus_digest` прогонов ДРУГ ПРОТИВ ДРУГА (только против текущего
+    кода/корпуса каждый по отдельности) — `compare` мог опубликовать разницу
+    чисел, целиком вызванную правкой кита между прогонами A и B, и она
+    читалась бы как разница между сравниваемыми вариантами (ревью-находка
+    части 3, major/medium). Расхождение не отвергается кодом 2: сравнение
+    прогонов на разных китах — легитимный сценарий сам по себе (например
+    «помогла ли правка промпта»), просто не тот, который `compare`
+    документирует как основной.
+    """
+    commits: dict[str, object] = {}
+    digests: dict[str, object] = {}
+    for label, manifest in (("A", manifest_a), ("B", manifest_b)):
+        kit = manifest.get("kit")
+        commit = kit.get("commit") if isinstance(kit, Mapping) else None
+        digest = manifest.get("corpus_digest")
+        commits[label] = commit
+        digests[label] = digest
+        typer.echo(f"{label}: run_id={manifest.get('run_id')} kit={commit} corpus_digest={digest}")
+    if commits["A"] != commits["B"] or digests["A"] != digests["B"]:
+        typer.echo(
+            "внимание: A и B измерены разным китом и/или корпусом — разница чисел "
+            "может быть вызвана этим, а не сравниваемым вариантом",
+            err=True,
+        )
 
 
 def _pairs(left: Sequence[CaseEval], right: Sequence[CaseEval]) -> list[tuple[CaseEval, CaseEval]]:

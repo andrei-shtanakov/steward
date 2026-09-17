@@ -11,7 +11,7 @@
 Команды:
 
 ```
-review-eval corpus validate [--corpus DIR] [--register [--retire-deleted] [--reidentify ID,…]]
+review-eval corpus validate [--corpus DIR] [--git PATH] [--register [--retire-deleted] [--reidentify ID,…]]
 review-eval corpus candidates --repo R --pr N [--corpus DIR] [--out PATH] [--force]   # сеть
 review-eval corpus materialize [--corpus DIR] [--cache DIR] [--workspace-root DIR]  # сеть
 review-eval run --corpus DIR --variant H:M[:E] --out DIR [...]              # всегда офлайн

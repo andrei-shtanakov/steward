@@ -287,6 +287,60 @@ def test_corpus_validate_reports_a_valid_corpus(tmp_path: Path) -> None:
     assert corpus_digest(load_corpus(corpus)) in result.output
 
 
+def test_corpus_validate_exits_2_on_a_missing_git_binary(tmp_path: Path) -> None:
+    """`--git` пред-проверяется у `corpus validate` так же, как у остальных
+    команд — раньше у неё не было флага вовсе, и append-only проверка
+    реестра всегда шла умолчанием `"git"` из PATH.
+    """
+    corpus = _corpus(tmp_path, 155)
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "validate", "--corpus", str(corpus), "--git", "/nonexistent/git"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "--git" in result.output
+    assert "/nonexistent/git" in result.output
+
+
+def test_corpus_validate_passes_git_through_to_load_corpus_and_append_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--git` доходит до `load_corpus`/`append_registry`, а не только до
+    предпроверки `_require_git`: раньше append-only проверка истории
+    `_ids.txt` всегда шла непроверенным умолчанием `"git"` из PATH,
+    независимо от `--git` (ревью-находка части 3).
+    """
+    corpus = _corpus(tmp_path, 155)
+    git_path = shutil.which("git")
+    assert git_path is not None
+    real_load_corpus = cli.load_corpus
+    real_append_registry = cli.append_registry
+    load_corpus_calls: list[dict[str, Any]] = []
+    append_registry_calls: list[dict[str, Any]] = []
+
+    def load_corpus_spy(directory: Path, **kwargs: Any) -> Any:
+        load_corpus_calls.append(kwargs)
+        return real_load_corpus(directory, **kwargs)
+
+    def append_registry_spy(cases: Any, directory: Path, **kwargs: Any) -> Any:
+        append_registry_calls.append(kwargs)
+        return real_append_registry(cases, directory, **kwargs)
+
+    monkeypatch.setattr(cli, "load_corpus", load_corpus_spy)
+    monkeypatch.setattr(cli, "append_registry", append_registry_spy)
+
+    result = runner.invoke(
+        cli.app,
+        ["corpus", "validate", "--corpus", str(corpus), "--register", "--git", git_path],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert load_corpus_calls and load_corpus_calls[0].get("git") == git_path
+    assert append_registry_calls and append_registry_calls[0].get("git") == git_path
+
+
 def test_corpus_validate_exits_2_on_an_unregistered_id(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     (corpus / "_ids.txt").write_text("", encoding="utf-8")
@@ -1145,6 +1199,53 @@ def test_run_exits_2_on_an_unsupported_harness_and_on_no_variant(
     assert "хотя бы один --variant" in none.output
 
 
+def test_run_exits_2_on_a_non_positive_repetitions_or_jobs(tmp_path: Path) -> None:
+    """`--repetitions 0`/`--jobs 0` — конфигурация (код 2), не пустой прогон.
+
+    `run_all` уже отвергает и то, и другое (`repetitions must be >= 1`,
+    `jobs must be >= 1`) до любой работы с worktree — но до этого теста ни
+    один тест CLI или раннера не проверял это сквозным вызовом; ревью-заход
+    части 3 заподозрил здесь молчаливый пустой прогон кодом 0, оказавшийся
+    ложным (guard уже стоит), и тест фиксирует фактическое, уже верное
+    поведение, чтобы предположение не повторялось.
+    """
+    corpus = _corpus(tmp_path, 155)
+
+    zero_repetitions = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--corpus",
+            str(corpus),
+            "--variant",
+            VARIANT,
+            "--out",
+            str(tmp_path / "r1"),
+            "--repetitions",
+            "0",
+        ],
+    )
+    assert zero_repetitions.exit_code == 2, zero_repetitions.output
+    assert "repetitions must be >= 1" in zero_repetitions.output
+
+    zero_jobs = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--corpus",
+            str(corpus),
+            "--variant",
+            VARIANT,
+            "--out",
+            str(tmp_path / "r2"),
+            "--jobs",
+            "0",
+        ],
+    )
+    assert zero_jobs.exit_code == 2, zero_jobs.output
+    assert "jobs must be >= 1" in zero_jobs.output
+
+
 def test_run_exits_2_when_the_object_is_not_in_the_cache(
     tmp_path: Path, stub_kit: KitUnderTest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1991,6 +2092,33 @@ def test_compare_prints_a_table_per_common_variant(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert f"## {VARIANT}" in result.output
     assert "blocking_recall" in result.output
+
+
+def test_compare_echoes_provenance_and_warns_on_a_kit_mismatch(tmp_path: Path) -> None:
+    """`compare` печатает кит/`corpus_digest` A и B и предупреждает при расхождении.
+
+    Ни `_require_same_case_material`, ни `_recompute_provenance` не сверяют
+    `kit`/`corpus_digest` двух прогонов друг с другом — раньше разница
+    чисел, целиком вызванная правкой кита между A и B, читалась бы как
+    разница между вариантами, ничем в выводе не отличаясь от настоящего
+    измерения (ревью-находка части 3, major/medium).
+    """
+    corpus = _corpus(tmp_path, 155)
+    run_a = tmp_path / "a"
+    run_b = tmp_path / "b"
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], findings=[])
+    manifest_b_path = run_b / "run.json"
+    manifest_b = json.loads(manifest_b_path.read_text(encoding="utf-8"))
+    manifest_b["kit"]["commit"] = "d" * 40
+    manifest_b_path.write_text(json.dumps(manifest_b), "utf-8")
+
+    result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
+
+    assert result.exit_code == 0, result.output
+    assert "c" * 40 in result.output
+    assert "d" * 40 in result.output
+    assert "внимание: A и B измерены разным китом" in result.output
 
 
 def test_compare_names_variants_outside_the_comparison(tmp_path: Path) -> None:
