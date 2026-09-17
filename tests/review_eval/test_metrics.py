@@ -544,6 +544,51 @@ def test_evaluate_case_raises_when_a_not_required_usage_sidecar_is_missing_too(
         evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
 
 
+def test_evaluate_case_tolerates_an_unparseable_usage_sidecar_when_not_required(
+    tmp_path: Path,
+) -> None:
+    """`usage.json` существует (раннер его записал), но не разбирается как
+    JSON, при `cost_status: unavailable` — это штатный, уже
+    классифицированный раннером исход (обрыв клиента посреди записи), не
+    новая порча: метрика просто не считается (`None`), а не `MetricsError`.
+
+    Раннер выставляет `usage_path` по непустоте файла (`_is_non_empty`), не
+    по годности его JSON — `_has_cost` на неразобравшемся usage уже дал
+    `cost_status: unavailable` на записи (`test_run_case_cost_status`).
+    Приёмочное ревью части 3 поймало здесь регрессию: округление проверки
+    "объявленный sidecar обязан существовать" (правка чуть выше) до
+    "обязан ЕЩЁ И читаться" уронило бы штатный `cost_status: unavailable`
+    отчётом кодом 3 вместо посчитанных `cost_unavailable_cases`.
+    """
+    case = make_case()
+    write_run(tmp_path, verdict={"findings": [], "note": "ok"})
+    (tmp_path / "usage.json").write_text("{not json", encoding="utf-8")
+    result = result_for(case, usage_path="usage.json", cost_status="unavailable")
+
+    ev = evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
+
+    assert ev.usage is None
+
+
+def test_evaluate_case_tolerates_an_unparseable_verdict_sidecar_when_not_required(
+    tmp_path: Path,
+) -> None:
+    """Тот же штатный случай, но для `verdict.json` при `outcome:
+    invalid_verdict`: файл есть и непуст (кит вернул мусор), раннер уже
+    классифицировал исход — `_load_sidecar` не требует годного JSON, когда
+    `required=False` (`outcome != "verdict"`).
+    """
+    case = make_case(defects=[make_defect()])
+    write_run(tmp_path)  # verdict не передан write_run — пишем сырой мусор сами
+    (tmp_path / "verdict.json").write_text("{not json", encoding="utf-8")
+    result = result_for(case, outcome="invalid_verdict", exit_code=2)
+
+    ev = evaluate_case(case, result, tmp_path, file_lines=lambda path: 40)
+
+    assert ev.findings == ()
+    assert ev.match is None
+
+
 # ---------------------------------------------------------------------------
 # precision_lower_bound / precision
 # ---------------------------------------------------------------------------

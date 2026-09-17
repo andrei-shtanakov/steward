@@ -507,35 +507,44 @@ def _load_sidecar(
     what: str,
     where: str,
 ) -> Mapping[str, object] | None:
-    """Sidecar-JSON как объект; ``None`` только если путь не был объявлен.
+    """Sidecar-JSON как объект; ``None``, если путь не объявлен или (только
+    когда `required=False`) объявлен, но содержимое непригодно.
 
     `required` — исход прогона обещает **содержимое** этого файла (`verdict`
     обещает вердикт, `cost_status: available` обещает usage с числом): при
     `relative is None` (путь не объявлен вовсе) непредоставленное содержимое
     — `MetricsError`, а без `required` — легитимное «метрика не считается».
 
-    **Объявленный путь (`relative is not None`) обязан читаться всегда,
-    независимо от `required`.** Раннер выставляет `verdict_path`/`usage_path`
-    только когда файл на момент записи `result.json` был непуст
-    (`_is_non_empty`); отсутствие или порча файла позже — рассогласование
-    `result.json` с диском (данные потеряны или подменены), а не «метрика
-    просто не считается». Раньше это давало разные коды выхода в
-    зависимости от `required` — то есть от значения `cost_status`/`outcome`,
-    к самому факту потери файла отношения не имеющего (ревью-находка части
-    3, minor): `usage_path` без файла при `cost_status: available` шёл
-    кодом 3 отсюда, а тот же самый пропавший файл при `cost_status:
-    unavailable` — кодом 2 из отдельной проверки в `runner.load_results`.
-    Теперь потеря объявленного sidecar — всегда `MetricsError` здесь,
-    `load_results` эту проверку не дублирует вовсе.
+    **Существование объявленного пути (`relative is not None`) проверяется
+    всегда, независимо от `required` — а вот годность содержимого лишь
+    когда `required`.** Раннер выставляет `verdict_path`/`usage_path` по
+    непустоте (`_is_non_empty`), но **не по годности** JSON: `cost_status:
+    unavailable`/`outcome: invalid_verdict` — штатные исходы, при которых
+    файл записан, непуст, но не разобрался (`_has_cost`/verdict-схема). Тот
+    файл ОБЯЗАН существовать и при `required=False` (данные не должны
+    ИСЧЕЗАТЬ после того, как раннер их записал), но раз он изначально был
+    сохранён как «содержимое не пригодилось» — негодный JSON тут не порча,
+    а сам этот заранее известный исход, и `required=False` обязано вернуть
+    `None`, не `MetricsError` (иначе штатный исход `cost_status: unavailable`/
+    `invalid_verdict` ронял бы весь отчёт кодом 3 — находка приёмочного
+    ревью части 3, major, поймана раньше, чем регрессия успела попасть в
+    отчёты по-настоящему). Отсутствие ФАЙЛА (не просто негодного содержимого)
+    — рассогласование `result.json` с диском в любом случае, и это
+    `MetricsError` независимо от `required`: `load_results` эту проверку не
+    дублирует.
     """
     if relative is None:
         if required:
             raise MetricsError(f"{where}: исход требует {what}, но путь в result.json пуст")
         return None
     path = out_dir / relative
+    if not path.is_file():
+        raise MetricsError(f"{where}: {path} не найден, хотя объявлен в result.json")
     payload = _read_json(path)
     if not isinstance(payload, Mapping):
-        raise MetricsError(f"{where}: {path} не читается как JSON-объект")
+        if required:
+            raise MetricsError(f"{where}: {path} не читается как JSON-объект")
+        return None
     return payload
 
 
