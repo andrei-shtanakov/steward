@@ -624,6 +624,38 @@ read_scope_key() {
     return 0
 }
 
+# Repo-owned политика: репозиторий может ВЕРНУТЬ себе прозу, но не спрятать
+# новое — расширение skip-набора живёт только в пиненом правиле. Читается из
+# BASE (`git show "$mb:путь"`), не из дерева: иначе PR отключал бы собственное
+# ревью. Отсутствие файла — штатное умолчание `off`.
+scope_cfg_path=".github/codex/review-scope.env"
+prose_review=off
+prose_review_paths=""
+if scope_cfg=$(git show "$mb:$scope_cfg_path" 2>/dev/null); then
+    prose_review=$(printf '%s\n' "$scope_cfg" \
+        | sed -n 's/^[[:space:]]*PROSE_REVIEW=//p' | tr -d '[:space:]')
+    prose_review="${prose_review:-off}"
+    prose_review_paths=$(printf '%s\n' "$scope_cfg" \
+        | sed -n 's/^[[:space:]]*PROSE_REVIEW_PATHS=//p' | tr '\n' ' ')
+    case "$prose_review" in
+        off|all) ;;
+        paths)
+            [ -n "$prose_review_paths" ] || {
+                echo "PROSE_REVIEW=paths без PROSE_REVIEW_PATHS в" \
+                    "$scope_cfg_path — нечего возвращать ревьюеру." >&2
+                exit 2
+            } ;;
+        *)
+            # Неизвестное значение — отказ, а не умолчание: неразобранный
+            # конфиг означает «мы не знаем, что репо велел ревьюить», и
+            # читать это в пользу МЕНЬШЕГО ревью нельзя.
+            echo "неизвестное PROSE_REVIEW='$prose_review' в" \
+                "$scope_cfg_path (ожидалось off|paths|all)." >&2
+            exit 2 ;;
+    esac
+fi
+[ "$prose_review" != "all" ] || include_prose=1
+
 prose_globs=""
 code_globs=""
 if [ "$include_prose" -eq 1 ]; then
@@ -660,6 +692,9 @@ fi
 # чтобы остаться шаблоном для `case`; снимается перед КАЖДЫМ возвратом.
 path_is_prose() {
     set -f
+    for _g in $prose_review_paths; do
+        case "$1" in $_g) set +f; return 1 ;; esac
+    done
     for _g in $code_globs; do
         case "$1" in $_g) set +f; return 1 ;; esac
     done

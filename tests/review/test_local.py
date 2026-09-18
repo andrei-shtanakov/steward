@@ -2846,3 +2846,123 @@ def test_scope_rules_pointing_at_a_directory_is_treated_as_unreadable(
     )
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" in dump.read_text()
+
+
+# --- Repo-owned review-scope.env: только в сторону большего ревью ----------
+#
+# Инвариант этого блока (в отличие от prose-paths.env выше): репозиторий
+# может ВЕРНУТЬ себе показ уже спрятанного, но расширить skip-набор —
+# никогда. Конфиг читается из BASE, не из HEAD/рабочего дерева — иначе PR
+# отключал бы собственное ревью, добавляя PROSE_REVIEW=all самому себе.
+# Assертам ниже нужен РЕАЛЬНЫЙ prose-paths.env (REAL_SCOPE_RULES) — тестовое
+# умолчание NO_SCOPE_RULES ничего не прячет само по себе, и без боевого
+# правила разница «конфиг применился / не применился» была бы неразличима.
+
+
+def _write_scope_config(remote: Path, body: str) -> None:
+    """Конфиг обязан прийти из BASE — коммитим прямо на `remote` из
+    `make_repo`, не на клон.
+
+    local.sh резолвит base как `refs/remotes/origin/HEAD`, а local — просто
+    клон, чей remote-tracking `origin/master` не сдвигается сам по себе:
+    коммит на локальный `master` клона туда не попал бы, пока `origin/
+    master` не подтянется. Коммитить сразу на `remote` и звать `run_local`
+    с `--fetch` — тот же приём, что уже применяют соседние тесты свежести
+    базы (test_fetch_updates_stale_base_and_suppresses_warning и другие)
+    выше по файлу; `remote` при этом НЕ bare, но прямой локальный коммит
+    внутри него не задет denyCurrentBranch — тот ловит только входящий
+    push на текущую ветку, не работу изнутри самого репозитория."""
+    cfg = remote / ".github" / "codex" / "review-scope.env"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(body, encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-m", "scope config")
+
+
+def test_prose_review_paths_returns_named_prose_to_the_model(
+    tmp_path: Path,
+) -> None:
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(
+        remote, "PROSE_REVIEW=paths\nPROSE_REVIEW_PATHS=authored/*\n"
+    )
+    # `work` обязана ВЕТВИТЬСЯ от уже подтянутого `origin/master` (после
+    # `fetch`), не от старого локального `master`: иначе merge-base между
+    # `origin/master` и `work` — общий предок ДО коммита конфига, а не он
+    # сам, и `git show "$mb:…"` конфиг не найдёт — тот же класс промаха,
+    # что и с самим push (см. `_write_scope_config`).
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "authored").mkdir(exist_ok=True)
+    (repo / "authored" / "rule.md").write_text("prose\n", encoding="utf-8")
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "other.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo,
+        stub,
+        "--fetch",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 0, res.stderr
+    seen = dump.read_text()
+    assert "authored/rule.md" in seen
+    assert "docs/other.md" not in seen
+
+
+def test_prose_review_all_disables_the_filter(tmp_path: Path) -> None:
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(remote, "PROSE_REVIEW=all\n")
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo,
+        stub,
+        "--fetch",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()
+
+
+def test_unknown_prose_review_value_is_config_error(tmp_path: Path) -> None:
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(remote, "PROSE_REVIEW=maybe\n")
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code")
+    stub = make_stub(tmp_path, "exit 0")
+    res = run_local(repo, stub, "--fetch")
+    assert res.returncode == 2, res.stdout
+    assert "PROSE_REVIEW" in res.stderr
+
+
+def test_config_from_head_does_not_apply_to_its_own_pr(
+    tmp_path: Path,
+) -> None:
+    """Конфиг читается из base: PR не отключает собственное ревью."""
+    _, repo = make_repo(tmp_path)
+    git(repo, "checkout", "-qb", "work")
+    _write_scope_config(repo, "PROSE_REVIEW=all\n")
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose + config")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" not in dump.read_text()
