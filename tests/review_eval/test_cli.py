@@ -743,13 +743,16 @@ def test_repo_corpus_is_valid_and_registered() -> None:
         if defect.severity in ("major", "blocker")
     ]
     assert len(blocking) == 3, "знаменатель blocking_recall обязан быть непустым"
-    # Путь находки обязан входить в `match.files` gold, поэтому «всё в Markdown»
-    # означает «находка в коде не поднимает recall никогда».
-    assert any(
-        not path.endswith(".md")
-        for defect in blocking
-        for path in (*defect.match.files, defect.file)
-    ), "в знаменателе blocking_recall обязан быть дефект вне прозы"
+    # Смотрим ТОЛЬКО на `match.files`: достижимость gold находкой определяет
+    # исключительно он (`matcher._edge` сверяет нормализованный путь находки с
+    # `match.files` и `defect.file` не читает вовсе), а alias-пути законно
+    # расходятся с `file`. Включать `defect.file` в дизъюнкцию нельзя: тогда
+    # правка одного `match.files` на markdown-алиас незаметно убивала бы само
+    # свойство, а тест оставался бы зелёным — ровно та регрессия, которую он
+    # обязан ловить (находка ревью-контура на PR #170).
+    assert any(not path.endswith(".md") for defect in blocking for path in defect.match.files), (
+        "в знаменателе blocking_recall обязан быть дефект, достижимый находкой вне прозы"
+    )
     # Опровергнутая при адъюдикации находка живёт как известный ложный класс:
     # её повтор классифицируется `known_fp`, а не висит в очереди (D8).
     assert sum(len(case.non_defects) for case in cases) == 1
