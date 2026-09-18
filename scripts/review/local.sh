@@ -678,8 +678,28 @@ if scope_cfg=$(git show "$mb:$scope_cfg_path" 2>/dev/null); then
             "нельзя читать в пользу МЕНЬШЕГО ревью." >&2
         exit 2
     fi
-    prose_review_paths=$(printf '%s\n' "$scope_cfg" \
-        | sed -n 's/^[[:space:]]*PROSE_REVIEW_PATHS=//p' | tr '\n' ' ')
+    # Тот же приём, что у PROSE_REVIEW выше — не четвёртый одноразовый
+    # sed/tr в этом файле. Дубль `PROSE_REVIEW_PATHS` раньше молча склеивал
+    # ОБА списка глобов в один через `tr '\n' ' '` (направление безопасное —
+    # больше ревью, не меньше — но это последний ключ блока, разобранный
+    # иначе троих соседей, а кит уезжает в 24 репо: дешевле закрыть сейчас
+    # одной правкой, чем объяснять потом молчаливое расхождение).
+    #
+    # "undefined" и "empty" здесь НЕ отдельный отказ — обе оставляют
+    # `prose_review_paths` пустым, и при `PROSE_REVIEW=paths` это ловит уже
+    # существующая проверка ниже ("нечего возвращать ревьюеру"); заводить
+    # для них второе сообщение о том же факте значило бы дублировать его.
+    # "duplicate" — единственная НАСТОЯЩАЯ поломка ключа, отказ немедленно,
+    # тем же кодом и тем же каналом (STDERR), что у PROSE_REVIEW.
+    if read_scope_key PROSE_REVIEW_PATHS "$_scope_cfg_lines" "$scope_cfg_path"
+    then
+        prose_review_paths="$scope_key_value"
+    elif [ "$scope_key_status" = "duplicate" ]; then
+        echo "review-scope.env ($scope_cfg_path): PROSE_REVIEW_PATHS —" \
+            "дубль ключа (определён больше одного раза) — какое значение" \
+            "настоящее, решает человек, не разбор." >&2
+        exit 2
+    fi
     case "$prose_review" in
         off|all) ;;
         paths)

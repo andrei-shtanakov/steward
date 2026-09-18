@@ -2968,6 +2968,31 @@ def test_duplicate_prose_review_key_is_a_named_config_error(
     assert "дубл" in res.stderr.lower()
 
 
+def test_duplicate_prose_review_paths_key_is_a_named_config_error(
+    tmp_path: Path,
+) -> None:
+    """Тот же приём, что у дубля PROSE_REVIEW: направление отказа
+    безопасное (склеенные списки глобов означают БОЛЬШЕ ревью, не меньше),
+    но последний ключ блока не разбирается иначе троих соседей."""
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(
+        remote,
+        "PROSE_REVIEW=paths\n"
+        "PROSE_REVIEW_PATHS=authored/*\n"
+        "PROSE_REVIEW_PATHS=docs/*\n",
+    )
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code")
+    stub = make_stub(tmp_path, "exit 0")
+    res = run_local(repo, stub, "--fetch")
+    assert res.returncode == 2, res.stdout
+    assert "PROSE_REVIEW_PATHS" in res.stderr
+    assert "дубл" in res.stderr.lower()
+
+
 def test_config_from_head_does_not_apply_to_its_own_pr(
     tmp_path: Path,
 ) -> None:
