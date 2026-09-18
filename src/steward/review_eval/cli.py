@@ -202,8 +202,9 @@ def _require_same_case_material(
         typer.echo(
             f"config error: {where} — материал кейса изменился с момента прогона "
             f"({', '.join(changed)}): repo/base_sha/head_sha/local_args/expected_outcome "
-            "пинуются прогоном; перемерьте кейс (--rerun) или пересчитывайте прежнюю версию "
-            "корпуса",
+            "пинуются прогоном; пересчитывайте прежнюю версию корпуса, либо перемерьте "
+            "прогон в новом --out (частичный --rerun одного кейса откажет, пока в "
+            "каталоге остаются результаты прочих кейсов)",
             err=True,
         )
         raise typer.Exit(_EXIT_CONFIG)

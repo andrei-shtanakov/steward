@@ -1949,6 +1949,39 @@ def test_run_all_rerun_of_a_subset_keeps_the_other_cases(tmp_path: Path) -> None
     assert stored["started"] == started_before
 
 
+def test_run_all_refuses_a_partial_rerun_when_case_material_changed_and_others_remain(
+    tmp_path: Path,
+) -> None:
+    """Частичный `--rerun` одного кейса с изменившимся материалом — тупик, если
+
+    в каталоге остались результаты прочих кейсов вне выборки (ревью-находка
+    части 3, minor/medium): `metrics`/`compare` советуют «перемерьте кейс
+    (--rerun)» на отказе «материал кейса изменился», но на прогоне из >1
+    кейса эта же команда сама отказывает — драйф провенанса (изменившийся
+    `case_digests.<id>`) плюс непокрытый выборкой остаток (`--cases` из
+    одного кейса не накрывает прочие) дают `drift and leftover` (runner.py).
+    Сообщение исправлено — называет новый `--out` или полный `--rerun`; этот
+    тест запирает сам тупик, которого раньше не проверял ни один тест ни в
+    одном направлении.
+    """
+    cases, out_dir, cache_root, kit, counter, digest, env_base = _two_case_run(tmp_path)
+    changed = dataclasses.replace(cases[0], expected_outcome="guardrail_rejection")
+    assert _calls(counter) == 2
+
+    with pytest.raises(RunnerError, match="начните прогон в другом --out"):
+        run_all(
+            [changed],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=corpus_digest([changed, cases[1]]),
+            rerun=True,
+        )
+
+
 def test_run_all_resume_of_a_subset_runs_only_its_missing_reps(tmp_path: Path) -> None:
     """Доливка подмножества добирает только его недостающие повторения.
 

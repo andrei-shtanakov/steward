@@ -1993,6 +1993,34 @@ def test_metrics_refuses_when_the_case_material_changed_since_the_run(tmp_path: 
     assert "andrei-shtanakov.steward-155" in result.output
 
 
+def test_metrics_names_a_reachable_fix_when_case_material_changed_on_a_multi_case_run(
+    tmp_path: Path,
+) -> None:
+    """Отказ «материал кейса изменился» не должен обещать голый `--rerun`.
+
+    На прогоне из >1 кейса частичный `--rerun` изменившегося кейса всегда
+    натыкается на `drift and leftover` (см. `test_run_all_refuses_a_partial_
+    rerun_when_case_material_changed_and_others_remain` в `test_runner.py`):
+    в каталоге остаются результаты прочих кейсов вне выборки. Сообщение
+    обязано называть путь, который действительно доступен, — новый `--out`
+    или пересчёт прежней версии корпуса (ревью-находка части 3, minor/medium).
+    """
+    corpus = _corpus(tmp_path, 155, 157)
+    out = tmp_path / "run"
+    _write_run(out, ["andrei-shtanakov.steward-155", "andrei-shtanakov.steward-157"])
+    payload = _case_payload(155)
+    payload["head_sha"] = "f" * 40
+    (corpus / "andrei-shtanakov.steward-155.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8"
+    )
+
+    result = runner.invoke(cli.app, ["metrics", str(out), "--corpus", str(corpus)])
+
+    assert result.exit_code == 2, result.output
+    assert "новом --out" in result.output
+    assert "перемерьте кейс (--rerun) или" not in result.output
+
+
 def test_metrics_refuses_a_manifest_whose_case_digests_do_not_cover_declared_cases(
     tmp_path: Path,
 ) -> None:
