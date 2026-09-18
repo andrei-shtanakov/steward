@@ -1862,11 +1862,26 @@ def scrubbed_git_env(env_base: Mapping[str, str] | None) -> dict[str, str]:
 
     `REVIEW_*` здесь **не** вычищается: на git они не влияют, а на кита идёт
     отдельное окружение (`_run_env`), где вычищено и то, и другое.
+
+    Локаль сообщений git пинуется в `C` (`LC_ALL=C`, `LANGUAGE=""`): на этом
+    окружении держится `cli.py::_MISSING_OBJECT_SIGNATURES` — предикат
+    «объекта нет» по подстрокам `fatal:`, все английские. Без пина
+    локализованный git (`LANG`/`LC_ALL` процесса, например `ru_RU.UTF-8`)
+    вернул бы переведённый текст, ни одна подпись не совпала бы, и штатное
+    «файла/коммита нет» поднималось бы как `CacheError` — отказ инструмента,
+    а не факт о дереве (ревью-находка части 3, minor/medium). `LANGUAGE` —
+    расширение gettext, у него приоритет над `LC_ALL` для перевода сообщений,
+    поэтому одного `LC_ALL=C` недостаточно.
     """
     source = os.environ if env_base is None else env_base
     env = {key: value for key, value in source.items() if not key.startswith("GIT_")}
+    env.update(_GIT_MESSAGE_LOCALE_PINS)
     return _pin_git_config(env)
 
+
+#: Локаль сообщений git — всегда английская, независимо от окружения
+#: процесса: на ней держится распознавание "объекта нет" по тексту `fatal:`.
+_GIT_MESSAGE_LOCALE_PINS: dict[str, str] = {"LC_ALL": "C", "LANGUAGE": ""}
 
 #: Переменные, которыми фиксируется конфигурация git: глобальный и системный
 #: конфиги выключены, действует только конфиг самого репозитория (кэша).

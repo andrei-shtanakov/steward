@@ -36,6 +36,7 @@ from steward.review_eval.runner import (
     provider_env_fingerprint,
     run_all,
     run_case,
+    scrubbed_git_env,
     variant_label,
 )
 
@@ -3748,3 +3749,27 @@ def test_run_all_pre_checks_every_case_before_first_run(tmp_path: Path) -> None:
     assert "steward-157" in message
     assert not counter.exists()  # ни одного вызова кита
     assert not (out_dir / "run.json").exists()
+
+
+def test_scrubbed_git_env_pins_the_message_locale_to_c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Локаль сообщений git не должна течь из окружения процесса (§9).
+
+    `cli.py::_MISSING_OBJECT_SIGNATURES` распознаёт «объекта нет» только по
+    английским подстрокам `fatal:`. На машине с локализованным git (`LANG`/
+    `LC_ALL` вроде `ru_RU.UTF-8`) без пина сообщение пришло бы переведённым,
+    ни одна подпись не совпала бы, и штатное «файла/коммита нет» поднималось
+    бы как `CacheError` — отказ инструмента вместо факта о дереве (ревью-
+    находка части 3, minor/medium). `LANGUAGE` — расширение gettext с
+    приоритетом над `LC_ALL` для перевода сообщений, поэтому оба должны
+    попасть в вычищенное окружение.
+    """
+    monkeypatch.setenv("LANG", "ru_RU.UTF-8")
+    monkeypatch.setenv("LC_ALL", "ru_RU.UTF-8")
+    monkeypatch.setenv("LANGUAGE", "ru")
+
+    env = scrubbed_git_env(None)
+
+    assert env["LC_ALL"] == "C"
+    assert env["LANGUAGE"] == ""
