@@ -1043,6 +1043,14 @@ PR и осознанно не закрыто; список полон, друг�
   копий CI-чекером и drift-вахтой — вопрос волн devtools, отмечен в
   `review-kit-next-wave`.
 
+- [ ] Перевод строки В ИМЕНИ файла ломает фильтр области ревью: `git diff -z`
+      отдаёт пути сырыми, но `tr '\0' '\n'` схлопывает разделитель обратно, и
+      такой путь разъезжается на две несуществующие записи. Страж
+      «pathspec непуст, а diff.patch пуст → код 3» переводит случай в
+      fail-closed, только когда другого кода в диапазоне нет; рядом с обычным
+      кодом файл выпадает молча. Полное решение требует `read -d ''` (bash),
+      которого в POSIX sh нет — нужен другой приём разбора NUL
+      @owner:github:andrei-shtanakov @id:review-scope-newline-in-path
 - [ ] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT
       `devtools/contracts/review-scope/v1/prose-paths.env` по расписанию, как
       `impresario-contract-drift.yml`. Copy-integrity у копии уже есть
