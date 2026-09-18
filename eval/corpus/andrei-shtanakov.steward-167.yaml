@@ -1,0 +1,120 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-167
+repo: andrei-shtanakov/steward
+pr: 167
+base_sha: 3c768b41c1afe7f2d07482f2401e446ef3efb799
+head_sha: 5ed67ec208debc081ed88c3b8cb38b8e468054ef
+class: defective
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: false
+  source: history-proxy
+  adjudicated_at: '2026-09-18'
+  adjudicated_by: github:andrei-shtanakov
+defects:
+- id: D-andrei-shtanakov.steward-167-1
+  severity: major
+  file: src/steward/review_eval/runner.py
+  line_hint: 946
+  scenario: '`--rerun` под симлинк-префиксом `--out` ложно отказывает: остаток считается лексически
+    между resolved-целями и нерезолвленными результатами. `--out /tmp/eval-run` на macOS (`/tmp`
+    → `/private/tmp`), первый прогон завершён; затем правится кит и идёт полный `run_all(...,
+    rerun=True)` по всему набору — ровно тот выход, который называет сообщение о дрейфе. `_reset_targets`
+    отдаёт цели через `_require_run_path` → `.resolve()` (`/private/tmp/...`), а `_remaining_results`
+    обходит НЕрезолвленный `out_dir` (`Path(os.path.abspath(out_dir))`, без `.resolve()`) и отдаёт
+    `/tmp/...`. `Path.is_relative_to` чисто лексический, поэтому ни один результат не «внутри»
+    ни одной цели, `leftover` — весь каталог, и раннер отказывает «начните прогон в другом --out»,
+    хотя выборка полная и результатов вне выборки нет. Оба документированных пути восстановления
+    недоступны.'
+  evidence:
+  - src/steward/review_eval/runner.py:946
+  - src/steward/review_eval/runner.py:847
+  - src/steward/review_eval/runner.py:244
+  - src/steward/review_eval/runner.py:1531
+  match:
+    files:
+    - src/steward/review_eval/runner.py
+    line_window: 60
+    keywords_any:
+    - симлинк
+    - лексическ
+    - resolve
+    - остаток
+    - префикс
+- id: D-andrei-shtanakov.steward-167-2
+  severity: minor
+  file: src/steward/review_eval/runner.py
+  line_hint: 910
+  scenario: 'Полный `--rerun` надмножеством кейсов с другим `repetitions` отказывает с ПУСТЫМ
+    списком «не запрошены: —». Манифест: кейсы [A, B], `repetitions: 1`; запрос `run_all([A, B,
+    C], repetitions=2, rerun=True)` — полный сброс с надмножеством плюс рост повторений, оба пути
+    поддержаны по отдельности. Условие отказа сформулировано как неравенство МНОЖЕСТВ (`set(case_ids)
+    != set(manifest_cases)`), а не как «есть кейсы манифеста вне запроса», поэтому для надмножества
+    оно истинно, хотя `missing = manifest − case_ids` пусто, и сообщение печатает `''—''`.'
+  evidence:
+  - src/steward/review_eval/runner.py:910
+  - src/steward/review_eval/runner.py:916
+  match:
+    files:
+    - src/steward/review_eval/runner.py
+    line_window: 50
+    keywords_any:
+    - repetitions
+    - надмножеств
+    - пуст
+    - запрошены
+- id: D-andrei-shtanakov.steward-167-3
+  severity: minor
+  file: src/steward/review_eval/runner.py
+  line_hint: 611
+  scenario: 'Не-UTF-8 байт в stdout/stderr кита роняет `run_case` необработанным `UnicodeDecodeError`
+    ПОСЛЕ оплаченного прогона. Кит копирует stderr ревьюера как есть, а захват идёт через `subprocess.run(...,
+    text=True)` без `errors=`, то есть строгой декодировкой; `except` рядом ловит только `OSError`.
+    Результат: `result.json` тройки не пишется, хотя ревьюер уже вызван и оплачен, а `run_all`
+    обрывается без финальной записи `run.json`. Тесты используют только ASCII/UTF-8 заглушки.'
+  evidence:
+  - src/steward/review_eval/runner.py:611
+  - src/steward/review_eval/runner.py:614
+  match:
+    files:
+    - src/steward/review_eval/runner.py
+    line_window: 50
+    keywords_any:
+    - utf-8
+    - unicodedecodeerror
+    - байт
+    - оплаченн
+non_defects: []
+notes: |-
+  Кейс добора 2026-09-18 из раунда ревью, НЕ последнего: у PR 167 три раунда, major
+  найден вторым (ревью id=5215751738, голова 5ed67ec2), а третий раунд major уже не
+  содержит. `corpus candidates` берёт только последний раунд, поэтому кейс заведён
+  руками из тела того ревью (см. review-eval-candidates-review-round).
+
+  Зачем именно этот PR: все три находки раунда лежат в `src/steward/review_eval/runner.py`,
+  то есть в исполняемом Python, а не в прозе. До добора корпус был почти целиком про
+  рассогласования текста с кодом (находка ревью-контура на PR #170, minor/high).
+
+  Все ТРИ находки ПОДТВЕРЖДЕНЫ, и каждая принята автором — в master стоит ровно то
+  исправление, которого требовала находка:
+  - D-…-167-1 (major): на голове ревью `_require_run_path` возвращает `.resolve()`, а
+    `out_dir` собирается как `Path(os.path.abspath(out_dir))` БЕЗ `.resolve()` — отсюда
+    лексическое несовпадение `is_relative_to`. В master обе строки `out_dir` имеют
+    `.resolve()` (`Path(os.path.abspath(out_dir)).resolve()`), то есть расхождение
+    устранено именно добавлением резолва.
+  - D-…-167-2 (minor): в master условие отказа получило guard `and missing`, а
+    комментарий рядом прямо говорит «Отказ только когда кейсы манифеста не запрошены:
+    надмножество с полным сбросом — законный путь» — ровно то, что требовала находка.
+  - D-…-167-3 (minor): в master захват идёт с `errors="replace"`, и комментарий
+    дословно повторяет находку: «байт вне UTF-8 в выводе кита не роняет оплаченный
+    прогон». Заявленная ревьюером `confidence: low` не мешает: факт проверен по дереву.
+
+  blocking_complete: FALSE СОЗНАТЕЛЬНО. Диапазон — 6 файлов и 6085 добавленных строк, из
+  них ~2350 строк нового исполняемого кода (`runner.py` создаётся этим PR целиком,
+  плюс `cache.py`, `threshold.py`); сплошь я его НЕ читал. По контракту D8 кейс входит в
+  precision и НЕ входит в знаменатели `blocking_recall`/`false_block_rate`. Поднять флаг
+  — отдельная работа по сплошному чтению, заведена пунктом
+  review-eval-167-blocking-complete: до неё блокирующий gold в Python в знаменатель
+  recall не входит, и в знаменателе остаются major из #137 (исполняемая конфигурация CI)
+  и два markdown-major из #130/#162.

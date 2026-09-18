@@ -688,20 +688,29 @@ def test_corpus_validate_exits_3_on_an_unexpected_error(
 
 
 def test_repo_corpus_is_valid_and_registered() -> None:
-    """Корпус самого репозитория загружается: одиннадцать размеченных кейсов в реестре.
+    """Корпус самого репозитория загружается: тринадцать размеченных кейсов в реестре.
 
     Гейт ветки проверяется этим же вызовом, но руками; тест делает его
     постоянным: правка кейса или реестра, ломающая загрузку, падает здесь,
     а не в чужом прогоне.
 
-    Пинуется не только состав, но и **измеримость**: пока в корпусе нет ни
-    одного gold-дефекта `major`/`blocker` в кейсе с `blocking_complete`,
-    знаменатель `blocking_recall` пуст. Числами это не печатается — `_ratio`
-    на нулевом знаменателе даёт `value: None`, а отчёт рендерит ячейку как
-    `— (0/0)`; опасность в другом: главный числовой результат гейта просто
-    ПЕРЕСТАЁТ СУЩЕСТВОВАТЬ, и для читателя таблицы это молчаливо. Понижение
-    севериты двух блокирующих дефектов до `minor` — ровно такая правка,
-    поэтому она обязана падать тестом, а не обнаруживаться на платном прогоне.
+    Пинуется не только состав, но и **измеримость**, двумя разными свойствами.
+
+    Первое — знаменатель `blocking_recall` непуст. Пока в корпусе нет ни
+    одного gold-дефекта `major`/`blocker` в кейсе с `blocking_complete`, он
+    пуст. Числами это не печатается — `_ratio` на нулевом знаменателе даёт
+    `value: None`, а отчёт рендерит ячейку как `— (0/0)`; опасность в другом:
+    главный числовой результат гейта просто ПЕРЕСТАЁТ СУЩЕСТВОВАТЬ, и для
+    читателя таблицы это молчаливо.
+
+    Второе — в знаменателе есть дефект ВНЕ прозы. Ребро матчера строится
+    только когда путь находки входит в `match.files` gold, поэтому корпус, где
+    все блокирующие gold лежат в Markdown, делает находку в исполняемом файле
+    неспособной поднять `blocking_recall` ПО ПОСТРОЕНИЮ: вариант, хорошо
+    читающий документы и плохо код, получил бы 1.00 (2/2), и число выглядело
+    бы как измерение поиска дефектов вообще (находка ревью-контура на PR #170,
+    minor/high). Оба свойства ломаются тихой правкой севериты или `match`,
+    поэтому обязаны падать тестом, а не обнаруживаться на платном прогоне.
     """
     corpus = Path(__file__).resolve().parents[2] / "eval" / "corpus"
 
@@ -709,6 +718,7 @@ def test_repo_corpus_is_valid_and_registered() -> None:
 
     assert [case.case_id for case in cases] == [
         "andrei-shtanakov.steward-130",
+        "andrei-shtanakov.steward-137",
         "andrei-shtanakov.steward-151",
         "andrei-shtanakov.steward-152",
         "andrei-shtanakov.steward-155",
@@ -717,13 +727,14 @@ def test_repo_corpus_is_valid_and_registered() -> None:
         "andrei-shtanakov.steward-159",
         "andrei-shtanakov.steward-161",
         "andrei-shtanakov.steward-162",
+        "andrei-shtanakov.steward-167",
         "andrei-shtanakov.steward-168",
         # Лексикографический порядок по имени файла: "86" > "1…".
         "andrei-shtanakov.steward-86",
     ]
     # Разметка закрыта (2026-09-18): черновиков нет, кейсы входят в метрики (D1).
     assert all(case.annotation.status == "adjudicated" for case in cases)
-    assert sum(len(case.defects) for case in cases) == 12
+    assert sum(len(case.defects) for case in cases) == 16
     blocking = [
         defect
         for case in cases
@@ -731,7 +742,14 @@ def test_repo_corpus_is_valid_and_registered() -> None:
         for defect in case.defects
         if defect.severity in ("major", "blocker")
     ]
-    assert len(blocking) == 2, "знаменатель blocking_recall обязан быть непустым"
+    assert len(blocking) == 3, "знаменатель blocking_recall обязан быть непустым"
+    # Путь находки обязан входить в `match.files` gold, поэтому «всё в Markdown»
+    # означает «находка в коде не поднимает recall никогда».
+    assert any(
+        not path.endswith(".md")
+        for defect in blocking
+        for path in (*defect.match.files, defect.file)
+    ), "в знаменателе blocking_recall обязан быть дефект вне прозы"
     # Опровергнутая при адъюдикации находка живёт как известный ложный класс:
     # её повтор классифицируется `known_fp`, а не висит в очереди (D8).
     assert sum(len(case.non_defects) for case in cases) == 1
