@@ -2303,10 +2303,18 @@ def test_prose_only_range_exits_five_without_calling_reviewer(
 
 
 def test_empty_range_still_exits_zero(tmp_path: Path) -> None:
-    """Код 0 сохраняет прежний смысл: пуст сам диапазон, а не остаток."""
+    """Код 0 сохраняет прежний смысл: пуст сам диапазон, а не остаток.
+
+    Ревью Task 2 (Minor «тесты не проверяют того, что заявляют»): единственный
+    сторож различения 0/5 гонялся с ВЫКЛЮЧЕННЫМ фильтром (`run_local` без
+    оверрайда → `NO_SCOPE_RULES`) — различение при живом фильтре не было
+    проверено ничем. Теперь боевое правило активно явно.
+    """
     _, repo = make_repo(tmp_path)
     stub = make_stub(tmp_path, "exit 0")
-    res = run_local(repo, stub)
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
     assert res.returncode == 0, res.stderr
     assert "диф пуст" in res.stdout
 
@@ -2333,7 +2341,15 @@ def test_mixed_range_sends_only_code_to_the_model(tmp_path: Path) -> None:
 
 def test_code_only_range_diff_is_unchanged(tmp_path: Path) -> None:
     """Кодовый PR фильтр не трогает — иначе поехал бы отпечаток и
-    наследование прошлых вердиктов."""
+    наследование прошлых вердиктов.
+
+    Ревью Task 2 (Minor «тесты не проверяют того, что заявляют»): один
+    ассерт «имя файла где-то есть в промпте» пропускает поехавший состав,
+    порядок или потерянную rename-детекцию. Настоящая форма — побайтовое
+    совпадение отпечатка с фильтром (боевое правило) и без (правило на
+    несуществующий путь): единственный вход, который отпечаток не различит,
+    — и есть «diff не изменился».
+    """
     _, repo = make_repo(tmp_path)
     (repo / "tool.py").write_text("x = 1\n")
     git(repo, "add", "-A")
@@ -2347,6 +2363,10 @@ def test_code_only_range_diff_is_unchanged(tmp_path: Path) -> None:
         == 0
     )
     assert "tool.py" in dump.read_text()
+
+    fp_filtered = harness_fp(repo, {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
+    fp_unfiltered = harness_fp(repo, {"REVIEW_SCOPE_RULES": NO_SCOPE_RULES})
+    assert fp_filtered == fp_unfiltered
 
 
 def test_include_prose_flag_disables_the_filter(tmp_path: Path) -> None:
@@ -2464,3 +2484,275 @@ def test_path_with_glob_metachar_is_matched_literally(tmp_path: Path) -> None:
         == 0
     )
     assert "a[1].py" in dump.read_text()
+
+
+# --- Фикс-раунд 2 (ревью Task 2): C-1, I-1, I-2, m-1, m-3 -------------------
+
+
+def _run_local_battle_default(
+    repo: Path,
+    stub_env: dict[str, str],
+    *args: str,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Прогон с окружением, максимально близким к боевому: `REVIEW_SCOPE_RULES`
+    не задан вовсе — кит сам резолвит `$kit_dir/prose-paths.env`, в отличие от
+    `run_local`/`run_local_env`, которые по умолчанию изолируют тесты от
+    настоящего правила (`NO_SCOPE_RULES`, см. выше). Нужен отдельно от
+    `test_default_scope_rules_resolve_next_to_the_kit_without_any_override`
+    (I-2 ревью этой ветки): тот тест покрывает только «спрятать» (проза → 5),
+    а «не спрятать» (код доходит, в т.ч. из подкаталога — C-1) не был
+    покрыт ничем."""
+    env = dict(os.environ)
+    env.pop("REVIEW_SCOPE_RULES", None)
+    env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
+    env["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
+    env["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    env.update(stub_env)
+    return subprocess.run(
+        ["sh", str(SCRIPT), *args],
+        cwd=str(cwd or repo),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_code_only_range_is_not_hidden_when_run_from_a_subdirectory(
+    tmp_path: Path,
+) -> None:
+    """Critical C-1 ревью этой ветки: `git diff --name-only` печатает пути ОТ
+    КОРНЯ репо, а pathspec резолвится от CWD. `:(literal)` (без `top`)
+    отключает только глоббинг, базу не меняет — из подкаталога (кит его
+    прямо объявляет штатным прогоном, шапка `local.sh`) ни один pathspec не
+    совпадал, диф.patch собирался ПУСТЫМ для целиком кодового диапазона:
+    модель видела пустой диф, «находок нет», код 0 — approve на диапазоне,
+    которого модель не видела. Чинится `:(top,literal)`."""
+    _, repo = make_repo(tmp_path)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code in subdir")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo,
+        stub,
+        cwd=repo / "sub",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 0, res.stderr
+    assert "tool.py" in dump.read_text()
+
+
+def test_fingerprint_matches_between_root_and_subdirectory_run(
+    tmp_path: Path,
+) -> None:
+    """Тот же C-1, доказанный отпечатком: разный CWD для одного и того же
+    диапазона не должен менять вход модели."""
+    _, repo = make_repo(tmp_path)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code in subdir")
+
+    fp_root = harness_fp(repo, {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
+    fp_subdir = harness_fp(
+        repo, {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}, cwd=repo / "sub"
+    )
+    assert fp_root == fp_subdir
+
+
+def test_default_mixed_range_reaches_the_model_without_any_override(
+    tmp_path: Path,
+) -> None:
+    """I-2: единственный тест боевого умолчания раньше проверял только
+    направление «спрятать» (проза → 5). Направление «не спрятать» — что под
+    боевым умолчанием кодовый файл ДОХОДИТ до модели — не было покрыто
+    ничем, и именно в этой дыре жил C-1."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "mixed")
+
+    dump = tmp_path / "prompt-seen.txt"
+    res = _run_local_battle_default(
+        repo, {"REVIEW_CMD": make_stub(tmp_path, _capturing_stub(dump))}
+    )
+    assert res.returncode == 0, res.stderr
+    seen = dump.read_text()
+    assert "tool.py" in seen
+    assert "docs/note.md" not in seen
+
+
+def test_default_code_only_range_is_identical_from_root_and_subdirectory(
+    tmp_path: Path,
+) -> None:
+    """C-1 + I-2 вместе, под НАСТОЯЩИМ боевым умолчанием (без
+    `REVIEW_SCOPE_RULES` вовсе): прогон из подкаталога не должен прятать код."""
+    _, repo = make_repo(tmp_path)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code in subdir")
+
+    dump_root = tmp_path / "prompt-root.txt"
+    res_root = _run_local_battle_default(
+        repo, {"REVIEW_CMD": make_stub(tmp_path, _capturing_stub(dump_root))}
+    )
+    assert res_root.returncode == 0, res_root.stderr
+    assert "tool.py" in dump_root.read_text()
+
+    dump_sub = tmp_path / "prompt-sub.txt"
+    res_sub = _run_local_battle_default(
+        repo,
+        {"REVIEW_CMD": make_stub(tmp_path, _capturing_stub(dump_sub))},
+        cwd=repo / "sub",
+    )
+    assert res_sub.returncode == 0, res_sub.stderr
+    assert "tool.py" in dump_sub.read_text()
+
+
+def test_rule_without_code_override_is_invalid_and_disables_the_filter(
+    tmp_path: Path,
+) -> None:
+    """I-1: `CODE_OVERRIDE` обязателен — контракт файла правила
+    (`prose-paths.env:20-24`) требует отказа разбора на усечённой копии, не
+    молчаливого расширения прозы на защищённый класс путей. Вход — тот же,
+    что в воспроизведении ревью: бамп `requirements.txt`, ради которого
+    владелец сессии 2026-09-18 и добавил `requirements*.txt` в
+    `CODE_OVERRIDE`."""
+    _, repo = make_repo(tmp_path)
+    (repo / "requirements.txt").write_text("pkg==2\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "bump pin")
+
+    truncated_rule = tmp_path / "truncated.env"
+    truncated_rule.write_text("PROSE=*.md *.txt TODO.md docs/*\n", encoding="utf-8")
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(truncated_rule)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "requirements.txt" in dump.read_text()
+    assert "CODE_OVERRIDE" in res.stdout
+
+
+def test_rule_with_duplicate_key_is_invalid_and_disables_the_filter(
+    tmp_path: Path,
+) -> None:
+    """I-1: дубль ключа — отказ разбора (контракт файла правила: «один
+    ключ — одна строка; дубль ключа — отказ разбора»), не «одно из значений
+    выигрывает молча»."""
+    _, repo = make_repo(tmp_path)
+    (repo / "requirements.txt").write_text("pkg==2\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "bump pin")
+
+    dup_rule = tmp_path / "dup.env"
+    dup_rule.write_text(
+        "PROSE=*.md\nPROSE=*.txt\nCODE_OVERRIDE=contracts/*\n", encoding="utf-8"
+    )
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(dup_rule)})
+    assert res.returncode == 0, res.stderr
+    assert "requirements.txt" in dump.read_text()
+    assert "определён" in res.stdout
+
+
+def test_rule_with_empty_prose_value_is_invalid_and_disables_the_filter(
+    tmp_path: Path,
+) -> None:
+    """m-2: `PROSE=` без значения — тоже отказ, не «PROSE есть, просто нет
+    глобов». Раньше `tr '\\n' ' '` превращал пустую строку в один пробел, и
+    `[ -z ]` не срабатывал — заметка не печаталась, фильтр молча не
+    применялся без единого слова объяснения."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+
+    empty_rule = tmp_path / "empty.env"
+    empty_rule.write_text("PROSE=\nCODE_OVERRIDE=contracts/*\n", encoding="utf-8")
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(empty_rule)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()
+    assert "пустое значение" in res.stdout
+
+
+def test_git_name_only_failure_is_a_mechanical_error_not_filtered_as_prose(
+    tmp_path: Path,
+) -> None:
+    """m-3: статус `git diff --name-only` не проверялся под `set -e` в
+    `for _f in $(...)` — сбой git давал ноль итераций, а ноль итераций
+    читался как «всё отфильтровано» (код 5), хотя это отказ прибора (код 3),
+    а не решение фильтра."""
+    real_git = shutil.which("git")
+    assert real_git, "git не найден — стенд не может подменить его осмысленно"
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code")
+
+    shim_dir = tmp_path / "shim-bin"
+    shim_dir.mkdir()
+    fake_git = shim_dir / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '    if [ "$a" = "--name-only" ]; then\n'
+        '        echo "имитация сбоя git diff --name-only" >&2\n'
+        "        exit 1\n"
+        "    fi\n"
+        "done\n"
+        f'exec {real_git} "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+
+    res = run_local(
+        repo,
+        make_stub(tmp_path, "exit 0"),
+        env_overrides={
+            "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        },
+    )
+    assert res.returncode == 3, res.stdout + res.stderr
+
+
+def test_scope_rules_pointing_at_a_directory_is_treated_as_unreadable(
+    tmp_path: Path,
+) -> None:
+    """m-3 (соседняя мелочь): каталог с тем же именем читаем (`[ -r ]`
+    проходит), а `sed`/`grep` внутри присваивания падают на нём и валят
+    скрипт кодом вне объявленного набора. `[ ! -f ]` ловит это как
+    «нечитаемо» — fail-open, не крах."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+
+    a_directory = tmp_path / "not-a-file.env"
+    a_directory.mkdir()
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(a_directory)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()

@@ -1043,6 +1043,12 @@ PR и осознанно не закрыто; список полон, друг�
   копий CI-чекером и drift-вахтой — вопрос волн devtools, отмечен в
   `review-kit-next-wave`.
 
+- [ ] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT
+      `devtools/contracts/review-scope/v1/prose-paths.env` по расписанию, как
+      `impresario-contract-drift.yml`. Copy-integrity у копии уже есть
+      (инвентарь checksum.sh), расхождения с SSOT не заметит ничто
+      @owner:github:andrei-shtanakov @id:review-scope-upstream-drift
+
 - [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша; @owner:github:andrei-shtanakov @id:review-kit-diff-marker-hardening @epic:eco.codex-review-rollout
       осталось решить, нужен ли полноценный nonce
 
