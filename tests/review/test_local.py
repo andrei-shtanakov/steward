@@ -2394,6 +2394,42 @@ def test_missing_rule_file_means_full_diff(tmp_path: Path) -> None:
     assert "правило области ревью" in res.stdout
 
 
+def test_default_scope_rules_resolve_next_to_the_kit_without_any_override(
+    tmp_path: Path,
+) -> None:
+    """Боевой путь: `REVIEW_SCOPE_RULES` в бою не задан вовсе, и кит обязан
+    сам найти `prose-paths.env` рядом с собой (умолчание `scope_rules` в
+    local.sh: `${REVIEW_SCOPE_RULES:-$kit_dir/prose-paths.env}`). Изоляция
+    остальных тестов этого файла (`run_local`/`run_local_env` по умолчанию
+    уводят `REVIEW_SCOPE_RULES` на несуществующий путь — см. `NO_SCOPE_RULES`
+    выше) не должна прятать регрессию в самом умолчании: этот тест собирает
+    окружение напрямую, без run_local, и явно не задаёт переменную вовсе
+    (тот же приём, что `test_default_schema_and_prompt_resolve_from_repo_root_not_cwd`
+    использует для REVIEW_SCHEMA/REVIEW_PROMPT)."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+
+    env = dict(os.environ)
+    env.pop("REVIEW_SCOPE_RULES", None)
+    env["REVIEW_CMD"] = make_stub(tmp_path, "echo REVIEWER_WAS_CALLED >&2; exit 0")
+    env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
+    env["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
+    env["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    res = subprocess.run(
+        ["sh", str(SCRIPT)],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 5, res.stderr
+    assert "REVIEWER_WAS_CALLED" not in res.stderr
+    assert "всё отфильтровано" in res.stdout
+
+
 def test_fingerprint_mode_on_filtered_range_prints_nothing_and_exits_five(
     tmp_path: Path,
 ) -> None:

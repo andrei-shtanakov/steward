@@ -597,13 +597,17 @@ if [ -n "$prose_globs" ]; then
     # Пути в позиционные параметры: список кодовых путей уходит в git с
     # магией `:(literal)`, иначе путь с глоб-метасимволом стал бы
     # pathspec-ШАБЛОНОМ и подобрал бы чужие файлы. --no-renames: и старый, и
-    # новый путь переименования проходят классификацию.
+    # новый путь переименования проходят классификацию. `core.quotePath=false`
+    # — тот же довод, что и у соседнего вызова ниже (@id:review-kit-quoted-diff-headers):
+    # сырые пути, не C-style-квотированные для non-ASCII/спецсимволов, иначе
+    # `path_is_prose`/`:(literal)` сравнивали бы классификатор с квотированной
+    # строкой, а не с реальным путём файла.
     _old_ifs=$IFS
     IFS='
 '
     set -f
     set --
-    for _f in $(git diff --no-renames --name-only "$mb..$head_sha"); do
+    for _f in $(git -c core.quotePath=false diff --no-renames --name-only "$mb..$head_sha"); do
         IFS=$_old_ifs
         set +f
         path_is_prose "$_f" || set -- "$@" ":(literal)$_f"
