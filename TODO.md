@@ -1043,6 +1043,11 @@ PR и осознанно не закрыто; список полон, друг�
   копий CI-чекером и drift-вахтой — вопрос волн devtools, отмечен в
   `review-kit-next-wave`.
 
+- [ ] Волна ре-вендора среза B обходит `arbiter` и `atp-platform`, пока те не
+      подтянут кит к текущему релизу @owner:github:andrei-shtanakov
+      @blocked_by:arbiter#107 @id:review-scope-wave-arbiter
+- [ ] То же по `atp-platform` @owner:github:andrei-shtanakov
+      @blocked_by:atp-platform#326 @id:review-scope-wave-atp-platform
 - [ ] Перевод строки В ИМЕНИ файла ломает фильтр области ревью: `git diff -z`
       отдаёт пути сырыми, но `tr '\0' '\n'` схлопывает разделитель обратно, и
       такой путь разъезжается на две несуществующие записи. Страж
