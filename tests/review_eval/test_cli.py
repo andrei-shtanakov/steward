@@ -750,7 +750,12 @@ def test_repo_corpus_is_valid_and_registered() -> None:
     # правка одного `match.files` на markdown-алиас незаметно убивала бы само
     # свойство, а тест оставался бы зелёным — ровно та регрессия, которую он
     # обязан ловить (находка ревью-контура на PR #170).
-    assert any(not path.endswith(".md") for defect in blocking for path in defect.match.files), (
+    # Allowlist исполняемых расширений, а не `not .md`: отрицание было слабее
+    # своего же докстринга — проза в `.txt`/`.rst` прошла бы его (замечание
+    # ревью-контура на PR #170). Список закрытый: расширять его — решение
+    # разметчика, а не побочный эффект правки кейса.
+    executable = (".py", ".sh", ".yml", ".yaml")
+    assert any(path.endswith(executable) for defect in blocking for path in defect.match.files), (
         "в знаменателе blocking_recall обязан быть дефект, достижимый находкой вне прозы"
     )
     # Опровергнутая при адъюдикации находка живёт как известный ложный класс:
