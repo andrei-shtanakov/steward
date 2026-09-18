@@ -136,6 +136,53 @@ def test_any_non_zero_from_local_blocks_the_push(tmp_path: Path) -> None:
         assert result.returncode != 0, f"код {code} от local.sh обязан блокировать пуш"
 
 
+def test_exit_five_is_a_successful_skip(tmp_path: Path) -> None:
+    """Код 5 кита («ревьюировать нечего: всё отфильтровано как проза») —
+    успешный пропуск для пуша, а не отказ. Хук зовёт local.sh последней
+    строкой, и под `set -eu` без явной обработки код кита стал бы кодом
+    хука: прозаическая ветка перестала бы пушиться вовсе."""
+    sha = "a" * 40
+    line = f"refs/heads/feature {sha} refs/heads/feature {ZERO}\n"
+    stub_kit = tmp_path / "kit-5"
+    stub_kit.mkdir()
+    stub_local = stub_kit / "local.sh"
+    stub_local.write_text("#!/bin/sh\nexit 5\n", encoding="utf-8")
+    stub_local.chmod(0o755)
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(stub_kit)
+    env["REVIEW_HEAD_SHA"] = sha
+    result = subprocess.run(
+        ["sh", str(HOOK), "origin", "git@example.com:o/r.git"],
+        input=line,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_exit_one_still_blocks(tmp_path: Path) -> None:
+    """Находки (код 1) по-прежнему блокируют пуш и после обработки кода 5."""
+    sha = "a" * 40
+    line = f"refs/heads/feature {sha} refs/heads/feature {ZERO}\n"
+    stub_kit = tmp_path / "kit-1"
+    stub_kit.mkdir()
+    stub_local = stub_kit / "local.sh"
+    stub_local.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    stub_local.chmod(0o755)
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(stub_kit)
+    env["REVIEW_HEAD_SHA"] = sha
+    result = subprocess.run(
+        ["sh", str(HOOK), "origin", "git@example.com:o/r.git"],
+        input=line,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 1
+
+
 # --- живой прогон: настоящий git push, а не сфабрикованный stdin -----------
 #
 # Всё выше проверяет реакцию хука на stdin, который ФОРМИРУЮТ ТЕСТЫ по

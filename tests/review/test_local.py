@@ -2435,7 +2435,6 @@ def test_default_scope_rules_resolve_next_to_the_kit_without_any_override(
     env = dict(os.environ)
     env.pop("REVIEW_SCOPE_RULES", None)
     env["REVIEW_CMD"] = make_stub(tmp_path, "echo REVIEWER_WAS_CALLED >&2; exit 0")
-    env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
     env["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
     env["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
     res = subprocess.run(
@@ -2681,6 +2680,80 @@ def test_rule_with_empty_prose_value_is_invalid_and_disables_the_filter(
 
     empty_rule = tmp_path / "empty.env"
     empty_rule.write_text("PROSE=\nCODE_OVERRIDE=contracts/*\n", encoding="utf-8")
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(empty_rule)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()
+    assert "пустое значение" in res.stdout
+
+
+def test_rule_without_prose_is_invalid_and_disables_the_filter(
+    tmp_path: Path,
+) -> None:
+    """I-1: `PROSE` обязателен наравне с `CODE_OVERRIDE` — отсутствие ключа
+    отказ разбора на усечённой копии, а не молчаливое «фильтровать нечего»."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+
+    truncated_rule = tmp_path / "truncated.env"
+    truncated_rule.write_text("CODE_OVERRIDE=contracts/*\n", encoding="utf-8")
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(truncated_rule)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()
+    assert "PROSE" in res.stdout
+
+
+def test_rule_with_duplicate_code_override_is_invalid_and_disables_the_filter(
+    tmp_path: Path,
+) -> None:
+    """I-1: дубль `CODE_OVERRIDE` — тот же отказ разбора, что и дубль
+    `PROSE` (контракт файла правила: «один ключ — одна строка; дубль ключа —
+    отказ разбора»), не «одно из значений выигрывает молча»."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+
+    dup_rule = tmp_path / "dup.env"
+    dup_rule.write_text(
+        "PROSE=*.md\nCODE_OVERRIDE=contracts/*\nCODE_OVERRIDE=other/*\n",
+        encoding="utf-8",
+    )
+
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(dup_rule)})
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()
+    assert "определён" in res.stdout
+
+
+def test_rule_with_empty_code_override_value_is_invalid_and_disables_the_filter(
+    tmp_path: Path,
+) -> None:
+    """m-2: `CODE_OVERRIDE=` без значения — тоже отказ, не «CODE_OVERRIDE
+    есть, просто нет глобов», зеркально пустому `PROSE`."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+
+    empty_rule = tmp_path / "empty.env"
+    empty_rule.write_text("PROSE=*.md\nCODE_OVERRIDE=\n", encoding="utf-8")
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
