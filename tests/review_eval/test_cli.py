@@ -688,28 +688,51 @@ def test_corpus_validate_exits_3_on_an_unexpected_error(
 
 
 def test_repo_corpus_is_valid_and_registered() -> None:
-    """Корпус самого репозитория загружается: шесть черновиков, id в реестре.
+    """Корпус самого репозитория загружается: десять размеченных кейсов в реестре.
 
     Гейт ветки проверяется этим же вызовом, но руками; тест делает его
-    постоянным: правка черновика или реестра, ломающая загрузку, падает здесь,
+    постоянным: правка кейса или реестра, ломающая загрузку, падает здесь,
     а не в чужом прогоне.
+
+    Пинуется не только состав, но и **измеримость**: пока в корпусе нет ни
+    одного gold-дефекта `major`/`blocker` в кейсе с `blocking_complete`,
+    знаменатель `blocking_recall` пуст, и прогон печатает числа, которых не
+    мерил. Понижение севериты двух блокирующих дефектов до `minor` — правка,
+    после которой главная метрика гейта молча перестаёт считаться, поэтому
+    она обязана падать тестом, а не обнаруживаться на живом прогоне.
     """
     corpus = Path(__file__).resolve().parents[2] / "eval" / "corpus"
 
     cases = load_corpus(corpus)
 
     assert [case.case_id for case in cases] == [
+        "andrei-shtanakov.steward-130",
+        "andrei-shtanakov.steward-151",
         "andrei-shtanakov.steward-152",
         "andrei-shtanakov.steward-155",
         "andrei-shtanakov.steward-156",
         "andrei-shtanakov.steward-157",
         "andrei-shtanakov.steward-159",
         "andrei-shtanakov.steward-161",
+        "andrei-shtanakov.steward-162",
+        "andrei-shtanakov.steward-168",
+        # Лексикографический порядок по имени файла: "86" > "1…".
+        "andrei-shtanakov.steward-86",
     ]
-    # Все шесть — прокси из истории ревью: в метрики они не входят, пока
-    # разметчик не перевёл их в `adjudicated` (D1).
-    assert all(case.annotation.status == "draft" for case in cases)
-    assert sum(len(case.defects) for case in cases) == 4
+    # Разметка закрыта (2026-09-18): черновиков нет, кейсы входят в метрики (D1).
+    assert all(case.annotation.status == "adjudicated" for case in cases)
+    assert sum(len(case.defects) for case in cases) == 11
+    blocking = [
+        defect
+        for case in cases
+        if case.annotation.blocking_complete
+        for defect in case.defects
+        if defect.severity in ("major", "blocker")
+    ]
+    assert len(blocking) == 2, "знаменатель blocking_recall обязан быть непустым"
+    # Опровергнутая при адъюдикации находка живёт как известный ложный класс:
+    # её повтор классифицируется `known_fp`, а не висит в очереди (D8).
+    assert sum(len(case.non_defects) for case in cases) == 1
 
 
 # ---------------------------------------------------------------------------

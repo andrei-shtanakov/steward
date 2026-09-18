@@ -7,11 +7,11 @@ head_sha: e187b5808f819100831afbf460d9363cae56ce84
 class: clean
 expected_outcome: verdict
 annotation:
-  status: draft
-  blocking_complete: false
+  status: adjudicated
+  blocking_complete: true
   source: history-proxy
-  adjudicated_by: null
-  adjudicated_at: null
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
 defects:
 - id: D-andrei-shtanakov.steward-161-1
   severity: minor
@@ -48,4 +48,14 @@ notes: |-
   Коммитов PR после последнего ревью: 0.
   candidate_status (подсказка D1, не ground truth):
     - D-andrei-shtanakov.steward-161-1: unknown [minor] profiles/approval-facts-scope.yaml:28
-  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 4 файла.
+  D-andrei-shtanakov.steward-161-1 ПОДТВЕРЖДЁН, класс minor. Приложенный тем же патчем
+  docs/evidence/2026-09-14-approval-facts-policy-refresh/approval_facts.jsonl даёт по
+  PR 95 `state: merged`, `merge_sha: 5fb32630…`, `actor_class: human`; все девять
+  записей бандла — merged, состояния `not_merged` в нём нет вовсе, вопреки доводу
+  строки 28. Оговорка для читателя метрик: опровергнутая строка 28 —
+  ПРЕДСУЩЕСТВУЮЩАЯ, патч её не добавлял, но правил тот же блок комментария и приложил
+  опровергающее её evidence. Не major: рантайм и решения гейта не затронуты, неверен
+  довод охвата.
+  blocking_complete: true.

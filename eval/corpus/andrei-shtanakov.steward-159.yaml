@@ -7,11 +7,11 @@ head_sha: a33a8944a8e33a4377dca36f1ac7a2c3221497e5
 class: clean
 expected_outcome: verdict
 annotation:
-  status: draft
-  blocking_complete: false
+  status: adjudicated
+  blocking_complete: true
   source: history-proxy
-  adjudicated_by: null
-  adjudicated_at: null
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
 defects: []
 non_defects: []
 notes: |-
@@ -19,4 +19,12 @@ notes: |-
   Ревью ai-prosto на PR: 1; находок в последнем: 0.
   head_sha взят из маркера ревью; merge_commit_sha: 9cfcb3c3035b183a658e620131751e4106b55ef0.
   Коммитов PR после последнего ревью: 0.
-  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 6 файлов. Дефектов нет. Отдельно проверено самое подозрительное место —
+  патч удаляет тест и утверждает, что его покрытие «остаётся закреплённым
+  generic-тестом»: тест test_optional_member_present_without_pin_line_is_integrity_failure
+  действительно существует в том же файле и пинует ровно то же свойство (код 1 плюс
+  текст «не запинован») на generic-члене через CHECKSUM_KIT_EXTRA. Покрытие не
+  потеряно, линза ослабления тестов не срабатывает; удалённый тест был дубликатом,
+  ставшим неверным после промоции члена.
+  blocking_complete: true.

@@ -1,0 +1,32 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-151
+repo: andrei-shtanakov/steward
+pr: 151
+base_sha: e9fc6416d75648d1df5d94f5a0b3e8392285cf5c
+head_sha: d0832f1e0305ccb2a361cd865860b4a19318774e
+class: clean
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: true
+  source: history-proxy
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
+defects: []
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#151, ревью ai-prosto id=5194170665 от 2026-09-14T05:23:03Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 0.
+  head_sha взят из маркера ревью; merge_commit_sha: 9d5f8e70c1b7f6a7ad5999189c20153162d9c015.
+  Коммитов PR после последнего ревью: 0.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 6 файлов, код — collect-context.sh и local.sh построчно. Дефектов нет,
+  ревью-находок в истории тоже не было.
+  Замечено при чтении и СОЗНАТЕЛЬНО не заведено как gold: новый сторож формы пути
+  манифеста (`/*|*..*|./*|*/./*|*/.`) не покрывает хвостовой `/` и pathspec-магию `:` —
+  это добавили позже (#157, со ссылкой на #154) вместе со структурной проверкой
+  «разрешился в себя». На этой голове `--manifest dir/` прошёл бы сторож формы. Не
+  заведено дефектом потому, что наблюдаемый исход — запутанный отказ кодом 2 при
+  опечатке в настройке оператора, а не молчаливо подменённый контекст: слабый gold
+  портит precision сильнее, чем пропущенный minor — recall. Owner может повысить.
+  blocking_complete: true.

@@ -1,0 +1,41 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-86
+repo: andrei-shtanakov/steward
+pr: 86
+base_sha: fff96eb5deb3d6a79f727faa1bcca6d79e4eea0f
+head_sha: b6ea95353f2ca177a5c9e41add44ec1dfd35d84b
+class: large
+expected_outcome: guardrail_rejection
+annotation:
+  status: adjudicated
+  blocking_complete: false
+  source: manual
+  adjudicated_at: 2026-09-18
+  adjudicated_by: github:andrei-shtanakov
+defects: []
+non_defects: []
+notes: |-
+  Кейс заведён РУКАМИ (source: manual) 2026-09-18: ревью ai-prosto на PR 86 нет
+  (он старше ревью-контура), а генератор черновиков без него работать не может.
+  Для `large` это и не нужно: измеряется не качество находок, а сам отказ
+  гардрейла — ревьюер не вызывается вовсе, поэтому gold-дефектов у кейса нет
+  по построению.
+
+  Зачем кейс нужен: DoD пункта review-kit-eval-harness требует «с дефектами,
+  чистые, КРУПНЫЕ», и без такого кейса путь гардрейла корпусом не покрыт вовсе.
+  Потолки живут в `build-prompt.sh` (400000 байт / 30 файлов) — `local.sh`
+  своих значений не имеет и пробрасывает только оверрайды оператора, так что
+  умолчания действуют. Диапазон кейса превышает ОБА: 35 файлов и 527980 байт
+  (сверено `git diff --name-only`/`wc -c` на base..head). Отсюда
+  `expected_outcome: guardrail_rejection` без `local_args`: потолок обязан
+  отказать до вызова ревьюера, и это правильный исход, а не сбой.
+
+  `base_sha` — первый родитель merge-коммита PR (`a4efcc16^1`), как его
+  разрешает `resolve_review_base`, а НЕ merge-base с текущим master: PR влит,
+  голова master содержит сам PR, и наивный `git merge-base origin/master
+  <head>` даёт саму голову, то есть пустой диапазон. Проверено на этом кейсе
+  прямо при заведении — ровно тот капкан, о котором предупреждает §1 дока.
+
+  blocking_complete: false — сознательно: 35 файлов и полмегабайта диффа
+  сплошь не прочитаны, а для исхода `guardrail_rejection` это и не требуется
+  (перечень блокирующих дефектов не участвует: предсказаний не будет).

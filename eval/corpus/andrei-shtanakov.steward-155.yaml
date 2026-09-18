@@ -7,11 +7,11 @@ head_sha: 15fe2fe48111deed95aa17089adb99c894f32a2f
 class: clean
 expected_outcome: verdict
 annotation:
-  status: draft
-  blocking_complete: false
+  status: adjudicated
+  blocking_complete: true
   source: history-proxy
-  adjudicated_by: null
-  adjudicated_at: null
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
 defects:
 - id: D-andrei-shtanakov.steward-155-1
   severity: minor
@@ -49,4 +49,16 @@ notes: |-
   Коммитов PR после последнего ревью: 0.
   candidate_status (подсказка D1, не ground truth):
     - D-andrei-shtanakov.steward-155-1: unknown [minor] tests/review/test_harness_claude.py:203
-  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 10 файлов, из кода — harness-claude (новый), local.sh, checksum.sh.
+  D-andrei-shtanakov.steward-155-1 ПОДТВЕРЖДЁН, класс minor. Механизм сверен по коду:
+  тест ставит PATH равным каталогу jq, префлайт адаптера делает `command -v claude`,
+  и при общем каталоге jq/claude прогон дошёл бы до настоящего `claude -p` с промптом
+  теста. На машине разметчика не воспроизводится (jq в /opt/homebrew/bin, claude в
+  ~/.local/bin); в master тест не изменён. Не major: затронуты только тесты, а
+  воспроизводимость зависит от раскладки установки, не от материала патча.
+  Блокирующих дефектов нет. Отдельно проверено главное подозрение — набор флагов
+  вызова `claude` (тесты идут через заглушку и семантику реального CLI не ловят):
+  вызов байт-в-байт совпадает с master, и именно этот адаптер отрабатывает все ревью
+  репозитория, включая приёмочные, то есть набор флагов рабочий.
+  blocking_complete: true.
