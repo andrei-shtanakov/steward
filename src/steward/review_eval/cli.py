@@ -60,6 +60,7 @@ from steward.review_eval.report import (
     ReportError,
     check_writable,
     render_compare,
+    status_text,
     write_inside,
     write_metrics_json,
     write_queue,
@@ -97,6 +98,10 @@ _DEFAULT_WORKSPACE_ROOT = Path("..")
 
 #: Статус варианта, требующий разбора очереди перед публикацией precision (D9).
 _PENDING = "pending_adjudication"
+
+#: Статусы `compare`, при которых сторона не даёт ни одной пары для метрик
+#: качества (§13/D9) — знаменатели `— (0/0)` в таблице не значат «измерено».
+_UNMEASURED_STATUSES = frozenset({"no_gold", "no_quality_runs"})
 
 #: Три артефакта отчёта прогона, в порядке записи. Общий список для
 #: пред-проверки записываемости (`check_writable`, до первой записи) и для
@@ -637,6 +642,15 @@ def compare_runs(
     adjudication (`pending_adjudication`) или `unexpected_outcome`, — иначе
     незавершённое сравнение выходило бы кодом 0.
 
+    Статус каждой стороны печатается перед таблицей каждого варианта —
+    тем же текстом, что и раздел «Статус» `report.md` (D9): без gold-кейсов
+    (`no_gold`) или без прогонов, годных для метрик качества
+    (`no_quality_runs`) знаменатели ниже — `— (0/0)` — иначе неотличимы от
+    состоявшегося измерения с нулевым результатом. Код выхода на это не
+    завязан (единообразно с `metrics` на `no_gold`, §13), но если качество
+    не измерено вовсе ни по одной сравниваемой метке — отдельная строка в
+    stderr называет это явно.
+
     **Провенанс обоих прогонов печатается до чисел** (кит, `corpus_digest`) —
     как это уже делает шапка `report.md` для одного прогона. Разница в
     `kit.commit`/`corpus_digest` между A и B не отвергается (сравнение кита
@@ -710,6 +724,7 @@ def compare_runs(
     # бы зелёным кодом выхода над незавершённым измерением.
     pending: list[str] = []
     unexpected: list[str] = []
+    unmeasured: list[str] = []
     # Общая метка варианта не значит общие кейсы: два прогона той же метки
     # на непересекающихся наборах кейсов дают пустую парную популяцию —
     # `compare` посчитал бы (и напечатал) сравнение из нуля пар, а без этой
@@ -728,6 +743,10 @@ def compare_runs(
             pending.append(f"{label} (A)")
         if summary_b.get("status") == _PENDING:
             pending.append(f"{label} (B)")
+        if summary_a.get("status") in _UNMEASURED_STATUSES:
+            unmeasured.append(f"{label} (A): {summary_a.get('status')}")
+        if summary_b.get("status") in _UNMEASURED_STATUSES:
+            unmeasured.append(f"{label} (B): {summary_b.get('status')}")
         unexpected.extend(
             f"{run_label}/{ev.case.case_id}/{label}/{ev.result.repetition_id}: {ev.result.outcome}"
             for run_label, evs in (("A", evals_a[label]), ("B", evals_b[label]))
@@ -736,6 +755,12 @@ def compare_runs(
         )
         typer.echo("")
         typer.echo(f"## {label}")
+        typer.echo("")
+        # Статус каждой стороны — тот же текст, что и «Статус» в report.md
+        # (D9): пустые знаменатели ниже (`— (0/0)`) без этого неотличимы от
+        # состоявшегося измерения качества (ревью-находка части 3, minor).
+        typer.echo(f"- **A**: {status_text(str(summary_a.get('status')))}")
+        typer.echo(f"- **B**: {status_text(str(summary_b.get('status')))}")
         typer.echo("")
         typer.echo(render_compare(compare(summary_a, summary_b, paired)))
     if not compared:
@@ -748,6 +773,16 @@ def compare_runs(
     if empty_pairs:
         typer.echo(
             f"варианты вне сравнения (общая метка, но нет общих пар): {', '.join(empty_pairs)}"
+        )
+    if unmeasured and len(unmeasured) == 2 * len(compared):
+        # Обе стороны каждой сравниваемой метки без качественных прогонов —
+        # тот же факт, что `_report` называет «gold-кейсов нет, метрики не
+        # публикуются (§13)»: строка обязательна, иначе шапка `n_pairs > 0`
+        # читается как состоявшееся измерение (ревью-находка части 3, minor).
+        typer.echo(
+            "качество не измерено ни по одной сравниваемой метке "
+            f"({', '.join(unmeasured)}) — сравнивать нечего по существу",
+            err=True,
         )
     for label in pending:
         typer.echo(f"{label}: очередь adjudication непуста — precision не публикуется", err=True)

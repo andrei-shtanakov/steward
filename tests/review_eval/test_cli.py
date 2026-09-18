@@ -2223,6 +2223,31 @@ def test_compare_echoes_provenance_and_warns_on_a_kit_mismatch(tmp_path: Path) -
     assert "внимание: A и B измерены разным китом" in result.output
 
 
+def test_compare_over_an_all_draft_corpus_names_that_quality_was_not_measured(
+    tmp_path: Path,
+) -> None:
+    """Корпус без единого gold-кейса — `compare` не должен выглядеть зелёным.
+
+    Все шесть кейсов, которые несёт эта ветка (`eval/corpus/`), — черновики
+    (`annotation.status: draft`), то есть состояние репозитория сразу после
+    мержа. `_evaluate` не фильтрует по gold, поэтому парная популяция непуста
+    (`n_common_cases`/`n_pairs` > 0), а каждая ячейка качества — `— (0/0)`:
+    без явного сигнала это неотличимо от состоявшегося измерения с нулевым
+    результатом (ревью-находка части 3, minor, PR #169 dry-run).
+    """
+    corpus = _corpus(tmp_path, 155, status="draft")
+    run_a = tmp_path / "a"
+    run_b = tmp_path / "b"
+    _write_run(run_a, ["andrei-shtanakov.steward-155"], findings=[_finding()])
+    _write_run(run_b, ["andrei-shtanakov.steward-155"], findings=[])
+
+    result = runner.invoke(cli.app, ["compare", str(run_a), str(run_b), "--corpus", str(corpus)])
+
+    assert result.exit_code == 0, result.output
+    assert "no_gold" in result.output
+    assert "качество не измерено ни по одной сравниваемой метке" in result.output
+
+
 def test_compare_names_variants_outside_the_comparison(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path, 155)
     run_a = tmp_path / "a"

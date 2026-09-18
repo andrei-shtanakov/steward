@@ -172,6 +172,7 @@ __all__ = [
     "render_compare",
     "render_queue",
     "render_report",
+    "status_text",
     "write_metrics_json",
     "write_queue",
     "write_report",
@@ -234,6 +235,16 @@ _STATUS_TEXT: Mapping[str, str] = {
 }
 """Текст статус-строки — словами, а не кодом (читатель не должен путать
 `ok`-выглядящие числа с измеренными, пока статус не `ok`)."""
+
+
+def status_text(status: str) -> str:
+    """Тот же словесный текст статус-строки, что печатает `report.md` (D9).
+
+    Публичная обёртка над `_STATUS_TEXT` — переиспользуется `compare`
+    (`cli.py`), чтобы «нет gold-кейсов» / «нет прогонов для качества» не
+    выглядели как состоявшееся измерение с нулевыми знаменателями.
+    """
+    return _STATUS_TEXT.get(status, f"⚠️ {status}")
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +440,7 @@ def _render_status(
     for variant in variants:
         summary = metrics_by_variant.get(variant)
         status = summary.get("status") if isinstance(summary, Mapping) else None
-        text = _STATUS_TEXT.get(str(status), f"⚠️ {status}")
-        lines.append(f"- **{variant}**: {text}")
+        lines.append(f"- **{variant}**: {status_text(str(status))}")
     return lines
 
 
