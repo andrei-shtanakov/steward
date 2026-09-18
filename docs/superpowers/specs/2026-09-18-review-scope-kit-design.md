@@ -105,8 +105,14 @@ fail-closed (`devtools/review-pr.sh:1180` — `die 3 «неожиданный к
 - SSOT остаётся в `devtools/contracts/review-scope/v1/prose-paths.env`.
 - steward получает **байт-в-байт** вендор-копию `scripts/review/prose-paths.env`
   с provenance на версию и коммит devtools в шапке.
-- Файл входит в `scripts/review/PIN` и в инвентарь `checksum.sh`, то есть
-  copy-integrity и ночной `review-kit-drift` накрывают его наравне со схемой.
+- Файл входит в инвентарь `checksum.sh` (у продюсера) и в `scripts/review/PIN`
+  **вендор-копий** (у потребителей), то есть copy-integrity и ночной
+  `review-kit-drift` накрывают его наравне со схемой.
+
+  Уточнение к первой редакции: у самого steward `scripts/review/PIN` нет и не
+  было — PIN пинует вендор-копию к продюсеру, и пиновать себя к себе продюсеру
+  нечем. Строка PIN появляется в волне ре-вендора, у потребителей; в steward —
+  только инвентарь.
 
 Довод против «своего у каждого репо» подкреплён замером: `review-prompt.md` — как
 раз «свой» член, и в шести репо из семи он побайтово одинаков, а в `maestro` тихо
