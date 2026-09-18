@@ -21,6 +21,7 @@ dev = [
 gate-check = "steward.gatecheck.cli:app"
 steward = "steward.riskclassify.cli:app"
 steward-compile = "steward.compile.cli:app"
+review-eval = "steward.review_eval.cli:app"
 
 [build-system]
 requires = ["hatchling"]

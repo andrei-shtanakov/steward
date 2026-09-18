@@ -36,6 +36,7 @@ from steward.review_eval.runner import (
     provider_env_fingerprint,
     run_all,
     run_case,
+    scrubbed_git_env,
     variant_label,
 )
 
@@ -305,6 +306,20 @@ def _env_base(record: Path, **extra: str) -> dict[str, str]:
 )
 def test_parse_variant_table(text: str, expected: Variant) -> None:
     assert parse_variant(text) == expected
+
+
+def test_parse_variant_treats_every_colon_as_a_segment_separator() -> None:
+    """`:` внутри model/effort никогда не переживает разбор — это разделитель
+    следующего сегмента, а не символ имени, и разбор его не экранирует.
+
+    `codex:vendor:model`, задуманное как модель `vendor:model` без effort,
+    разбирается как `model=vendor, effort=model` — единственно возможная (хоть
+    и не то, что мог иметь в виду вызывающий) трактовка простого
+    `text.split(":")`; экранирования или отдельных флагов под harness/model/
+    effort нет (ревью-находка части 3, major). `_TOKEN_RE` двоеточие в
+    алфавите модели/effort не пропускает именно поэтому.
+    """
+    assert parse_variant("codex:vendor:model") == Variant("codex", "vendor", "model")
 
 
 @pytest.mark.parametrize(
@@ -1760,6 +1775,25 @@ def test_run_all_allows_growing_repetitions_on_resume(tmp_path: Path) -> None:
     assert resume.calls() == 3  # повторение 1 уже было
 
 
+def _rekeyed(payload: dict[str, object]) -> dict[str, object]:
+    """Пути артефактов result.json под его же case_id/variant/repetition_id.
+
+    Загрузчик требует канонические sidecar-пути **своей** тройки; тесты, которые
+    переносят результат в чужую тройку, должны переносить и пути — иначе первым
+    сработает отказ про sidecar, а не то, что проверяет тест.
+    """
+    prefix = f"cases/{payload['case_id']}/{payload['variant']}/{payload['repetition_id']}"
+    for name, leaf in (
+        ("verdict_path", "verdict.json"),
+        ("usage_path", "usage.json"),
+        ("stdout_path", "stdout.txt"),
+        ("stderr_path", "stderr.txt"),
+    ):
+        if payload.get(name) is not None:
+            payload[name] = f"{prefix}/{leaf}"
+    return payload
+
+
 def test_load_results_refuses_a_result_outside_the_manifest(tmp_path: Path) -> None:
     """Результат повторения, которого манифест не объявляет, — отказ, а не «лишний».
 
@@ -1774,7 +1808,7 @@ def test_load_results_refuses_a_result_outside_the_manifest(tmp_path: Path) -> N
     stray.mkdir()
     payload = json.loads((rep1 / "result.json").read_text(encoding="utf-8"))
     payload["repetition_id"] = 3
-    (stray / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (stray / "result.json").write_text(json.dumps(_rekeyed(payload)), encoding="utf-8")
 
     with pytest.raises(RunnerError, match="манифест") as excinfo:
         load_results(resume.out_dir)
@@ -1812,7 +1846,7 @@ def test_load_results_refuses_a_result_of_an_unknown_case(tmp_path: Path) -> Non
     stray.mkdir(parents=True)
     payload = json.loads((rep1 / "result.json").read_text(encoding="utf-8"))
     payload["case_id"] = "steward-999"
-    (stray / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (stray / "result.json").write_text(json.dumps(_rekeyed(payload)), encoding="utf-8")
 
     with pytest.raises(RunnerError, match="манифест") as excinfo:
         load_results(resume.out_dir)
@@ -1913,6 +1947,39 @@ def test_run_all_rerun_of_a_subset_keeps_the_other_cases(tmp_path: Path) -> None
     # Остался результат прежнего прогона — прогон тот же, `started` прежний:
     # иначе run.json датировал бы сохранённый результат позже его измерения.
     assert stored["started"] == started_before
+
+
+def test_run_all_refuses_a_partial_rerun_when_case_material_changed_and_others_remain(
+    tmp_path: Path,
+) -> None:
+    """Частичный `--rerun` одного кейса с изменившимся материалом — тупик, если
+
+    в каталоге остались результаты прочих кейсов вне выборки (ревью-находка
+    части 3, minor/medium): `metrics`/`compare` советуют «перемерьте кейс
+    (--rerun)» на отказе «материал кейса изменился», но на прогоне из >1
+    кейса эта же команда сама отказывает — драйф провенанса (изменившийся
+    `case_digests.<id>`) плюс непокрытый выборкой остаток (`--cases` из
+    одного кейса не накрывает прочие) дают `drift and leftover` (runner.py).
+    Сообщение исправлено — называет новый `--out` или полный `--rerun`; этот
+    тест запирает сам тупик, которого раньше не проверял ни один тест ни в
+    одном направлении.
+    """
+    cases, out_dir, cache_root, kit, counter, digest, env_base = _two_case_run(tmp_path)
+    changed = dataclasses.replace(cases[0], expected_outcome="guardrail_rejection")
+    assert _calls(counter) == 2
+
+    with pytest.raises(RunnerError, match="начните прогон в другом --out"):
+        run_all(
+            [changed],
+            [Variant("claude", "claude-opus-5", None)],
+            repetitions=1,
+            out_dir=out_dir,
+            kit=kit,
+            cache_root=cache_root,
+            env_base=env_base,
+            corpus_digest_override=corpus_digest([changed, cases[1]]),
+            rerun=True,
+        )
 
 
 def test_run_all_resume_of_a_subset_runs_only_its_missing_reps(tmp_path: Path) -> None:
@@ -2052,7 +2119,7 @@ def test_load_results_refuses_a_result_of_an_unknown_variant(tmp_path: Path) -> 
     stray.mkdir(parents=True)
     payload = json.loads((rep1 / "result.json").read_text(encoding="utf-8"))
     payload["variant"] = "codex:gpt-5.4:high"
-    (stray / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (stray / "result.json").write_text(json.dumps(_rekeyed(payload)), encoding="utf-8")
 
     with pytest.raises(RunnerError, match="манифест"):
         load_results(resume.out_dir)
@@ -3048,6 +3115,125 @@ def test_load_results_refuses_a_manifest_with_a_corrupt_variant(
         load_results(out_dir)
 
 
+@pytest.mark.parametrize(
+    "verdict_path",
+    [
+        "cases/steward-155/claude:claude-opus-5/1/verdict.json",  # чужая тройка
+        "/etc/passwd",  # абсолютный
+        "cases/steward-157/claude:claude-opus-5/1/../1/verdict.json",  # `..`
+    ],
+    ids=["other-triple", "absolute", "dotdot"],
+)
+def test_load_results_refuses_a_non_canonical_sidecar_path(
+    tmp_path: Path, verdict_path: str
+) -> None:
+    """`verdict_path`/`usage_path` — только `cases/<case>/<variant>/<rep>/<name>.json`
+    своей тройки: чужой или внешний sidecar иначе попадал бы в метрики как свой.
+    """
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    result = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "result.json"
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    payload["verdict_path"] = verdict_path
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="verdict_path"):
+        load_results(out_dir)
+
+
+def test_load_results_refuses_a_symlinked_sidecar(tmp_path: Path) -> None:
+    """Симлинк на месте `verdict.json` готовой тройки — отказ при чтении."""
+    _cases, out_dir, _cache_root, _kit, _counter, _digest, _env = _two_case_run(tmp_path)
+    verdict = out_dir / "cases" / "steward-157" / "claude:claude-opus-5" / "1" / "verdict.json"
+    external = out_dir.parent / "outside-verdict.json"
+    external.write_text(verdict.read_text(encoding="utf-8"), encoding="utf-8")
+    verdict.unlink()
+    verdict.symlink_to(external)
+
+    with pytest.raises(RunnerError, match="символическая ссылка"):
+        load_results(out_dir)
+
+
+def test_load_results_does_not_check_sidecar_existence_itself(tmp_path: Path) -> None:
+    """`load_results` не проверяет существование объявленного sidecar-а — это
+    забота `metrics.evaluate_case`/`_load_sidecar`, безусловная (не только
+    когда `required`), и **одна**: раньше та же проверка дублировалась и
+    здесь тоже (только для «не обязательных» metrics.py sidecar-ов), и одна
+    и та же порча («result.json обещал файл, файла нет») давала разный код
+    выхода в зависимости от `cost_status`/`outcome` — поля, к факту потери
+    файла отношения не имеющего (ревью-находка части 3, minor). Периметр
+    симлинков (`_require_result_file`) при этом остаётся: `load_results`
+    по-прежнему отказывает, если на месте объявленного sidecar — ссылка
+    (`test_load_results_refuses_a_symlinked_sidecar`).
+    """
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    out_dir = tmp_path / "run"
+    cases = [_make_case(base_sha=first, head_sha=second, case_id="steward-155")]
+    run_all(
+        cases,
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=out_dir,
+        kit=kit,
+        cache_root=cache_root,
+        env_base=_env_base(
+            tmp_path / "record.txt",
+            STUB_EXIT="0",
+            STUB_VERDICT_BODY=VALID_VERDICT,
+            # Непустой usage без числа — легитимный cost_status: unavailable
+            # (та же комбинация, что в test_run_case_cost_status), и раннер
+            # всё равно объявляет usage_path непустым sidecar-ом.
+            STUB_USAGE_BODY=json.dumps({"total_cost_usd": None}),
+        ),
+    )
+    rep_dir = out_dir / "cases" / "steward-155" / "claude:claude-opus-5" / "1"
+    result_payload = json.loads((rep_dir / "result.json").read_text(encoding="utf-8"))
+    assert result_payload["usage_path"] is not None
+    assert result_payload["cost_status"] == "unavailable"
+    (rep_dir / "usage.json").unlink()
+
+    results = load_results(out_dir)
+
+    assert len(results) == 1
+    assert results[0].usage_path is not None
+
+
+def test_run_all_refuses_resume_when_case_material_changed(tmp_path: Path) -> None:
+    """Тот же case_id с другим материалом (здесь — `expected_outcome`; `head_sha`
+    остановил бы уже оффлайн-проверка объектов) — доливка отвергается."""
+    resume = _resume_fixture(tmp_path)
+    changed = dataclasses.replace(resume.cases[0], expected_outcome="guardrail_rejection")
+    before = (resume.out_dir / "run.json").read_bytes()
+
+    with pytest.raises(RunnerError, match="case_digests"):
+        resume.again(cases=[changed], corpus_digest_override=corpus_digest([changed]))
+
+    assert (resume.out_dir / "run.json").read_bytes() == before
+
+
+def test_run_all_refuses_resume_when_a_case_digest_is_missing_from_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Кейс уже был в прежнем `cases` (и у него уже есть result.json), а
+    записи для него в `case_digests` нет — потерянная/повреждённая запись,
+    не «прогон впервые видит кейс». Доливка отвергается, а не тихо
+    накладывает текущий дайджест на старый result.json без переизмерения —
+    тот же инвариант полноты, что у `cli.py::_require_same_case_material`.
+    """
+    resume = _resume_fixture(tmp_path)
+    manifest_path = resume.out_dir / "run.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest["case_digests"]["steward-155"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    corrupted = manifest_path.read_bytes()
+
+    with pytest.raises(RunnerError, match="case_digests"):
+        resume.again()
+
+    assert manifest_path.read_bytes() == corrupted
+
+
 def test_load_results_refuses_an_unfinished_run(tmp_path: Path) -> None:
     """`finished: null` — прогон не завершён, даже если все `result.json` на месте.
 
@@ -3596,3 +3782,27 @@ def test_run_all_pre_checks_every_case_before_first_run(tmp_path: Path) -> None:
     assert "steward-157" in message
     assert not counter.exists()  # ни одного вызова кита
     assert not (out_dir / "run.json").exists()
+
+
+def test_scrubbed_git_env_pins_the_message_locale_to_c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Локаль сообщений git не должна течь из окружения процесса (§9).
+
+    `cli.py::_MISSING_OBJECT_SIGNATURES` распознаёт «объекта нет» только по
+    английским подстрокам `fatal:`. На машине с локализованным git (`LANG`/
+    `LC_ALL` вроде `ru_RU.UTF-8`) без пина сообщение пришло бы переведённым,
+    ни одна подпись не совпала бы, и штатное «файла/коммита нет» поднималось
+    бы как `CacheError` — отказ инструмента вместо факта о дереве (ревью-
+    находка части 3, minor/medium). `LANGUAGE` — расширение gettext с
+    приоритетом над `LC_ALL` для перевода сообщений, поэтому оба должны
+    попасть в вычищенное окружение.
+    """
+    monkeypatch.setenv("LANG", "ru_RU.UTF-8")
+    monkeypatch.setenv("LC_ALL", "ru_RU.UTF-8")
+    monkeypatch.setenv("LANGUAGE", "ru")
+
+    env = scrubbed_git_env(None)
+
+    assert env["LC_ALL"] == "C"
+    assert env["LANGUAGE"] == ""

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -41,10 +42,137 @@ from steward.review_eval.metrics import (
 from steward.review_eval.runner import RunManifest
 from steward.review_eval.threshold import is_blocking
 
+
+class ReportError(RuntimeError):
+    """Отчёт не может быть записан: путь выводит запись за пределы каталога прогона."""
+
+
+def _check_no_symlink_on_path(root: Path, relative: str) -> None:
+    """Отказать, если `root/relative` (или что-то по пути к нему) — симлинк."""
+    current = root
+    for part in Path(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ReportError(
+                f"{current}: символическая ссылка на пути отчёта — запись только "
+                "внутри каталога прогона, по ссылкам отчёт не пишется"
+            )
+
+
+def check_writable(run_dir: Path, name: str) -> None:
+    """Отказать, если `run_dir/name` или его temp-путь — симлинк.
+
+    Ровно проверка, которую `write_inside` делает перед записью, вынесенная
+    отдельно: комплект из трёх артефактов отчёта (`metrics.json`, `report.md`,
+    `adjudication-queue.md`) пишется тремя раздельными вызовами `write_inside`,
+    и отказ второго или третьего писателя на симлинке, встреченном уже
+    ПОСЛЕ первого `os.replace`, оставлял каталог прогона с артефактами от
+    РАЗНЫХ пересчётов: `metrics.json` уже новый, `report.md` — ещё старый
+    (ревью-находка части 3, minor). Вызывающий обязан проверить **все** пути
+    комплекта этой функцией, прежде чем звать `write_inside` для любого из
+    них — тогда симлинк-препятствие отказывает раньше первой записи.
+
+    **Проверяется и `.{name}.tmp`, не только `name`.** Первая версия этой
+    функции проверяла только конечную цель — симлинк на месте
+    детерминированного temp-файла `write_inside` (тот, через который идёт
+    сама запись, `os.open(..., O_CREAT|O_EXCL)`) проходил незамеченным, и
+    отказ на нём случался уже ПОСЛЕ `os.replace` предыдущего артефакта — то
+    самое смешанное состояние, которое эта функция должна предотвращать
+    (ревью-находка части 3, minor: пред-проверка предыдущего раунда сама не
+    покрывала temp-путь).
+
+    **Не гарантия «ничего не тронуто» на любой отказ, только на симлинк.**
+    Каталог (не файл) или неудаляемый обычный файл на месте `.tmp`, ENOSPC
+    посреди `handle.write`/`os.replace` — эта функция такое не ловит вовсе
+    (проверяется только `is_symlink`), и второй/третий писатель по-прежнему
+    может отказать уже после того, как первый заменил свой артефакт (ревью-
+    находка части 3, minor: комментарий предыдущего раунда обещал больше,
+    чем эта проверка на деле даёт). Полная атомарность комплекта из трёх
+    независимых `os.replace` потребовала бы двухфазной записи (staging-
+    каталог + один атомарный коммит) — вне масштаба точечной пред-проверки;
+    здесь закрыт конкретный, воспроизводимый класс (симлинк), не весь класс
+    возможных отказов файловой системы. Не панацея и от TOCTOU (симлинк
+    может появиться после проверки, до записи) — тот же остаточный риск
+    несёт и сам `write_inside`.
+    """
+    root = Path(os.path.normpath(os.path.abspath(run_dir)))
+    _check_no_symlink_on_path(root, name)
+    _check_no_symlink_on_path(root, f".{name}.tmp")
+
+
+def write_inside(run_dir: Path, name: str, text: str) -> Path:
+    """Записать `run_dir/name` так, чтобы запись не покинула `run_dir`.
+
+    Ни один компонент **внутри** `run_dir` до цели не симлинк, и сам файл не
+    симлинк (`check_writable`): `write_text` по ссылке пишет в её цель, и
+    подготовленный каталог прогона портил бы произвольный файл вне него.
+    `run_dir` **сам** симлинком быть вправе — та же политика, что у
+    `runner._require_no_symlinks` (проверяет только `tail.parts`, компоненты
+    пути относительно `root`, никогда сам `root`): `run_all` резолвит
+    `--out`-симлинк и работает с целью, и раньше `write_inside` требовал
+    строже, чем сам раннер — оплаченный `run` с `--out`-симлинком отрабатывал
+    целиком, а последующий `_report` отказывал кодом 2 на ровно том же пути,
+    который раннер уже принял (ревью-находка части 3, minor). Запись
+    атомарна: временный файл рядом, созданный эксклюзивно, затем
+    `os.replace`. Обычный (не symlink) temp-файл, оставшийся от прогона,
+    прерванного между созданием temp-файла и `os.replace`, снимается и
+    попытка создания повторяется один раз — иначе то же детерминированное
+    имя отказывало бы навсегда после любого сбоя посередине записи.
+    """
+    check_writable(run_dir, name)
+    root = Path(os.path.normpath(os.path.abspath(run_dir)))
+    path = root / name
+    tmp = root / f".{name}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(tmp, flags, 0o644)
+    except FileExistsError:
+        # Имя временного файла детерминировано (по `name`), поэтому обычный
+        # regular-файл, оставшийся после прежнего прогона, прерванного между
+        # `os.open` и `os.replace`, отказывал бы здесь вечно — до ручной
+        # уборки. `O_EXCL` даёт EEXIST по самому факту существования пути —
+        # для symlink на месте `tmp` тоже (в т.ч. висящего), цель значения не
+        # имеет. Убрать можно только regular-файл: symlink на месте `tmp` —
+        # тот же периметр, что и остальной `write_inside`, его не трогаем.
+        if tmp.is_symlink():
+            raise ReportError(
+                f"{tmp}: временный файл отчёта — символическая ссылка, не трогаем"
+            ) from None
+        try:
+            tmp.unlink()
+        except OSError as exc:
+            # Не снимается — чужой uid, sticky-бит каталога, права. Это
+            # препятствие в каталоге прогона (конфигурация, код 2), а не
+            # дефект review-eval: необёрнутый `OSError` уходил бы мимо
+            # `except ReportError` в `_report` и ловился бы только `_guarded`
+            # как «internal error» кодом 3 — уже ПОСЛЕ того, как соседний
+            # writer успел заменить свой артефакт (ревью-находка части 3,
+            # minor).
+            raise ReportError(
+                f"{tmp}: не удалось снять оставшийся временный файл отчёта: {exc}"
+            ) from exc
+        try:
+            descriptor = os.open(tmp, flags, 0o644)
+        except OSError as exc:
+            raise ReportError(f"{tmp}: не удалось создать временный файл отчёта: {exc}") from exc
+    except OSError as exc:
+        raise ReportError(f"{tmp}: не удалось создать временный файл отчёта: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink(missing_ok=True)
+    return path
+
+
 __all__ = [
+    "check_writable",
     "render_compare",
     "render_queue",
     "render_report",
+    "status_text",
     "write_metrics_json",
     "write_queue",
     "write_report",
@@ -109,6 +237,16 @@ _STATUS_TEXT: Mapping[str, str] = {
 `ok`-выглядящие числа с измеренными, пока статус не `ok`)."""
 
 
+def status_text(status: str) -> str:
+    """Тот же словесный текст статус-строки, что печатает `report.md` (D9).
+
+    Публичная обёртка над `_STATUS_TEXT` — переиспользуется `compare`
+    (`cli.py`), чтобы «нет gold-кейсов» / «нет прогонов для качества» не
+    выглядели как состоявшееся измерение с нулевыми знаменателями.
+    """
+    return _STATUS_TEXT.get(status, f"⚠️ {status}")
+
+
 # ---------------------------------------------------------------------------
 # metrics.json
 # ---------------------------------------------------------------------------
@@ -139,9 +277,7 @@ def write_metrics_json(
         "recomputed_with": dict(recomputed_with) if recomputed_with is not None else None,
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
-    path = run_dir / "metrics.json"
-    path.write_text(text, encoding="utf-8")
-    return path
+    return write_inside(run_dir, "metrics.json", text)
 
 
 # ---------------------------------------------------------------------------
@@ -218,14 +354,13 @@ def write_report(
     recomputed_with: Mapping[str, object] | None = None,
 ) -> Path:
     """Рендерит и пишет ``report.md``."""
-    path = run_dir / "report.md"
-    path.write_text(
+    return write_inside(
+        run_dir,
+        "report.md",
         render_report(
             metrics_by_variant, evals_by_variant, manifest, recomputed_with=recomputed_with
         ),
-        encoding="utf-8",
     )
-    return path
 
 
 def _manifest_map(manifest: RunManifest | Mapping[str, object]) -> Mapping[str, object]:
@@ -305,8 +440,7 @@ def _render_status(
     for variant in variants:
         summary = metrics_by_variant.get(variant)
         status = summary.get("status") if isinstance(summary, Mapping) else None
-        text = _STATUS_TEXT.get(str(status), f"⚠️ {status}")
-        lines.append(f"- **{variant}**: {text}")
+        lines.append(f"- **{variant}**: {status_text(str(status))}")
     return lines
 
 
@@ -542,9 +676,7 @@ def render_queue(evals_by_variant: Mapping[str, Sequence[CaseEval]]) -> str:
 
 def write_queue(run_dir: Path, evals_by_variant: Mapping[str, Sequence[CaseEval]]) -> Path:
     """Рендерит и пишет ``adjudication-queue.md``."""
-    path = run_dir / "adjudication-queue.md"
-    path.write_text(render_queue(evals_by_variant), encoding="utf-8")
-    return path
+    return write_inside(run_dir, "adjudication-queue.md", render_queue(evals_by_variant))
 
 
 def _variant_queue_lines(evs: Sequence[CaseEval]) -> list[str]:

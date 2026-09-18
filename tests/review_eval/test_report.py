@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+
+import pytest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from steward.review_eval.corpus import Annotation, Case, Defect, Match
 from steward.review_eval.matcher import Prediction, match
 from steward.review_eval.metrics import CaseEval, metrics_for_variant
 from steward.review_eval.report import (
+    ReportError,
     render_compare,
     render_queue,
     render_report,
@@ -1167,6 +1170,148 @@ def test_queue_labels_every_case_with_its_annotation_status() -> None:
     text = render_queue({"variant-a": [ev]})
 
     assert "### C-queue (rep 1, annotation: adjudicated)" in text
+
+
+@pytest.mark.parametrize("name", ["metrics.json", "report.md", "adjudication-queue.md"])
+def test_writers_refuse_a_symlinked_output_and_keep_the_target(tmp_path: Path, name: str) -> None:
+    """Симлинк на месте выходного файла — отказ, внешняя цель не тронута.
+
+    `write_text` по ссылке пишет в её цель: подготовленный каталог прогона
+    выводил бы запись за пределы `run_dir` и портил бы произвольный файл.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    external = tmp_path / "victim.txt"
+    external.write_text("important", encoding="utf-8")
+    (run_dir / name).symlink_to(external)
+    case = make_case(defects=[make_defect()])
+    ev = build_eval(case, findings=[finding()])
+    evals_by_variant = {"v": [ev]}
+    metrics_by_variant = {"v": metrics_for_variant([ev])}
+    manifest = RunManifest(
+        run_id="r",
+        kit={"commit": "c"},
+        tools={},
+        variants=[{"label": "v", "harness": "h", "model": "m", "effort": None}],
+        corpus_digest="d",
+        matcher_version=1,
+        matcher_rules_digest="x",
+        started="s",
+        finished="f",
+        jobs=1,
+        repetitions=1,
+    )
+
+    with pytest.raises(ReportError, match="символическая ссылка"):
+        if name == "metrics.json":
+            write_metrics_json(run_dir, metrics_by_variant)
+        elif name == "report.md":
+            write_report(run_dir, metrics_by_variant, evals_by_variant, manifest)
+        else:
+            write_queue(run_dir, evals_by_variant)
+
+    assert external.read_text(encoding="utf-8") == "important"
+
+
+def test_write_inside_recovers_from_a_stale_regular_tmp_file(tmp_path: Path) -> None:
+    """Обычный (не symlink) `.metrics.json.tmp`, оставшийся после прогона,
+    прерванного между созданием temp-файла и `os.replace`, не блокирует
+    следующую запись навсегда: имя детерминировано (по имени цели), и без
+    восстановления `O_EXCL` отказывал бы на нём при каждой попытке.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".metrics.json.tmp").write_text("огрызок прежнего прогона", encoding="utf-8")
+
+    path = write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert path == run_dir / "metrics.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["variants"] == {"v": {"status": "no_gold"}}
+    assert not (run_dir / ".metrics.json.tmp").exists()
+
+
+def test_write_inside_reports_a_report_error_when_the_stale_tmp_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Обычный (не symlink) `.tmp`, который снять не удаётся (чужой uid,
+    sticky-бит каталога, права на общей машине) — `ReportError` (у
+    вызывающего это конфигурация каталога, код 2), не сырой `OSError`:
+    необёрнутый `OSError` уходил бы мимо `except ReportError` в `_report` и
+    ловился бы только как «internal error» кодом 3 — уже ПОСЛЕ того, как
+    соседний writer успел заменить свой артефакт (ревью-находка части 3,
+    minor).
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    stale = run_dir / ".metrics.json.tmp"
+    stale.write_text("огрызок прежнего прогона", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def failing_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == stale:
+            raise PermissionError("permission denied (test)")
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(ReportError, match="не удалось снять"):
+        write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert stale.read_text(encoding="utf-8") == "огрызок прежнего прогона"
+
+
+def test_write_inside_refuses_a_symlinked_stale_tmp_file(tmp_path: Path) -> None:
+    """Симлинк на месте `.tmp` — не «обычный оставшийся файл»: тот же периметр,
+    что и у цели записи, — отказ, а не молчаливое снятие чужой ссылки.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    external = tmp_path / "victim.txt"
+    external.write_text("important", encoding="utf-8")
+    (run_dir / ".metrics.json.tmp").symlink_to(external)
+
+    with pytest.raises(ReportError, match="символическая ссылка"):
+        write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert external.read_text(encoding="utf-8") == "important"
+
+
+def test_writers_accept_a_symlinked_prefix_above_the_run_dir(tmp_path: Path) -> None:
+    """Симлинк **выше** `run_dir` (macOS `/tmp` → `/private/tmp`) — не нарушение:
+    та же политика, что у раннера — ссылки запрещены внутри каталога прогона.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    run_dir = link / "sub"
+    run_dir.mkdir()
+
+    path = write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert path == run_dir / "metrics.json"
+    assert (real / "sub" / "metrics.json").is_file()
+
+
+def test_writers_accept_run_dir_itself_being_a_symlink(tmp_path: Path) -> None:
+    """`run_dir` (`--out`) сам — симлинк на настоящий каталог: не нарушение.
+
+    `run_all` резолвит симлинк `--out` и работает с целью (`_require_no_symlinks`
+    проверяет только компоненты ПУТИ ВНУТРИ каталога прогона, никогда сам
+    корень) — раньше `write_inside` требовал строже и отказывал на ровно том
+    пути, который раннер уже принял: оплаченный `run --out eval/runs/latest`
+    (симлинк на настоящий каталог прогона) отрабатывал целиком, а `_report`
+    в конце проваливался кодом 2 без единого артефакта.
+    """
+    real = tmp_path / "real-run"
+    real.mkdir()
+    run_dir = tmp_path / "latest"
+    run_dir.symlink_to(real, target_is_directory=True)
+
+    path = write_metrics_json(run_dir, {"v": {"status": "no_gold"}})
+
+    assert path == run_dir / "metrics.json"
+    assert (real / "metrics.json").is_file()
 
 
 def test_write_queue_writes_render_queue_output(tmp_path: Path) -> None:

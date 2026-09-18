@@ -43,7 +43,7 @@ from pathlib import Path
 
 from steward.review_eval.cache import CacheUnavailable
 from steward.review_eval.corpus import FILE_MISSING_KIND, Case, is_gold
-from steward.review_eval.matcher import MatchResult, Prediction, normalize_path
+from steward.review_eval.matcher import MatchResult, Prediction
 from steward.review_eval.matcher import match as match_predictions
 from steward.review_eval.runner import EMPTY_RANGE_OUTCOME, RunResult
 from steward.review_eval.threshold import as_line_number, is_blocking, is_schema_valid_verdict
@@ -507,17 +507,39 @@ def _load_sidecar(
     what: str,
     where: str,
 ) -> Mapping[str, object] | None:
-    """Sidecar-JSON как объект; ``None``, если пути нет или он не читается.
+    """Sidecar-JSON как объект; ``None``, если путь не объявлен или (только
+    когда `required=False`) объявлен, но содержимое непригодно.
 
-    `required` — исход прогона обещает этот файл (`verdict` обещает вердикт,
-    `cost_status: available` обещает usage): тогда отсутствие или битый JSON
-    это `MetricsError`, а не «метрика по этому прогону просто не считается».
+    `required` — исход прогона обещает **содержимое** этого файла (`verdict`
+    обещает вердикт, `cost_status: available` обещает usage с числом): при
+    `relative is None` (путь не объявлен вовсе) непредоставленное содержимое
+    — `MetricsError`, а без `required` — легитимное «метрика не считается».
+
+    **Существование объявленного пути (`relative is not None`) проверяется
+    всегда, независимо от `required` — а вот годность содержимого лишь
+    когда `required`.** Раннер выставляет `verdict_path`/`usage_path` по
+    непустоте (`_is_non_empty`), но **не по годности** JSON: `cost_status:
+    unavailable`/`outcome: invalid_verdict` — штатные исходы, при которых
+    файл записан, непуст, но не разобрался (`_has_cost`/verdict-схема). Тот
+    файл ОБЯЗАН существовать и при `required=False` (данные не должны
+    ИСЧЕЗАТЬ после того, как раннер их записал), но раз он изначально был
+    сохранён как «содержимое не пригодилось» — негодный JSON тут не порча,
+    а сам этот заранее известный исход, и `required=False` обязано вернуть
+    `None`, не `MetricsError` (иначе штатный исход `cost_status: unavailable`/
+    `invalid_verdict` ронял бы весь отчёт кодом 3 — находка приёмочного
+    ревью части 3, major, поймана раньше, чем регрессия успела попасть в
+    отчёты по-настоящему). Отсутствие ФАЙЛА (не просто негодного содержимого)
+    — рассогласование `result.json` с диском в любом случае, и это
+    `MetricsError` независимо от `required`: `load_results` эту проверку не
+    дублирует.
     """
     if relative is None:
         if required:
             raise MetricsError(f"{where}: исход требует {what}, но путь в result.json пуст")
         return None
     path = out_dir / relative
+    if not path.is_file():
+        raise MetricsError(f"{where}: {path} не найден, хотя объявлен в result.json")
     payload = _read_json(path)
     if not isinstance(payload, Mapping):
         if required:
@@ -567,8 +589,12 @@ def _refuted_file_missing(
     то же, противоречит материалу (`_contradicted_gold`). Прежде опровергались
     только `unlabeled`, и назначенная ложная находка становилась TP.
 
-    Путь нормализуется тем же правилом, что в матчере (`normalize_path`):
-    иначе ``./app/a.py`` из вердикта не нашёлся бы в дереве.
+    Путь передаётся **сырым**, без `normalize_path`: у `file_lines`
+    (`_file_lines_at`) уже есть своё правило «сырой путь сперва, нормализация —
+    запасной вариант», и предварительная нормализация здесь уничтожала бы
+    литеральный обратный слэш в настоящем git-имени раньше, чем до него
+    доходил сырой поиск — различить символ имени и виндовый разделитель
+    путей может только сам поиск по дереву, знающий оба варианта.
     """
     refuted: list[int] = []
     for pos, item in zip(positions, findings, strict=True):
@@ -577,7 +603,7 @@ def _refuted_file_missing(
         path = item.get("file")
         if not isinstance(path, str) or not path.strip():
             continue
-        if file_lines(normalize_path(path)) is not None:
+        if file_lines(path) is not None:
             refuted.append(pos)
     return tuple(refuted)
 
@@ -610,7 +636,10 @@ def _contradicted_gold(
     for defect in case.defects:
         if defect.kind != FILE_MISSING_KIND:
             continue
-        if file_lines(normalize_path(defect.file)) is not None:
+        # Сырой путь — та же причина, что у `_refuted_file_missing`: нормализация
+        # здесь стёрла бы литеральный backslash раньше, чем до него дошёл бы
+        # сырой поиск в `file_lines`.
+        if file_lines(defect.file) is not None:
             ids.add(defect.id)
     if matched is not None:
         ids.update(matched.assigned[pos] for pos in refuted if pos in matched.assigned)
@@ -648,9 +677,11 @@ def _is_resolvable(item: object, file_lines: Callable[[str], int | None]) -> boo
     file = item.get("file")
     if not isinstance(file, str) or not file.strip():
         return False
-    # Тем же правилом, что матчер и опровержение file-missing: `./app/a.py`
-    # из вердикта иначе не нашёлся бы в дереве.
-    lines = file_lines(normalize_path(file))
+    # Сырой путь — `file_lines` (`_file_lines_at`) сам пробует его первым и
+    # только потом нормализованный: предварительная нормализация здесь
+    # стирала бы литеральный backslash настоящего git-имени раньше, чем до
+    # него доходил бы сырой поиск.
+    lines = file_lines(file)
     if lines is None:
         return False
     line = as_line_number(

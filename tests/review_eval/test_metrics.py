@@ -20,7 +20,7 @@ import pytest
 
 from steward.review_eval.cache import CacheUnavailable
 from steward.review_eval.corpus import Annotation, Case, Defect, Match, NonDefect
-from steward.review_eval.matcher import Prediction, match
+from steward.review_eval.matcher import Prediction, match, normalize_path
 from steward.review_eval.metrics import (
     CI_METRICS,
     CaseEval,
@@ -335,6 +335,30 @@ def test_evaluate_case_refutes_file_missing_when_the_file_exists(tmp_path: Path)
     assert ev.refuted == (0,)
 
 
+def test_evaluate_case_passes_the_raw_path_to_file_lines_unnormalized(tmp_path: Path) -> None:
+    """`evaluate_case` не нормализует путь перед `file_lines`.
+
+    Литеральный backslash в имени — настоящий git-путь. `file_lines`
+    (`_file_lines_at` в проде) сам решает, пробовать ли сырой путь первым, а
+    нормализация здесь стирала бы `\\` раньше, чем до неё дошло бы дело:
+    `back\\slash.md` навсегда стал бы `back/slash.md`, и сырой поиск по
+    дереву уже не мог бы сработать.
+    """
+    case = make_case(defects=[make_defect()])
+    raw_path = "back\\slash.md"
+    write_run(tmp_path, verdict={"findings": [file_missing_finding(file=raw_path)], "note": "ok"})
+    seen: list[str] = []
+
+    def file_lines(path: str) -> int | None:
+        seen.append(path)
+        return None  # файла нет ни в каком виде — опровержение не суть теста
+
+    evaluate_case(case, result_for(case), tmp_path, file_lines=file_lines)
+
+    assert raw_path in seen
+    assert "back/slash.md" not in seen
+
+
 def test_evaluate_case_keeps_file_missing_unlabeled_when_the_file_is_absent(
     tmp_path: Path,
 ) -> None:
@@ -434,7 +458,7 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
         evidence=[
             {"file": "app/a.py", "line": 7, "reason": "в файле"},
             {"file": "app/a.py", "line": 8.0, "reason": "целое JSON-число в дробной записи"},
-            {"file": "./app/a.py", "line": 9, "reason": "путь нормализуется, как в матчере"},
+            {"file": "./app/a.py", "line": 9, "reason": "путь нормализует file_lines, не metrics"},
             {"file": "app/a.py", "line": 0, "reason": "указатель уровня файла"},
             {"file": "app/a.py", "line": 99, "reason": "за концом файла"},
             {"file": "app/gone.py", "line": 1, "reason": "файла нет на head"},
@@ -447,11 +471,15 @@ def test_evaluate_case_resolvable_evidence_semantics(tmp_path: Path) -> None:
     write_run(tmp_path, verdict={"findings": [blocking, quiet], "note": "ok"})
     sizes = {"app/a.py": 10}
 
+    # metrics.py передаёт путь сырым (не нормализует): нормализация здесь
+    # стоит на месте настоящего `_file_lines_at`, чтобы `./app/a.py` всё ещё
+    # резолвился — тем самым правилом, что и в матчере, только теперь
+    # ответственность за него у file_lines, а не у вызывающего кода.
     ev = evaluate_case(
         case,
         result_for(case),
         tmp_path,
-        file_lines=lambda path: sizes.get(path),
+        file_lines=lambda path: sizes.get(normalize_path(path)),
     )
 
     assert ev.resolvable_evidence == (True, True, True, True, False, False)
@@ -478,6 +506,87 @@ def test_evaluate_case_raises_when_cost_promised_but_absent(tmp_path: Path) -> N
 
     with pytest.raises(MetricsError, match="total_cost_usd"):
         evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
+
+
+def test_evaluate_case_raises_when_a_required_usage_sidecar_is_missing(tmp_path: Path) -> None:
+    """`cost_status: available` c `usage_path`, файла которого нет вовсе — та
+    же `MetricsError` (D6), что и у соседнего «файл есть, но без числа».
+    """
+    case = make_case()
+    write_run(tmp_path, verdict={"findings": [], "note": "ok"})  # без usage.json вовсе
+    result = result_for(case, usage_path="usage.json", cost_status="available")
+
+    with pytest.raises(MetricsError, match="usage.json"):
+        evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
+
+
+def test_evaluate_case_raises_when_a_not_required_usage_sidecar_is_missing_too(
+    tmp_path: Path,
+) -> None:
+    """Тот же пропавший объявленный `usage_path`, но при `cost_status:
+    unavailable` (metrics.py не сочла бы содержимое обязательным для
+    расчёта числа) — тоже `MetricsError`, тем же классом.
+
+    `_load_sidecar` проверяет существование объявленного (не-`None`) пути
+    безусловно, независимо от `required`: `required` описывает, нужно ли
+    metrics.py содержимое sidecar-а для расчёта, а не может ли результат
+    вообще разойтись с тем, что он сам заявил о себе в `result.json`. Раньше
+    при `required=False` пропажа возвращалась молча (`None`), и отдельная
+    проверка в `runner.load_results` ловила её отдельным кодом выхода (2) —
+    одна и та же порча получала два разных кода в зависимости от
+    `cost_status` (ревью-находка части 3, minor).
+    """
+    case = make_case()
+    write_run(tmp_path, verdict={"findings": [], "note": "ok"})  # без usage.json вовсе
+    result = result_for(case, usage_path="usage.json", cost_status="unavailable")
+
+    with pytest.raises(MetricsError, match="usage.json"):
+        evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
+
+
+def test_evaluate_case_tolerates_an_unparseable_usage_sidecar_when_not_required(
+    tmp_path: Path,
+) -> None:
+    """`usage.json` существует (раннер его записал), но не разбирается как
+    JSON, при `cost_status: unavailable` — это штатный, уже
+    классифицированный раннером исход (обрыв клиента посреди записи), не
+    новая порча: метрика просто не считается (`None`), а не `MetricsError`.
+
+    Раннер выставляет `usage_path` по непустоте файла (`_is_non_empty`), не
+    по годности его JSON — `_has_cost` на неразобравшемся usage уже дал
+    `cost_status: unavailable` на записи (`test_run_case_cost_status`).
+    Приёмочное ревью части 3 поймало здесь регрессию: округление проверки
+    "объявленный sidecar обязан существовать" (правка чуть выше) до
+    "обязан ЕЩЁ И читаться" уронило бы штатный `cost_status: unavailable`
+    отчётом кодом 3 вместо посчитанных `cost_unavailable_cases`.
+    """
+    case = make_case()
+    write_run(tmp_path, verdict={"findings": [], "note": "ok"})
+    (tmp_path / "usage.json").write_text("{not json", encoding="utf-8")
+    result = result_for(case, usage_path="usage.json", cost_status="unavailable")
+
+    ev = evaluate_case(case, result, tmp_path, file_lines=lambda path: 1)
+
+    assert ev.usage is None
+
+
+def test_evaluate_case_tolerates_an_unparseable_verdict_sidecar_when_not_required(
+    tmp_path: Path,
+) -> None:
+    """Тот же штатный случай, но для `verdict.json` при `outcome:
+    invalid_verdict`: файл есть и непуст (кит вернул мусор), раннер уже
+    классифицировал исход — `_load_sidecar` не требует годного JSON, когда
+    `required=False` (`outcome != "verdict"`).
+    """
+    case = make_case(defects=[make_defect()])
+    write_run(tmp_path)  # verdict не передан write_run — пишем сырой мусор сами
+    (tmp_path / "verdict.json").write_text("{not json", encoding="utf-8")
+    result = result_for(case, outcome="invalid_verdict", exit_code=2)
+
+    ev = evaluate_case(case, result, tmp_path, file_lines=lambda path: 40)
+
+    assert ev.findings == ()
+    assert ev.match is None
 
 
 # ---------------------------------------------------------------------------

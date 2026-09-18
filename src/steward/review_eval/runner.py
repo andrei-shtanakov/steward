@@ -51,7 +51,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from steward.review_eval.cache import CacheError, has_object, repo_cache_dir, worktree
-from steward.review_eval.corpus import Case, corpus_digest
+from steward.review_eval.corpus import Case, case_material_digest, corpus_digest
 from steward.review_eval.matcher import MATCHER_VERSION, rules_digest
 from steward.review_eval.threshold import is_schema_valid_verdict
 
@@ -112,9 +112,23 @@ OUTCOMES: frozenset[str] = frozenset(
 #: **Слеша здесь нет намеренно.** Метка варианта (`variant_label`) — имя
 #: каталога артефактов, а `--rerun` этот каталог `rmtree`-ит. `codex:x/../../../outside`
 #: раньше проходил разбор, уводил запись за пределы `--out` и позволял удалить
-#: чужое дерево. Двоеточие в классе безвредно (сегменты разделены им же, внутрь
-#: оно не попадает) и оставлено, чтобы класс совпадал с объявленным в спеке.
-_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:@+-]+$")
+#: чужое дерево.
+#:
+#: **Двоеточия здесь тоже нет — уже не намеренно оставлено, а намеренно
+#: убрано** (ревью-находка части 3, major): `parse_variant` разбирает строку
+#: `text.split(":")` целиком, поэтому двоеточие внутри `model`/`effort` в
+#: принципе не может пережить разбор — оно неотличимо от разделителя
+#: следующего сегмента. `codex:vendor:model`, задуманное как модель
+#: `vendor:model` без effort, разбиралось бы как `model=vendor,
+#: effort=model` молча, без ошибки: колонка в классе была безвредной ровно
+#: в этом смысле (сегмент, реально дошедший до валидации, физически не
+#: может содержать `:` — split его уже снял), но эта безвредность и
+#: создавала ложное впечатление, что двоеточие в имени модели поддержано.
+#: Кит (`local.sh`/`harness-claude`) валидирует уже РАЗРЕШЁННОЕ значение
+#: `REVIEW_MODEL`/`REVIEW_EFFORT` своим алфавитом с двоеточием — это другой
+#: слой (безопасность для word-splitting shell-команды), а не контракт
+#: разбора `--variant`, и его алфавит здесь не переиспользуется целиком.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._@+-]+$")
 
 #: Компоненты пути, которые нельзя допускать в метку варианта ни под каким
 #: видом: точка и две точки — это «здесь» и «уровнем выше», а не имена.
@@ -201,10 +215,26 @@ def parse_variant(text: str) -> Variant:
     Отсутствующий сегмент effort — это «переменная не задаётся», а не пустое
     значение (пустое кит отвергает кодом 2). `ValueError` называет причину.
 
-    Класс символов модели и effort — `[A-Za-z0-9._:@+-]`, **без слеша**, и ни
-    один сегмент не может быть `.` или `..`: метка варианта идёт в путь
-    артефактов, а `--rerun` этот путь удаляет. Вторая линия обороны — `_inside`
-    перед каждой записью, потому что `Variant` собирают и в коде.
+    **Разбор — по всем `:` без экранирования**, поэтому у модели и effort
+    не может быть двоеточия в имени: оно неотличимо от разделителя
+    следующего сегмента. `codex:vendor:model`, задуманное как модель
+    `vendor:model` без effort, разбирается как `model=vendor,
+    effort=model` — молча, не отказом: **защиты от этого нет**, и класс
+    символов ниже её не создаёт — двоеточие убрано из класса не потому, что
+    так отвергается неоднозначный ввод (сегмент, дошедший до валидации,
+    физически не может содержать `:` — split его уже снял, так что запрет
+    здесь ничего не ловит), а чтобы код и документация не заявляли
+    поддержку, которой на самом деле нет. Настоящая поддержка потребовала бы
+    экранирования или отдельных флагов `--model`/`--effort` — не сделано; у
+    harness `codex`/`claude` реальных имён моделей с `:` внутри на практике
+    нет.
+
+    Класс символов модели и effort — `[A-Za-z0-9._@+-]` (без слеша и без
+    двоеточия — оба зарезервированы: слеш `--rerun`-у, двоеточие —
+    разделителю сегментов), и ни один сегмент не может быть `.` или `..`:
+    метка варианта идёт в путь артефактов, а `--rerun` этот путь удаляет.
+    Вторая линия обороны — `_inside` перед каждой записью, потому что
+    `Variant` собирают и в коде.
     """
     if not text or text.strip() != text:
         raise ValueError(f"variant must be '<harness>:<model>[:<effort>]', got '{text}'")
@@ -218,9 +248,9 @@ def parse_variant(text: str) -> Variant:
     if harness not in HARNESSES:
         raise ValueError(f"unsupported harness '{harness}', expected one of {HARNESSES}")
     if not _TOKEN_RE.fullmatch(model):
-        raise ValueError(f"model must be one word of [A-Za-z0-9._:@+-], got '{model}'")
+        raise ValueError(f"model must be one word of [A-Za-z0-9._@+-], got '{model}'")
     if effort is not None and not _TOKEN_RE.fullmatch(effort):
-        raise ValueError(f"effort must be one word of [A-Za-z0-9._:@+-], got '{effort}'")
+        raise ValueError(f"effort must be one word of [A-Za-z0-9._@+-], got '{effort}'")
     for name, value in (("model", model), ("effort", effort)):
         if value in _PATH_TRAVERSAL:
             raise ValueError(f"{name} must not be a path component like '.' or '..', got '{value}'")
@@ -702,6 +732,16 @@ class RunManifest:
     #: одно значение: частичный `--rerun` видит только репо своей выборки и
     #: сверяет их, не объявляя дрейфом отсутствие остальных.
     git_config_digests: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: Дайджест **неизменяемого материала** каждого запущенного кейса
+    #: (`corpus.case_material_digest`): репо, PR, диапазон, `local_args`,
+    #: `expected_outcome`. **Не** `class` — он для `defective`/`clean`
+    #: произведение от наличия дефектов, и документированный цикл
+    #: adjudication (§5) прямо разрешает менять его после прогона без
+    #: переизмерения (см. докстринг `case_material_digest`). Пересчёт метрик
+    #: и доливка сверяют этот дайджест: вердикт, полученный на одном дереве,
+    #: нельзя переоценивать по другому — а разметку (включая `class`) менять
+    #: можно.
+    case_digests: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def provider_env_names(env: Mapping[str, str]) -> list[str]:
@@ -885,6 +925,7 @@ def run_all(
         )
     tools = _tool_versions(git_env, git=git)
     config_digests = _git_config_digests(cache_root, [case.repo for case in cases])
+    case_digests_now = {case.case_id: case_material_digest(case) for case in cases}
     env_names = provider_env_names(environment)
     env_fingerprint = provider_env_fingerprint(environment)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -927,6 +968,7 @@ def run_all(
         tools,
         env_fingerprint,
         config_digests,
+        case_digests_now,
     )
     if drift and not rerun:
         raise RunnerError(
@@ -984,6 +1026,13 @@ def run_all(
         **(dict(stored_configs) if isinstance(stored_configs, Mapping) else {}),
         **config_digests,
     }
+    stored_material = previous.get("case_digests") if previous else None
+    merged_cases = {
+        **(dict(stored_material) if isinstance(stored_material, Mapping) else {}),
+        **case_digests_now,
+    }
+    if fresh_start:
+        merged_cases = dict(case_digests_now)
     payload: dict[str, object] = {
         "run_id": run_id,
         "kit": kit_payload,
@@ -1000,6 +1049,7 @@ def run_all(
         "provider_env_names": env_names,
         "provider_env_fingerprint": env_fingerprint,
         "git_config_digests": merged_configs,
+        "case_digests": merged_cases,
     }
     _write_json(out_dir / "run.json", payload)
 
@@ -1072,6 +1122,7 @@ def run_all(
         provider_env_fingerprint=env_fingerprint,
         cases=manifest_cases,
         git_config_digests=merged_configs,
+        case_digests=merged_cases,
     )
     _write_json(out_dir / "run.json", dataclasses.asdict(manifest))
     return manifest
@@ -1108,6 +1159,19 @@ def load_results(out_dir: Path) -> list[RunResult]:
 
     Симлинк на месте `result.json` или любого каталога выше — `RunnerError`
     (`_require_result_file`): содержимое пришло бы извне прогона.
+
+    **Объявленный, но пропавший sidecar (`verdict_path`/`usage_path`) —
+    забота `metrics.evaluate_case`/`_load_sidecar`, не эта функция.**
+    `_require_result_file` здесь проверяет только периметр симлинков — путь
+    пришёл из содержимого `result.json`, не из обхода каталога, и сам факт
+    существования файла эта функция не проверяет вовсе. Существование
+    объявленного sidecar-а безусловно (не только когда `metrics.py` сочтёт
+    его обязательным для расчёта) проверяет `_load_sidecar`, давая
+    `MetricsError` (код 3) на любую его пропажу или порчу — раздвоение этой
+    проверки по двум местам (здесь и там) раньше давало один и тот же
+    класс порчи (объявленный sidecar потерян) двумя разными кодами выхода
+    в зависимости от `cost_status`/`outcome`, поля, к самому факту потери
+    файла отношения не имеющего (ревью-находка части 3, minor).
 
     **Незакрытый манифест — тоже отказ** (`_require_finished`): полный набор
     результатов при ``finished: null`` значит, что раннер оборвался между
@@ -1146,6 +1210,18 @@ def load_results(out_dir: Path) -> list[RunResult]:
         _require_path_matches_payload(result, path, cases_dir=cases_dir)
         _require_unique(result, path, seen)
         _require_in_manifest(result, manifest, path, out_dir=out_dir)
+        # Периметр симлинков — **всегда**, для обоих sidecar-ов: отдельная
+        # гарантия (`_require_result_file`), не про существование файла.
+        # Существование объявленного sidecar-а (путь непуст, а файла нет
+        # или он не читается) — забота `metrics.evaluate_case`/`_load_sidecar`,
+        # и НЕ дублируется здесь: та проверка одна и безусловна там (не
+        # зависит от `required`), и раздвоение по двум местам как раз и
+        # давало один и тот же класс порчи двумя разными кодами выхода в
+        # зависимости от `cost_status`/`outcome` — поля, к факту потери
+        # файла отношения не имеющего (ревью-находка части 3, minor).
+        for relative in (result.verdict_path, result.usage_path):
+            if relative is not None:
+                _require_result_file(out_dir, out_dir / relative)
         results.append(result)
     if manifest is None and results:
         raise RunnerError(
@@ -1305,6 +1381,7 @@ def _provenance_drift(
     tools: Mapping[str, str],
     env_fingerprint: str,
     config_digests: Mapping[str, str] | None = None,
+    case_digests: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Поля, в которых прежний `run.json` расходится с текущим прогоном.
 
@@ -1345,6 +1422,12 @@ def _provenance_drift(
     Сам список манифеста от выборки не меняется (см. `run_all`): он описывает
     прогон целиком, а не последнюю выборку.
 
+    **`case_digests` без записи для кейса, уже бывшего в прежнем `cases` —
+    дрейф**, а не «новый кейс»: у уже измеренного кейса дайджест обязан
+    быть, и его отсутствие значит потерю/повреждение записи, а не то, что
+    прогон впервые его видит (это отличают по прежнему `cases`, не по
+    самому `case_digests`).
+
     Окружение попало сюда не как «обстоятельство»: имена provider-переменных
     отвечают, к какому аккаунту и через какой прокси ушёл вызов. Прежде
     повторение 2 с другим набором доливалось молча, а `run.json`
@@ -1378,6 +1461,32 @@ def _provenance_drift(
         # обязан — их дайджесты остаются в манифесте как были.
         if stored_configs.get(repo) != now:
             drift.append(f"git_config_digests.{repo}")
+    stored_cases_material = previous.get("case_digests")
+    stored_cases_material = (
+        stored_cases_material if isinstance(stored_cases_material, Mapping) else {}
+    )
+    stored_case_ids = previous.get("cases")
+    stored_case_ids = set(stored_case_ids) if isinstance(stored_case_ids, list) else set()
+    for case_id, now in sorted((case_digests or {}).items()):
+        # Сверяются только кейсы текущей выборки. Кейса не было в прежнем
+        # `cases` вовсе — это новый кейс, дайджеста для сравнения нет, и это
+        # не дрейф (та ветка, для которой и написан комментарий ниже).
+        was = stored_cases_material.get(case_id)
+        if was is None:
+            if case_id in stored_case_ids:
+                # Кейс УЖЕ БЫЛ в прежнем `cases` (значит и у него уже есть
+                # result.json — прогон его видел), а записи в case_digests
+                # нет — потерянная или повреждённая запись, а не «прогон не
+                # видел кейс». Тихая доливка текущего дайджеста здесь
+                # задним числом утверждала бы, что старый result.json
+                # получен на текущем материале, хотя переизмерения не было
+                # (тот же инвариант полноты, что в
+                # cli.py::_require_same_case_material) — только `--rerun`
+                # чинит эту связь.
+                drift.append(f"case_digests.{case_id} (дайджест материала отсутствует в манифесте)")
+            continue
+        if was != now:
+            drift.append(f"case_digests.{case_id} (материал кейса изменился)")
     if previous.get("corpus_digest") != digest:
         drift.append("corpus_digest")
     if previous.get("matcher_version") != MATCHER_VERSION:
@@ -1623,6 +1732,21 @@ def _result_from_file(path: Path) -> RunResult:
     wrong += [name for name in flags if not isinstance(known.get(name), bool)]
     if wrong:
         raise RunnerError(f"{path}: result.json field(s) of the wrong type: {', '.join(wrong)}")
+    # Пути артефактов — только канонические, **своей** тройки: чужой, абсолютный
+    # или с `..` sidecar иначе читался бы как свой вердикт/usage.
+    prefix = f"cases/{known['case_id']}/{known['variant']}/{known['repetition_id']}"
+    for name, leaf in (
+        ("verdict_path", "verdict.json"),
+        ("usage_path", "usage.json"),
+        ("stdout_path", "stdout.txt"),
+        ("stderr_path", "stderr.txt"),
+    ):
+        value = known.get(name)
+        if value is not None and value != f"{prefix}/{leaf}":
+            raise RunnerError(
+                f"{path}: {name} '{value}' вне канонического пути {prefix}/{leaf} — "
+                "артефакт чужой тройки или внешний файл"
+            )
     if known["outcome"] not in OUTCOMES:
         raise RunnerError(
             f"{path}: result.json outcome '{known['outcome']}' вне известных исходов "
@@ -1738,11 +1862,26 @@ def scrubbed_git_env(env_base: Mapping[str, str] | None) -> dict[str, str]:
 
     `REVIEW_*` здесь **не** вычищается: на git они не влияют, а на кита идёт
     отдельное окружение (`_run_env`), где вычищено и то, и другое.
+
+    Локаль сообщений git пинуется в `C` (`LC_ALL=C`, `LANGUAGE=""`): на этом
+    окружении держится `cli.py::_MISSING_OBJECT_SIGNATURES` — предикат
+    «объекта нет» по подстрокам `fatal:`, все английские. Без пина
+    локализованный git (`LANG`/`LC_ALL` процесса, например `ru_RU.UTF-8`)
+    вернул бы переведённый текст, ни одна подпись не совпала бы, и штатное
+    «файла/коммита нет» поднималось бы как `CacheError` — отказ инструмента,
+    а не факт о дереве (ревью-находка части 3, minor/medium). `LANGUAGE` —
+    расширение gettext, у него приоритет над `LC_ALL` для перевода сообщений,
+    поэтому одного `LC_ALL=C` недостаточно.
     """
     source = os.environ if env_base is None else env_base
     env = {key: value for key, value in source.items() if not key.startswith("GIT_")}
+    env.update(_GIT_MESSAGE_LOCALE_PINS)
     return _pin_git_config(env)
 
+
+#: Локаль сообщений git — всегда английская, независимо от окружения
+#: процесса: на ней держится распознавание "объекта нет" по тексту `fatal:`.
+_GIT_MESSAGE_LOCALE_PINS: dict[str, str] = {"LC_ALL": "C", "LANGUAGE": ""}
 
 #: Переменные, которыми фиксируется конфигурация git: глобальный и системный
 #: конфиги выключены, действует только конфиг самого репозитория (кэша).
@@ -1999,6 +2138,7 @@ _MANIFEST_REQUIRED: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("matcher_rules_digest", str),
     ("git_config_digests", dict),
     ("jobs", int),
+    ("case_digests", dict),
 )
 
 #: Обязательное содержимое блока `tools` манифеста.

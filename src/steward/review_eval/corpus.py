@@ -72,6 +72,8 @@ __all__ = [
     "Match",
     "NonDefect",
     "append_registry",
+    "case_material_digest",
+    "load_cases",
     "check_registry",
     "corpus_digest",
     "is_gold",
@@ -402,6 +404,29 @@ def load_corpus(directory: Path, *, git: str = "git") -> list[Case]:
     ответила бы «кейсов 0» с кодом 0 — то есть выдала бы ошибку пути за
     «мерить нечего». Существующий пустой каталог пустым корпусом остаётся:
     это законное начальное состояние.
+
+    `git` уходит в `check_registry` для проверки append-only истории
+    `_ids.txt`: вызывающий с уже пред-проверенным `--git` (`_require_git`)
+    обязан передать тот же бинарь сюда явно, а не молчаливое умолчание
+    `"git"` — иначе на машине без `git` в PATH проверка тихо выключается
+    (`_git_text` ловит `OSError` как «git тут ни при чём», не как отказ) и
+    испорченная история реестра проходит кодом 0 (ревью-находка части 3).
+    """
+    cases = load_cases(directory)
+    check_registry(cases, directory, git=git)
+    return cases
+
+
+def load_cases(directory: Path) -> list[Case]:
+    """Все проверки `load_corpus`, **кроме** сверки с реестром.
+
+    Ровно то, что нужно перед `append_registry`: регистрация и списание должны
+    идти по корпусу, уже прошедшему все межфайловые инварианты (уникальность
+    `case_id` и id записей), — иначе надгробие, которое терминально, успевало
+    бы записаться до отказа `duplicate case_id`, и неудачная команда портила
+    бы реестр необратимо. Сверка с реестром здесь намеренно не делается: она
+    отказывает и на незарегистрированном id, и на живом id без кейса — а это
+    ровно то, что регистрация чинит.
     """
     if not directory.exists():
         raise CorpusError(f"каталога корпуса нет: {directory}")
@@ -425,15 +450,40 @@ def load_corpus(directory: Path, *, git: str = "git") -> list[Case]:
                 raise CorpusError(f"duplicate id '{entry_id}': {prior} and {path}")
             seen_ids[entry_id] = path
 
-    cases = sorted((case for _, case in loaded), key=lambda c: c.case_id)
-    check_registry(cases, directory, git=git)
-    return cases
+    return sorted((case for _, case in loaded), key=lambda c: c.case_id)
 
 
 def corpus_digest(cases: Sequence[Case]) -> str:
     """``sha256:<hex>`` канонического JSON корпуса (порядок кейсов не важен)."""
     payload = [dataclasses.asdict(c) for c in sorted(cases, key=lambda c: c.case_id)]
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def case_material_digest(case: Case) -> str:
+    """``sha256:<hex>`` **неизменяемого материала** кейса: репо, PR, диапазон,
+    `local_args`, ожидаемый исход. Разметка (defects/non_defects, annotation,
+    notes) сюда не входит: её менять после прогона можно и нужно, а вот
+    вердикт, полученный на `head_sha=H1`, нельзя пересчитывать по H2.
+
+    ``class`` тоже не входит, хоть и не разметка: для `defective`/`clean` это
+    произведение от наличия дефектов, а документированный цикл adjudication
+    (§5) прямо разрешает дописывать пропущенный дефект в уже прогнанный кейс
+    без повторного вызова модели — ровно тот случай, где `clean` становится
+    `defective`. Пинать его в дайджесте значило бы запрещать этот переход
+    задним числом. Диапазон и `local_args`/`expected_outcome` уже пинуют всё,
+    что у `class: large` материально: непустой `local_args` допустим только
+    там, а гвардрейл держит `expected_outcome`.
+    """
+    material = {
+        "repo": case.repo,
+        "pr": case.pr,
+        "base_sha": case.base_sha,
+        "head_sha": case.head_sha,
+        "local_args": list(case.local_args),
+        "expected_outcome": case.expected_outcome,
+    }
+    canonical = json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

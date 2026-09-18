@@ -1,0 +1,84 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-157
+repo: andrei-shtanakov/steward
+pr: 157
+base_sha: b84a3bbb3ef9f4c9c23194e16e94d6c4836f79a9
+head_sha: ffa6f0f986cd8861ec31c75567543cce1df645c3
+class: clean
+expected_outcome: verdict
+annotation:
+  status: draft
+  blocking_complete: false
+  source: history-proxy
+  adjudicated_by: null
+  adjudicated_at: null
+defects:
+- id: D-andrei-shtanakov.steward-157-1
+  severity: minor
+  file: tests/review/test_collect_context.py
+  line_hint: 613
+  scenario: 'Docstring теста утверждает механизм (`-c core.quotePath=false`), которого
+    в скрипте нет — используется `ls-tree -z` (confidence: high). Мейнтейнер читает
+    `test_non_ascii_path_resolves_to_itself` как объяснение, почему не-ASCII путь
+    проходит структурную проверку: docstring говорит «Оба вызова ls-tree идут с `-c
+    core.quotePath=false`, как уже делает local.sh». В итоговом дереве ни один вызов
+    `ls-tree` в collect-context.sh этот флаг не передаёт — механизм заменён на `-z
+    | tr ''\0'' ''\n''` (коммит 2971726), и комментарий скрипта в строках 103–109
+    прямо объясняет, почему `core.quotePath=false` НЕ достаточно (`"` и `\` квотируются
+    всегда). Соседний тест (строка 629–633) описывает актуальный механизм верно; первый
+    — устаревшую версию.'
+  evidence:
+  - tests/review/test_collect_context.py:613
+  - scripts/review/collect-context.sh:110
+  - scripts/review/collect-context.sh:219
+  - scripts/review/collect-context.sh:103
+  - tests/review/test_collect_context.py:631
+  match:
+    files:
+    - tests/review/test_collect_context.py
+    line_window: 40
+    keywords_any:
+    - используется
+    - утверждает
+    - docstring
+    - quotepath
+    - механизм
+- id: D-andrei-shtanakov.steward-157-2
+  severity: minor
+  file: scripts/review/collect-context.sh
+  line_hint: 228
+  scenario: 'Обратная косая в пути — glob-спецсимвол pathspec: при наличии «соседа»
+    без `\` ls-tree вернёт две записи, и легитимный путь будет отвергнут как «разрешился
+    не в себя» (confidence: medium). Патч явно заявляет поддержку имён с `\` (`test_c_quoted_ascii_names_resolve_to_themselves`,
+    `docs/back\slash.md`). `git ls-tree -- <path>` без `--literal-pathspecs` трактует
+    `<path>` как pathspec, а `\` в git входит в GLOB_SPECIAL наряду с `*?[` — хвост
+    после первого `\` матчится через wildmatch, где `\s` означает литеральный `s`.
+    Литеральное совпадение (`match_entry`) проверяется первым, поэтому сам `docs/back\slash.md`
+    находится; но если в base рядом лежит `docs/backslash.md`, он тоже матчится по
+    wildcard, и `ls-tree` печатает ДВЕ записи. Вход: манифест с `docs/back\slash.md`,
+    в дереве base есть и `docs/back\slash.md`, и `docs/backslash.md`.'
+  evidence:
+  - scripts/review/collect-context.sh:219
+  - scripts/review/collect-context.sh:125
+  - scripts/review/collect-context.sh:200
+  - tests/review/test_collect_context.py:627
+  match:
+    files:
+    - scripts/review/collect-context.sh
+    line_window: 40
+    keywords_any:
+    - спецсимвол
+    - легитимный
+    - разрешился
+    - отвергнут
+    - обратная
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#157, ревью ai-prosto id=5200707170 от 2026-09-14T17:16:34Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 2.
+  head_sha взят из маркера ревью; merge_commit_sha: 57170da804ecd638cc3d8b5184c3c87f93bf99a1.
+  Коммитов PR после последнего ревью: 0.
+  candidate_status (подсказка D1, не ground truth):
+    - D-andrei-shtanakov.steward-157-1: unknown [minor] tests/review/test_collect_context.py:613
+    - D-andrei-shtanakov.steward-157-2: unknown [minor] scripts/review/collect-context.sh:228
+  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.
