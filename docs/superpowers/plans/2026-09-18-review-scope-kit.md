@@ -767,38 +767,51 @@ ls -d */scripts/review | sed 's|/scripts/review||' | grep -v '^steward$'
 
 Ожидается 23 репо.
 
-- [ ] **Step 2: Прогнать по одному репо и убедиться, что рецепт верен**
+- [ ] **Step 2: ПРОХОД 1 на одном репо — только инвентарь**
 
-Взять `devtools` (он же потребитель, и там уже есть тесты обвязки):
+Проход 1 несёт `checksum.sh` с переходным членом И **свою же строку PIN**: чекер
+сверяет по PIN каждый член, включая самого себя, поэтому смена байтов
+`checksum.sh` без обновления его строки покраснеет у base-чекера на дрейфе
+собственного хеша.
 
 ```bash
 R=devtools
 cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/$R
-git switch -c chore/review-kit-revendor-scope
-for f in local.sh checksum.sh prose-paths.env; do
-  cp ../steward/scripts/review/$f scripts/review/$f
-done
-cp ../steward/.github/hooks/pre-push .github/hooks/pre-push
-sh scripts/review/checksum.sh   # ожидается красное: PIN ещё старый
+git switch -c chore/review-kit-inventory-scope
+cp ../steward/scripts/review/checksum.sh scripts/review/checksum.sh
+# в scripts/review/PIN заменить ТОЛЬКО строку checksum.sh:
+shasum -a 256 scripts/review/checksum.sh
+sh scripts/review/checksum.sh   # ожидается чисто: файла правила ещё нет,
+                                # переходный член его отсутствие терпит
 ```
 
-Пересчитать PIN:
+Коммит, PR, **дождаться мержа**. Только после этого проход 2 на том же репо.
+
+- [ ] **Step 3: ПРОХОД 2 на том же репо — файл, кит, хук, PIN**
 
 ```bash
-for f in scripts/review/*.sh scripts/review/harness-claude scripts/review/prose-paths.env .github/codex/review-schema.json; do
+cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/$R
+git switch master && git pull --ff-only
+git switch -c chore/review-kit-revendor-scope
+for f in local.sh prose-paths.env; do
+  cp ../steward/scripts/review/$f scripts/review/$f
+done
+[ -f .github/hooks/pre-push ] && cp ../steward/.github/hooks/pre-push .github/hooks/pre-push
+for f in scripts/review/*.sh scripts/review/harness-claude \
+         scripts/review/prose-paths.env .github/codex/review-schema.json; do
   shasum -a 256 "$f"
 done
+# вписать пересчитанные строки в scripts/review/PIN, обновить шапку
+# (SOURCE: steward @ <sha>), затем:
+sh scripts/review/checksum.sh   # ожидается чисто
 ```
 
-вписать строки в `scripts/review/PIN`, обновить шапку (`SOURCE: steward @ <sha>`),
-затем `sh scripts/review/checksum.sh` — ожидается чисто.
-
-- [ ] **Step 3: Проверить на этом репо живьём**
+- [ ] **Step 4: Проверить на этом репо живьём**
 
 Run: `sh scripts/review/local.sh --base master --head HEAD --fingerprint-only`
 Expected: на прозаической ветке — код 5, stdout пуст; на кодовой — 64-hex.
 
-- [ ] **Step 4: Коммит и PR, дождаться мержа**
+- [ ] **Step 5: Коммит и PR прохода 2, дождаться мержа**
 
 ```bash
 git add scripts/review .github/hooks/pre-push
@@ -814,11 +827,15 @@ EOF
 git push -u origin HEAD && gh pr create --fill
 ```
 
-- [ ] **Step 5: Повторить по остальным 22 репо**
+- [ ] **Step 5a: Повторить оба прохода по остальным 22 репо**
 
-Рецепт тот же. Репо без `.github/hooks/pre-push` — шаг с хуком пропустить.
-Репо, где `checksum.sh` после копирования краснеет по ДРУГИМ членам, —
-остановиться и сказать владельцу: это не задача волны, а протухшая копия.
+Порядок внутри репо обязателен: проход 1 → мерж → проход 2. Между репо порядка
+нет, их можно вести параллельно.
+
+Репо без `.github/hooks/pre-push` — шаг с хуком пропустить. Репо, где
+`checksum.sh` краснеет по ДРУГИМ членам, — остановиться и сказать владельцу:
+это протухшая копия, а не задача волны. `arbiter` и `atp-platform` — сперва
+решение владельца (см. шапку задачи), в общий поток не брать.
 
 - [ ] **Step 6: Сверка волны**
 
