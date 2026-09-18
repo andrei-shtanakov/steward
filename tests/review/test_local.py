@@ -2692,6 +2692,23 @@ def test_rule_with_empty_prose_value_is_invalid_and_disables_the_filter(
     assert "пустое значение" in res.stdout
 
 
+def test_review_include_prose_with_invalid_value_is_a_config_error(
+    tmp_path: Path,
+) -> None:
+    """m-1: `${REVIEW_INCLUDE_PROSE:+1}` раньше срабатывал на ЛЮБОМ непустом
+    значении — `REVIEW_INCLUDE_PROSE=0` (оператор пытается ВЫКЛЮЧИТЬ фильтр)
+    молча ВКЛЮЧАЛ обход. Конвенция файла (REVIEW_MODEL/REVIEW_HARNESS) на
+    такой случай — именованный отказ, не молчаливая переинтерпретация."""
+    _, repo = make_repo(tmp_path)
+    res = run_local(
+        repo,
+        make_stub(tmp_path, "exit 0"),
+        env_overrides={"REVIEW_INCLUDE_PROSE": "0"},
+    )
+    assert res.returncode == 2
+    assert "REVIEW_INCLUDE_PROSE" in res.stderr
+
+
 def test_git_name_only_failure_is_a_mechanical_error_not_filtered_as_prose(
     tmp_path: Path,
 ) -> None:

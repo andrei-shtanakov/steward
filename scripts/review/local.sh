@@ -204,8 +204,25 @@ remote_explicit=0
 # --include-prose или REVIEW_INCLUDE_PROSE=1 (напр., ревью самого правила
 # путей). Флаг сильнее переменной только в сторону включения — обе ветки
 # устанавливают include_prose=1, отключить обратно флагом нельзя.
-include_prose="${REVIEW_INCLUDE_PROSE:+1}"
-include_prose="${include_prose:-0}"
+#
+# REVIEW_INCLUDE_PROSE, не равный "1" (в т.ч. "0"/"no"/пустой), — ОТКАЗ, не
+# "выключено": та же конвенция, что у REVIEW_MODEL/REVIEW_HARNESS выше —
+# явная, но сломанная настройка не читается молча как её противоположность.
+# `${REVIEW_INCLUDE_PROSE:+1}` раньше срабатывал на ЛЮБОМ непустом значении,
+# и REVIEW_INCLUDE_PROSE=0 (оператор пытается ВЫКЛЮЧИТЬ фильтр) включал его
+# (находка m-1 ревью этой ветки).
+include_prose=0
+if [ -n "${REVIEW_INCLUDE_PROSE+x}" ]; then
+    case "$REVIEW_INCLUDE_PROSE" in
+        1) include_prose=1 ;;
+        *)
+            echo "REVIEW_INCLUDE_PROSE='$REVIEW_INCLUDE_PROSE' — ожидается" \
+                "'1' (--include-prose) или переменная не задана вовсе" \
+                "(фильтр включён)." >&2
+            exit 2
+            ;;
+    esac
+fi
 scope_rules="${REVIEW_SCOPE_RULES:-$kit_dir/prose-paths.env}"
 
 usage() {
