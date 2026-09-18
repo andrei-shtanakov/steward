@@ -2948,6 +2948,26 @@ def test_unknown_prose_review_value_is_config_error(tmp_path: Path) -> None:
     assert "PROSE_REVIEW" in res.stderr
 
 
+def test_duplicate_prose_review_key_is_a_named_config_error(
+    tmp_path: Path,
+) -> None:
+    """Дубль ключа НЕ должен склеиваться в мусор, тихо проваливаясь в
+    ветку "неизвестное значение" с сообщением про случайную склейку вместо
+    настоящей причины — сообщение обязано назвать дубль явно."""
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(remote, "PROSE_REVIEW=off\nPROSE_REVIEW=all\n")
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code")
+    stub = make_stub(tmp_path, "exit 0")
+    res = run_local(repo, stub, "--fetch")
+    assert res.returncode == 2, res.stdout
+    assert "PROSE_REVIEW" in res.stderr
+    assert "дубл" in res.stderr.lower()
+
+
 def test_config_from_head_does_not_apply_to_its_own_pr(
     tmp_path: Path,
 ) -> None:
