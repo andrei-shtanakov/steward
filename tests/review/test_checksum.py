@@ -503,3 +503,15 @@ def test_adapter_missing_pin_line_is_config_error(tmp_path: Path) -> None:
     result = run(root, pin)
 
     assert result.returncode == 2, result.stderr
+
+
+def test_prose_paths_is_a_transitional_member(tmp_path: Path) -> None:
+    """Переходный член: файла нет — чисто; файл есть и разошёлся с PIN —
+    красный."""
+    root = make_kit(tmp_path)
+    (root / "scripts" / "review" / "prose-paths.env").unlink(missing_ok=True)
+    assert run(root, full_pin(root)).returncode == 0
+    (root / "scripts" / "review" / "prose-paths.env").write_text("PROSE=*.md\n")
+    res = run(root, full_pin(root))
+    assert res.returncode != 0
+    assert "prose-paths.env" in res.stdout + res.stderr
