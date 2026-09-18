@@ -3011,3 +3011,174 @@ def test_config_from_head_does_not_apply_to_its_own_pr(
     )
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" not in dump.read_text()
+
+
+# --- Финальное ревью ветки: C-1 (квотирование путей), I-1, I-2 -------------
+
+
+def test_quoted_filename_is_not_dropped_from_the_diff(tmp_path: Path) -> None:
+    """C-1 (Critical, финальное ревью): git C-квотирует `"`/`\\`/TAB/перевод
+    строки в имени файла БЕЗУСЛОВНО, даже при `core.quotePath=false` (тот
+    флаг спасает только не-ASCII). Квотированная строка не совпадала ни с
+    одним глобом классификатора и не совпадала с `:(top,literal)` реального
+    файла — путь молча выпадал из дифа, и для целиком кодового диапазона с
+    таким именем это значило бы пустой diff.patch и approve на
+    неревьюированном коде. Диапазон здесь смешанный (код + проза), чтобы
+    реально пройти через блок фильтра/пересборки pathspec, а не короткий
+    путь пустого прозаического диапазона."""
+    _, repo = make_repo(tmp_path)
+    (repo / 'we"ird.py').write_text('SECRET = "x"\n', encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "quoted name + prose")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
+    assert res.returncode == 0, res.stderr
+    seen = dump.read_text()
+    assert "SECRET" in seen
+    assert "docs/note.md" not in seen
+
+
+def test_broken_pathspec_after_filter_is_a_mechanical_failure_not_zero(
+    tmp_path: Path,
+) -> None:
+    """C-1, вторая обязательная половина правки (финальное ревью): классиф-
+    икация нашла код (`$# > 0`, значит не код 5), но если пересборка дифа
+    по этому pathspec-у всё равно вернулась пустой — инструмент сломан
+    (pathspec не совпал ни с одним реальным путём), а не "находок нет".
+    Подменяем git так, чтобы ИМЕННО финальный `git diff -- :(top,literal)…`
+    молча выродился в пустой результат (успешный код, пустой stdout) —
+    ровно тот класс рассогласования, который увидела бы будущая, ещё не
+    найденная форма C-1, не только квотирование."""
+    real_git = shutil.which("git")
+    assert real_git, "git не найден — стенд не может подменить его осмысленно"
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code")
+
+    shim_dir = tmp_path / "shim-bin"
+    shim_dir.mkdir()
+    fake_git = shim_dir / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '    case "$a" in\n'
+        '        :\\(top,literal\\)*)\n'
+        f"            exec {real_git} diff --quiet\n"
+        "            ;;\n"
+        "    esac\n"
+        "done\n"
+        f'exec {real_git} "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+
+    res = run_local(
+        repo,
+        make_stub(tmp_path, "exit 0"),
+        env_overrides={
+            "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        },
+    )
+    assert res.returncode == 3, res.stdout + res.stderr
+
+
+def test_filter_combined_with_sidecar_verdict_out(tmp_path: Path) -> None:
+    """Замечание финального ревью: фильтр области ни разу не встречался в
+    тестах с потолками/generated/контекстом/sidecar-артефактами вместе —
+    именно там переиспользуются позиционные параметры (`$@`) и двигаются
+    `IFS`/`set -f`, ровно тот код, который ломается от соседства. Минимум
+    один такой прогон: боевое правило + REVIEW_VERDICT_OUT вместе, на
+    смешанном диапазоне."""
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "mixed + sidecar")
+    dump = tmp_path / "prompt-seen.txt"
+    out = tmp_path / "verdict.json"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo,
+        stub,
+        env_overrides={
+            "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
+            "REVIEW_VERDICT_OUT": str(out),
+        },
+    )
+    assert res.returncode == 0, res.stderr
+    seen = dump.read_text()
+    assert "tool.py" in seen
+    assert "docs/note.md" not in seen
+    assert out.exists()
+    assert "findings" in out.read_text()
+
+
+def test_prose_review_off_with_leftover_paths_is_still_fully_filtered(
+    tmp_path: Path,
+) -> None:
+    """I-1 (Important, финальное ревью): `prose_review_paths` раньше
+    заполнялся НЕЗАВИСИМО от `PROSE_REVIEW`, и забытая строка
+    `PROSE_REVIEW_PATHS=` в конфиге со значением `PROSE_REVIEW=off`
+    продолжала возвращать эти пути под ревью — репозиторий, переключивший
+    конфиг обратно в `off`, платил за круг модели, которого README
+    (написанный в этой же ветке) обещает не платить."""
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(
+        remote, "PROSE_REVIEW=off\nPROSE_REVIEW_PATHS=authored/*\n"
+    )
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "authored").mkdir(exist_ok=True)
+    (repo / "authored" / "rule.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo,
+        stub,
+        "--fetch",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 5, res.stdout + res.stderr
+
+
+def test_read_scope_key_undefined_message_is_owned_by_the_caller(
+    tmp_path: Path,
+) -> None:
+    """I-2 (Important, финальное ревью): `read_scope_key` печатала
+    зашитый текст "фильтр не применяется" на статусе "undefined" —
+    правда для `prose-paths.env` (там отсутствие ключа — отказ разбора), но
+    ложь для `review-scope.env` (отсутствие `PROSE_REVIEW` — штатный `off`,
+    при котором фильтр `prose-paths.env` как раз ПРОДОЛЖАЕТ применяться).
+    Валидный `PROSE_REVIEW=off` без явного объявления ключа — воспроизведён
+    ровно так, как в отчёте ревью."""
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(remote, "# no PROSE_REVIEW key at all\n")
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "mixed")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo,
+        stub,
+        "--fetch",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" not in dump.read_text()
+    assert "используется умолчание" in res.stdout
+    assert "фильтр не применяется" not in res.stdout
