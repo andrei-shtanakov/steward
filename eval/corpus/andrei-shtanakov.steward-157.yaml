@@ -7,11 +7,11 @@ head_sha: ffa6f0f986cd8861ec31c75567543cce1df645c3
 class: clean
 expected_outcome: verdict
 annotation:
-  status: draft
-  blocking_complete: false
+  status: adjudicated
+  blocking_complete: true
   source: history-proxy
-  adjudicated_by: null
-  adjudicated_at: null
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
 defects:
 - id: D-andrei-shtanakov.steward-157-1
   severity: minor
@@ -43,25 +43,18 @@ defects:
     - docstring
     - quotepath
     - механизм
-- id: D-andrei-shtanakov.steward-157-2
-  severity: minor
+non_defects:
+- id: NF-andrei-shtanakov.steward-157-1
   file: scripts/review/collect-context.sh
   line_hint: 228
-  scenario: 'Обратная косая в пути — glob-спецсимвол pathspec: при наличии «соседа»
-    без `\` ls-tree вернёт две записи, и легитимный путь будет отвергнут как «разрешился
-    не в себя» (confidence: medium). Патч явно заявляет поддержку имён с `\` (`test_c_quoted_ascii_names_resolve_to_themselves`,
-    `docs/back\slash.md`). `git ls-tree -- <path>` без `--literal-pathspecs` трактует
-    `<path>` как pathspec, а `\` в git входит в GLOB_SPECIAL наряду с `*?[` — хвост
-    после первого `\` матчится через wildmatch, где `\s` означает литеральный `s`.
-    Литеральное совпадение (`match_entry`) проверяется первым, поэтому сам `docs/back\slash.md`
-    находится; но если в base рядом лежит `docs/backslash.md`, он тоже матчится по
-    wildcard, и `ls-tree` печатает ДВЕ записи. Вход: манифест с `docs/back\slash.md`,
-    в дереве base есть и `docs/back\slash.md`, и `docs/backslash.md`.'
-  evidence:
-  - scripts/review/collect-context.sh:219
-  - scripts/review/collect-context.sh:125
-  - scripts/review/collect-context.sh:200
-  - tests/review/test_collect_context.py:627
+  scenario: 'ЛОЖНАЯ находка (отклонена при адъюдикации 2026-09-18, проверено эмпирически).
+    Утверждение: обратная косая в пути — glob-спецсимвол pathspec, поэтому при наличии соседа
+    без `\` `ls-tree` вернёт ДВЕ записи и легитимный путь будет отвергнут как «разрешился
+    не в себя». Не воспроизводится: на git 2.54.0 в дереве с обоими `docs/back\slash.md` и
+    `docs/backslash.md` запрос `ls-tree -z --full-tree <base> -- ''docs/back\slash.md''` даёт
+    РОВНО ОДНУ запись — литеральный файл; сквозной прогон collect-context.sh в этом же сценарии
+    выходит кодом 0 и прикладывает верное содержимое. Цепочка рвётся на первом звене, поэтому
+    повтор этого утверждения — известный ложный класс, а не находка.'
   match:
     files:
     - scripts/review/collect-context.sh
@@ -72,7 +65,6 @@ defects:
     - разрешился
     - отвергнут
     - обратная
-non_defects: []
 notes: |-
   Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#157, ревью ai-prosto id=5200707170 от 2026-09-14T17:16:34Z.
   Ревью ai-prosto на PR: 1; находок в последнем: 2.
@@ -81,4 +73,18 @@ notes: |-
   candidate_status (подсказка D1, не ground truth):
     - D-andrei-shtanakov.steward-157-1: unknown [minor] tests/review/test_collect_context.py:613
     - D-andrei-shtanakov.steward-157-2: unknown [minor] scripts/review/collect-context.sh:228
-  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 3 файла, collect-context.sh — построчно.
+  D-andrei-shtanakov.steward-157-1 ПОДТВЕРЖДЁН, класс minor: докстринг НОВОГО теста
+  обещает механизм `-c core.quotePath=false`, которого в скрипте нет (реально `ls-tree
+  -z | tr`), а соседний тест описывает настоящий механизм верно. Дефект внесён этим же
+  патчем. Не major: неверно только объяснение, проверяемое поведение теста корректно.
+  D-andrei-shtanakov.steward-157-2 ОТКЛОНЁН как ложная находка, перенесён в non_defects
+  под NF-andrei-shtanakov.steward-157-1. Проверено эмпирически на git 2.54.0: в дереве,
+  где лежат ОБА `docs/back\slash.md` и `docs/backslash.md`, запрос `ls-tree -z
+  --full-tree <base> -- 'docs/back\slash.md'` возвращает РОВНО ОДНУ запись —
+  литеральный файл, а не две; сквозной прогон collect-context.sh в точно этом сценарии
+  (манифест называет путь с обратной косой, сосед без неё существует) выходит кодом 0 и
+  прикладывает правильное содержимое. Цепочка находки рвётся на первом же звене
+  («ls-tree вернёт две записи»), поэтому это не gold-дефект, а известный ложный класс.
+  blocking_complete: true.

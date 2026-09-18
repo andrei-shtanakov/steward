@@ -688,28 +688,79 @@ def test_corpus_validate_exits_3_on_an_unexpected_error(
 
 
 def test_repo_corpus_is_valid_and_registered() -> None:
-    """Корпус самого репозитория загружается: шесть черновиков, id в реестре.
+    """Корпус самого репозитория загружается: тринадцать размеченных кейсов в реестре.
 
     Гейт ветки проверяется этим же вызовом, но руками; тест делает его
-    постоянным: правка черновика или реестра, ломающая загрузку, падает здесь,
+    постоянным: правка кейса или реестра, ломающая загрузку, падает здесь,
     а не в чужом прогоне.
+
+    Пинуется не только состав, но и **измеримость**, двумя разными свойствами.
+
+    Первое — знаменатель `blocking_recall` непуст. Пока в корпусе нет ни
+    одного gold-дефекта `major`/`blocker` в кейсе с `blocking_complete`, он
+    пуст. Числами это не печатается — `_ratio` на нулевом знаменателе даёт
+    `value: None`, а отчёт рендерит ячейку как `— (0/0)`; опасность в другом:
+    главный числовой результат гейта просто ПЕРЕСТАЁТ СУЩЕСТВОВАТЬ, и для
+    читателя таблицы это молчаливо.
+
+    Второе — в знаменателе есть дефект ВНЕ прозы. Ребро матчера строится
+    только когда путь находки входит в `match.files` gold, поэтому корпус, где
+    все блокирующие gold лежат в Markdown, делает находку в исполняемом файле
+    неспособной поднять `blocking_recall` ПО ПОСТРОЕНИЮ: вариант, хорошо
+    читающий документы и плохо код, получил бы 1.00 (2/2), и число выглядело
+    бы как измерение поиска дефектов вообще (находка ревью-контура на PR #170,
+    minor/high). Оба свойства ломаются тихой правкой севериты или `match`,
+    поэтому обязаны падать тестом, а не обнаруживаться на платном прогоне.
     """
     corpus = Path(__file__).resolve().parents[2] / "eval" / "corpus"
 
     cases = load_corpus(corpus)
 
     assert [case.case_id for case in cases] == [
+        "andrei-shtanakov.steward-130",
+        "andrei-shtanakov.steward-137",
+        "andrei-shtanakov.steward-151",
         "andrei-shtanakov.steward-152",
         "andrei-shtanakov.steward-155",
         "andrei-shtanakov.steward-156",
         "andrei-shtanakov.steward-157",
         "andrei-shtanakov.steward-159",
         "andrei-shtanakov.steward-161",
+        "andrei-shtanakov.steward-162",
+        "andrei-shtanakov.steward-167",
+        "andrei-shtanakov.steward-168",
+        # Лексикографический порядок по имени файла: "86" > "1…".
+        "andrei-shtanakov.steward-86",
     ]
-    # Все шесть — прокси из истории ревью: в метрики они не входят, пока
-    # разметчик не перевёл их в `adjudicated` (D1).
-    assert all(case.annotation.status == "draft" for case in cases)
-    assert sum(len(case.defects) for case in cases) == 4
+    # Разметка закрыта (2026-09-18): черновиков нет, кейсы входят в метрики (D1).
+    assert all(case.annotation.status == "adjudicated" for case in cases)
+    assert sum(len(case.defects) for case in cases) == 16
+    blocking = [
+        defect
+        for case in cases
+        if case.annotation.blocking_complete
+        for defect in case.defects
+        if defect.severity in ("major", "blocker")
+    ]
+    assert len(blocking) == 3, "знаменатель blocking_recall обязан быть непустым"
+    # Смотрим ТОЛЬКО на `match.files`: достижимость gold находкой определяет
+    # исключительно он (`matcher._edge` сверяет нормализованный путь находки с
+    # `match.files` и `defect.file` не читает вовсе), а alias-пути законно
+    # расходятся с `file`. Включать `defect.file` в дизъюнкцию нельзя: тогда
+    # правка одного `match.files` на markdown-алиас незаметно убивала бы само
+    # свойство, а тест оставался бы зелёным — ровно та регрессия, которую он
+    # обязан ловить (находка ревью-контура на PR #170).
+    # Allowlist исполняемых расширений, а не `not .md`: отрицание было слабее
+    # своего же докстринга — проза в `.txt`/`.rst` прошла бы его (замечание
+    # ревью-контура на PR #170). Список закрытый: расширять его — решение
+    # разметчика, а не побочный эффект правки кейса.
+    executable = (".py", ".sh", ".yml", ".yaml")
+    assert any(path.endswith(executable) for defect in blocking for path in defect.match.files), (
+        "в знаменателе blocking_recall обязан быть дефект, достижимый находкой вне прозы"
+    )
+    # Опровергнутая при адъюдикации находка живёт как известный ложный класс:
+    # её повтор классифицируется `known_fp`, а не висит в очереди (D8).
+    assert sum(len(case.non_defects) for case in cases) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2256,9 +2307,12 @@ def test_compare_over_an_all_draft_corpus_names_that_quality_was_not_measured(
 ) -> None:
     """Корпус без единого gold-кейса — `compare` не должен выглядеть зелёным.
 
-    Все шесть кейсов, которые несёт эта ветка (`eval/corpus/`), — черновики
-    (`annotation.status: draft`), то есть состояние репозитория сразу после
-    мержа. `_evaluate` не фильтрует по gold, поэтому парная популяция непуста
+    Корпус здесь СИНТЕТИЧЕСКИЙ (`_corpus(..., status="draft")`), и докстринг
+    нарочно не утверждает ничего о реальном `eval/corpus/`: тот был целиком
+    `draft`, когда тест писался, а с закрытием разметки (2026-09-18) стал
+    целиком `adjudicated` — привязка к его составу стухла бы снова.
+    Проверяемое свойство от состава репо не зависит: `_evaluate` не фильтрует
+    по gold, поэтому парная популяция непуста
     (`n_common_cases`/`n_pairs` > 0), а каждая ячейка качества — `— (0/0)`:
     без явного сигнала это неотличимо от состоявшегося измерения с нулевым
     результатом (ревью-находка части 3, minor, PR #169 dry-run).

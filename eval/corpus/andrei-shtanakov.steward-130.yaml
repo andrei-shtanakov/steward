@@ -1,0 +1,61 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-130
+repo: andrei-shtanakov/steward
+pr: 130
+base_sha: 5045a486c2127d145347824fac6a2224cfcf7579
+head_sha: d24f67f802a008c39cb7a8b4f3e97cf448f1d0af
+class: defective
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: true
+  source: history-proxy
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
+defects:
+- id: D-andrei-shtanakov.steward-130-1
+  severity: major
+  file: TODO.md
+  line_hint: 776
+  scenario: 'Метаданные ожидания находятся вне строки чекбокса (confidence: medium).
+    Robin или другой построчный потребитель читает новый открытый пункт как узел TODO.
+    Строка чекбокса 776 не содержит ни `@owner`, ни `@blocked_by`, ни `@id`; все теги
+    вынесены на строки 780–782, хотя контракт требует размещать их на строке чекбокса.'
+  evidence:
+  - TODO.md:776
+  - TODO.md:780
+  - TODO.md:781
+  - TODO.md:782
+  - CLAUDE.md:11
+  - CLAUDE.md:127
+  match:
+    files:
+    - TODO.md
+    line_window: 40
+    keywords_any:
+    - метаданные
+    - находятся
+    - ожидания
+    - чекбокса
+    - строки
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#130, ревью ai-prosto id=5044271295 от 2026-08-27T18:22:28Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 1.
+  head_sha взят из маркера ревью; merge_commit_sha: ee6d85a46fcd32a7506625b70369f0038307e8d6.
+  Коммитов PR после последнего ревью: 0.
+  candidate_status (подсказка D1, не ground truth):
+    - D-andrei-shtanakov.steward-130-1: unknown [major] TODO.md:776
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 1 файл, 7 строк.
+  D-andrei-shtanakov.steward-130-1 ПОДТВЕРЖДЁН, класс major. Сверено по дереву головы
+  ревью: строка чекбокса пункта не несёт ни одного типизированного тега, все три
+  (@owner, @blocked_by, @id) вынесены на строки продолжения, тогда как контракт TODO
+  (CLAUDE.md: «tagged on checkbox lines») и построчный потребитель требуют их на самой
+  строке чекбокса. Следствие не гипотетическое: пункт заводился именно ради исходящего
+  ожидания, а по правилу кросс-репных ожиданий ожидание существует ТОЛЬКО как чекбокс
+  с @blocked_by — не распознанный тег означает, что ожидания в графе нет.
+  ПРИНЯТО И ИСПРАВЛЕНО: в master теги стоят на строке чекбокса, а PR 146 называется
+  прямо «docs(todo): вернуть теги пунктов на checkbox-строку» — отдельный PR-исправление
+  ровно этой находки. Это независимое подтверждение, а не только согласие автора.
+  blocking_complete: true — блокирующий дефект в диапазоне ровно один.

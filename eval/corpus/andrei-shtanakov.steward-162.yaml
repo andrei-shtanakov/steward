@@ -1,0 +1,227 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-162
+repo: andrei-shtanakov/steward
+pr: 162
+base_sha: 4afb50e07a0286d25bb09309564a3f7bfa62a6ba
+head_sha: df3ae98f148d85f0d788f981cee366039427dd33
+class: defective
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: true
+  source: history-proxy
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
+defects:
+- id: D-andrei-shtanakov.steward-162-1
+  severity: major
+  file: docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+  line_hint: 215
+  scenario: 'Раннер вычищает из окружения только REVIEW_CMD: унаследованный REVIEW_EFFORT
+    (и REVIEW_CONTEXT_MANIFEST) молча меняет измеряемого ревьюера при requested_effort:
+    null в метаданных (confidence: medium). Оператор держит в shell `export REVIEW_EFFORT=high`
+    (штатная настройка кита по D13/§7 — та же переменная, которую читает local.sh
+    для хука и ручного прогона) и запускает `review-eval run --variant claude:claude-opus-5`
+    (сегмент effort не задан). По §6 п.3 раннер «без сегмента effort переменную не
+    задаёт» и вычищает из наследуемого env только `REVIEW_CMD`; `REVIEW_EFFORT` наследуется
+    subprocess''ом, резолв §7 собирает `harness-claude --model claude-opus-5 --effort
+    high`, а `result.json`/`run.json` пишут `requested_effort: null` (значение берётся
+    из строки варианта, а не из эффективного `--print-review-cmd`). Аналогично унаследованный
+    `REVIEW_CONTEXT_MANIFEST` подменяет манифест, который §6 п.2 обещает брать «из
+    base кейса, как в бою».'
+  evidence:
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:215
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:273
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:212
+  - scripts/review/local.sh:480
+  - scripts/review/local.sh:55
+  match:
+    files:
+    - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+    line_window: 40
+    keywords_any:
+    - унаследованный
+    - измеряемого
+    - метаданных
+    - окружения
+    - requested
+- id: D-andrei-shtanakov.steward-162-2
+  severity: minor
+  file: docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+  line_hint: 227
+  scenario: 'Отказ apply-threshold.sh по битому вердикту (код 2) классифицируется
+    как config_failure, хотя D4 сохраняет verdict.json ровно для этого случая — сигнал
+    качества модели уходит в чужой бакет (confidence: high). Модель отдаёт вердикт,
+    проходящий JSON-схему, но не проверку apply-threshold.sh — например находку `kind:
+    file-missing` с `line: 17` (правило `line == 0` при file-missing выражается только
+    в скрипте, не в схеме). local.sh по D4 сохраняет `REVIEW_VERDICT_OUT`, затем `apply-threshold.sh`
+    выходит кодом 2, local.sh завершает прогон кодом 2. По §6 п.6 `invalid_verdict`
+    определён как «код 0/1, но verdict.json нет или не проходит схему», а «прочий
+    код 2» — `config_failure`.'
+  evidence:
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:225
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:249
+  - scripts/review/apply-threshold.sh:90
+  - scripts/review/apply-threshold.sh:106
+  - scripts/review/local.sh:759
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:372
+  match:
+    files:
+    - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+    line_window: 40
+    keywords_any:
+    - классифицируется
+    - threshold
+    - сохраняет
+    - вердикту
+    - качества
+- id: D-andrei-shtanakov.steward-162-3
+  severity: minor
+  file: docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+  line_hint: 337
+  scenario: 'Контрактный тест is_blocking требует совпадения кода 0/1 на строках с
+    ОТСУТСТВУЮЩИМ полем, но apply-threshold.sh на них выходит кодом 2 (confidence:
+    high). §9 велит прогнать через настоящий `apply-threshold.sh` таблицу, где «каждое
+    поле по отдельности … отсутствующее», и требует, чтобы «код выхода 0/1 обязан
+    совпасть с предикатом на каждой строке». Для строки без `scenario` (или без `file`,
+    `observed_result`, `evidence[].reason`) скрипт не доходит до BLOCKING_DEF: префлайт
+    схемы (`jq -e … all(type == "string")`) даёт exit 2.'
+  evidence:
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:340
+  - scripts/review/apply-threshold.sh:93
+  - scripts/review/apply-threshold.sh:106
+  - scripts/review/apply-threshold.sh:84
+  match:
+    files:
+    - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+    line_window: 40
+    keywords_any:
+    - отсутствующим
+    - контрактный
+    - совпадения
+    - threshold
+    - blocking
+- id: D-andrei-shtanakov.steward-162-4
+  severity: minor
+  file: docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+  line_hint: 463
+  scenario: '§13 заводит PR #155 двумя кейсами (defective и large), а §5 делает case_id
+    и имя файла равными `<repo>-<pr>` и уникальными — второй кейс непредставим (confidence:
+    high). Разметчик по §13 создаёт `eval/corpus/steward-155.yaml` с `class: defective`
+    и второй кейс «#155 целиком как large с local_args». По §5 путь — `eval/corpus/<repo>-<pr>.yaml`,
+    `case_id: <repo>-<pr>, уникален в корпусе`, а `corpus validate` возвращает 2 на
+    дубликат `case_id` (§12).'
+  evidence:
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:125
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:129
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:460
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:463
+  match:
+    files:
+    - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+    line_window: 40
+    keywords_any:
+    - непредставим
+    - уникальными
+    - defective
+    - заводит
+    - кейсами
+- id: D-andrei-shtanakov.steward-162-5
+  severity: minor
+  file: docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+  line_hint: 269
+  scenario: 'Порядок записи usage-sidecar относительно проверки кода выхода claude
+    не определён: при «прежних» проверках ненулевой код claude с JSON-конвертом теряет
+    стоимость, которую D12 обещает сохранять (confidence: medium). §7 требует писать
+    sidecar «сразу после того, как конверт разобран как JSON (до проверки subtype/is_error/structured_output)»,
+    и одновременно «все проверки конверта и коды выхода адаптера — прежние». Сегодня
+    harness-claude проверяет `claude_code -eq 0` (строка 110) ДО любого разбора конверта;
+    спека описывает только случай «ненулевой код claude без JSON → usage: null». Вопрос
+    к автору (внешний факт, проверить нельзя): `claude -p --output-format json` при
+    ошибке провайдера/лимите завершается ненулевым кодом, но печатает конверт с `is_error:
+    true` и `usage`/`total_cost_usd`?'
+  evidence:
+  - scripts/review/harness-claude:110
+  - scripts/review/harness-claude:117
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:254
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:269
+  match:
+    files:
+    - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+    line_window: 40
+    keywords_any:
+    - относительно
+    - определён
+    - проверках
+    - ненулевой
+    - конвертом
+- id: D-andrei-shtanakov.steward-162-6
+  severity: minor
+  file: docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+  line_hint: 365
+  scenario: 'resolvable_evidence_rate штрафует evidence на целиком удалённый файл
+    с line: 0, которое промпт кита прямо предписывает для линзы ослабления тестов
+    (confidence: high). Кейс с патчем, удаляющим целиком тестовый файл без замены
+    (линза §4 промпта). Ревьюер по правилу промпта ставит evidence `{file: tests/test_x.py,
+    line: 0}` — «файл удалён целиком — line: 0». Метрика §9 считает запись resolvable
+    только если «файл существует в worktree на head».'
+  evidence:
+  - .github/codex/review-prompt.md:109
+  - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:365
+  match:
+    files:
+    - docs/superpowers/specs/2026-09-14-review-eval-harness-design.md
+    line_window: 40
+    keywords_any:
+    - предписывает
+    - resolvable
+    - ослабления
+    - удалённый
+    - evidence
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#162, ревью ai-prosto id=5202108825 от 2026-09-14T19:45:39Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 6.
+  head_sha взят из маркера ревью; merge_commit_sha: 80e459f96b7c553f620c34f8a4963592c4ec01cc.
+  Коммитов PR после последнего ревью: 0.
+  candidate_status (подсказка D1, не ground truth):
+    - D-andrei-shtanakov.steward-162-1: unknown [major] docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:215
+    - D-andrei-shtanakov.steward-162-2: unknown [minor] docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:227
+    - D-andrei-shtanakov.steward-162-3: unknown [minor] docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:337
+    - D-andrei-shtanakov.steward-162-4: unknown [minor] docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:463
+    - D-andrei-shtanakov.steward-162-5: unknown [minor] docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:269
+    - D-andrei-shtanakov.steward-162-6: unknown [minor] docs/superpowers/specs/2026-09-14-review-eval-harness-design.md:365
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком (2 файла, дизайн-спека). Все ШЕСТЬ находок раунда ПОДТВЕРЖДЕНЫ — редкий
+  случай 6/6, севериты оставлены как заявлены.
+  D-…-162-1 (major): на голове ревью спека вычищала из наследуемого окружения ТОЛЬКО
+  `REVIEW_CMD`, поэтому унаследованный `REVIEW_EFFORT` молча менял измеряемого
+  ревьюера при `requested_effort: null` в метаданных — сравнение `claude:M` против
+  `claude:M:high` (буквальная цель пункта выбора модели) дало бы один и тот же
+  ревьюер под двумя метками. ПРИНЯТО И ИСПРАВЛЕНО: в master вычищается весь префикс
+  `REVIEW_*` (runner.py, `_run_env`), ровно как требовала находка.
+  D-…-162-2 (minor): отказ порога по негодному вердикту уходил в `config_failure`.
+  ПРИНЯТО: `classify` в master делит код 2 с сохранённым вердиктом по годности схемы и
+  даёт `invalid_verdict` — ровно требуемое.
+  D-…-162-3 (minor): контрактная таблица §9 требует совпадения кода 0/1 с предикатом на
+  строках с ОТСУТСТВУЮЩИМ полем, а порог на них выходит кодом 2. РЕАЛЬНО и в спеке НЕ
+  исправлено: реализация обошла это отдельной таблицей `SCHEMA_INVALID_TABLE`
+  (tests/review_eval/test_threshold.py), которая ждёт именно кода 2 — то есть требование
+  спеки неисполнимо буквально.
+  D-…-162-4 (minor): PR #155 заводился двумя кейсами при уникальном `case_id` вида
+  `<owner.name>-<pr>` — второй кейс непредставим. РЕАЛЬНО (разметчик уперся в это же
+  ограничение на практике: два кейса на один PR корпус не принимает). В спеке НЕ
+  исправлено — §13 называет #155 дважды до сих пор, строкой 785 как `defective` и
+  строкой 788 как `large`, то есть ровно той парой, непредставимость которой дефект и
+  описывает. (Первая версия этой записи утверждала обратное — «в master спека называет
+  #155 один раз»; утверждение было ложным, поймано ревью-контуром на этом же PR и
+  здесь исправлено.)
+  D-…-162-5 (minor): порядок записи usage-sidecar относительно проверки кода claude был
+  не определён. ПРИНЯТО: master пишет sidecar после разбора конверта и ДО решения о
+  коде выхода, сохраняя стоимость и при ненулевом коде claude с JSON-конвертом.
+  D-…-162-6 (minor): `resolvable_evidence_rate` штрафует evidence на целиком удалённый
+  файл с `line: 0`, которое промпт кита предписывает. ЧАСТИЧНО исправлено и потому
+  РЕАЛЬНО: `_is_resolvable` в master признаёт `line: 0` легитимным, но по-прежнему
+  требует существования файла на head, так что сценарий находки (файл удалён целиком)
+  наказывается до сих пор.
+  blocking_complete: true — блокирующий дефект ровно один (162-1).

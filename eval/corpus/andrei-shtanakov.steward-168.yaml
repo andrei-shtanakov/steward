@@ -1,0 +1,76 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-168
+repo: andrei-shtanakov/steward
+pr: 168
+base_sha: ac612d6b599f3b223abbd2ffac8e7aac09e5c523
+head_sha: c6288a430f780862dbaaa67abf10f85a0416ecf0
+class: clean
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: false
+  source: history-proxy
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
+defects:
+- id: D-andrei-shtanakov.steward-168-1
+  severity: minor
+  file: src/steward/review_eval/metrics.py
+  line_hint: 616
+  scenario: 'Второй путь `_contradicted_gold` объявляет gold противоречащим дереву
+    по alias-пути из `match.files`, даже когда сам `defect.file` действительно отсутствует
+    (confidence: high). Gold-дефект `kind: file-missing` с `file: docs/CHANGELOG.md`
+    и alias-путями `match: {files: [docs/CHANGELOG.md, CHANGELOG.md]}` (alias-пути
+    — заявленная фича спеки, §5 «alias-пути допустимы»; multi-file `match.files` используется
+    в tests/review_eval/test_matcher.py:571). На `head_sha` файла `docs/CHANGELOG.md`
+    нет (gold верен), а `CHANGELOG.md` в корне есть. Вариант выдаёт находку `kind:
+    file-missing, file: CHANGELOG.md` с ключевым словом gold. Матчер строит ребро
+    (kind совпал, нормализованный путь входит в `match.files`) и назначает находку
+    этому gold. `_refuted_file_missing` проверяет `file_lines(''CHANGELOG.md'')` →
+    не `None` → находка опровергнута (верно: её утверждение ложно). Затем `_contradicted_gold`:
+    первый путь проверяет `file_lines(''docs/CHANGELOG.md'')` → `None` → gold не противоречит;
+    но второй путь (`ids.update(matched.assigned[pos] for pos in refuted ...)`) добавляет
+    id этого gold в `contradicted_gold`.'
+  evidence:
+  - src/steward/review_eval/metrics.py:616
+  - src/steward/review_eval/metrics.py:613
+  - src/steward/review_eval/metrics.py:580
+  - src/steward/review_eval/matcher.py:477
+  - src/steward/review_eval/matcher.py:479
+  - src/steward/review_eval/metrics.py:723
+  - src/steward/review_eval/metrics.py:791
+  - tests/review_eval/test_matcher.py:571
+  - tests/review_eval/test_metrics.py:60
+  match:
+    files:
+    - src/steward/review_eval/metrics.py
+    line_window: 40
+    keywords_any:
+    - противоречащим
+    - действительно
+    - contradicted
+    - отсутствует
+    - объявляет
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#168, ревью ai-prosto id=5216313726 от 2026-09-15T22:09:37Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 1.
+  head_sha взят из маркера ревью; merge_commit_sha: 4819ed17b3021c64255c41f3986994fff1626476.
+  Коммитов PR после последнего ревью: 0.
+  candidate_status (подсказка D1, не ground truth):
+    - D-andrei-shtanakov.steward-168-1: unknown [minor] src/steward/review_eval/metrics.py:616
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov).
+  D-andrei-shtanakov.steward-168-1 ПОДТВЕРЖДЁН, класс minor. Сверено по master: второй
+  путь `_contradicted_gold` (`ids.update(matched.assigned[pos] for pos in refuted …)`)
+  безусловен — назначенная опровергнутая находка чернит gold, даже когда первый путь
+  только что проверил, что собственный `defect.file` этого gold и правда отсутствует,
+  то есть разметка верна. С alias-путями в `match.files` (заявленная фича) верный gold
+  выпадает из знаменателей recall и печатается в очереди как «gold противоречит дереву».
+  НЕ исправлено в master. Класс minor: нужна особая раскладка (multi-file `match.files`
+  с существующим алиасом), затронута бухгалтерия метрик, не решение гейта.
+  blocking_complete: FALSE СОЗНАТЕЛЬНО: диапазон — +5166 строк в 4 файлах, и я его
+  исчерпывающе НЕ прочитал. По контракту D8 такой кейс всё равно входит в precision, но
+  честно не входит в знаменатели blocking_recall и false_block_rate. Кейс взят ради
+  реалистичного КРУПНОГО дифа: корпус из одних мелких диапазонов не мерил бы ревьюера
+  на том материале, на котором он работает в бою. Поднять флаг в true — отдельная
+  работа по сплошному чтению диапазона.

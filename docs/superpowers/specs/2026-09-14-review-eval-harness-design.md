@@ -154,7 +154,7 @@ defects:                              # D7 — единица ground truth
       line_window: 40                         # ± строк от line_hint
       keywords_any: [PATH, подмен, hijack, kit_dir]
 non_defects:                          # исторические находки, признанные ложными
-  - id: NF-steward-155-1
+  - id: NF-andrei-shtanakov.steward-155-1   # слаг и pr — СВОИ у кейса, как у D-
     file: docs/superpowers/specs/2026-09-14-review-kit-harness-layer-design.md
     line_hint: 151
     scenario: "…"

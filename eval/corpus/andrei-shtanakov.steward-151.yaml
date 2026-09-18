@@ -1,0 +1,72 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-151
+repo: andrei-shtanakov/steward
+pr: 151
+base_sha: e9fc6416d75648d1df5d94f5a0b3e8392285cf5c
+head_sha: d0832f1e0305ccb2a361cd865860b4a19318774e
+class: clean
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: true
+  source: history-proxy
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
+defects:
+- id: D-andrei-shtanakov.steward-151-1
+  severity: minor
+  file: scripts/review/collect-context.sh
+  line_hint: 53
+  scenario: 'Новый сторож формы пути манифеста не покрывает хвостовой `/` и pathspec-магию `:`
+    — путь, разрешающийся НЕ В СЕБЯ, проходит проверку формы. Список сторожа (строка 53) — `/*|*..*|./*|*/./*|*/.`:
+    абсолютный путь, `..` и `.`-сегменты отвергаются, а `dir/` и `:(top)x` нет. Оператор ставит
+    `REVIEW_CONTEXT_MANIFEST=.github/codex/` (опечатка хвостовым слэшем). `git ls-tree --full-tree
+    <base> -- .github/codex/` (строка 92) печатает СОДЕРЖИМОЕ каталога — несколько записей, —
+    а проверка режима смотрит на первую строку и проходит; `git show <base>:.github/codex/` отдаёт
+    листинг каталога кодом 0, и он становится «манифестом». Структурной проверки «путь разрешился
+    в себя» на этой голове ещё нет: её добавили позже, вместе с самими сторожами `*/` и `:*` (#157,
+    со ссылкой на #154). Наблюдаемое — запутанный отказ кодом 2 на строках листинга вместо честного
+    «путь манифеста — не путь в дереве base».'
+  evidence:
+  - scripts/review/collect-context.sh:53
+  - scripts/review/collect-context.sh:92
+  match:
+    files:
+    - scripts/review/collect-context.sh
+    line_window: 45
+    keywords_any:
+    - хвостовой
+    - pathspec
+    - каталог
+    - листинг
+    - магия
+non_defects: []
+notes: |-
+  Черновик из истории ревью (source: history-proxy): andrei-shtanakov/steward#151, ревью ai-prosto id=5194170665 от 2026-09-14T05:23:03Z.
+  Ревью ai-prosto на PR: 1; находок в последнем: 0.
+  head_sha взят из маркера ревью; merge_commit_sha: 9d5f8e70c1b7f6a7ad5999189c20153162d9c015.
+  Коммитов PR после последнего ревью: 0.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 6 файлов, код — collect-context.sh и local.sh построчно. Блокирующих
+  дефектов нет; ревью ai-prosto на этом PR находок не дало, а один minor нашёл сам
+  разметчик — он и заведён ниже.
+  D-andrei-shtanakov.steward-151-1 найден САМИМ РАЗМЕТЧИКОМ при чтении диапазона, а не
+  взят из истории: ревью ai-prosto на этом PR находок не дало. Это важно для смысла
+  метрик — корпус, собранный из одних прошлых находок, мерил бы только «повторяет ли
+  кит сам себя».
+
+  Первая версия этой записи дефект СОЗНАТЕЛЬНО не заводила, с доводом «слабый gold
+  портит precision сильнее, чем пропущенный minor — recall». Довод был НЕВЕРЕН, и это
+  поймал ревью-контур на этом же PR. По коду метрик: знаменатель
+  `precision_lower_bound` — все блокирующие предсказания независимо от разметки
+  (`_precision_lb_pair`), а в числитель идут только назначения на gold major/blocker
+  (`_true_positives`, `_gold_blocking_ids` фильтрует по GOLD_SEVERITIES). Значит
+  блокирующее предсказание на этот дефект даёт РОВНО ТУ ЖЕ арифметику и с gold-минором,
+  и без записи вовсе. Разница в другом: без записи предсказание остаётся `unlabeled`
+  (`matcher.py`), `_queue_open` на неразмеченном блокирующем предсказании даёт True, и
+  официальный `precision` не публикуется у ВСЕГО варианта (D9), а статус уходит в
+  `pending_adjudication`. То есть пропуск делал ровно то, чего довод хотел избежать, и
+  обещанного выигрыша не давал. Запись заведена `severity: minor`: в знаменатели recall
+  она не попадает (там только major/blocker), precision от неё не меняется, а очередь
+  остаётся закрытой.
+  blocking_complete: true.

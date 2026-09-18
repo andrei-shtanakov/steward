@@ -7,11 +7,11 @@ head_sha: 2b57713fcde8e1a0323a0df4df63fffdd2fdf995
 class: clean
 expected_outcome: verdict
 annotation:
-  status: draft
-  blocking_complete: false
+  status: adjudicated
+  blocking_complete: true
   source: history-proxy
-  adjudicated_by: null
-  adjudicated_at: null
+  adjudicated_by: github:andrei-shtanakov
+  adjudicated_at: 2026-09-18
 defects: []
 non_defects: []
 notes: |-
@@ -19,4 +19,8 @@ notes: |-
   Ревью ai-prosto на PR: 1; находок в последнем: 0.
   head_sha взят из маркера ревью; merge_commit_sha: 1912a07db5f52ae05693ef4fff5a87ae2148ee19.
   Коммитов PR после последнего ревью: 0.
-  Разметчику: проверить severity и evidence каждой находки, уточнить match.keywords_any/line_window, выставить annotation.blocking_complete и перевести status в adjudicated.
+  Адъюдикация 2026-09-18 (разметчик github:andrei-shtanakov). Диапазон прочитан
+  целиком: 1 файл, 6 строк — регенерация evidence-артефакта conformance-report/v1
+  (даты, коммиты, снапшот 13 -> 14). Дефектов нет: projects.steward.commit совпадает
+  с base_sha кейса, indexed_at раньше generated_at, состав findings не тронут.
+  blocking_complete: true — блокирующих дефектов в диапазоне нет.

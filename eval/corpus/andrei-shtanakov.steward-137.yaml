@@ -1,0 +1,104 @@
+schema: review-eval-case/v1
+case_id: andrei-shtanakov.steward-137
+repo: andrei-shtanakov/steward
+pr: 137
+base_sha: 265ddcfed19b6f3bacdbd99f138e4bf1a219252c
+head_sha: 8002bae50183ff560357476ce680ada9a934d564
+class: defective
+expected_outcome: verdict
+annotation:
+  status: adjudicated
+  blocking_complete: true
+  source: history-proxy
+  adjudicated_at: '2026-09-18'
+  adjudicated_by: github:andrei-shtanakov
+defects:
+- id: D-andrei-shtanakov.steward-137-1
+  severity: major
+  file: .github/workflows/codex-review.yml
+  line_hint: 135
+  scenario: 'Opt-in режим оставляет merge-broker с гарантированно красным rollup. Патч меняет
+    условие запроса ревью с `(!draft || есть лейбл)` на `есть лейбл`, поэтому ЛЮБОЙ PR без лейбла
+    `codex-review` получает синтетический `{"review_deferred": true}`, а job `report` завершается
+    кодом 1 («красное везде, где нет годного вердикта» — его инвариант). Обычный PR создаётся
+    без лейбла, проходит предусмотренное умолчанием терминальное ревью `review-pr.sh` от ai-prosto
+    и передаётся существующему merge-broker. Навешивание лейбла после ревью само workflow не запускает
+    (`labeled` в триггерах намеренно отсутствует), поэтому красный чек остаётся на текущем SHA.
+    Брокер читает АГРЕГАТ всех чеков: `[ "$rollup" = SUCCESS ] || refuse`, — advisory-чек в rollup
+    неотличим от обязательного.'
+  evidence:
+  - .github/workflows/codex-review.yml:135
+  - .github/workflows/codex-review.yml:140
+  - .github/workflows/codex-review.yml:683
+  - README.md:75
+  match:
+    files:
+    - .github/workflows/codex-review.yml
+    line_window: 60
+    keywords_any:
+    - rollup
+    - broker
+    - deferred
+    - лейбл
+    - красн
+non_defects: []
+notes: |-
+  Кейс добора 2026-09-18 из раунда ревью, НЕ последнего: у PR 137 два раунда, major
+  найден первым (ревью id=5049447079, голова 8002bae5), а последний раунд уже чистый от
+  major — типовая картина, см. пункт review-eval-candidates-review-round. Поэтому
+  `corpus candidates` этот кейс собрать не мог, и он заведён руками из тела того ревью.
+
+  Зачем он нужен именно такой: до него ОБА блокирующих gold-дефекта корпуса лежали в
+  Markdown (TODO.md и дизайн-спека), а ребро матчера требует, чтобы путь находки входил
+  в `match.files` gold. Значит находка в исполняемом файле в числитель `blocking_recall`
+  попасть не могла ПО ПОСТРОЕНИЮ, и главное число гейта мерило бы вычитку прозы, а не
+  поиск дефектов поведения (находка ревью-контура на PR #170, minor/high). Этот дефект —
+  в исполняемой конфигурации CI, и его обнаружение требует понимания поведения, а не
+  сверки текста с текстом.
+
+  D-andrei-shtanakov.steward-137-1 ПОДТВЕРЖДЁН, класс major, механически достоверно.
+  Диапазон прочитан ЦЕЛИКОМ: 2 файла, 55 изменённых строк — отсюда честный
+  `blocking_complete: true`. Цепочка проверена по коду до конца: (1) `REQUESTED` после
+  патча равен только `contains(labels, 'codex-review')`; (2) при `REQUESTED != true`
+  пишется `review_deferred`, а job `report` на нём делает `exit 1`; (3) `labeled` в
+  триггерах отсутствует намеренно, поэтому лейбл не перезапускает прогон на том же SHA;
+  (4) КЛЮЧЕВОЕ — решающее звено лежит ВНЕ этого репозитория, и вот его точный адрес,
+  потому что по evidence записи его не перепроверить (находка ревью-контура на PR #170,
+  minor/medium): `.github/workflows/merge-broker.yml` в steward — тонкий каллер
+  (строка 36, `uses:`), а логика предусловий живёт в соседнем репо
+  `andrei-shtanakov/ai-orchestrators-workspace`, файл
+  `.github/workflows/merge-broker.yml` на пине `938a3318efc88c5d2b34899077dc9d71f1a31fac`,
+  СТРОКИ 185-186 — дословно:
+      rollup=$(jq -r '.commits.nodes[0].commit.statusCheckRollup.state // "NONE"' <<<"$pr")
+      [ "$rollup" = SUCCESS ] || refuse "статус чеков: $rollup"
+  `statusCheckRollup.state` — агрегат ВСЕХ чеков, а не только обязательных, поэтому
+  довод патча «report не required (advisory-фолбэк)» брокера не спасает. Сверено
+  разметчиком чтением того репо (он read-only reference, правки туда не вносились).
+  В `evidence` записи этот путь не вписан намеренно: поле адресует дерево кейса по
+  `head_sha`, и путь чужого репо там был бы неразрешим по смыслу.
+
+  ЕСЛИ эта внешняя посылка когда-нибудь окажется неверной (зонтик станет фильтровать
+  rollup до required-чеков), класс D-…-137-1 падает до minor, и тогда падают оба пина
+  теста: `len(blocking) == 3` и «в знаменателе есть дефект вне прозы», а знаменатель
+  `blocking_recall` возвращается к двум markdown-дефектам. Это не хрупкость разметки, а
+  её честная зависимость, и она названа здесь, чтобы обнаруживалась чтением, а не
+  падением на платном прогоне.
+
+  Принято автором: следующий раунд ревью того же PR major уже не содержит.
+
+  Класс major, не blocker: ломается автоматический мерж (обходится ручным или лейблом до
+  ревью), необратимой потери и эксплуатации нет.
+  МАТЕРИАЛИЗУЕМОСТЬ ГОЛОВЫ ПРОВЕРЕНА 2026-09-18, повторно и точно. Голова этого
+  кейса — промежуточный раунд, то есть голова ДО фикса; открытый пункт
+  `review-eval-prefix-heads` предупреждает, что такие достижимы только через
+  `refs/pull/<n>/head` и материализация такого объекта — отдельный шаг.
+  Первая запись этой проверки утверждала, что она сделана «ровно тем путём,
+  которым идёт cache.py», а фактическая команда несла `--depth 1` и шла в пустой
+  репозиторий — два расхождения с кодом сразу (находка приёмочного dry-run на
+  PR #170, minor/high). Проверка повторена ИМЕННО кодовым путём: при пинах
+  `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`, `LC_ALL=C` выполнено
+  `git clone --bare --no-hardlinks https://github.com/andrei-shtanakov/steward.git`,
+  затем проверка `git cat-file -e <sha>^{commit}` — то же, что делает `has_object`.
+  Результат для `8002bae5`: объект ПРИСУТСТВУЕТ сразу после bare-клона, поэтому
+  `ensure_objects` до сетевого `git fetch` вообще не доходит — материализация
+  этого кейса не зависит ни от `refs/pull/*`, ни от сети сверх самого клона.
