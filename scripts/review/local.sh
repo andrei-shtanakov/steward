@@ -7,6 +7,14 @@
 # head — одно рабочее дерево. В CI они читаются из base, чтобы автор патча не
 # переписал инструкции своему ревьюеру; локально такого разделения нет и быть
 # не может. Это цена, а не дефект — см. спеку §4.1.
+#
+# Коды выхода (конвенция репо, §7): 0 — чисто (в том числе «диф пуст» —
+# определённое состояние, не «ревью прошло», модель не вызывается); 1 —
+# предметный отказ (ревьюер нашёл проблему); 2 — ошибка конфигурации; 3 —
+# механический сбой ревьюера.
+#   5 — ревьюировать нечего: исходный диф непуст, но после фильтра области
+#       не осталось ничего. НЕ то же, что 0 («пуст сам диапазон»): потребитель
+#       обязан различать, иначе опубликует approve, которого не было.
 set -eu
 
 kit_dir="${REVIEW_KIT_DIR:-$(dirname "$0")}"
@@ -192,12 +200,19 @@ format="text"
 # той же информации при прогоне без хука.
 remote="origin"
 remote_explicit=0
+# Область ревью (спека среза B): оператор может разово вернуть прозу флагом
+# --include-prose или REVIEW_INCLUDE_PROSE=1 (напр., ревью самого правила
+# путей). Флаг сильнее переменной только в сторону включения — обе ветки
+# устанавливают include_prose=1, отключить обратно флагом нельзя.
+include_prose="${REVIEW_INCLUDE_PROSE:+1}"
+include_prose="${include_prose:-0}"
+scope_rules="${REVIEW_SCOPE_RULES:-$kit_dir/prose-paths.env}"
 
 usage() {
     echo "usage: local.sh [--base <ref>] [--head <ref>] [--remote <name>]" \
         "[--fetch] [--format markdown|text]" \
         "[--max-diff-bytes N] [--max-diff-files N] [--fingerprint-only]" \
-        "[--print-review-cmd]" >&2
+        "[--print-review-cmd] [--include-prose]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -237,6 +252,7 @@ while [ $# -gt 0 ]; do
         # таблицы резолва — кит; review-pr.sh берёт отсюда reviewer_label.
         --print-review-cmd) print_cmd=1; shift ;;
         --fingerprint-only) fp_only=1; shift ;;
+        --include-prose) include_prose=1; shift ;;
         *) usage; exit 2 ;;
     esac
 done
@@ -532,6 +548,77 @@ if [ ! -s "$work/diff.patch" ]; then
     # нечего» как «наследовать нечего и ревьюировать нечего».
     info "ревьюировать нечего: диф пуст"
     exit 0
+fi
+
+# --- Область ревью: проза модели не показывается (спека среза B) ------------
+# Фильтр стоит ПОСЛЕ проверки пустого дифа: «пуст диапазон» (0) и «пуст
+# остаток после фильтра» (5) — разные факты, и обвязка обязана различать их,
+# иначе прозаический PR получил бы approve, которого не выносила модель.
+#
+# Правило читается из ФАЙЛА КИТА, а он на авторитетном канале берётся из
+# доверенного чекаута, не из дерева PR: PR не может расширить список того,
+# что скрыто от его собственного ревьюера.
+#
+# Fail-closed в сторону ревью: нет файла, нечитаем, нет PROSE — фильтр не
+# применяется, модель видит полный диф. Недоказанная проза не прячется.
+prose_globs=""
+code_globs=""
+if [ "$include_prose" -eq 1 ]; then
+    info "--include-prose: фильтр области ревью отключён на этом прогоне"
+elif [ ! -r "$scope_rules" ]; then
+    info "правило области ревью нечитаемо ($scope_rules) — фильтр не" \
+        "применяется, ревьюер получает полный диф"
+else
+    prose_globs=$(sed -n 's/^[[:space:]]*PROSE=//p' "$scope_rules" | tr '\n' ' ')
+    code_globs=$(sed -n 's/^[[:space:]]*CODE_OVERRIDE=//p' "$scope_rules" \
+        | tr '\n' ' ')
+    if [ -z "$prose_globs" ]; then
+        info "правило области ревью не называет PROSE ($scope_rules) —" \
+            "фильтр не применяется"
+    fi
+fi
+
+# 0 — путь проза, 1 — код. CODE_OVERRIDE сильнее PROSE. `set -f` обязателен:
+# неквотированный глоб иначе развернулся бы по содержимому cwd вместо того,
+# чтобы остаться шаблоном для `case`; снимается перед КАЖДЫМ возвратом.
+path_is_prose() {
+    set -f
+    for _g in $code_globs; do
+        case "$1" in $_g) set +f; return 1 ;; esac
+    done
+    for _g in $prose_globs; do
+        case "$1" in $_g) set +f; return 0 ;; esac
+    done
+    set +f
+    return 1
+}
+
+if [ -n "$prose_globs" ]; then
+    # Пути в позиционные параметры: список кодовых путей уходит в git с
+    # магией `:(literal)`, иначе путь с глоб-метасимволом стал бы
+    # pathspec-ШАБЛОНОМ и подобрал бы чужие файлы. --no-renames: и старый, и
+    # новый путь переименования проходят классификацию.
+    _old_ifs=$IFS
+    IFS='
+'
+    set -f
+    set --
+    for _f in $(git diff --no-renames --name-only "$mb..$head_sha"); do
+        IFS=$_old_ifs
+        set +f
+        path_is_prose "$_f" || set -- "$@" ":(literal)$_f"
+        IFS='
+'
+        set -f
+    done
+    IFS=$_old_ifs
+    set +f
+    if [ "$#" -eq 0 ]; then
+        info "ревьюировать нечего: всё отфильтровано как проза" \
+            "(правило $scope_rules)"
+        exit 5
+    fi
+    git diff "$mb..$head_sha" -- "$@" > "$work/diff.patch"
 fi
 
 # Схема и промпт — вход ревьюера. Отсутствие любого из них — конфигурационный

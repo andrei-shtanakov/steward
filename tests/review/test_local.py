@@ -11,6 +11,20 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "review" / "local.sh"
 
+# Область ревью (спека среза B): REVIEW_KIT_DIR ниже указывает на РЕАЛЬНЫЙ
+# scripts/review кита, а значит и на настоящий prose-paths.env — фильтр
+# области иначе включался бы неявно для всех ~50 тестов этого файла, чей
+# диф — файл `*.txt` (`new.txt`, `changed.txt`, ...), используемый только
+# как generic-заглушка «что-то поменялось», а не как объект теста фильтра.
+# Тестовая обвязка поэтому по умолчанию указывает REVIEW_SCOPE_RULES на
+# заведомо отсутствующий путь — тот же fail-open «правила нет», которым уже
+# явно пользуется test_missing_rule_file_means_full_diff, — и тесты САМОГО
+# фильтра (ниже) явно перекрывают его настоящим `prose-paths.env`. Это
+# изоляция ТЕСТОВОГО арнеса, не local.sh: боевое умолчание (`$kit_dir/…`)
+# не тронуто.
+NO_SCOPE_RULES = str(ROOT / "scripts" / "review" / "__no-scope-rules-in-tests__")
+REAL_SCOPE_RULES = str(ROOT / "scripts" / "review" / "prose-paths.env")
+
 STUB_OK = """#!/bin/sh
 # Подставной ревьюер: пишет годный вердикт без находок туда, куда просят.
 out=""
@@ -90,6 +104,7 @@ def run_local(
     env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
     env["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
     env["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    env["REVIEW_SCOPE_RULES"] = NO_SCOPE_RULES
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
@@ -798,6 +813,7 @@ def test_default_schema_and_prompt_resolve_from_repo_root_not_cwd(tmp_path: Path
     env = dict(os.environ)
     env["REVIEW_CMD"] = make_stub(tmp_path, STUB_OK)
     env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
+    env["REVIEW_SCOPE_RULES"] = NO_SCOPE_RULES
     # Намеренно НЕ задаём REVIEW_SCHEMA/REVIEW_PROMPT — проверяем умолчания.
     result = subprocess.run(
         ["sh", str(SCRIPT)],
@@ -1680,6 +1696,7 @@ def run_local_env(
     base["REVIEW_KIT_DIR"] = str(kit_dir or ROOT / "scripts" / "review")
     base["REVIEW_SCHEMA"] = str(ROOT / ".github" / "codex" / "review-schema.json")
     base["REVIEW_PROMPT"] = str(ROOT / ".github" / "codex" / "review-prompt.md")
+    base["REVIEW_SCOPE_RULES"] = NO_SCOPE_RULES
     if env:
         base.update(env)
     return subprocess.run(
@@ -2242,3 +2259,172 @@ def test_verdict_out_path_with_apostrophe_keeps_trap_working(tmp_path: Path) -> 
 def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
     repo = make_repo_with_diff(tmp_path)
     assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})
+
+
+# --- Область ревью: проза не доходит до модели (спека среза B) -------------
+
+
+def _capturing_stub(dump: Path) -> str:
+    """Стаб, который и пишет годный вердикт (иначе `local.sh` отказывает
+    кодом 3 — «вердикта не оставил»), и сохраняет ПРИШЕДШИЙ НА STDIN промпт
+    целиком в `dump`, чтобы тест мог проверить, какой диф реально дошёл до
+    ревьюера."""
+    return f"""#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output-last-message) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+cat > "{dump}"
+printf '{{"findings":[],"note":"stub"}}' > "$out"
+"""
+
+
+def test_prose_only_range_exits_five_without_calling_reviewer(
+    tmp_path: Path,
+) -> None:
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+    stub = make_stub(tmp_path, "echo REVIEWER_WAS_CALLED >&2; exit 0")
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
+    assert res.returncode == 5, res.stderr
+    assert "REVIEWER_WAS_CALLED" not in res.stderr
+    # info() пишет в stdout вне fp-режима (см. test_empty_diff_is_green_…
+    # выше) — «диф пуст» и «всё отфильтровано» тот же канал, тот же жанр
+    # сообщения.
+    assert "всё отфильтровано" in res.stdout
+
+
+def test_empty_range_still_exits_zero(tmp_path: Path) -> None:
+    """Код 0 сохраняет прежний смысл: пуст сам диапазон, а не остаток."""
+    _, repo = make_repo(tmp_path)
+    stub = make_stub(tmp_path, "exit 0")
+    res = run_local(repo, stub)
+    assert res.returncode == 0, res.stderr
+    assert "диф пуст" in res.stdout
+
+
+def test_mixed_range_sends_only_code_to_the_model(tmp_path: Path) -> None:
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n")
+    (repo / "tool.py").write_text("x = 1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "mixed")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    assert (
+        run_local(
+            repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+        ).returncode
+        == 0
+    )
+    seen = dump.read_text()
+    assert "tool.py" in seen
+    assert "docs/note.md" not in seen
+
+
+def test_code_only_range_diff_is_unchanged(tmp_path: Path) -> None:
+    """Кодовый PR фильтр не трогает — иначе поехал бы отпечаток и
+    наследование прошлых вердиктов."""
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code only")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    assert (
+        run_local(
+            repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+        ).returncode
+        == 0
+    )
+    assert "tool.py" in dump.read_text()
+
+
+def test_include_prose_flag_disables_the_filter(tmp_path: Path) -> None:
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    assert (
+        run_local(
+            repo,
+            stub,
+            "--include-prose",
+            env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+        ).returncode
+        == 0
+    )
+    assert "docs/note.md" in dump.read_text()
+    assert run_local(
+        repo,
+        stub,
+        env_overrides={
+            "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
+            "REVIEW_INCLUDE_PROSE": "1",
+        },
+    ).returncode == 0
+
+
+def test_missing_rule_file_means_full_diff(tmp_path: Path) -> None:
+    """Fail-closed в сторону ревью: правила нет — фильтра нет."""
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(tmp_path / "nope.env")}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "docs/note.md" in dump.read_text()
+    assert "правило области ревью" in res.stdout
+
+
+def test_fingerprint_mode_on_filtered_range_prints_nothing_and_exits_five(
+    tmp_path: Path,
+) -> None:
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("prose\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "prose only")
+    stub = make_stub(tmp_path, "exit 0")
+    res = run_local(
+        repo,
+        stub,
+        "--fingerprint-only",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 5, res.stderr
+    assert res.stdout.strip() == ""
+
+
+def test_path_with_glob_metachar_is_matched_literally(tmp_path: Path) -> None:
+    """Путь с `*` не должен толковаться как pathspec-шаблон."""
+    _, repo = make_repo(tmp_path)
+    (repo / "a[1].py").write_text("x = 1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "odd name")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    assert (
+        run_local(
+            repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+        ).returncode
+        == 0
+    )
+    assert "a[1].py" in dump.read_text()
