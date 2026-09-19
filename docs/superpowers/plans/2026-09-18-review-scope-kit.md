@@ -738,7 +738,25 @@ EOF
 
 ---
 
-## Task 6: Волна ре-вендора (23 репо, по PR на репо)
+## Task 6: Волна ре-вендора (23 репо, ДВА прохода по PR на репо)
+
+**Поправка после финального разбора: волна двухфазная, как и ввод члена в
+steward.** У потребителя джоба `review-kit-integrity` исполняет `checksum.sh`
+**из base**, то есть со старым инвентарём. PR, приносящий разом новый
+`checksum.sh`, файл правила и строку `PIN`, даёт у такого потребителя отказ
+«PIN перечисляет файл вне состава кита» (exit 2). Гейт стоит в 14 репо из 24.
+
+Поэтому по каждому репо: **проход 1** — только `checksum.sh` с переходным
+членом; **проход 2** (после мержа первого) — `local.sh`, `prose-paths.env`,
+`pre-push`, строка `PIN`. Ровно так шёл прецедент `harness-claude`.
+
+**`arbiter` и `atp-platform` идут вне волны** (решение владельца 2026-09-18).
+Оба стоят на `steward @ e4c43cc` (2026-08-25), шесть членов, без
+`harness-claude` — то есть отстали на два релиза кита, и цикл пересчёта PIN
+там упадёт на отсутствующем члене. Их подтягивают к текущему релизу
+**отдельной работой**, а не особой формой волны: чинить два разных долга одним
+PR значит не починить ни один чисто. Просьбы доставлены inbox-issue —
+`arbiter#107`, `atp-platform#326`. Волна их не касается, пока не ответят.
 
 **Files (в каждом репо):** `scripts/review/local.sh`, `scripts/review/checksum.sh`,
 `scripts/review/prose-paths.env`, `scripts/review/PIN`, `.github/hooks/pre-push`
@@ -752,38 +770,52 @@ ls -d */scripts/review | sed 's|/scripts/review||' | grep -v '^steward$'
 
 Ожидается 23 репо.
 
-- [ ] **Step 2: Прогнать по одному репо и убедиться, что рецепт верен**
+- [ ] **Step 2: ПРОХОД 1 на одном репо — только инвентарь**
 
-Взять `devtools` (он же потребитель, и там уже есть тесты обвязки):
+Проход 1 несёт `checksum.sh` с переходным членом И **свою же строку PIN**: чекер
+сверяет по PIN каждый член, включая самого себя, поэтому смена байтов
+`checksum.sh` без обновления его строки покраснеет у base-чекера на дрейфе
+собственного хеша.
 
 ```bash
 R=devtools
 cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/$R
-git switch -c chore/review-kit-revendor-scope
-for f in local.sh checksum.sh prose-paths.env; do
-  cp ../steward/scripts/review/$f scripts/review/$f
-done
-cp ../steward/.github/hooks/pre-push .github/hooks/pre-push
-sh scripts/review/checksum.sh   # ожидается красное: PIN ещё старый
+git switch -c chore/review-kit-inventory-scope
+cp ../steward/scripts/review/checksum.sh scripts/review/checksum.sh
+# в scripts/review/PIN заменить ТОЛЬКО строку checksum.sh:
+shasum -a 256 scripts/review/checksum.sh
+sh scripts/review/checksum.sh --pin scripts/review/PIN
+                                # ожидается чисто: файла правила ещё нет,
+                                # переходный член его отсутствие терпит
 ```
 
-Пересчитать PIN:
+Коммит, PR, **дождаться мержа**. Только после этого проход 2 на том же репо.
+
+- [ ] **Step 3: ПРОХОД 2 на том же репо — файл, кит, хук, PIN**
 
 ```bash
-for f in scripts/review/*.sh scripts/review/harness-claude scripts/review/prose-paths.env .github/codex/review-schema.json; do
+cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/$R
+git switch master && git pull --ff-only
+git switch -c chore/review-kit-revendor-scope
+for f in local.sh prose-paths.env; do
+  cp ../steward/scripts/review/$f scripts/review/$f
+done
+[ -f .github/hooks/pre-push ] && cp ../steward/.github/hooks/pre-push .github/hooks/pre-push
+for f in scripts/review/*.sh scripts/review/harness-claude \
+         scripts/review/prose-paths.env .github/codex/review-schema.json; do
   shasum -a 256 "$f"
 done
+# вписать пересчитанные строки в scripts/review/PIN, обновить шапку
+# (SOURCE: steward @ <sha>), затем:
+sh scripts/review/checksum.sh --pin scripts/review/PIN   # ожидается чисто
 ```
 
-вписать строки в `scripts/review/PIN`, обновить шапку (`SOURCE: steward @ <sha>`),
-затем `sh scripts/review/checksum.sh` — ожидается чисто.
-
-- [ ] **Step 3: Проверить на этом репо живьём**
+- [ ] **Step 4: Проверить на этом репо живьём**
 
 Run: `sh scripts/review/local.sh --base master --head HEAD --fingerprint-only`
 Expected: на прозаической ветке — код 5, stdout пуст; на кодовой — 64-hex.
 
-- [ ] **Step 4: Коммит и PR, дождаться мержа**
+- [ ] **Step 5: Коммит и PR прохода 2, дождаться мержа**
 
 ```bash
 git add scripts/review .github/hooks/pre-push
@@ -799,11 +831,32 @@ EOF
 git push -u origin HEAD && gh pr create --fill
 ```
 
-- [ ] **Step 5: Повторить по остальным 22 репо**
+- [ ] **Step 5a: Повторить оба прохода по остальным 22 репо**
 
-Рецепт тот же. Репо без `.github/hooks/pre-push` — шаг с хуком пропустить.
-Репо, где `checksum.sh` после копирования краснеет по ДРУГИМ членам, —
-остановиться и сказать владельцу: это не задача волны, а протухшая копия.
+Порядок внутри репо обязателен: проход 1 → мерж → проход 2. Между репо порядка
+нет, их можно вести параллельно.
+
+Репо без `.github/hooks/pre-push` — шаг с хуком пропустить. Репо, где
+`checksum.sh` краснеет по ДРУГИМ членам, — остановиться и сказать владельцу:
+это протухшая копия, а не задача волны. `arbiter` и `atp-platform` — сперва
+решение владельца (см. шапку задачи), в общий поток не брать.
+
+- [ ] **Step 5b: `spec-runner` — проверить прозрачность адаптера**
+
+У `spec-runner` есть собственный потребитель кита —
+`scripts/review/local-claude.sh:38`, прозрачный адаптер (`exec`, аргументы и код
+выхода проходят без изменения). Кода ему менять не надо, но в PR волны по этому
+репо проверить живьём, что прозрачность сохранилась:
+
+```bash
+cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/spec-runner
+# прозаическая ветка: код 5 обязан пройти наружу через адаптер
+sh scripts/review/local-claude.sh --base master --head HEAD; echo "код: $?"
+# флаг обязан дойти до local.sh (ревьюер увидит полный диф)
+sh scripts/review/local-claude.sh --base master --head HEAD --include-prose
+```
+
+Expected: первый — код 5; второй — обычный прогон с прозой во входе.
 
 - [ ] **Step 6: Сверка волны**
 
@@ -820,6 +873,23 @@ done
 ```
 
 Expected: одинаковый хеш во всех репо, «НЕТ ФАЙЛА» ни одного.
+
+- [ ] **Step 7: Fleet-scan потребителей — обязательный шаг приёмки**
+
+Инвентарь потребителей кита (спека §1) обязан пересобираться, а не доверяться:
+именно неполный список стоил блокирующей находки на приёмке `#172`. Прогон
+детерминированный, модель не нужна:
+
+```bash
+cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators
+grep -rln "scripts/review/local\.sh\|REVIEW_KIT_DIR" \
+  --include="*.sh" --include="*.py" --include="*.yml" --include="*.yaml" \
+  --include="pre-push" . | grep -v "/scripts/review/" | sort
+```
+
+Каждое попадание сверить со списком §1 спеки. Новый потребитель — **стоп**:
+он интерпретирует коды выхода кита и обязан знать про 5, иначе волна сломает
+его молча. Список в спеке обновить тем же PR, что и находку.
 
 ---
 

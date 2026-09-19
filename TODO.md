@@ -1043,6 +1043,27 @@ PR и осознанно не закрыто; список полон, друг�
   копий CI-чекером и drift-вахтой — вопрос волн devtools, отмечен в
   `review-kit-next-wave`.
 
+- [ ] Волна ре-вендора среза B обходит `arbiter` и `atp-platform`, пока те не
+      подтянут кит к текущему релизу @owner:github:andrei-shtanakov
+      @blocked_by:arbiter#107 @id:review-scope-wave-arbiter
+- [ ] То же по `atp-platform` @owner:github:andrei-shtanakov
+      @blocked_by:atp-platform#326 @id:review-scope-wave-atp-platform
+- [ ] Перевод строки В ИМЕНИ файла ломает разбор фильтра области ревью:
+      `git diff -z` отдаёт пути сырыми, но `tr '\0' '\n'` схлопывает
+      разделитель записи с байтом внутри самого имени, и такой путь
+      разъезжается на две несуществующие записи. Страж (счётчик NUL-байтов
+      в `changed-paths.z` против числа фактически разобранных путей) ловит
+      расхождение целиком и отказывает кодом 3 fail-closed — файл больше не
+      выпадает молча, но и не ревьюируется: полноценная поддержка таких
+      имён (пропустить их через ревью, а не отказывать) требует другого
+      приёма разбора NUL, например `read -d ''` (bash), которого в POSIX sh
+      нет @owner:github:andrei-shtanakov @id:review-scope-newline-in-path
+- [ ] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT
+      `devtools/contracts/review-scope/v1/prose-paths.env` по расписанию, как
+      `impresario-contract-drift.yml`. Copy-integrity у копии уже есть
+      (инвентарь checksum.sh), расхождения с SSOT не заметит ничто
+      @owner:github:andrei-shtanakov @id:review-scope-upstream-drift
+
 - [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша; @owner:github:andrei-shtanakov @id:review-kit-diff-marker-hardening @epic:eco.codex-review-rollout
       осталось решить, нужен ли полноценный nonce
 

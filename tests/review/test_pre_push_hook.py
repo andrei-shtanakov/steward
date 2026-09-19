@@ -136,6 +136,53 @@ def test_any_non_zero_from_local_blocks_the_push(tmp_path: Path) -> None:
         assert result.returncode != 0, f"код {code} от local.sh обязан блокировать пуш"
 
 
+def test_exit_five_is_a_successful_skip(tmp_path: Path) -> None:
+    """Код 5 кита («ревьюировать нечего: всё отфильтровано как проза») —
+    успешный пропуск для пуша, а не отказ. Хук зовёт local.sh последней
+    строкой, и под `set -eu` без явной обработки код кита стал бы кодом
+    хука: прозаическая ветка перестала бы пушиться вовсе."""
+    sha = "a" * 40
+    line = f"refs/heads/feature {sha} refs/heads/feature {ZERO}\n"
+    stub_kit = tmp_path / "kit-5"
+    stub_kit.mkdir()
+    stub_local = stub_kit / "local.sh"
+    stub_local.write_text("#!/bin/sh\nexit 5\n", encoding="utf-8")
+    stub_local.chmod(0o755)
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(stub_kit)
+    env["REVIEW_HEAD_SHA"] = sha
+    result = subprocess.run(
+        ["sh", str(HOOK), "origin", "git@example.com:o/r.git"],
+        input=line,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_exit_one_still_blocks(tmp_path: Path) -> None:
+    """Находки (код 1) по-прежнему блокируют пуш и после обработки кода 5."""
+    sha = "a" * 40
+    line = f"refs/heads/feature {sha} refs/heads/feature {ZERO}\n"
+    stub_kit = tmp_path / "kit-1"
+    stub_kit.mkdir()
+    stub_local = stub_kit / "local.sh"
+    stub_local.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    stub_local.chmod(0o755)
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(stub_kit)
+    env["REVIEW_HEAD_SHA"] = sha
+    result = subprocess.run(
+        ["sh", str(HOOK), "origin", "git@example.com:o/r.git"],
+        input=line,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 1
+
+
 # --- живой прогон: настоящий git push, а не сфабрикованный stdin -----------
 #
 # Всё выше проверяет реакцию хука на stdin, который ФОРМИРУЮТ ТЕСТЫ по
@@ -919,3 +966,48 @@ def test_installer_accepts_worktree_scoped_hookspath(tmp_path: Path) -> None:
     result = subprocess.run(["sh", str(INSTALLER)], cwd=str(local), capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert (local / "myworkhooks" / "pre-push").is_file()
+
+
+def test_real_prose_only_push_gets_kit_code_5_and_still_succeeds(
+    tmp_path: Path,
+) -> None:
+    """Настоящий push, но НЕ через стаб-кит: REVIEW_KIT_DIR указывает на
+    РЕАЛЬНЫЙ scripts/review (с настоящим prose-paths.env), а диапазон пуша —
+    только прозаический файл. Кит обязан сам, по своей логике фильтра
+    области, дойти до кода 5 («ревьюировать нечего: всё отфильтровано») —
+    не смоделированного стабом, а настоящего; хук обязан пропустить такой
+    пуш кодом 0, тем же путём, что и код 5 из `test_real_...` выше в файле."""
+    _, local = make_bare_remote_and_clone(tmp_path)
+    install_hook_via_installer(local)
+    # `install_hook_via_installer` кладёт `.github/hooks/pre-push` В РАБОЧЕЕ
+    # ДЕРЕВО (не только в `.git/hooks`), не коммитя его — иначе он попадёт
+    # ПОД `.github/*` (CODE_OVERRIDE) в тот же диф, что и docs/note.md, диф
+    # перестанет быть чисто прозаическим, и кит нормально дойдёт до модели
+    # вместо кода 5. Коммитим источник хука на master ДО ветвления feature,
+    # чтобы диапазон base..feature состоял ровно из прозы — и СРАЗУ пушим:
+    # local.sh резолвит базу как `refs/remotes/origin/HEAD`, а не локальный
+    # `master`, так что без push merge-base остался бы на СТАРОМ `base`, диф
+    # захватил бы и этот коммит вместе с прозой, и фильтр снова не сработал
+    # бы (тот же класс промаха, что и с review-scope.env в test_local.py).
+    # `remote.git` из `make_bare_remote_and_clone` — bare, denyCurrentBranch
+    # здесь не ловушка.
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "hook source")
+    git(local, "push", "-q", "origin", "master")
+
+    git(local, "switch", "-qc", "feature")
+    (local / "docs").mkdir()
+    (local / "docs" / "note.md").write_text("проза\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "проза")
+
+    env = dict(os.environ)
+    env["REVIEW_KIT_DIR"] = str(ROOT / "scripts" / "review")
+    result = subprocess.run(
+        ["git", "-C", str(local), "push", "origin", "feature"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "всё отфильтровано" in (result.stdout + result.stderr)

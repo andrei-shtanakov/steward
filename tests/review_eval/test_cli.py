@@ -1559,6 +1559,7 @@ _E2E_KIT_PLACEHOLDERS = (
     "scripts/review/collect-context.sh",
     "scripts/review/harness-claude",
     "scripts/review/build-prompt.sh",
+    "scripts/review/prose-paths.env",
 )
 
 
@@ -1726,10 +1727,12 @@ def test_run_end_to_end_with_the_real_runner(tmp_path: Path) -> None:
         "collect_context_sha256",
         "harness_claude_sha256",
         "build_prompt_sha256",
+        "review_scope_rules_sha256",
     }
     assert set(manifest["kit"]) == {"commit"} | digest_keys | {
         key.removesuffix("_sha256") + "_executable" for key in digest_keys
     }
+    assert manifest["review_scope_mode"] == "include_prose"
     # Чистый прогон не оставляет пустого дерева worktree.
     assert not (out / "scratch").exists()
 
