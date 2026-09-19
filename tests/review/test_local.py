@@ -2261,6 +2261,46 @@ def test_verdict_out_does_not_change_fingerprint(tmp_path: Path) -> None:
     assert harness_fp(repo) == harness_fp(repo, {"REVIEW_VERDICT_OUT": str(tmp_path / "v.json")})
 
 
+@pytest.mark.parametrize("mode", ["--print-review-cmd", "--fingerprint-only"])
+def test_query_modes_keep_existing_sidecar_files(tmp_path: Path, mode: str) -> None:
+    """Режим-запрос ревьюера не зовёт и вердикта не производит — сносить чужой
+    файл ему нечем взамен. Раньше сброс стоял в префлайте, до разбора
+    аргументов: `local.sh --print-review-cmd` молча удалял результат прошлого
+    прогона и выходил кодом 0 (steward#175, #176, прислал arbiter)."""
+    repo = make_repo_with_diff(tmp_path)
+    verdict = tmp_path / "verdict.json"
+    usage = tmp_path / "usage.json"
+    verdict.write_text('{"findings": [], "note": "прошлый прогон"}', encoding="utf-8")
+    usage.write_text('{"tokens": 1}', encoding="utf-8")
+    res = run_local_env(
+        repo,
+        mode,
+        env={"REVIEW_VERDICT_OUT": str(verdict), "REVIEW_USAGE_OUT": str(usage)},
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert json.loads(verdict.read_text(encoding="utf-8"))["note"] == "прошлый прогон"
+    assert usage.read_text(encoding="utf-8") == '{"tokens": 1}'
+
+
+def test_empty_range_still_invalidates_stale_sidecar(tmp_path: Path) -> None:
+    """Обратная сторона того же инварианта: прогон, который РЕВЬЮ вёл и
+    закончился «ревьюировать нечего», обязан снять прежний файл — иначе
+    потребитель прочитает чужой вердикт как результат этого прогона."""
+    repo = make_repo_with_diff(tmp_path)
+    verdict = tmp_path / "verdict.json"
+    verdict.write_text('{"findings": [], "note": "прошлый прогон"}', encoding="utf-8")
+    res = run_local_env(
+        repo,
+        "--base",
+        "HEAD",
+        "--head",
+        "HEAD",
+        env={"REVIEW_VERDICT_OUT": str(verdict)},
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not verdict.exists()
+
+
 # --- Область ревью: проза не доходит до модели (спека среза B) -------------
 
 
@@ -2330,7 +2370,12 @@ def test_mixed_range_sends_only_code_to_the_model(tmp_path: Path) -> None:
     )
     seen = dump.read_text()
     assert "tool.py" in seen
-    assert "docs/note.md" not in seen
+    # Имя удержанного пути теперь В промпте намеренно — в блоке
+    # «УДЕРЖАНО ФИЛЬТРОМ»; не должно быть его ТЕЛА, то есть
+    # diff-заголовка (steward#176).
+    assert "+++ b/docs/note.md" not in seen
+    assert "УДЕРЖАНО ФИЛЬТРОМ ОБЛАСТИ РЕВЬЮ" in seen
+    assert "docs/note.md" in seen
 
 
 def test_code_only_range_diff_is_unchanged(tmp_path: Path) -> None:
@@ -2536,7 +2581,11 @@ def test_normal_range_still_passes_with_the_nul_count_guard_in_place(
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "a.py" in seen
-    assert "note.md" not in seen
+    # Проза этого теста лежит в КОРНЕ (`note.md`), не в `docs/` — путь в
+    # утверждении обязан совпадать с созданным файлом, иначе проверка
+    # вырождается в тавтологию и «удержано» перестаёт проверяться.
+    assert "+++ b/note.md" not in seen
+    assert "УДЕРЖАНО ФИЛЬТРОМ ОБЛАСТИ РЕВЬЮ" in seen
 
 
 # --- Фикс-раунд 2 (ревью Task 2): C-1, I-1, I-2, m-1, m-3 -------------------
@@ -2635,7 +2684,12 @@ def test_default_mixed_range_reaches_the_model_without_any_override(
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "tool.py" in seen
-    assert "docs/note.md" not in seen
+    # Имя удержанного пути теперь В промпте намеренно — в блоке
+    # «УДЕРЖАНО ФИЛЬТРОМ»; не должно быть его ТЕЛА, то есть
+    # diff-заголовка (steward#176).
+    assert "+++ b/docs/note.md" not in seen
+    assert "УДЕРЖАНО ФИЛЬТРОМ ОБЛАСТИ РЕВЬЮ" in seen
+    assert "docs/note.md" in seen
 
 
 def test_default_code_only_range_is_identical_from_root_and_subdirectory(
@@ -2948,7 +3002,7 @@ def test_prose_review_paths_returns_named_prose_to_the_model(
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "authored/rule.md" in seen
-    assert "docs/other.md" not in seen
+    assert "+++ b/docs/other.md" not in seen
 
 
 def test_prose_review_all_disables_the_filter(tmp_path: Path) -> None:
@@ -3044,7 +3098,7 @@ def test_config_from_head_does_not_apply_to_its_own_pr(
     stub = make_stub(tmp_path, _capturing_stub(dump))
     res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 0, res.stderr
-    assert "docs/note.md" not in dump.read_text()
+    assert "+++ b/docs/note.md" not in dump.read_text()
 
 
 # --- Финальное ревью ветки: C-1 (квотирование путей), I-1, I-2 -------------
@@ -3072,7 +3126,12 @@ def test_quoted_filename_is_not_dropped_from_the_diff(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "SECRET" in seen
-    assert "docs/note.md" not in seen
+    # Имя удержанного пути теперь В промпте намеренно — в блоке
+    # «УДЕРЖАНО ФИЛЬТРОМ»; не должно быть его ТЕЛА, то есть
+    # diff-заголовка (steward#176).
+    assert "+++ b/docs/note.md" not in seen
+    assert "УДЕРЖАНО ФИЛЬТРОМ ОБЛАСТИ РЕВЬЮ" in seen
+    assert "docs/note.md" in seen
 
 
 def test_broken_pathspec_after_filter_is_a_mechanical_failure_not_zero(
@@ -3148,7 +3207,12 @@ def test_filter_combined_with_sidecar_verdict_out(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "tool.py" in seen
-    assert "docs/note.md" not in seen
+    # Имя удержанного пути теперь В промпте намеренно — в блоке
+    # «УДЕРЖАНО ФИЛЬТРОМ»; не должно быть его ТЕЛА, то есть
+    # diff-заголовка (steward#176).
+    assert "+++ b/docs/note.md" not in seen
+    assert "УДЕРЖАНО ФИЛЬТРОМ ОБЛАСТИ РЕВЬЮ" in seen
+    assert "docs/note.md" in seen
     assert out.exists()
     assert "findings" in out.read_text()
 
@@ -3181,6 +3245,37 @@ def test_prose_review_off_with_leftover_paths_is_still_fully_filtered(
     assert res.returncode == 5, res.stdout + res.stderr
 
 
+@pytest.mark.parametrize(
+    "cfg,key",
+    [
+        ("PROSE_REVIEW=\n", "PROSE_REVIEW"),
+        ("PROSE_REVIEW=paths\nPROSE_REVIEW_PATHS=\n", "PROSE_REVIEW_PATHS"),
+    ],
+)
+def test_empty_scope_key_does_not_promise_a_continued_run(
+    tmp_path: Path, cfg: str, key: str
+) -> None:
+    """Находка 2 из steward#176 (прислал atp-platform): на пустом значении
+    печаталось «фильтр не применяется», а следом прогон падал кодом 2. Фраза
+    была ложной по обеим осям — прогон не продолжается и уж тем более не
+    продолжается «без фильтра». Следствие для битого ключа теперь задаёт
+    вызывающий, как давно задаёт для ненайденного."""
+    remote, repo = make_repo(tmp_path)
+    _write_scope_config(remote, cfg)
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", "work", "origin/master")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "code")
+    stub = make_stub(tmp_path, "exit 0")
+    res = run_local(repo, stub, "--fetch")
+    assert res.returncode == 2, res.stdout + res.stderr
+    both = res.stdout + res.stderr
+    assert key in both
+    assert "пустое значение" in both
+    assert "фильтр не применяется" not in both
+
+
 def test_read_scope_key_undefined_message_is_owned_by_the_caller(
     tmp_path: Path,
 ) -> None:
@@ -3209,6 +3304,6 @@ def test_read_scope_key_undefined_message_is_owned_by_the_caller(
         env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
     )
     assert res.returncode == 0, res.stderr
-    assert "docs/note.md" not in dump.read_text()
+    assert "+++ b/docs/note.md" not in dump.read_text()
     assert "используется умолчание" in res.stdout
     assert "фильтр не применяется" not in res.stdout

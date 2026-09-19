@@ -1043,11 +1043,35 @@ PR и осознанно не закрыто; список полон, друг�
   копий CI-чекером и drift-вахтой — вопрос волн devtools, отмечен в
   `review-kit-next-wave`.
 
-- [ ] Волна ре-вендора среза B обходит `arbiter` и `atp-platform`, пока те не
+- [x] Волна ре-вендора среза B обходит `arbiter` и `atp-platform`, пока те не
       подтянут кит к текущему релизу @owner:github:andrei-shtanakov
-      @blocked_by:arbiter#107 @id:review-scope-wave-arbiter
-- [ ] То же по `atp-platform` @owner:github:andrei-shtanakov
-      @blocked_by:atp-platform#326 @id:review-scope-wave-atp-platform
+      @id:review-scope-wave-arbiter — закрыт 2026-09-19: оба догнались сами
+      по нашим inbox-запросам (arbiter#107, atp-platform#326 — оба CLOSED),
+      `prose-paths.env` и переходная строка инвентаря есть в дефолтных ветках
+      обоих. Их догоняющие PR прошли своим ревью-контуром и вернули четыре
+      находки в кит — steward#173…#176 ниже.
+- [x] То же по `atp-platform` @owner:github:andrei-shtanakov
+      @id:review-scope-wave-atp-platform — см. строку выше, один факт.
+- [x] Приём входящих по срезу B: `checksum.sh` — шапка инвентаря утверждала
+      «переходных членов нет» на три строки выше абзаца, вводящего
+      `?prose-paths.env`, и заодно заявляла охват «все 22 копии», из которого
+      сама же волна вывела исключения @owner:github:andrei-shtanakov
+      @id:checksum-inventory-header-contradiction — приём steward#173 (from
+      arbiter) и steward#174 (from atp-platform), одна находка двумя каналами.
+- [x] `local.sh`: режимы-запросы (`--print-review-cmd`, `--fingerprint-only`,
+      опечатка во флаге) стирали sidecar-артефакты предыдущего прогона, ни
+      разу не вызвав ревьюера @owner:github:andrei-shtanakov
+      @id:local-sh-query-modes-invalidate-sidecars — приём steward#175 (from
+      arbiter). Решение владельца кита: инвариант «файл есть = результат
+      ИМЕННО этого прогона» этого не требует — сброс перенесён за разбор
+      аргументов и ранние выходы, валидация ФОРМЫ осталась в префлайте.
+- [x] `local.sh` среза B: частичное усечение дифа фильтром нигде не
+      объявлялось (ни оператору, ни модели), а пустое значение ключа в
+      `review-scope.env` печатало «фильтр не применяется» и тут же роняло
+      прогон кодом 2 @owner:github:andrei-shtanakov
+      @id:review-kit-scope-filter-followups — приём steward#176 (from
+      atp-platform); третья находка того же issue — та же, что в
+      `local-sh-query-modes-invalidate-sidecars`.
 - [ ] Перевод строки В ИМЕНИ файла ломает разбор фильтра области ревью:
       `git diff -z` отдаёт пути сырыми, но `tr '\0' '\n'` схлопывает
       разделитель записи с байтом внутри самого имени, и такой путь
