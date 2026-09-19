@@ -71,6 +71,13 @@ generated_list=""
 # Тот же довод, что у generated-маркера ниже: опущение объявляется, а не
 # прячется (steward#176).
 withheld_list=""
+# Факт передачи флага хранится отдельно от значения — приём `--context`
+# (`context_given`) и по той же причине: `--withheld-list ""` иначе
+# неотличимо от «флага не было», проверки ниже пропускаются, и промпт
+# собирается без объявления, будучи уже урезанным. Для `--generated-list`
+# та же дыра безопасна (пустое значение = фильтр не применён = БОЛЬШЕ
+# ревью), здесь — нет: пустое значение означает «объявить нечем».
+withheld_given=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -91,7 +98,7 @@ while [ $# -gt 0 ]; do
             max_diff_files="$2"; shift 2 ;;
         --withheld-list)
             [ $# -ge 2 ] || { usage; exit 2; }
-            withheld_list="$2"; shift 2 ;;
+            withheld_list="$2"; withheld_given=1; shift 2 ;;
         --generated-list)
             [ $# -ge 2 ] || { usage; exit 2; }
             generated_list="$2"; shift 2 ;;
@@ -111,7 +118,8 @@ fi
 # успешно и будет выглядеть полным, а он неполон по построению: пути уже
 # вырезаны из дифа вызывающим. Тихо пропускать нельзя — это ровно тот класс,
 # против которого написан steward#176.
-if [ -n "$withheld_list" ]; then
+if [ "$withheld_given" -eq 1 ]; then
+    [ -n "$withheld_list" ] || { echo "--withheld-list передан с пустым значением" >&2; exit 2; }
     [ -f "$withheld_list" ] || { echo "нет файла withheld-списка: $withheld_list" >&2; exit 2; }
     [ -r "$withheld_list" ] || { echo "withheld-список нечитаем: $withheld_list" >&2; exit 2; }
 fi

@@ -669,12 +669,29 @@ def test_withheld_list_missing_file_is_config_error(tmp_path: Path) -> None:
     assert "withheld" in result.stderr
 
 
+def test_withheld_list_empty_value_is_config_error(tmp_path: Path) -> None:
+    """`--withheld-list ""` неотличимо от «флага не было», если смотреть
+    только на значение: проверки пропускаются, объявление не печатается, а
+    диф уже урезан вызывающим. Приём `--context` (`context_given`) —
+    отдельный признак передачи. Находка второго прохода ревью."""
+    prompt, diff = make(tmp_path, "И", "Д")
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "--prompt", str(prompt), "--diff", str(diff), "--withheld-list", ""],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "withheld" in result.stderr
+
+
 def test_withheld_list_unreadable_file_is_config_error(tmp_path: Path) -> None:
     """Существующий, но нечитаемый список — тот же отказ: `-s` на нём
     вернул бы false, и объявление молча исчезло бы."""
     prompt, diff = make(tmp_path, "И", "Д")
     lst = tmp_path / "withheld.lst"
     lst.write_text("docs/note.md\n", encoding="utf-8")
+    if not _chmod_000_actually_blocks_reads(lst):
+        pytest.skip("chmod 000 не блокирует чтение под текущим пользователем/FS")
     lst.chmod(0o000)
     try:
         result = subprocess.run(
