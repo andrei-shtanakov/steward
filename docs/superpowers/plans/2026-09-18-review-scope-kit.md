@@ -784,7 +784,8 @@ git switch -c chore/review-kit-inventory-scope
 cp ../steward/scripts/review/checksum.sh scripts/review/checksum.sh
 # в scripts/review/PIN заменить ТОЛЬКО строку checksum.sh:
 shasum -a 256 scripts/review/checksum.sh
-sh scripts/review/checksum.sh   # ожидается чисто: файла правила ещё нет,
+sh scripts/review/checksum.sh --pin scripts/review/PIN
+                                # ожидается чисто: файла правила ещё нет,
                                 # переходный член его отсутствие терпит
 ```
 
@@ -806,7 +807,7 @@ for f in scripts/review/*.sh scripts/review/harness-claude \
 done
 # вписать пересчитанные строки в scripts/review/PIN, обновить шапку
 # (SOURCE: steward @ <sha>), затем:
-sh scripts/review/checksum.sh   # ожидается чисто
+sh scripts/review/checksum.sh --pin scripts/review/PIN   # ожидается чисто
 ```
 
 - [ ] **Step 4: Проверить на этом репо живьём**

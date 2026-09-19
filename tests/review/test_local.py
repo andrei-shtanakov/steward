@@ -2485,6 +2485,75 @@ def test_path_with_glob_metachar_is_matched_literally(tmp_path: Path) -> None:
     assert "a[1].py" in dump.read_text()
 
 
+def test_dev_requirements_txt_is_code_override_not_prose(tmp_path: Path) -> None:
+    """Minor #2 приёмочного ревью steward#172 круг 2: старые шаблоны
+    `requirements*.txt`/`*/requirements*.txt` якорились на НАЧАЛО сегмента
+    и пропускали ходовые имена вида `dev-requirements.txt` — те проваливались
+    в PROSE по `*.txt`, и бамп пинов уходил без ревью. `*requirements*.txt`
+    (любая позиция внутри имени) обязан ловить префикс `dev-`/`test-`."""
+    _, repo = make_repo(tmp_path)
+    (repo / "dev-requirements.txt").write_text("pkg==2\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "bump dev pin")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
+    assert res.returncode == 0, res.stderr
+    assert "dev-requirements.txt" in dump.read_text()
+
+
+def test_newline_in_filename_fails_closed_next_to_regular_code(
+    tmp_path: Path,
+) -> None:
+    """Блокер круга 2 приёмочного ревью steward#172: `git diff -z` отдаёт
+    пути сырыми, но `tr '\\0' '\\n'` в разборе `changed-paths.z` стирает
+    разницу между разделителем записи и переводом строки ВНУТРИ самого
+    имени файла — такая запись распадается в цикле классификации на два
+    несуществующих пути. Прежний страж (`! -s diff.patch`) ловил только
+    вырожденную форму — когда разъехались ВСЕ пути диапазона; рядом с
+    обычным кодом он молчал, и повреждённый файл (с любым содержимым,
+    включая новый код) выпадал из-под ревью НИЖЕ прежнего уровня покрытия
+    (до фильтра области такой файл доходил до ревьюера целиком). Вход —
+    ровно этот случай: файл с переводом строки в имени РЯДОМ с обычным
+    кодом; счётчик NUL-байтов обязан поймать расхождение и отказать кодом
+    3, а не пропустить диапазон молча."""
+    _, repo = make_repo(tmp_path)
+    (repo / "we\nird.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "a.py").write_text("code = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "newline in filename plus regular code")
+    stub = make_stub(tmp_path, STUB_OK)
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
+    assert res.returncode == 3, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "перевод строки" in res.stderr
+
+
+def test_normal_range_still_passes_with_the_nul_count_guard_in_place(
+    tmp_path: Path,
+) -> None:
+    """Пара к тесту выше (обязательна по тому же вердикту): страж по
+    счётчику NUL не должен ложно срабатывать на обычных именах — только
+    когда счётчик реально расходится с числом разобранных путей."""
+    _, repo = make_repo(tmp_path)
+    (repo / "a.py").write_text("code = 1\n", encoding="utf-8")
+    (repo / "note.md").write_text("prose\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "regular files, no newline in any name")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(
+        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    )
+    assert res.returncode == 0, res.stderr
+    seen = dump.read_text()
+    assert "a.py" in seen
+    assert "note.md" not in seen
+
+
 # --- Фикс-раунд 2 (ревью Task 2): C-1, I-1, I-2, m-1, m-3 -------------------
 
 
