@@ -226,7 +226,7 @@ Sidecar-артефакты для eval (спека review-eval §7): `REVIEW_VER
 `devtools/contracts/review-scope/v1/prose-paths.env`, формат: `PROSE=`/
 `CODE_OVERRIDE=` — глобы через пробел, `CODE_OVERRIDE` сильнее `PROSE` и
 держит кодом при любом расширении пути вроде `.github/*`, `contracts/*`,
-`fixtures/*`, `schemas/*`, `requirements*.txt`, `constraints*.txt`). Забор
+`fixtures/*`, `schemas/*`, `*requirements*.txt`, `*constraints*.txt`). Забор
 ставится ПО ПРОЗЕ: код — всё, что в `PROSE` не перечислено, — обратная
 формулировка вывела бы из-под ревью классы файлов вроде
 `.github/workflows/*.yml`, где уже был живой дефект.
