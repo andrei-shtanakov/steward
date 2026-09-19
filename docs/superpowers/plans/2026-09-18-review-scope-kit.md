@@ -840,6 +840,23 @@ git push -u origin HEAD && gh pr create --fill
 это протухшая копия, а не задача волны. `arbiter` и `atp-platform` — сперва
 решение владельца (см. шапку задачи), в общий поток не брать.
 
+- [ ] **Step 5b: `spec-runner` — проверить прозрачность адаптера**
+
+У `spec-runner` есть собственный потребитель кита —
+`scripts/review/local-claude.sh:38`, прозрачный адаптер (`exec`, аргументы и код
+выхода проходят без изменения). Кода ему менять не надо, но в PR волны по этому
+репо проверить живьём, что прозрачность сохранилась:
+
+```bash
+cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators/spec-runner
+# прозаическая ветка: код 5 обязан пройти наружу через адаптер
+sh scripts/review/local-claude.sh --base master --head HEAD; echo "код: $?"
+# флаг обязан дойти до local.sh (ревьюер увидит полный диф)
+sh scripts/review/local-claude.sh --base master --head HEAD --include-prose
+```
+
+Expected: первый — код 5; второй — обычный прогон с прозой во входе.
+
 - [ ] **Step 6: Сверка волны**
 
 ```bash
@@ -855,6 +872,23 @@ done
 ```
 
 Expected: одинаковый хеш во всех репо, «НЕТ ФАЙЛА» ни одного.
+
+- [ ] **Step 7: Fleet-scan потребителей — обязательный шаг приёмки**
+
+Инвентарь потребителей кита (спека §1) обязан пересобираться, а не доверяться:
+именно неполный список стоил блокирующей находки на приёмке `#172`. Прогон
+детерминированный, модель не нужна:
+
+```bash
+cd /Users/Andrei_Shtanakov/labs/all_ai_orchestrators
+grep -rln "scripts/review/local\.sh\|REVIEW_KIT_DIR" \
+  --include="*.sh" --include="*.py" --include="*.yml" --include="*.yaml" \
+  --include="pre-push" . | grep -v "/scripts/review/" | sort
+```
+
+Каждое попадание сверить со списком §1 спеки. Новый потребитель — **стоп**:
+он интерпретирует коды выхода кита и обязан знать про 5, иначе волна сломает
+его молча. Список в спеке обновить тем же PR, что и находку.
 
 ---
 
