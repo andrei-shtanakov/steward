@@ -547,7 +547,10 @@ def test_run_case_artefacts_and_env(tmp_path: Path) -> None:
     assert "have:REVIEW_CMD" not in text
     assert "harness:claude model:claude-opus-5 effort:high" in text
     assert f"kit_dir:{kit.kit_dir} prompt:{kit.prompt} schema:{kit.schema}" in text
-    assert f"args:--base {first} --head {second} --format text --max-diff-bytes 900000" in text
+    assert (
+        f"args:--base {first} --head {second} --format text --include-prose "
+        "--max-diff-bytes 900000" in text
+    )
 
 
 def test_run_case_omits_effort_when_absent(tmp_path: Path) -> None:
@@ -867,6 +870,7 @@ def test_run_all_generated_run_id_is_stable(tmp_path: Path) -> None:
         ("--fingerprint-only",),
         ("--print-review-cmd",),
         ("--head=" + "c" * 40,),
+        ("--include-prose",),
     ],
     ids=[
         "head",
@@ -877,6 +881,7 @@ def test_run_all_generated_run_id_is_stable(tmp_path: Path) -> None:
         "fingerprint-only",
         "print-review-cmd",
         "head-with-equals",
+        "include-prose",
     ],
 )
 def test_run_case_refuses_range_overriding_local_args(
@@ -1057,6 +1062,7 @@ def test_kit_under_test_digests_match_real_files() -> None:
         "collect_context_sha256": kit.kit_dir / "collect-context.sh",
         "harness_claude_sha256": kit.kit_dir / "harness-claude",
         "build_prompt_sha256": kit.kit_dir / "build-prompt.sh",
+        "review_scope_rules_sha256": kit.kit_dir / "prose-paths.env",
     }
     assert set(kit.digests) == set(expected)
     for key, path in expected.items():
@@ -3455,6 +3461,9 @@ def _make_kit_tree(tmp_path: Path) -> Path:
         path = kit_dir / name
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
+    # Не исполняемый: настоящий `prose-paths.env` — данные (`KEY=VALUE`),
+    # парсится, а не выполняется (§ комментарий в самом файле).
+    (kit_dir / "prose-paths.env").write_text("PROSE=\nCODE_OVERRIDE=\n", encoding="utf-8")
     return root
 
 
@@ -3806,3 +3815,195 @@ def test_scrubbed_git_env_pins_the_message_locale_to_c(
 
     assert env["LC_ALL"] == "C"
     assert env["LANGUAGE"] == ""
+
+
+# --- D8: --include-prose всегда включён -------------------------------------
+#
+# Находка приёмочного ревью steward#172: раннер ставит `REVIEW_KIT_DIR` на
+# каталог кита и вычищает весь `REVIEW_*` из окружения, поэтому
+# `REVIEW_SCOPE_RULES` резолвится к настоящему `prose-paths.env` кита, и
+# фильтр области ревью включён по умолчанию — ровно как в бою. Ниже кит
+# настоящий (`kit_under_test(_steward_root())`, тот же чекаут steward, что и
+# `test_kit_under_test_digests_match_real_files`), подставной только сам
+# `claude`: воспроизводится форма `_claude_stand`/`CLAUDE_STUB` из
+# `tests/review/test_local.py`, но через `run_case`, а не прямым вызовом
+# `local.sh`.
+
+#: Подставной claude: argv — построчно в `$CLAUDE_STUB_ARGV`, промпт (stdin,
+#: то, что реально дошло до ревьюера) — в `$CLAUDE_STUB_PROMPT`, ответ —
+#: содержимое `$CLAUDE_STUB_ENVELOPE`.
+_CLAUDE_STUB = """#!/bin/sh
+printf '%s\\n' "$@" > "$CLAUDE_STUB_ARGV"
+cat > "$CLAUDE_STUB_PROMPT"
+cat "$CLAUDE_STUB_ENVELOPE"
+"""
+
+
+def _claude_stub_env(tmp_path: Path, structured: object) -> dict[str, str]:
+    """Окружение прогона со стабом `claude` первым в `PATH` (реальный кит,
+    подставной только ревьюер)."""
+    bin_dir = tmp_path / "claude-stub-bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "claude"
+    stub.write_text(_CLAUDE_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    envelope_file = tmp_path / "envelope.json"
+    envelope_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "structured_output": structured,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "CLAUDE_STUB_ARGV": str(tmp_path / "argv.txt"),
+        "CLAUDE_STUB_PROMPT": str(tmp_path / "prompt.txt"),
+        "CLAUDE_STUB_ENVELOPE": str(envelope_file),
+    }
+
+
+def _make_git_repo(tmp_path: Path, name: str) -> Path:
+    repo = tmp_path / name
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    return repo
+
+
+def test_run_case_with_the_real_kit_reviews_a_docs_only_range(tmp_path: Path) -> None:
+    """Регрессия 1 (D8): docs-only диапазон зовёт ревьюера, а не код 5.
+
+    Прежде принудительного `--include-prose` такой диапазон фильтровался
+    целиком как проза, настоящий `local.sh` выходил кодом 5 без sidecar, и
+    `classify` читал это как `mechanical_failure` (кейс
+    `andrei-shtanakov.steward-130`, steward#172) — `unexpected=True` навсегда,
+    хотя это просто исход, для которого корпус не заводит `expected_outcome`.
+    """
+    repo = _make_git_repo(tmp_path, "docs-only-repo")
+    (repo / "a.py").write_text("print('base')\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _rev_parse(repo, "HEAD")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("заметка, не код\n", encoding="utf-8")
+    _git(repo, "add", "docs/note.md")
+    _git(repo, "commit", "-q", "-m", "docs only")
+    head = _rev_parse(repo, "HEAD")
+    cache_root = _make_cache(tmp_path, repo, [base, head])
+    kit = kit_under_test(_steward_root())
+
+    result = run_case(
+        _make_case(base_sha=base, head_sha=head, case_id="steward-docs-only"),
+        Variant("claude", "claude-opus-5", None),
+        1,
+        kit=kit,
+        cache_root=cache_root,
+        out_dir=tmp_path / "run",
+        env_base=_claude_stub_env(tmp_path, {"findings": [], "note": "docs seen"}),
+    )
+
+    assert result.outcome == "verdict"
+    assert result.reviewer_ran is True
+    assert result.exit_code == 0
+    prompt = (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+    assert "docs/note.md" in prompt
+
+
+def test_run_case_with_the_real_kit_sends_prose_paths_to_the_reviewer_in_a_mixed_range(
+    tmp_path: Path,
+) -> None:
+    """Регрессия 2 (D8): в смешанном диапазоне `docs/**/*.md` реально уходит
+    модели — проверяется по тому, что дошло до ревьюера (stdin claude), а не
+    по коду возврата.
+
+    Прежде смешанный диапазон отдавал только кодовую часть: gold-дефекты в
+    `docs/superpowers/specs/*.md` (кейс `andrei-shtanakov.steward-162`,
+    steward#172) были недостижимы, а исход `verdict` без находок выглядел
+    нормальным прогоном — нулевая полнота молча списывалась на модель.
+    """
+    repo = _make_git_repo(tmp_path, "mixed-repo")
+    (repo / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "spec.md").write_text("исходная спека\n", encoding="utf-8")
+    _git(repo, "add", "a.py", "docs/spec.md")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _rev_parse(repo, "HEAD")
+    (repo / "a.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+    (repo / "docs" / "spec.md").write_text(
+        "исходная спека\nмаркер-прозы-D8-9f3c1a\n", encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "mixed change")
+    head = _rev_parse(repo, "HEAD")
+    cache_root = _make_cache(tmp_path, repo, [base, head])
+    kit = kit_under_test(_steward_root())
+
+    result = run_case(
+        _make_case(base_sha=base, head_sha=head, case_id="steward-mixed"),
+        Variant("claude", "claude-opus-5", None),
+        1,
+        kit=kit,
+        cache_root=cache_root,
+        out_dir=tmp_path / "run",
+        env_base=_claude_stub_env(tmp_path, {"findings": [], "note": "mixed seen"}),
+    )
+
+    assert result.outcome == "verdict"
+    prompt = (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+    # Кодовая часть уходила и раньше — характеристика теста в том, что
+    # прозаическая часть тоже дошла.
+    assert "a.py" in prompt
+    assert "маркер-прозы-D8-9f3c1a" in prompt
+
+
+def test_run_case_always_appends_include_prose_to_the_kit_call(tmp_path: Path) -> None:
+    """`run_case` дописывает `--include-prose` сам — не через окружение, не
+    через `local_args` кейса (D8, п.1)."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+    record = tmp_path / "record.txt"
+
+    run_case(
+        _make_case(base_sha=first, head_sha=second),
+        Variant("codex", "gpt-5.4", None),
+        1,
+        kit=kit,
+        cache_root=cache_root,
+        out_dir=tmp_path / "run",
+        env_base=_env_base(record, STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT),
+    )
+
+    text = record.read_text(encoding="utf-8")
+    assert "--include-prose" in text
+    assert "have:REVIEW_INCLUDE_PROSE" not in text
+
+
+def test_run_all_writes_review_scope_mode_and_rules_digest_into_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """`run.json` несёт провенанс режима области ревью (D8, п.4/5)."""
+    repo, first, second = _make_fixture_repo(tmp_path)
+    cache_root = _make_cache(tmp_path, repo, [first, second])
+    kit = _make_stub_kit(tmp_path)
+
+    manifest = run_all(
+        [_make_case(base_sha=first, head_sha=second)],
+        [Variant("claude", "claude-opus-5", None)],
+        repetitions=1,
+        out_dir=tmp_path / "run",
+        kit=kit,
+        cache_root=cache_root,
+        env_base=_env_base(tmp_path / "record.txt", STUB_EXIT="0", STUB_VERDICT_BODY=VALID_VERDICT),
+    )
+
+    assert manifest.review_scope_mode == "include_prose"
+    payload = json.loads((tmp_path / "run" / "run.json").read_text(encoding="utf-8"))
+    assert payload["review_scope_mode"] == "include_prose"

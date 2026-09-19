@@ -25,6 +25,12 @@
    (`invalid_verdict`), а не конфигурации.
 7. **Стоимость (D6).** `cost_status: available` только если usage-sidecar
    есть и несёт числовой `total_cost_usd`; нулём стоимость не подставляется.
+8. **Область ревью (D8).** Раннер измеряет reviewer core на **полном дифе**
+   кейса, не боевую политику области: каждый вызов кита несёт `--include-prose`
+   аргументом (не окружением, не `local_args` кейса), кейсу запрещено
+   передавать этот флаг сам, а `run.json` называет режим (`review_scope_mode`)
+   и дайджест пиненого правила (`kit.review_scope_rules_sha256`) как факт об
+   измерительном приборе.
 
 Сети раннер не касается никогда (сетевой контракт §5/D12): объектов нет в
 кэше → `RunnerError`, а не `git fetch`. Пишет только внутрь `out_dir`
@@ -63,6 +69,7 @@ __all__ = [
     "RunnerError",
     "Variant",
     "EMPTY_RANGE_OUTCOME",
+    "REVIEW_SCOPE_MODE",
     "classify",
     "kit_under_test",
     "load_results",
@@ -168,8 +175,13 @@ _SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("REVIEW_", "GIT_")
 #: поэтому дописанный после раннера `--head C` увёл бы измерение на чужой
 #: диапазон, оставив gold прежним; `--format`/`--fingerprint-only`/
 #: `--print-review-cmd` меняют режим вывода (исход стал бы неклассифицируемым), а
-#: `--fetch`/`--remote` тянули бы сеть в офлайн-прогон. Схема корпуса такие
-#: `local_args` не пропускает — это вторая линия обороны для `Case`, собранных в коде.
+#: `--fetch`/`--remote` тянули бы сеть в офлайн-прогон. `--include-prose`
+#: запрещён по другой причине (D8): раннер уже дописывает его сам к каждому
+#: вызову, и кейс не вправе управлять измерительной поверхностью — второй
+#: `--include-prose` от кейса безвреден для `local.sh` (флаг идемпотентен), но
+#: разрешать его значило бы объявлять область ревью решением автора корпуса,
+#: а не раннера. Схема корпуса такие `local_args` не пропускает — это вторая
+#: линия обороны для `Case`, собранных в коде.
 _FORBIDDEN_LOCAL_ARG_PREFIXES: tuple[str, ...] = (
     "--base",
     "--head",
@@ -178,19 +190,39 @@ _FORBIDDEN_LOCAL_ARG_PREFIXES: tuple[str, ...] = (
     "--remote",
     "--fingerprint-only",
     "--print-review-cmd",
+    "--include-prose",
 )
+
+#: `review-eval` — третий потребитель кита, но не боевой канал: он измеряет
+#: **reviewer core** (модель + промпт + схема + порог + харнесс) на **полном
+#: дифе кейса**, а не боевую политику области ревью (D8 дизайна,
+#: `docs/superpowers/specs/2026-09-18-review-scope-kit-design.md`). Поэтому
+#: `run_case` всегда дописывает `--include-prose` к вызову кита — не через
+#: `REVIEW_INCLUDE_PROSE` (вычищается `_SCRUBBED_ENV_PREFIXES`) и не через
+#: `case.local_args` (запрещён выше): это факт о раннере, а не о кейсе или
+#: окружении. Значение пишется в `run.json` как `review_scope_mode` — то же
+#: слово, что и константа здесь, чтобы поле манифеста не разошлось с
+#: поведением кода.
+REVIEW_SCOPE_MODE = "include_prose"
 
 _RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
 
 #: Файлы кита, чьи дайджесты идут в `run.json` (§10): всё, что влияет на
 #: поведение ревьюера, — промпт, схема, порог, оркестратор, сбор контекста,
-#: сборка промпта, claude-адаптер.
+#: сборка промпта, claude-адаптер. `prose-paths.env` — пиненое правило области
+#: ревью — идёт туда же наравне с остальными членами кита (D8, п.5): это не
+#: противоречит отпечатку (D6) — отпечаток называет семантическую идентичность
+#: **фактического входа модели**, а `run.json` — полный provenance
+#: измерительного прибора. `--include-prose` делает правило не действующим на
+#: вход, но дайджест по-прежнему фиксирует, какой именно кит (со всеми его
+#: членами) находился под измерением.
 _KIT_FILES: tuple[tuple[str, str], ...] = (
     ("threshold_sha256", "apply-threshold.sh"),
     ("local_sh_sha256", "local.sh"),
     ("collect_context_sha256", "collect-context.sh"),
     ("harness_claude_sha256", "harness-claude"),
     ("build_prompt_sha256", "build-prompt.sh"),
+    ("review_scope_rules_sha256", "prose-paths.env"),
 )
 
 _TOOL_TIMEOUT_S = 30.0
@@ -575,6 +607,13 @@ def run_case(
         case.head_sha,
         "--format",
         "text",
+        # D8: раннер измеряет reviewer core на полном дифе кейса, а не боевую
+        # политику области ревью — флаг идёт аргументом вызова, не через
+        # окружение (`REVIEW_INCLUDE_PROSE` вычищен `_run_env`, как и весь
+        # `REVIEW_*`) и не через `local_args` кейса (запрещён
+        # `_require_safe_local_args`), потому что это решение раннера, а не
+        # кейса.
+        "--include-prose",
         *case.local_args,
     ]
 
@@ -742,6 +781,13 @@ class RunManifest:
     #: нельзя переоценивать по другому — а разметку (включая `class`) менять
     #: можно.
     case_digests: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: Провенанс режима области ревью (D8): всегда `REVIEW_SCOPE_MODE`
+    #: (`"include_prose"`), потому что `run_case` всегда дописывает
+    #: `--include-prose`. Не сравнивается в `_provenance_drift` отдельно — это
+    #: константа кода, а не факт окружения или кита, и дайджест самого
+    #: пиненого правила (`kit.review_scope_rules_sha256`) уже участвует в
+    #: сверке кита как обычный член `_KIT_FILES`.
+    review_scope_mode: str = REVIEW_SCOPE_MODE
 
 
 def provider_env_names(env: Mapping[str, str]) -> list[str]:
@@ -1050,6 +1096,7 @@ def run_all(
         "provider_env_fingerprint": env_fingerprint,
         "git_config_digests": merged_configs,
         "case_digests": merged_cases,
+        "review_scope_mode": REVIEW_SCOPE_MODE,
     }
     _write_json(out_dir / "run.json", payload)
 
