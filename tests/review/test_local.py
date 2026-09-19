@@ -3276,6 +3276,55 @@ def test_empty_scope_key_does_not_promise_a_continued_run(
     assert "фильтр не применяется" not in both
 
 
+def test_half_updated_kit_turns_the_scope_filter_off_entirely(
+    tmp_path: Path,
+) -> None:
+    """Перекос версий копий кита — объявленный штатный режим раскатки, и
+    именно в нём фильтр раньше оставался ВКЛЮЧЁННЫМ: проза вырезалась из
+    дифа, объявить её старый `build-prompt.sh` не умел, оператору печаталось
+    предупреждение (которого в прогоне pre-push никто не читает), чистый
+    вердикт проходил порог кодом 0. То есть ровно дефект steward#176, только
+    тише. Теперь неспособность объявить выключает фильтр целиком: модель
+    видит полный диф, включая прозу.
+
+    Находка приёмочного ревью этой же ветки: прежний тест полуобновлённого
+    кита не включал реального правила области, поэтому эту комбинацию не
+    проверял вовсе."""
+    _, local = make_repo(tmp_path)
+    (local / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    (local / "docs").mkdir(exist_ok=True)
+    (local / "docs" / "note.md").write_text("проза\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "смешанный диапазон")
+
+    kit = tmp_path / "half-kit"
+    kit.mkdir()
+    for name in ("local.sh", "apply-threshold.sh", "collect-context.sh"):
+        src = ROOT / "scripts" / "review" / name
+        if src.exists():
+            shutil.copy(src, kit / name)
+    (kit / "build-prompt.sh").write_text(OLD_BUILD_PROMPT, encoding="utf-8")
+
+    dump = tmp_path / "prompt-seen.txt"
+    res = run_local(
+        local,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        env_overrides={
+            "REVIEW_KIT_DIR": str(kit),
+            "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
+        },
+    )
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "фильтр области выключен целиком" in res.stdout
+    seen = dump.read_text()
+    assert "+++ b/tool.py" in seen
+    # Главное утверждение: проза НЕ спрятана — раз объявить её нечем,
+    # она ревьюируется как обычный путь.
+    assert "+++ b/docs/note.md" in seen
+    assert "удержано" not in res.stdout
+
+
 def test_read_scope_key_undefined_message_is_owned_by_the_caller(
     tmp_path: Path,
 ) -> None:
