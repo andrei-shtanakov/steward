@@ -2291,9 +2291,7 @@ def test_prose_only_range_exits_five_without_calling_reviewer(
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "prose only")
     stub = make_stub(tmp_path, "echo REVIEWER_WAS_CALLED >&2; exit 0")
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 5, res.stderr
     assert "REVIEWER_WAS_CALLED" not in res.stderr
     # info() пишет в stdout вне fp-режима (см. test_empty_diff_is_green_…
@@ -2312,9 +2310,7 @@ def test_empty_range_still_exits_zero(tmp_path: Path) -> None:
     """
     _, repo = make_repo(tmp_path)
     stub = make_stub(tmp_path, "exit 0")
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 0, res.stderr
     assert "диф пуст" in res.stdout
 
@@ -2329,9 +2325,7 @@ def test_mixed_range_sends_only_code_to_the_model(tmp_path: Path) -> None:
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
     assert (
-        run_local(
-            repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-        ).returncode
+        run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}).returncode
         == 0
     )
     seen = dump.read_text()
@@ -2357,9 +2351,7 @@ def test_code_only_range_diff_is_unchanged(tmp_path: Path) -> None:
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
     assert (
-        run_local(
-            repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-        ).returncode
+        run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}).returncode
         == 0
     )
     assert "tool.py" in dump.read_text()
@@ -2387,14 +2379,17 @@ def test_include_prose_flag_disables_the_filter(tmp_path: Path) -> None:
         == 0
     )
     assert "docs/note.md" in dump.read_text()
-    assert run_local(
-        repo,
-        stub,
-        env_overrides={
-            "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
-            "REVIEW_INCLUDE_PROSE": "1",
-        },
-    ).returncode == 0
+    assert (
+        run_local(
+            repo,
+            stub,
+            env_overrides={
+                "REVIEW_SCOPE_RULES": REAL_SCOPE_RULES,
+                "REVIEW_INCLUDE_PROSE": "1",
+            },
+        ).returncode
+        == 0
+    )
 
 
 def test_missing_rule_file_means_full_diff(tmp_path: Path) -> None:
@@ -2406,9 +2401,7 @@ def test_missing_rule_file_means_full_diff(tmp_path: Path) -> None:
     git(repo, "commit", "-m", "prose only")
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(tmp_path / "nope.env")}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(tmp_path / "nope.env")})
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" in dump.read_text()
     assert "правило области ревью" in res.stdout
@@ -2477,9 +2470,7 @@ def test_path_with_glob_metachar_is_matched_literally(tmp_path: Path) -> None:
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
     assert (
-        run_local(
-            repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-        ).returncode
+        run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}).returncode
         == 0
     )
     assert "a[1].py" in dump.read_text()
@@ -2497,9 +2488,7 @@ def test_dev_requirements_txt_is_code_override_not_prose(tmp_path: Path) -> None
     git(repo, "commit", "-m", "bump dev pin")
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 0, res.stderr
     assert "dev-requirements.txt" in dump.read_text()
 
@@ -2525,9 +2514,7 @@ def test_newline_in_filename_fails_closed_next_to_regular_code(
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "newline in filename plus regular code")
     stub = make_stub(tmp_path, STUB_OK)
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 3, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "перевод строки" in res.stderr
 
@@ -2545,9 +2532,7 @@ def test_normal_range_still_passes_with_the_nul_count_guard_in_place(
     git(repo, "commit", "-m", "regular files, no newline in any name")
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "a.py" in seen
@@ -2625,9 +2610,7 @@ def test_fingerprint_matches_between_root_and_subdirectory_run(
     git(repo, "commit", "-m", "code in subdir")
 
     fp_root = harness_fp(repo, {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
-    fp_subdir = harness_fp(
-        repo, {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}, cwd=repo / "sub"
-    )
+    fp_subdir = harness_fp(repo, {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}, cwd=repo / "sub")
     assert fp_root == fp_subdir
 
 
@@ -2702,9 +2685,7 @@ def test_rule_without_code_override_is_invalid_and_disables_the_filter(
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(truncated_rule)}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(truncated_rule)})
     assert res.returncode == 0, res.stderr
     assert "requirements.txt" in dump.read_text()
     assert "CODE_OVERRIDE" in res.stdout
@@ -2722,9 +2703,7 @@ def test_rule_with_duplicate_key_is_invalid_and_disables_the_filter(
     git(repo, "commit", "-m", "bump pin")
 
     dup_rule = tmp_path / "dup.env"
-    dup_rule.write_text(
-        "PROSE=*.md\nPROSE=*.txt\nCODE_OVERRIDE=contracts/*\n", encoding="utf-8"
-    )
+    dup_rule.write_text("PROSE=*.md\nPROSE=*.txt\nCODE_OVERRIDE=contracts/*\n", encoding="utf-8")
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
@@ -2752,9 +2731,7 @@ def test_rule_with_empty_prose_value_is_invalid_and_disables_the_filter(
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(empty_rule)}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(empty_rule)})
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" in dump.read_text()
     assert "пустое значение" in res.stdout
@@ -2776,9 +2753,7 @@ def test_rule_without_prose_is_invalid_and_disables_the_filter(
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(truncated_rule)}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(truncated_rule)})
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" in dump.read_text()
     assert "PROSE" in res.stdout
@@ -2826,9 +2801,7 @@ def test_rule_with_empty_code_override_value_is_invalid_and_disables_the_filter(
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(empty_rule)}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(empty_rule)})
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" in dump.read_text()
     assert "пустое значение" in res.stdout
@@ -2910,9 +2883,7 @@ def test_scope_rules_pointing_at_a_directory_is_treated_as_unreadable(
 
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(a_directory)}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": str(a_directory)})
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" in dump.read_text()
 
@@ -2952,9 +2923,7 @@ def test_prose_review_paths_returns_named_prose_to_the_model(
     tmp_path: Path,
 ) -> None:
     remote, repo = make_repo(tmp_path)
-    _write_scope_config(
-        remote, "PROSE_REVIEW=paths\nPROSE_REVIEW_PATHS=authored/*\n"
-    )
+    _write_scope_config(remote, "PROSE_REVIEW=paths\nPROSE_REVIEW_PATHS=authored/*\n")
     # `work` обязана ВЕТВИТЬСЯ от уже подтянутого `origin/master` (после
     # `fetch`), не от старого локального `master`: иначе merge-base между
     # `origin/master` и `work` — общий предок ДО коммита конфига, а не он
@@ -3046,9 +3015,7 @@ def test_duplicate_prose_review_paths_key_is_a_named_config_error(
     remote, repo = make_repo(tmp_path)
     _write_scope_config(
         remote,
-        "PROSE_REVIEW=paths\n"
-        "PROSE_REVIEW_PATHS=authored/*\n"
-        "PROSE_REVIEW_PATHS=docs/*\n",
+        "PROSE_REVIEW=paths\nPROSE_REVIEW_PATHS=authored/*\nPROSE_REVIEW_PATHS=docs/*\n",
     )
     git(repo, "fetch", "-q", "origin")
     git(repo, "checkout", "-qb", "work", "origin/master")
@@ -3075,9 +3042,7 @@ def test_config_from_head_does_not_apply_to_its_own_pr(
     git(repo, "commit", "-m", "prose + config")
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 0, res.stderr
     assert "docs/note.md" not in dump.read_text()
 
@@ -3103,9 +3068,7 @@ def test_quoted_filename_is_not_dropped_from_the_diff(tmp_path: Path) -> None:
     git(repo, "commit", "-m", "quoted name + prose")
     dump = tmp_path / "prompt-seen.txt"
     stub = make_stub(tmp_path, _capturing_stub(dump))
-    res = run_local(
-        repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    )
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
     assert res.returncode == 0, res.stderr
     seen = dump.read_text()
     assert "SECRET" in seen
@@ -3137,7 +3100,7 @@ def test_broken_pathspec_after_filter_is_a_mechanical_failure_not_zero(
         "#!/bin/sh\n"
         'for a in "$@"; do\n'
         '    case "$a" in\n'
-        '        :\\(top,literal\\)*)\n'
+        "        :\\(top,literal\\)*)\n"
         f"            exec {real_git} diff --quiet\n"
         "            ;;\n"
         "    esac\n"
@@ -3200,9 +3163,7 @@ def test_prose_review_off_with_leftover_paths_is_still_fully_filtered(
     конфиг обратно в `off`, платил за круг модели, которого README
     (написанный в этой же ветке) обещает не платить."""
     remote, repo = make_repo(tmp_path)
-    _write_scope_config(
-        remote, "PROSE_REVIEW=off\nPROSE_REVIEW_PATHS=authored/*\n"
-    )
+    _write_scope_config(remote, "PROSE_REVIEW=off\nPROSE_REVIEW_PATHS=authored/*\n")
     git(repo, "fetch", "-q", "origin")
     git(repo, "checkout", "-qb", "work", "origin/master")
     (repo / "authored").mkdir(exist_ok=True)
