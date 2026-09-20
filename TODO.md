@@ -1096,11 +1096,29 @@ PR и осознанно не закрыто; список полон, друг�
       имён (пропустить их через ревью, а не отказывать) требует другого
       приёма разбора NUL, например `read -d ''` (bash), которого в POSIX sh
       нет @owner:github:andrei-shtanakov @id:review-scope-newline-in-path
-- [ ] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT
+- [x] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT
       `devtools/contracts/review-scope/v1/prose-paths.env` по расписанию, как
       `impresario-contract-drift.yml`. Copy-integrity у копии уже есть
       (инвентарь checksum.sh), расхождения с SSOT не заметит ничто
-      @owner:github:andrei-shtanakov @id:review-scope-upstream-drift
+      @owner:github:andrei-shtanakov @id:review-scope-upstream-drift —
+      `.github/workflows/review-scope-drift.yml`, 2026-09-19. Вахта нашла
+      предмет сразу же, и это НЕ просто «апстрим уехал»: копия была
+      ОТРЕДАКТИРОВАНА НА МЕСТЕ — то, что её собственная шапка запрещает
+      («Правка — только ре-вендором, не на месте»). При заведении (`84ce30a`)
+      тело копии побайтно совпадало с SSOT на пине `f523d82`; коммит
+      `6a58c0a` (правка `*requirements*.txt` по кругу 2 ревью steward#172)
+      изменил её ЛОКАЛЬНО, а тот же по смыслу фикс независимо приехал в
+      devtools как `33bb8b1` с другой формулировкой. Поймать это было нечем.
+      Рабочие ключи (`PROSE`/`CODE_OVERRIDE`) при этом совпадают побайтно —
+      поведение сошлось, разошлась проза.
+- [ ] Ре-вендор `prose-paths.env` с devtools HEAD (`33bb8b1`) + бамп шапки
+      `# VENDORED:`; гасит обе находки вахты `review-scope-drift`
+      (несовпадение со своим пином и движение SSOT). Не срочно по поведению —
+      рабочие ключи совпадают, — но это возврат копии в дисциплину вендоринга,
+      из которой её вывели правкой на месте. Дешевле сделать прицепом к
+      следующей ПОВЕДЕНЧЕСКОЙ правке кита: отдельная волна по 22 репо ради
+      переформулировки комментария не окупается
+      @owner:github:andrei-shtanakov @id:review-scope-revendor-prose-paths
 
 - [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша; @owner:github:andrei-shtanakov @id:review-kit-diff-marker-hardening @epic:eco.codex-review-rollout
       осталось решить, нужен ли полноценный nonce
