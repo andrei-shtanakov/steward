@@ -2538,6 +2538,64 @@ def test_dev_requirements_txt_is_code_override_not_prose(tmp_path: Path) -> None
     assert "dev-requirements.txt" in dump.read_text()
 
 
+def test_agent_instructions_are_code_override_not_prose(tmp_path: Path) -> None:
+    """Приём steward#180 (from devtools#265 ← atp-platform#329): инструкция
+    агента — не проза, её правка меняет поведение исполнителя и самого
+    ревьюера. До этих восьми глобов ветка, трогающая только
+    `.claude/skills/*/SKILL.md` или корневой `CLAUDE.md`, попадала под
+    `PROSE=*.md` целиком и получала код 5 «всё отфильтровано» — вердикт не
+    выносился вовсе. `CLAUDE.md` опасен отдельно: authority-root его НЕ
+    накрывает, а в нём живут `merge_policy` и «Мерж: человек»."""
+    _, repo = make_repo(tmp_path)
+    for rel in (
+        ".claude/skills/review/SKILL.md",
+        ".agents/skills/plan.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "nested/CLAUDE.md",
+        "nested/AGENTS.md",
+    ):
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"инструкция агента: {rel}\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "инструкции агентов")
+    dump = tmp_path / "prompt-seen.txt"
+    stub = make_stub(tmp_path, _capturing_stub(dump))
+    res = run_local(repo, stub, env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES})
+    assert res.returncode == 0, res.stdout + res.stderr
+    seen = dump.read_text(encoding="utf-8")
+    for rel in (
+        ".claude/skills/review/SKILL.md",
+        ".agents/skills/plan.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "nested/CLAUDE.md",
+        "nested/AGENTS.md",
+    ):
+        assert f"+++ b/{rel}" in seen, rel
+
+
+def test_agent_instruction_lookalikes_stay_prose(tmp_path: Path) -> None:
+    """Якорь `*/CLAUDE.md` намеренно стоит на `/`-сегменте: иначе под платное
+    ревью уехала бы вся проза, лишь упоминающая агента в имени. Файл с
+    именем ВОКРУГ `CLAUDE.md`/`AGENTS.md` остаётся прозой — диапазон из одних
+    таких файлов даёт код 5, а не уходит модели."""
+    _, repo = make_repo(tmp_path)
+    for rel in ("CLAUDE-migration.md", "claude-notes.md", "AGENTS-old.md", "notes/myCLAUDE.md"):
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("проза про агентов\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "проза, похожая на инструкции")
+    res = run_local(
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),  # сломанный: вызов был бы виден
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    assert res.returncode == 5, res.stdout + res.stderr
+
+
 def test_newline_in_filename_fails_closed_next_to_regular_code(
     tmp_path: Path,
 ) -> None:
@@ -3356,3 +3414,203 @@ def test_read_scope_key_undefined_message_is_owned_by_the_caller(
     assert "+++ b/docs/note.md" not in dump.read_text()
     assert "используется умолчание" in res.stdout
     assert "фильтр не применяется" not in res.stdout
+
+
+# --- Граница доверия отдельно от диапазона дифа (steward#181 ← devtools#260)
+#
+# `--base` отвечал сразу на два вопроса — "что показать модели" и "откуда
+# читать входы, которым кит верит". Адресный recheck (ревью только
+# фикс-коммитов после красного вердикта) разводит их: сужающая база лежит НА
+# ВЕТКЕ PR. Тесты ниже проверяют обе половины: умолчание не сдвинулось, а с
+# `--trusted-base` каждый из трёх доверенных входов читается с влитой базы.
+
+
+def _branch_from_origin_master(repo: Path, name: str = "work") -> None:
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "checkout", "-qb", name, "origin/master")
+
+
+def _commit(repo: Path, message: str) -> str:
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_narrowed_base_alone_lets_the_branch_declare_its_own_code_generated(
+    tmp_path: Path,
+) -> None:
+    """Дефект, ради которого заведён флаг — зафиксирован как есть.
+
+    Сузить `--base` до прошлой отревьюированной головы значит увести вместе
+    с диапазоном и границу доверия внутрь PR: `.gitattributes` с
+    `*.py linguist-generated`, закоммиченный ДО этой головы, действует на
+    собственное же ревью — узкий диф состоит из одних маркеров опущения,
+    модель не видит ни строки, кит выходит нулём. Тест документирует
+    поведение БЕЗ `--trusted-base`; он же — контрольная точка того, что
+    умолчание флагом не тронуто."""
+    _, repo = make_repo(tmp_path)
+    _branch_from_origin_master(repo)
+    (repo / ".gitattributes").write_text("*.py linguist-generated\n", encoding="utf-8")
+    (repo / "gen.py").write_text("SECRET_HANDWRITTEN = 1\n", encoding="utf-8")
+    reviewed_head = _commit(repo, "объявить .py generated")
+
+    (repo / "gen.py").write_text("SECRET_HANDWRITTEN = 2\n", encoding="utf-8")
+    _commit(repo, "фикс-коммит после красного вердикта")
+
+    dump = tmp_path / "prompt-seen.txt"
+    res = run_local(repo, make_stub(tmp_path, _capturing_stub(dump)), "--base", reviewed_head)
+    assert res.returncode == 0, res.stdout + res.stderr
+    seen = dump.read_text(encoding="utf-8")
+    assert "generated-файл опущен из дифа: gen.py" in seen
+    assert "SECRET_HANDWRITTEN" not in seen
+
+
+def test_trusted_base_keeps_the_generated_declaration_on_the_merged_base(
+    tmp_path: Path,
+) -> None:
+    """Негативный контроль заявки: тот же прогон с `--trusted-base` на влитой
+    базе НЕ применяет декларацию, добавленную коммитом ветки PR, — иначе
+    граница только объявлена. Диапазон при этом остаётся суженным."""
+    _, repo = make_repo(tmp_path)
+    _branch_from_origin_master(repo)
+    (repo / ".gitattributes").write_text("*.py linguist-generated\n", encoding="utf-8")
+    (repo / "gen.py").write_text("SECRET_HANDWRITTEN = 1\n", encoding="utf-8")
+    reviewed_head = _commit(repo, "объявить .py generated")
+
+    (repo / "gen.py").write_text("SECRET_HANDWRITTEN = 2\n", encoding="utf-8")
+    _commit(repo, "фикс-коммит после красного вердикта")
+
+    dump = tmp_path / "prompt-seen.txt"
+    res = run_local(
+        repo,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        "--base",
+        reviewed_head,
+        "--trusted-base",
+        "origin/master",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    seen = dump.read_text(encoding="utf-8")
+    assert "SECRET_HANDWRITTEN = 2" in seen
+    assert "generated-файл опущен из дифа: gen.py" not in seen
+    # Диапазон обязан остаться узким: `.gitattributes` добавлен первым
+    # коммитом ветки, то есть ВНЕ суженного диапазона, — если он в дифе,
+    # флаг заодно расширил диапазон, чего у него полномочий нет.
+    assert "+++ b/.gitattributes" not in seen
+    assert "доверенная база:" in res.stdout
+
+
+def test_trusted_base_reads_curated_context_from_the_merged_base(
+    tmp_path: Path,
+) -> None:
+    """Второй доверенный вход: курируемый контекст подаётся модели как
+    авторитетные контракты. С суженным `--base` его содержимое уехало бы из
+    влитой базы внутрь ветки PR — автор диктовал бы своему ревьюеру правила
+    тем же патчем."""
+    remote, repo = make_repo(tmp_path)
+    (remote / ".github" / "codex").mkdir(parents=True)
+    (remote / ".github" / "codex" / "review-context.txt").write_text("rules.py\n", encoding="utf-8")
+    (remote / "rules.py").write_text("RULE_FROM_MERGED_BASE = 1\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "манифест и контекст во влитой базе")
+
+    _branch_from_origin_master(repo)
+    (repo / "rules.py").write_text("RULE_REWRITTEN_ON_BRANCH = 1\n", encoding="utf-8")
+    reviewed_head = _commit(repo, "переписать контекст на ветке")
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "фикс-коммит")
+
+    dump = tmp_path / "prompt-seen.txt"
+    res = run_local(
+        repo,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        "--base",
+        reviewed_head,
+        "--trusted-base",
+        "origin/master",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    seen = dump.read_text(encoding="utf-8")
+    assert "RULE_FROM_MERGED_BASE = 1" in seen
+    assert "RULE_REWRITTEN_ON_BRANCH" not in seen
+
+
+def test_trusted_base_reads_repo_scope_config_from_the_merged_base(
+    tmp_path: Path,
+) -> None:
+    """Третий доверенный вход: `.github/codex/review-scope.env`. Он и так
+    умеет только РАСШИРИТЬ ревью, поэтому дыры здесь нет — но читаться он
+    обязан с той же границы, что и два других, иначе "граница доверия"
+    перестаёт быть одним местом."""
+    _, repo = make_repo(tmp_path)
+    _branch_from_origin_master(repo)
+    cfg = repo / ".github" / "codex"
+    cfg.mkdir(parents=True)
+    (cfg / "review-scope.env").write_text("PROSE_REVIEW=all\n", encoding="utf-8")
+    reviewed_head = _commit(repo, "конфиг области на ветке")
+
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "note.md").write_text("проза\n", encoding="utf-8")
+    _commit(repo, "фикс-коммит: одна проза")
+
+    res = run_local(
+        repo,
+        make_stub(tmp_path, "exit 0"),
+        "--base",
+        reviewed_head,
+        "--trusted-base",
+        "origin/master",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES},
+    )
+    # Конфига во влитой базе нет — штатный `off`, фильтр работает: диапазон
+    # из одной прозы даёт код 5, а не approve по `PROSE_REVIEW=all` с ветки.
+    assert res.returncode == 5, res.stdout + res.stderr
+
+
+def test_trusted_base_defaults_to_base_byte_for_byte(tmp_path: Path) -> None:
+    """Умолчание не сдвинулось: отпечаток входа ревью с явным
+    `--trusted-base`, равным базе, совпадает с отпечатком без флага. Кит
+    вендорится в ~22 репо, и сдвиг умолчания инвалидировал бы наследование
+    вердиктов у всех сразу."""
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "код")
+    stub = make_stub(tmp_path, STUB_OK)
+    plain = run_local(repo, stub, "--fingerprint-only")
+    explicit = run_local(repo, stub, "--fingerprint-only", "--trusted-base", "origin/master")
+    assert plain.returncode == 0, plain.stderr
+    assert explicit.returncode == 0, explicit.stderr
+    assert plain.stdout.strip() == explicit.stdout.strip()
+    assert len(plain.stdout.strip()) == 64
+
+
+def test_empty_trusted_base_is_a_config_error(tmp_path: Path) -> None:
+    """Пустое значение — отказ, не "как будто не передавали": молчаливый
+    съезд на умолчание вернул бы границу внутрь PR именно у того
+    вызывающего, который её как раз выносил наружу."""
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "код")
+    res = run_local(repo, make_stub(tmp_path, "exit 0"), "--trusted-base", "")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "--trusted-base" in res.stderr
+
+
+def test_unresolvable_trusted_base_is_a_config_error(tmp_path: Path) -> None:
+    """Неразрешимая граница — код 2 с причиной, а не сырой код git и не
+    код 1 ("ревью нашло проблемы"): инвертированный сигнал хуже отказа."""
+    _, repo = make_repo(tmp_path)
+    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "код")
+    res = run_local(repo, make_stub(tmp_path, "exit 0"), "--trusted-base", "origin/nope")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "--trusted-base" in res.stderr
+
+
+def test_trusted_base_without_value_is_a_config_error(tmp_path: Path) -> None:
+    """Голый флаг в конце argv не должен сдвигать позиционные параметры мимо
+    края — тот же сторож, что у `--base`/`--max-diff-bytes`."""
+    _, repo = make_repo(tmp_path)
+    res = run_local(repo, make_stub(tmp_path, "exit 0"), "--trusted-base")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "usage" in res.stderr
