@@ -3500,6 +3500,53 @@ def test_trusted_base_keeps_the_generated_declaration_on_the_merged_base(
     assert "доверенная база:" in res.stdout
 
 
+def test_trusted_base_still_honours_a_declaration_removed_by_the_branch(
+    tmp_path: Path,
+) -> None:
+    """Обратное направление декларации, и оно не симметрично первому.
+
+    Находка терминального ревью ветки (major/high): вето снятой декларации
+    включается вопросом «правит ли PR `.gitattributes`», а тот гейтился по
+    `changed-paths.txt` — списку СУЖЕННОГО диапазона. Пока базы совпадали,
+    это был один отрезок; разведя их, тот же гейт поменял бы направление
+    отказа на противоположное — в сторону СОКРЫТИЯ. Влитая база объявляет
+    `dist/* linguist-generated`, ветка первым коммитом переводит `dist/` в
+    рукописный код и снимает декларацию, а адресный recheck по README
+    (`--base <голова круга 1> --trusted-base origin/master`) уже не видит
+    `.gitattributes` в диапазоне — снятая декларация продолжала бы
+    действовать, и фикс-коммиты по `dist/` вырезались бы из дифа маркером."""
+    remote, repo = make_repo(tmp_path)
+    (remote / ".gitattributes").write_text("dist/* linguist-generated\n", encoding="utf-8")
+    (remote / "dist").mkdir()
+    (remote / "dist" / "foo.js").write_text("// генерат\n", encoding="utf-8")
+    git(remote, "add", "-A")
+    git(remote, "commit", "-qm", "влитая декларация: dist/ — генерат")
+
+    _branch_from_origin_master(repo)
+    # Первый коммит ветки: dist/ становится рукописным, декларация снята.
+    (repo / ".gitattributes").write_text("", encoding="utf-8")
+    (repo / "dist" / "foo.js").write_text("HANDWRITTEN_NOW = 1\n", encoding="utf-8")
+    reviewed_head = _commit(repo, "dist/ теперь рукописный, декларация снята")
+
+    # Фикс-коммиты после красного вердикта: .gitattributes больше не трогаем.
+    (repo / "dist" / "foo.js").write_text("HANDWRITTEN_NOW = 2\n", encoding="utf-8")
+    _commit(repo, "фикс-коммит после красного вердикта")
+
+    dump = tmp_path / "prompt-seen.txt"
+    res = run_local(
+        repo,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        "--base",
+        reviewed_head,
+        "--trusted-base",
+        "origin/master",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    seen = dump.read_text(encoding="utf-8")
+    assert "HANDWRITTEN_NOW = 2" in seen
+    assert "generated-файл опущен из дифа: dist/foo.js" not in seen
+
+
 def test_trusted_base_reads_curated_context_from_the_merged_base(
     tmp_path: Path,
 ) -> None:

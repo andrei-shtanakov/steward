@@ -1256,18 +1256,48 @@ if git check-attr --source="$trusted_base" linguist-generated -- probe \
     # гейта на #99): добавление действует только ВЛИТЫМ — читается с
     # ВЕРХУШКИ доверенной базы (как BASE_SHA в CI), не из merge-base:
     # декларация, влитая в base после ответвления ветки, есть в merge-ref
-    # дереве CI, но
-    # её нет ни в mb, ни в голом head — пересечение по ним давало ложный
-    # отказ по потолку локально при зелёном CI (двенадцатый заход). Снятие
-    # действует СРАЗУ: head ветирует пересечением, но только когда PR
-    # вообще правит какой-нибудь `.gitattributes` — PR, не трогавший
+    # дереве CI, но её нет ни в mb, ни в голом head — пересечение по ним
+    # давало ложный отказ по потолку локально при зелёном CI (двенадцатый
+    # заход). Снятие действует СРАЗУ: head ветирует пересечением, но только
+    # когда PR вообще правит какой-нибудь `.gitattributes` — PR, не трогавший
     # деклараций, ничего не отзывал, и действует список базы один (так же
     # ведёт себя merge-ref дерево CI: `.gitattributes` базы в нём есть,
     # пока PR его не менял). Остаточный край: PR правит один
     # `.gitattributes`, а пост-форковая декларация живёт в другом — тогда
     # пересечение её уронит и файл останется в дифе: отказ в сторону ревью.
+    #
+    # "ПРАВИТ ЛИ PR `.gitattributes`" — вопрос про PR ЦЕЛИКОМ, то есть про
+    # отрезок `trusted_mb..head`, а НЕ про суженный диапазон дифа. Пока базы
+    # совпадали, это был один отрезок, и вето гейтилось по `changed-paths.txt`
+    # (диапазон). Разведя базы, тот же гейт поменял бы направление отказа на
+    # противоположное — в сторону СОКРЫТИЯ (находка терминального ревью этой
+    # ветки, major/high): влитая база объявляет `dist/* linguist-generated`,
+    # ветка первым коммитом переводит `dist/` в рукописный код и снимает
+    # декларацию, круг 1 краснеет; адресный recheck зовётся ровно как велит
+    # README (`--base <голова круга 1> --trusted-base origin/master`), и
+    # `.gitattributes` в суженный диапазон уже не попадает — вето не
+    # включается, снятая декларация продолжает действовать, и фикс-коммиты по
+    # `dist/` вырезаются из дифа маркером. Модель не видит ни строки, кит
+    # выходит нулём — тот же approve поверх request-changes, ради закрытия
+    # которого флаг и заведён, только через другую дверь.
+    #
+    # Отдельный `git diff` только при разведённых базах: при умолчании
+    # `$trusted_mb` == `$mb`, список тот же побайтно, и лишний вызов git был
+    # бы платой всего флота за ветку, нужную обвязке адресного recheck.
     collect_declared "$trusted_base" "$work/generated-base.txt"
-    if grep -Eq '(^|/)\.gitattributes$' "$work/changed-paths.txt"; then
+    if [ "$trusted_base_explicit" -eq 0 ]; then
+        gitattr_probe="$work/changed-paths.txt"
+    else
+        gitattr_probe="$work/trusted-changed-paths.txt"
+        if ! git -c core.quotePath=false diff --name-only \
+            "$trusted_mb..$head_sha" > "$gitattr_probe"; then
+            echo "не удалось перечислить пути отрезка" \
+                "$trusted_mb..$head_sha (git diff --name-only) —" \
+                "правит ли PR .gitattributes, установить нечем." >&2
+            exit 2
+        fi
+    fi
+    if grep -Eq '(^|/)\.gitattributes$' "$gitattr_probe"; then
         collect_declared "$head_sha" "$work/generated-head.txt"
         comm -12 "$work/generated-base.txt" "$work/generated-head.txt" \
             > "$work/generated-paths.txt"
