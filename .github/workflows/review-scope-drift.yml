@@ -56,11 +56,31 @@ jobs:
             # Кейс, который прежняя редакция НЕ ловила: апстрим удаляет свою
             # первую строку. Якорный поиск находил новую первую строку ниже в
             # копии и зеленел на настоящем дрейфе.
+            #
+            # КОММИТ обязателен, а не правка рабочего дерева: обе проверки
+            # читают git-ОБЪЕКТЫ (`git show <pin>:<path>`, `git diff <pin>
+            # HEAD`), и незакоммиченная правка для них не существует —
+            # синтетика прошла бы зелёной, ничего не проверив (находка
+            # приёмочного ревью; ложно-зелёная синтетика хуже её отсутствия).
             upstream-first-line)
-              sed -i '1d' ws/devtools/contracts/review-scope/v1/prose-paths.env ;;
-            # Валидный, но устаревший пин: тело обновлено, шапка врёт.
+              sed -i '1d' ws/devtools/contracts/review-scope/v1/prose-paths.env
+              git -C ws/devtools -c user.email=ci@local -c user.name=ci \
+                  commit -q -am "синтетика: удалить первую строку SSOT" ;;
+            # Валидный, но устаревший пин: тело копии не трогаем, а шапку
+            # переставляем на ДРУГОЙ коммит, менявший SSOT. Берётся первый в
+            # логе, ОТЛИЧНЫЙ от текущего пина, а не «второй по счёту»: вторым
+            # как раз и оказался текущий пин, и синтетика была no-op. Жёстко
+            # зашитый SHA до того был no-op по той же причине. Любой другой
+            # коммит, трогавший файл, по определению имеет другие байты.
             stale-pin)
-              sed -i '1s/@ [0-9a-f]*/@ f523d82/' ws/steward/scripts/review/prose-paths.env ;;
+              copy=ws/steward/scripts/review/prose-paths.env
+              cur=$(sed -n 's/^# VENDORED: devtools @ \([0-9a-f]\{7,40\}\).*/\1/p' "$copy" | head -1)
+              other=$(git -C ws/devtools log --format=%H \
+                        -- contracts/review-scope/v1/prose-paths.env \
+                      | grep -v "^${cur}" | head -1)
+              [ -n "$other" ] || { echo "нет другого коммита SSOT для синтетики"; exit 1; }
+              sed -i "1s/@ [0-9a-f]*/@ ${other}/" "$copy"
+              echo "синтетика stale-pin: $cur -> ${other}" ;;
           esac
 
       - name: compare vendored copy to devtools
