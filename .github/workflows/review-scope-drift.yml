@@ -66,21 +66,25 @@ jobs:
               sed -i '1d' ws/devtools/contracts/review-scope/v1/prose-paths.env
               git -C ws/devtools -c user.email=ci@local -c user.name=ci \
                   commit -q -am "синтетика: удалить первую строку SSOT" ;;
-            # Валидный, но устаревший пин: тело копии не трогаем, а шапку
-            # переставляем на ДРУГОЙ коммит, менявший SSOT. Берётся первый в
-            # логе, ОТЛИЧНЫЙ от текущего пина, а не «второй по счёту»: вторым
-            # как раз и оказался текущий пин, и синтетика была no-op. Жёстко
-            # зашитый SHA до того был no-op по той же причине. Любой другой
-            # коммит, трогавший файл, по определению имеет другие байты.
+            # Валидный, но устаревший пин: шапка называет коммит, на
+            # котором у SSOT ДРУГИЕ байты, чем в теле копии.
+            #
+            # Расхождение СОЗДАЁТСЯ, а не выискивается в истории. Две прежние
+            # редакции искали «подходящий» коммит и обе оказались no-op:
+            # сперва жёстко зашитый SHA (он же текущий пин), потом «второй в
+            # логе» (тоже он). Третья — «первый, отличный от пина» — отличала
+            # кандидата ПО SHA, хотя значение имеют БАЙТЫ: revert-коммит
+            # вернул бы то же содержимое, и синтетика снова стала бы
+            # пустышкой (три находки приёмочного ревью подряд, все про выбор
+            # по косвенному признаку вместо нужного свойства).
             stale-pin)
-              copy=ws/steward/scripts/review/prose-paths.env
-              cur=$(sed -n 's/^# VENDORED: devtools @ \([0-9a-f]\{7,40\}\).*/\1/p' "$copy" | head -1)
-              other=$(git -C ws/devtools log --format=%H \
-                        -- contracts/review-scope/v1/prose-paths.env \
-                      | grep -v "^${cur}" | head -1)
-              [ -n "$other" ] || { echo "нет другого коммита SSOT для синтетики"; exit 1; }
-              sed -i "1s/@ [0-9a-f]*/@ ${other}/" "$copy"
-              echo "синтетика stale-pin: $cur -> ${other}" ;;
+              printf '# синтетика: байт, которого нет в копии\n' \
+                >> ws/devtools/contracts/review-scope/v1/prose-paths.env
+              git -C ws/devtools -c user.email=ci@local -c user.name=ci \
+                  commit -q -am "синтетика: изменить SSOT под stale-pin"
+              q=$(git -C ws/devtools rev-parse HEAD)
+              sed -i "1s/@ [0-9a-f]*/@ ${q}/" ws/steward/scripts/review/prose-paths.env
+              echo "синтетика stale-pin: шапка -> ${q}; SSOT на нём заведомо != тела копии" ;;
           esac
 
       - name: compare vendored copy to devtools
