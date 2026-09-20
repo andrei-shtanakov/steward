@@ -1,0 +1,163 @@
+# Scheduled-НАБЛЮДЕНИЕ (guarantee B, two-contract-guarantees), НЕ PR-гейт:
+# workflow никогда не добавлять required-чеком. Copy-integrity (guarantee A)
+# у этой копии уже есть и живёт отдельно — инвентарь `scripts/review/checksum.sh`
+# и PIN потребителей; он доказывает «копия не тронута на месте», но про
+# движение SSOT не знает ничего. Эта вахта закрывает вторую половину.
+#
+# SSOT: devtools @ contracts/review-scope/v1/prose-paths.env.
+# Вендор-копия: scripts/review/prose-paths.env (член кита review-kit, поэтому
+# её правка стоит волны ре-вендора по флоту — решение о ре-вендоре за
+# владельцем steward, вахта его не принимает).
+#
+# Сравниваются БАЙТЫ поверхности, не коммиты: движение master devtools без
+# правки самого файла — честный clean. Локальная шапка `# VENDORED: ...`
+# у копии есть по построению, а у SSOT её нет — поэтому сравнение начинается
+# с первой строки SSOT, найденной в копии; отсутствие этой строки само по
+# себе находка, а не повод тихо сравнить не то.
+name: review-scope-drift
+
+on:
+  schedule:
+    - cron: "20 6 * * *" # ежедневно 06:20 UTC; фактический старт дрейфует на 40-70 мин (очередь GitHub)
+  workflow_dispatch:
+    inputs:
+      synthetic:
+        description: "Синтетический кейс: drift правит вендоренную копию в ephemeral-чекауте"
+        default: "none"
+        type: choice
+        options: ["none", "drift", "no-header", "upstream-first-line", "stale-pin"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-scope-drift
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ws/steward
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: andrei-shtanakov/devtools
+          path: ws/devtools
+          fetch-depth: 0        # нужен для проверки, что пин из шапки — реальный коммит
+
+      - name: synthetic non-clean (только ручной прогон)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.synthetic != 'none' }}
+        run: |
+          case "${{ inputs.synthetic }}" in
+            drift)     printf '# синтетический дрейф\n' >> ws/steward/scripts/review/prose-paths.env ;;
+            no-header) sed -i '/^# VENDORED:/d' ws/steward/scripts/review/prose-paths.env ;;
+            # Кейс, который прежняя редакция НЕ ловила: апстрим удаляет свою
+            # первую строку. Якорный поиск находил новую первую строку ниже в
+            # копии и зеленел на настоящем дрейфе.
+            #
+            # КОММИТ обязателен, а не правка рабочего дерева: обе проверки
+            # читают git-ОБЪЕКТЫ (`git show <pin>:<path>`, `git diff <pin>
+            # HEAD`), и незакоммиченная правка для них не существует —
+            # синтетика прошла бы зелёной, ничего не проверив (находка
+            # приёмочного ревью; ложно-зелёная синтетика хуже её отсутствия).
+            upstream-first-line)
+              sed -i '1d' ws/devtools/contracts/review-scope/v1/prose-paths.env
+              git -C ws/devtools -c user.email=ci@local -c user.name=ci \
+                  commit -q -am "синтетика: удалить первую строку SSOT" ;;
+            # Валидный, но устаревший пин: шапка называет коммит, на
+            # котором у SSOT ДРУГИЕ байты, чем в теле копии.
+            #
+            # Расхождение СОЗДАЁТСЯ, а не выискивается в истории. Две прежние
+            # редакции искали «подходящий» коммит и обе оказались no-op:
+            # сперва жёстко зашитый SHA (он же текущий пин), потом «второй в
+            # логе» (тоже он). Третья — «первый, отличный от пина» — отличала
+            # кандидата ПО SHA, хотя значение имеют БАЙТЫ: revert-коммит
+            # вернул бы то же содержимое, и синтетика снова стала бы
+            # пустышкой (три находки приёмочного ревью подряд, все про выбор
+            # по косвенному признаку вместо нужного свойства).
+            stale-pin)
+              printf '# синтетика: байт, которого нет в копии\n' \
+                >> ws/devtools/contracts/review-scope/v1/prose-paths.env
+              git -C ws/devtools -c user.email=ci@local -c user.name=ci \
+                  commit -q -am "синтетика: изменить SSOT под stale-pin"
+              q=$(git -C ws/devtools rev-parse HEAD)
+              sed -i "1s/@ [0-9a-f]*/@ ${q}/" ws/steward/scripts/review/prose-paths.env
+              echo "синтетика stale-pin: шапка -> ${q}; SSOT на нём заведомо != тела копии" ;;
+          esac
+
+      - name: compare vendored copy to devtools
+        run: |
+          set -u
+          vendored=ws/steward/scripts/review/prose-paths.env
+          ssot_path=contracts/review-scope/v1/prose-paths.env
+          status=0
+          note() { printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          fail() { status=1; echo "НАХОДКА: $1"; note "### $1"; }
+
+          [ -f "$vendored" ] || { echo "нет вендор-копии: $vendored"; exit 1; }
+          [ -f "ws/devtools/$ssot_path" ] || { echo "нет SSOT: $ssot_path"; exit 1; }
+
+          # --- 1. Провенанс: копия ОБЯЗАНА быть шапкой + SSOT НА СВОЁМ ПИНЕ ---
+          # Сравнение суффиксом по БАЙТАМ, без якорей и поиска строк: берём
+          # ровно столько последних байт копии, сколько весит SSOT на пине.
+          # Совпало — копия и есть «шапка + та версия», и длина шапки нигде не
+          # угадывается. Прежняя редакция искала в копии первую строку SSOT и
+          # сравнивала суффикс ОТ НЕЁ — fail-open: удали апстрим свою первую
+          # строку, и якорь находился ниже, а остаток совпадал (находка
+          # приёмочного ревью, major).
+          pin=$(sed -n 's/^# VENDORED: devtools @ \([0-9a-f]\{7,40\}\).*/\1/p' "$vendored" | head -1)
+          if [ -z "$pin" ]; then
+            fail "в копии нет шапки '# VENDORED: devtools @ <sha>' — происхождение недоказуемо"
+          elif ! git -C ws/devtools cat-file -e "${pin}^{commit}" 2>/dev/null; then
+            fail "пин \`$pin\` не существует в devtools — происхождение недоказуемо"
+          elif ! git -C ws/devtools cat-file -e "${pin}:${ssot_path}" 2>/dev/null; then
+            fail "на пине \`$pin\` в devtools нет файла \`$ssot_path\`"
+          else
+            git -C ws/devtools show "${pin}:${ssot_path}" > /tmp/ssot-at-pin
+            n=$(wc -c < /tmp/ssot-at-pin | tr -d ' ')
+            if tail -c "$n" "$vendored" | cmp -s - /tmp/ssot-at-pin; then
+              # Шапка — только комментарии: иначе в неё можно было бы
+              # протащить свой PROSE=/CODE_OVERRIDE= выше тела.
+              head_len=$(( $(wc -c < "$vendored" | tr -d ' ') - n ))
+              if head -c "$head_len" "$vendored" | grep -qvE '^#|^$'; then
+                fail "шапка копии содержит не только комментарии"
+              else
+                echo "провенанс: тело копии == SSOT на пине $pin"
+              fi
+            else
+              fail "тело копии НЕ совпадает с SSOT на собственном пине \`$pin\` — шапка утверждает происхождение, которого нет"
+              note ''
+              note '```diff'
+              tail -c "$n" "$vendored" | diff -u - /tmp/ssot-at-pin >> "$GITHUB_STEP_SUMMARY" || true
+              note '```'
+            fi
+          fi
+
+          # --- 2. Дрейф апстрима: двигался ли SSOT после пина ---
+          # Вопрос про АПСТРИМ, копия здесь не участвует вовсе — значит и
+          # шапку обходить не нужно. git отвечает точно: пусто = не двигался.
+          if [ -n "${pin:-}" ] && git -C ws/devtools cat-file -e "${pin}^{commit}" 2>/dev/null; then
+            if git -C ws/devtools diff --quiet "$pin" HEAD -- "$ssot_path"; then
+              echo "clean: SSOT не двигался после пина $pin"
+              note "## review-scope-drift: clean (пин \`$pin\`, SSOT не двигался)"
+            else
+              status=1
+              echo "DRIFT: SSOT двигался после пина $pin"
+              note "### DRIFT: SSOT уехал после пина \`$pin\`"
+              note ''
+              note "Ре-вендор — решение владельца steward: это член кита, и его"
+              note "правка стоит волны по 22 потребителям."
+              note ''
+              note '```diff'
+              git -C ws/devtools diff "$pin" HEAD -- "$ssot_path" >> "$GITHUB_STEP_SUMMARY" || true
+              note '```'
+              note ''
+              note "Коммиты по SSOT после пина:"
+              note '```'
+              git -C ws/devtools log --oneline "$pin"..HEAD -- "$ssot_path" >> "$GITHUB_STEP_SUMMARY" || true
+              note '```'
+            fi
+          fi
+          exit "$status"
