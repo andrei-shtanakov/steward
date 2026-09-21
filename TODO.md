@@ -1137,8 +1137,9 @@ PR и осознанно не закрыто; список полон, друг�
       бюджет платных прогонов. Якорь `*/CLAUDE.md` намеренно на `/`-сегменте —
       `CLAUDE-migration.md` и `claude-notes.md` остаются прозой. Наблюдаемый
       признак: такая ветка перестаёт получать код 5 и уходит модели
-      @owner:github:andrei-shtanakov @id:review-kit-scope-agent-instructions —
-      **апстрим закрыт PR этой ветки**, чекбокс намеренно оставлен снятым:
+      @owner:github:andrei-shtanakov @id:review-kit-scope-agent-instructions
+      @blocked_by:todo://devtools/review-kit-wave-trusted-base-and-agent-instructions —
+      **апстрим закрыт PR #182**, чекбокс намеренно оставлен снятым:
       признак «сделано» заявителя наблюдается у ПОТРЕБИТЕЛЯ с обновлённым
       китом, а у нас правило лежит только в апстрим-копии. Закрывается волной
       (`review-kit-next-wave`). Регрессия проверена, а не предположена: на
@@ -1359,7 +1360,16 @@ PR и осознанно не закрыто; список полон, друг�
     флоту следующей волной (`review-kit-next-wave`); до неё копии
     `checksum.sh` @ `a2d7e71` дают при 7 строках PIN тот же результат.
 
-  - [ ] Следующая волна кита: `collect-context.sh` #154 (21 копия) + промоция члена + spec-runner-lint @owner:github:andrei-shtanakov @id:review-kit-next-wave @epic:eco.codex-review-rollout
+  - [ ] Следующая волна кита: `collect-context.sh` #154 (21 копия) + промоция члена + spec-runner-lint @owner:github:andrei-shtanakov @id:review-kit-next-wave @blocked_by:todo://devtools/review-kit-wave-trusted-base-and-agent-instructions @epic:eco.codex-review-rollout
+
+    **Окно запрошено 2026-09-21 — devtools#292** (заявка с sha256-таблицей и
+    списком 22 потребителей). Решение владельца: раскатывать сразу на все 22,
+    без узкого среза-замера. Форма — одношаговая для 21 (состав кита не
+    меняется, оба файла у потребителей есть: правится содержимое плюс две
+    строки `PIN`); `atp-platform-testing` — исключение, ему нужен двухфазный
+    ре-вендор: у него нет `prose-paths.env` вовсе, а `local.sh` на более
+    старом релизе (`4214c3e2…` против общего `18e87312…`). devtools свою
+    копию подтянул сам (их #283), в списке его нет.
 
     Накопленная дельта после волны devtools#228 (взяла `a2d7e71`):
     `collect-context.sh` @ `57170da` (отказ на `dir/` и pathspec-магию,
