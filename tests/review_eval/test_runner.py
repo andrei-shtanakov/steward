@@ -864,6 +864,7 @@ def test_run_all_generated_run_id_is_stable(tmp_path: Path) -> None:
     [
         ("--head", "c" * 40),
         ("--base", "c" * 40),
+        ("--trusted-base", "c" * 40),
         ("--format", "markdown"),
         ("--fetch",),
         ("--remote", "upstream"),
@@ -875,6 +876,7 @@ def test_run_all_generated_run_id_is_stable(tmp_path: Path) -> None:
     ids=[
         "head",
         "base",
+        "trusted-base",
         "format",
         "fetch",
         "remote",
