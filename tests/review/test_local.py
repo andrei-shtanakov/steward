@@ -3664,58 +3664,21 @@ def test_default_base_run_stays_silent_about_the_boundary(tmp_path: Path) -> Non
     assert "доверенная база" not in res.stdout
 
 
-def test_fresh_trusted_base_is_reported_as_fresh(tmp_path: Path) -> None:
-    """Свежесть границы доверия проверяется отдельно от свежести базы и
-    называет РЕЗУЛЬТАТ, а не общий дисклеймер (minor круга 3: безусловная
-    строка не отличала свежую границу от протухшей)."""
-    _, repo = make_repo(tmp_path)
-    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
-    _commit(repo, "код")
-    res = run_local(repo, make_stub(tmp_path, STUB_OK), "--trusted-base", "origin/master")
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert "свежесть доверенной базы: совпадает с origin/master" in res.stdout
-
-
-def test_stale_trusted_base_is_named_with_how_far_behind(tmp_path: Path) -> None:
-    """Протухшая граница — активное предупреждение, а не молчание.
-
-    Сценарий находки: локальный `origin/master` подтянут при открытии PR, а
-    за это время в master СНЯЛИ `dist/* linguist-generated`. Ветка
-    `.gitattributes` не трогала, вето не включается, и кит читал бы старую
-    декларацию — рукописный код уехал бы под маркер опущения. Направление
-    отказа здесь в сторону СОКРЫТИЯ, поэтому у базы и у границы проверка
-    обязана быть одинаково активной."""
-    remote, repo = make_repo(tmp_path)
-    (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
-    _commit(repo, "код")
-    # Remote уезжает вперёд, локальная remote-tracking ссылка не трогается.
-    (remote / "moved.txt").write_text("вперёд\n", encoding="utf-8")
-    git(remote, "add", "-A")
-    git(remote, "commit", "-qm", "master уехал вперёд")
-
-    res = run_local(repo, make_stub(tmp_path, STUB_OK), "--trusted-base", "origin/master")
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert "доверенная база устарела" in res.stdout
-    # Отставание печатается `?`, когда чужой коммит локально не подтянут, —
-    # `rev-list` его не видит. Ровно так же ведёт себя предупреждение о
-    # базе; выдумывать число вместо честного `?` кит не станет.
-    assert "коммит(ов) против origin/master" in res.stdout
-    assert "снятые с тех пор декларации ещё действуют" in res.stdout
-
-
-def test_non_tracking_trusted_base_says_why_freshness_is_not_checked(
+def test_trusted_base_run_declares_that_its_freshness_is_unchecked(
     tmp_path: Path,
 ) -> None:
-    """Голый SHA как граница: проверять нечего, и это тоже называется
-    результатом, а не выдаётся за проверку."""
+    """Свежесть проверяется только для `$base`. Для границы доверия это
+    объявленный край, а не упущение — но объявленный ВСЛУХ: устаревшая
+    граница читает СТАРУЮ декларацию, то есть отказывает в сторону
+    сокрытия. Активная проверка ls-remote по границе была написана и
+    откачена решением владельца 2026-09-21: заявка steward#181 её не
+    просила."""
     _, repo = make_repo(tmp_path)
     (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
-    first = _commit(repo, "код")
-    (repo / "tool.py").write_text("x = 2\n", encoding="utf-8")
-    _commit(repo, "ещё код")
-    res = run_local(repo, make_stub(tmp_path, STUB_OK), "--trusted-base", first)
+    _commit(repo, "код")
+    res = run_local(repo, make_stub(tmp_path, STUB_OK), "--trusted-base", "origin/master")
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "не remote-tracking ref" in res.stdout
+    assert "свежесть доверенной базы кит не проверяет" in res.stdout
 
 
 def test_empty_base_value_keeps_the_default_path_silent(tmp_path: Path) -> None:
