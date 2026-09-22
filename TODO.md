@@ -1072,7 +1072,7 @@ PR и осознанно не закрыто; список полон, друг�
  — приём steward#176 (from
       atp-platform); третья находка того же issue — та же, что в
       `local-sh-query-modes-invalidate-sidecars`.
-- [ ] Окно инвалидации sidecar: конфигурационные отказы резолва харнесса @owner:github:andrei-shtanakov @id:review-kit-sidecar-reset-window
+- [ ] Окно инвалидации sidecar: конфигурационные отказы резолва харнесса @owner:github:andrei-shtanakov @id:review-kit-sidecar-reset-window @epic:eco.codex-review-rollout
       (нет `harness-claude` на полуобновлённом ките, `REVIEW_MODEL=""`,
       небезопасное слово в `REVIEW_EFFORT`, кривой `REVIEW_INCLUDE_PROSE`)
       физически стоят ВЫШЕ точки сброса `REVIEW_VERDICT_OUT`/`REVIEW_USAGE_OUT`
@@ -1085,7 +1085,7 @@ PR и осознанно не закрыто; список полон, друг�
       потребитель (`review_eval/runner.py`) сам делает unlink и не затронут —
       находка приёмочного ревью PR #177 (minor/high), граница названа в
       комментарии `local.sh` на самой точке сброса.
-- [ ] Перевод строки В ИМЕНИ файла ломает разбор фильтра области ревью @owner:github:andrei-shtanakov @id:review-scope-newline-in-path
+- [ ] Перевод строки В ИМЕНИ файла ломает разбор фильтра области ревью @owner:github:andrei-shtanakov @id:review-scope-newline-in-path @epic:eco.codex-review-rollout
       `git diff -z` отдаёт пути сырыми, но `tr '\0' '\n'` схлопывает
       разделитель записи с байтом внутри самого имени, и такой путь
       разъезжается на две несуществующие записи. Страж (счётчик NUL-байтов
@@ -1226,7 +1226,7 @@ PR и осознанно не закрыто; список полон, друг�
       поверхность добавляла. Край остаётся ОБЪЯВЛЕННЫМ (строка вывода +
       комментарий + README), не спрятанным.
 
-- [ ] Решение владельца: `--base ""` — молчаливая ветка по умолчанию или отказ кодом 2? @owner:github:andrei-shtanakov @id:review-kit-empty-base-ruling
+- [ ] Решение владельца: `--base ""` — молчаливая ветка по умолчанию или отказ кодом 2? @owner:github:andrei-shtanakov @id:review-kit-empty-base-ruling @epic:eco.codex-review-rollout
       Вопрос: Соседние опции (`--trusted-base`, `--max-diff-bytes`,
       `--max-diff-files`) на пустом значении отказывают с доводом «явная, но
       сломанная настройка не читается молча как её противоположность»; у
