@@ -554,24 +554,24 @@ product decision record (и наоборот). Как approved proposal стан
 до пустого вердикта» не сходится и стоит ~$0.5/раунд; качество дальше повышают
 пункты ниже, в порядке владельца.
 
-- [ ] Итоговое дерево PR для ревьюера @owner:github:andrei-shtanakov @id:review-kit-final-tree
+- [ ] Итоговое дерево PR для ревьюера @owner:github:andrei-shtanakov @id:review-kit-final-tree @epic:eco.codex-review-rollout
       Control plane (промпт, схема, скрипты) из base во временный доверенный
       каталог, чекаут — head PR, codex read-only по получившемуся дереву,
       диф — указатель на область ревью; ничего из PR не исполнять.
-- [ ] Переписать шкалу severity: blocker сужен (эксплуатация, необратимая потеря, @owner:github:andrei-shtanakov @id:review-kit-severity-rewrite
+- [ ] Переписать шкалу severity: blocker сужен (эксплуатация, необратимая потеря, @owner:github:andrei-shtanakov @id:review-kit-severity-rewrite @epic:eco.codex-review-rollout
       обход authority, гарантированная невозможность основного сценария), для
       blocker/major обязательны файл+строка, вход, наблюдаемый результат, ссылка
       на проверенный код и почему существующие проверки не ловят
-- [ ] Сократить промпт до 4 разделов (~700–1200 слов): что ревьюируется, @owner:github:andrei-shtanakov @id:review-kit-prompt-diet
+- [ ] Сократить промпт до 4 разделов (~700–1200 слов): что ревьюируется, @owner:github:andrei-shtanakov @id:review-kit-prompt-diet @epic:eco.codex-review-rollout
       инструменты/файлы, условия валидной находки, шкала+формат; механику
       доверия обеспечивает runner, а не проза
-- [ ] Статический контекст — только архитектурные контракты и инварианты; обычные @owner:github:andrei-shtanakov @id:review-kit-context-demotion
+- [ ] Статический контекст — только архитектурные контракты и инварианты; обычные @owner:github:andrei-shtanakov @id:review-kit-context-demotion @epic:eco.codex-review-rollout
       исходники уходят (доступны деревом), в промпт — требование читать callers,
       callees и тесты изменённого кода
-- [ ] Усилить схему вердикта @owner:github:andrei-shtanakov @id:review-kit-verdict-schema-v2
+- [ ] Усилить схему вердикта @owner:github:andrei-shtanakov @id:review-kit-verdict-schema-v2 @epic:eco.codex-review-rollout
       `file`/`line`/`scenario`/`observed`/`expected`/`evidence[]`/`confidence`;
       блокируют только blocker/major с `confidence: high` и заполненным evidence.
-- [ ] Большие PR: до ~20–30 файлов один прогон; крупнее — chunked по подсистемам + @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode
+- [ ] Большие PR: до ~20–30 файлов один прогон; крупнее — chunked по подсистемам + @owner:github:andrei-shtanakov @id:review-kit-large-pr-mode @epic:eco.codex-review-rollout
       финальный межмодульный проход; generated/lock/snapshots не ревьюировать как
       код; обрезка дифа не молча, а явным infrastructure failure
 
@@ -584,7 +584,7 @@ product decision record (и наоборот). Как approved proposal стан
   `(file, line, нормализованное сообщение)` — одна находка приедет из
   нескольких чанков.
 - [x] **Машинный тип находки в вердикте: `kind: defect | file-missing`** @owner:github:andrei-shtanakov @id:review-kit-file-missing-finding-type — приём входящего steward#141 (from devtools#behaviour-runner). Известный ложный класс: ревьюер заявляет «файлов нет» на файлы, которые в PR есть (опровергается `git cat-file -e <head>:<путь>`); behaviour-runner devtools на таком request-changes останавливался на человеке, потому что находка приезжала только прозой и машинно не отличалась от настоящей. PR этой ветки: поле `kind` в `.github/codex/review-schema.json` — **обязательное**, как и остальные поля схемы: необязательное не дало бы потребителю отличить «старый кит без типов» от «находка не про отсутствие файла». Путь отдельным полем не заводится — при `kind: file-missing` субъектом объявлен сам `file` (один путь на находку, `line: 0`), правило записано в промпт §3. `apply-threshold.sh` тип **валидирует** (значение вне enum = негодный вердикт, код 2, наравне с severity/confidence) и рендерит, но порога не меняет: опровержение — работа потребителя, у которого есть дерево, а скрипт дерева не видит. Там же единственный оракул правила `line: 0` для этого класса — JSON-схема условных конструкций не принимает (структурированный вывод модели), поэтому без проверки в скрипте требование промпта разошлось бы с вердиктами молча (находка ревью-гейта на этом PR, minor). Ход за devtools: авто-ветка опровержения в runner (спека §7) отдельным PR.
-- [ ] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers
+- [ ] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers @epic:eco.codex-review-rollout
       спецсимволами/пробелами): такой путь не совпадает с сырым членом
       `--generated-list` и остаётся в дифе — худший исход сегодня это явный
       отказ по потолку (fail в сторону ревью, находка minor гейта на #99,
@@ -595,13 +595,13 @@ product decision record (и наоборот). Как approved proposal стан
       ДЕТЕКЦИЕЙ литерала флага в извлечённой из base механике (деплой-
       ограничение head-YAML × base-скрипты обойдено без второго PR; до мержа
       кита фильтра в CI нет — явный отказ по потолку, честный и временный)
-- [ ] Вето head-стороны generated-деклараций скоупить до фактически @id:review-kit-attr-veto-scope
+- [ ] Вето head-стороны generated-деклараций скоупить до фактически @id:review-kit-attr-veto-scope @epic:eco.codex-review-rollout
       изменённых `.gitattributes`: сейчас правка одного файла деклараций
       включает пересечение целиком и роняет base-side декларацию из другого
       (multi-file топология; minor четырнадцатого захода на #99, край назван
       в комментарии local.sh) — расхождение local↔CI в сторону ложного
       отказа по потолку @owner:github:andrei-shtanakov
-- [ ] Накопление вердиктов codex-review в jsonl-корпус (PR, head_sha, модель, @owner:github:andrei-shtanakov @id:review-kit-verdict-corpus
+- [ ] Накопление вердиктов codex-review в jsonl-корпус (PR, head_sha, модель, @owner:github:andrei-shtanakov @id:review-kit-verdict-corpus @epic:eco.codex-review-rollout
       effort, находки, что стало блокирующим) — жанр `gate_verdicts.jsonl` с
       header-записью уже есть (`src/steward/verdicts/emitter.py`); без
       накопления eval-харнесс упрётся в ручной сбор прошлых PR. ОТКРЫТЫЙ
@@ -620,7 +620,7 @@ product decision record (и наоборот). Как approved proposal стан
   То есть исходный дизайн-вопрос владельцу сужается до «нужен ли нам
   CI-канал отдельно, если терминальный канал даёт корпус бесплатно», и
   пункт до этого ответа остаётся `[ ]`.
-- [ ] Детерминированный пре-фильтр в report-джобе (без ключа, без LLM): @owner:github:andrei-shtanakov @id:review-kit-import-detector
+- [ ] Детерминированный пре-фильтр в report-джобе (без ключа, без LLM): @owner:github:andrei-shtanakov @id:review-kit-import-detector @epic:eco.codex-review-rollout
       детектор галлюцинированных импортов — импорт, которого нет ни в
       pyproject.toml, ни в uv.lock. Один язык, один пакет-менеджер — вся
       таблица детекторов ai-review не нужна
@@ -640,10 +640,10 @@ product decision record (и наоборот). Как approved proposal стан
       (дефолтная safety-strategy), а наш джоб review sudo/Docker/
       привилегированные сокеты не использует, довод записан комментарием у
       шага в workflow
-- [ ] Инлайн-аннотации из вердикта: report-джоба печатает @owner:github:andrei-shtanakov @id:review-kit-inline-annotations
+- [ ] Инлайн-аннотации из вердикта: report-джоба печатает @owner:github:andrei-shtanakov @id:review-kit-inline-annotations @epic:eco.codex-review-rollout
       `::error file=…,line=…,title=…::` для блокирующих и `::warning::` для
       остальных — находки появляются в Files changed, новых прав не нужно
-- [ ] Дедуп сводок в треде PR: скрытый маркер в теле комментария + поиск @owner:github:andrei-shtanakov @id:review-kit-comment-dedup
+- [ ] Дедуп сводок в треде PR: скрытый маркер в теле комментария + поиск @owner:github:andrei-shtanakov @id:review-kit-comment-dedup @epic:eco.codex-review-rollout
       своего последнего + правка вместо создания (10 раундов на #99 = 10
       сводок, актуальна одна). Маркер обязан пережить смену формата тела
 - [x] Дедуп ревью по снимку диффа — вердикт не перегоняется на байт-идентичном входе @owner:github:andrei-shtanakov @id:review-dedup-diff-hash
@@ -732,7 +732,7 @@ product decision record (и наоборот). Как approved proposal стан
       PR» из issue заменена на «довод, видимый в дереве» — описание PR в вход
       ревьюера не попадает (ни в CI, ни в local.sh), требование, которое
       ревьюер не может проверить, было бы мёртвой буквой
-- [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики @owner:github:andrei-shtanakov @id:review-kit-eval-harness
+- [ ] Измеримый eval: 10–20 прошлых PR (с дефектами, чистые, крупные), метрики @owner:github:andrei-shtanakov @id:review-kit-eval-harness @epic:eco.codex-review-rollout
       precision блокирующих/recall major+blocker/ложные блокировки/доля без
       evidence/стоимость; для гейта precision важнее полноты
 
@@ -837,7 +837,7 @@ product decision record (и наоборот). Как approved proposal стан
   Плюс `review-eval-candidates-review-round` про сам генератор черновиков.
   Находка ревью-контура на этом же PR: без пунктов они были видны только внутри
   YAML-кейсов, то есть ни владельцу, ни дайджесту.
-- [ ] Кит: граница секции находок и экранирование evidence в `apply-threshold.sh` @owner:github:andrei-shtanakov @id:review-kit-findings-boundary
+- [ ] Кит: граница секции находок и экранирование evidence в `apply-threshold.sh` @owner:github:andrei-shtanakov @id:review-kit-findings-boundary @epic:eco.codex-review-rollout
       `note` модели рендерится **раньше** находок и не экранируется, границы
       перед секцией находок нет. Поэтому note, оформленный как
       `### [major] … — \`file:line\``, для `corpus candidates` неотличим от
@@ -849,7 +849,7 @@ product decision record (и наоборот). Как approved proposal стан
       причины — одни и те же символы. Лечится на стороне кита — маркер границы
       в рендере и экранирование (или структура вместо строки), — а не догадками
       в парсере
-- [ ] Разовый bump `MATCHER_VERSION` перед первым живым прогоном @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-matcher-version-bump
+- [ ] Разовый bump `MATCHER_VERSION` перед первым живым прогоном @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-matcher-version-bump @epic:eco.codex-review-rollout
       Правила матчера менялись после объявления версии 1 (согласие по `kind`,
       общее правило номера строки, уникальные ключевые слова), а версия не
       поднималась: прогонов ещё нет, сравнивать отчёты не с чем, и версия,
@@ -858,7 +858,7 @@ product decision record (и наоборот). Как approved proposal стан
       декларация в `matcher.py` требует поднимать версию на любое
       семантическое изменение. Решение: поднять **один раз** перед первым
       прогоном либо снять требование из декларации
-- [ ] Эвристика секретных имён окружения: allow-list вместо подстроки @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-secret-name-heuristic
+- [ ] Эвристика секретных имён окружения: allow-list вместо подстроки @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-secret-name-heuristic @epic:eco.codex-review-rollout
       `provider_env_fingerprint` не хэширует значения переменных, в имени
       которых есть `KEY`/`TOKEN`/`SECRET`/`PASSWORD`/`CREDENTIAL`. Это
       подстрока, а не знание: переменная с ключом в значении и безобидным
@@ -866,28 +866,28 @@ product decision record (и наоборот). Как approved proposal стан
       безобидная переменная с `TOKEN` в имени (`*_TOKEN_LIMIT`) из отпечатка
       выпадет молча. Решение — закрытый список имён, чьи значения хэшируются,
       вместо чёрного списка подстрок
-- [ ] Промежуточные метрики идущего прогона (`metrics --partial`) @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-partial-metrics
+- [ ] Промежуточные метрики идущего прогона (`metrics --partial`) @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-partial-metrics @epic:eco.codex-review-rollout
       `load_results` требует полноты и закрытого манифеста, поэтому посмотреть
       на половину большого прогона нельзя вовсе: оператору остаётся читать
       `result.json` глазами. Правило верное (`status: ok` по половине прогона
       выглядел бы измерением), но нужен явный режим, который печатает числа с
       пометкой «прогон не завершён» и **не** пишет `metrics.json`
-- [ ] Дайджест отревьюированного дифа в `result.json` вместо прокси по версиям @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-diff-digest
+- [ ] Дайджест отревьюированного дифа в `result.json` вместо прокси по версиям @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-diff-digest @epic:eco.codex-review-rollout
       Сейчас «тот же вход или нет» доказывается косвенно: версии `git` и
       клиентов ревьюера плюс дайджест конфига репозитория кэша. Поэтому
       обновление системы прерывает растянутый на дни прогон, хотя диф мог не
       измениться. Дайджест самого дифа (того, что кит передал модели) отвечал
       бы на вопрос прямо, и сверку версий можно было бы ослабить
-- [ ] Головы PR до фикса (`refs/pull/<n>/head`) для gold-кейсов @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-prefix-heads
+- [ ] Головы PR до фикса (`refs/pull/<n>/head`) для gold-кейсов @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-prefix-heads @epic:eco.codex-review-rollout
       Черновики из истории пинуют `head_sha` из маркера ревью — то дерево,
       которое ревьюер видел. Но для кейса «дефект должен быть найден» нужна
       голова **до** фикса, а она у смерженного PR доступна только через
       `refs/pull/<n>/head`, и материализация такого объекта — отдельный шаг
       (`corpus materialize` тянет только `base_sha`/`head_sha` кейса). Без
       этого часть gold-кейсов придётся пинить руками
-- [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection
+- [ ] Выбор модели и reasoning-уровня — только по eval (минимум два варианта @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-kit-model-selection @epic:eco.codex-review-rollout
       модели × два уровня), не по рассуждению в комментарии workflow
-- [ ] Поднять `blocking_complete` у кейса #167 сплошным чтением диапазона — иначе блокирующий gold в Python вне знаменателя recall @owner:github:andrei-shtanakov @id:review-eval-167-blocking-complete
+- [ ] Поднять `blocking_complete` у кейса #167 сплошным чтением диапазона — иначе блокирующий gold в Python вне знаменателя recall @owner:github:andrei-shtanakov @id:review-eval-167-blocking-complete @epic:eco.codex-review-rollout
       Кейс `andrei-shtanakov.steward-167` несёт единственный в корпусе
       блокирующий gold в исполняемом Python (`D-…-167-1`, лексическое
       несовпадение resolved-целей и нерезолвленного `out_dir` в `run_all`,
@@ -900,7 +900,7 @@ product decision record (и наоборот). Как approved proposal стан
       Работа — сплошное чтение диапазона и, если блокирующих находок больше
       нет, поднятие флага в `true`. До этого состав знаменателя надо называть
       при чтении отчёта (см. прозу выше).
-- [ ] Второй путь `_contradicted_gold` безусловен: верный gold чернится и выпадает из знаменателей recall @owner:github:andrei-shtanakov @id:review-eval-contradicted-gold-second-path
+- [ ] Второй путь `_contradicted_gold` безусловен: верный gold чернится и выпадает из знаменателей recall @owner:github:andrei-shtanakov @id:review-eval-contradicted-gold-second-path @epic:eco.codex-review-rollout
       Подтверждено адъюдикацией 2026-09-18 как живой дефект шипнутого кода
       (`D-…-168-1`, находка ревью PR #168, в master НЕ исправлена). Первый путь
       проверяет `file_lines(defect.file) is not None` и потому корректен; второй
@@ -913,7 +913,7 @@ product decision record (и наоборот). Как approved proposal стан
       противоречит дереву head» и держит вариант вне `status: ok`. Сработает на
       первом же платном прогоне с alias-путями. Класс — minor: нужна особая
       раскладка, затронута бухгалтерия метрик, не решение гейта.
-- [ ] Спека §13 заводит #155 двумя кейсами при уникальном `case_id` — пара непредставима @owner:github:andrei-shtanakov @id:review-eval-spec-starting-corpus-duplicate-case
+- [ ] Спека §13 заводит #155 двумя кейсами при уникальном `case_id` — пара непредставима @owner:github:andrei-shtanakov @id:review-eval-spec-starting-corpus-duplicate-case @epic:eco.codex-review-rollout
       Подтверждено адъюдикацией 2026-09-18 (`D-…-162-4`, находка ревью PR #162,
       в спеке НЕ исправлена): §13 называет #155 строкой 785 как `defective` и
       строкой 788 как `large`, а §5 требует `case_id` вида `<owner.name>-<pr>`,
@@ -923,7 +923,7 @@ product decision record (и наоборот). Как approved proposal стан
       см. пункт выше) и от плана §13 отличается, поэтому вероятная правка —
       списать план §13 как исполненный и сослаться на фактический состав, а не
       примирять две записи про #155.
-- [ ] Контрактная таблица §9 требует кода 0/1 там, где порог выходит кодом 2 @owner:github:andrei-shtanakov @id:review-eval-contract-table-missing-field
+- [ ] Контрактная таблица §9 требует кода 0/1 там, где порог выходит кодом 2 @owner:github:andrei-shtanakov @id:review-eval-contract-table-missing-field @epic:eco.codex-review-rollout
       Подтверждено адъюдикацией 2026-09-18 (`D-…-162-3`, находка ревью PR #162,
       в спеке НЕ исправлена): §9 велит прогнать через настоящий
       `apply-threshold.sh` таблицу, где «каждое поле по отдельности пустое /
@@ -936,7 +936,7 @@ product decision record (и наоборот). Как approved proposal стан
       Правка — привести формулировку §9 к тому, что реализовано (две таблицы с
       разными контрактами), иначе следующий автор будет искать несуществующее
       расхождение кода с спекой.
-- [ ] `corpus candidates` умеет только ПОСЛЕДНЕЕ ревью ai-prosto — кейс с настоящим блокирующим дефектом им не собрать @owner:github:andrei-shtanakov @id:review-eval-candidates-review-round
+- [ ] `corpus candidates` умеет только ПОСЛЕДНЕЕ ревью ai-prosto — кейс с настоящим блокирующим дефектом им не собрать @owner:github:andrei-shtanakov @id:review-eval-candidates-review-round @epic:eco.codex-review-rollout
       Вскрыто разметкой 2026-09-18 при доборе корпуса. Закономерность, а не
       случай: PR, где ревьюер нашёл РЕАЛЬНЫЙ major, — это ровно тот PR, где
       автор его принял и починил до мержа, поэтому последний раунд ревью там
@@ -950,7 +950,7 @@ product decision record (и наоборот). Как approved proposal стан
       раунда. Просится опция вида `--review-id`/`--round`: брать тело и маркер
       выбранного ревью, `commits_after` считать от него же. Не сделано в
       разметке сознательно — это правка продуктового кода, а не данных.
-- [ ] `corpus materialize` без локального чекаута соседа уходит в сеть с @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-materialize-network-git-config
+- [ ] `corpus materialize` без локального чекаута соседа уходит в сеть с @owner:github:andrei-shtanakov @blocked_by:todo://steward/review-kit-eval-harness @id:review-eval-materialize-network-git-config @epic:eco.codex-review-rollout
       `scrubbed_git_env(None)` — тот же пин `GIT_CONFIG_GLOBAL`/
       `GIT_CONFIG_SYSTEM=/dev/null`, что и у чтения дерева ради
       воспроизводимости диффа (`diff.context`/`diff.algorithm`), но здесь он
