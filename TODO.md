@@ -1043,36 +1043,36 @@ PR и осознанно не закрыто; список полон, друг�
   копий CI-чекером и drift-вахтой — вопрос волн devtools, отмечен в
   `review-kit-next-wave`.
 
-- [x] Волна ре-вендора среза B обходит `arbiter` и `atp-platform`, пока те не
+- [x] Волна ре-вендора среза B обходит `arbiter` и `atp-platform`, пока те не @id:review-scope-wave-arbiter
       подтянут кит к текущему релизу @owner:github:andrei-shtanakov
-      @id:review-scope-wave-arbiter — закрыт 2026-09-19: оба догнались сами
+ — закрыт 2026-09-19: оба догнались сами
       по нашим inbox-запросам (arbiter#107, atp-platform#326 — оба CLOSED),
       `prose-paths.env` и переходная строка инвентаря есть в дефолтных ветках
       обоих. Их догоняющие PR прошли своим ревью-контуром и вернули четыре
       находки в кит — steward#173…#176 ниже.
-- [x] То же по `atp-platform` @owner:github:andrei-shtanakov
-      @id:review-scope-wave-atp-platform — см. строку выше, один факт.
-- [x] Приём входящих по срезу B: `checksum.sh` — шапка инвентаря утверждала
+- [x] То же по `atp-platform` @owner:github:andrei-shtanakov @id:review-scope-wave-atp-platform
+ — см. строку выше, один факт.
+- [x] Приём входящих по срезу B: `checksum.sh` — шапка инвентаря утверждала @id:checksum-inventory-header-contradiction
       «переходных членов нет» на три строки выше абзаца, вводящего
       `?prose-paths.env`, и заодно заявляла охват «все 22 копии», из которого
       сама же волна вывела исключения @owner:github:andrei-shtanakov
-      @id:checksum-inventory-header-contradiction — приём steward#173 (from
+ — приём steward#173 (from
       arbiter) и steward#174 (from atp-platform), одна находка двумя каналами.
-- [x] `local.sh`: режимы-запросы (`--print-review-cmd`, `--fingerprint-only`,
+- [x] `local.sh`: режимы-запросы (`--print-review-cmd`, `--fingerprint-only`, @id:local-sh-query-modes-invalidate-sidecars
       опечатка во флаге) стирали sidecar-артефакты предыдущего прогона, ни
       разу не вызвав ревьюера @owner:github:andrei-shtanakov
-      @id:local-sh-query-modes-invalidate-sidecars — приём steward#175 (from
+ — приём steward#175 (from
       arbiter). Решение владельца кита: инвариант «файл есть = результат
       ИМЕННО этого прогона» этого не требует — сброс перенесён за разбор
       аргументов и ранние выходы, валидация ФОРМЫ осталась в префлайте.
-- [x] `local.sh` среза B: частичное усечение дифа фильтром нигде не
+- [x] `local.sh` среза B: частичное усечение дифа фильтром нигде не @id:review-kit-scope-filter-followups
       объявлялось (ни оператору, ни модели), а пустое значение ключа в
       `review-scope.env` печатало «фильтр не применяется» и тут же роняло
       прогон кодом 2 @owner:github:andrei-shtanakov
-      @id:review-kit-scope-filter-followups — приём steward#176 (from
+ — приём steward#176 (from
       atp-platform); третья находка того же issue — та же, что в
       `local-sh-query-modes-invalidate-sidecars`.
-- [ ] Окно инвалидации sidecar: конфигурационные отказы резолва харнесса
+- [ ] Окно инвалидации sidecar: конфигурационные отказы резолва харнесса @owner:github:andrei-shtanakov @id:review-kit-sidecar-reset-window
       (нет `harness-claude` на полуобновлённом ките, `REVIEW_MODEL=""`,
       небезопасное слово в `REVIEW_EFFORT`, кривой `REVIEW_INCLUDE_PROSE`)
       физически стоят ВЫШЕ точки сброса `REVIEW_VERDICT_OUT`/`REVIEW_USAGE_OUT`
@@ -1082,11 +1082,10 @@ PR и осознанно не закрыто; список полон, друг�
       «код 2 + схемно негодный старый файл» `review_eval.classify` вернёт
       `invalid_verdict` (вина модели) вместо `config_failure`. Закрывается
       только перестановкой резолва харнесса ниже разбора аргументов. Штатный
-      потребитель (`review_eval/runner.py`) сам делает unlink и не затронут
-      @owner:github:andrei-shtanakov @id:review-kit-sidecar-reset-window —
+      потребитель (`review_eval/runner.py`) сам делает unlink и не затронут —
       находка приёмочного ревью PR #177 (minor/high), граница названа в
       комментарии `local.sh` на самой точке сброса.
-- [ ] Перевод строки В ИМЕНИ файла ломает разбор фильтра области ревью:
+- [ ] Перевод строки В ИМЕНИ файла ломает разбор фильтра области ревью @owner:github:andrei-shtanakov @id:review-scope-newline-in-path
       `git diff -z` отдаёт пути сырыми, но `tr '\0' '\n'` схлопывает
       разделитель записи с байтом внутри самого имени, и такой путь
       разъезжается на две несуществующие записи. Страж (счётчик NUL-байтов
@@ -1095,12 +1094,12 @@ PR и осознанно не закрыто; список полон, друг�
       выпадает молча, но и не ревьюируется: полноценная поддержка таких
       имён (пропустить их через ревью, а не отказывать) требует другого
       приёма разбора NUL, например `read -d ''` (bash), которого в POSIX sh
-      нет @owner:github:andrei-shtanakov @id:review-scope-newline-in-path
-- [x] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT
+      нет.
+- [x] Сторож upstream-drift для `scripts/review/prose-paths.env`: сверка с SSOT @owner:github:andrei-shtanakov @id:review-scope-upstream-drift
       `devtools/contracts/review-scope/v1/prose-paths.env` по расписанию, как
       `impresario-contract-drift.yml`. Copy-integrity у копии уже есть
       (инвентарь checksum.sh), расхождения с SSOT не заметит ничто
-      @owner:github:andrei-shtanakov @id:review-scope-upstream-drift —
+ —
       `.github/workflows/review-scope-drift.yml`, 2026-09-19. Вахта нашла
       предмет сразу же, и это НЕ просто «апстрим уехал»: копия была
       ОТРЕДАКТИРОВАНА НА МЕСТЕ — то, что её собственная шапка запрещает
@@ -1111,22 +1110,22 @@ PR и осознанно не закрыто; список полон, друг�
       devtools как `33bb8b1` с другой формулировкой. Поймать это было нечем.
       Рабочие ключи (`PROSE`/`CODE_OVERRIDE`) при этом совпадают побайтно —
       поведение сошлось, разошлась проза.
-- [x] Ре-вендор `prose-paths.env` с devtools HEAD (`33bb8b1`) + бамп шапки
+- [x] Ре-вендор `prose-paths.env` с devtools HEAD (`33bb8b1`) + бамп шапки @owner:github:andrei-shtanakov @id:review-scope-revendor-prose-paths
       `# VENDORED:`; гасит обе находки вахты `review-scope-drift`
       (несовпадение со своим пином и движение SSOT). Не срочно по поведению —
       рабочие ключи совпадают, — но это возврат копии в дисциплину вендоринга,
       из которой её вывели правкой на месте. Дешевле сделать прицепом к
       следующей ПОВЕДЕНЧЕСКОЙ правке кита: отдельная волна по 22 репо ради
       переформулировки комментария не окупается
-      @owner:github:andrei-shtanakov @id:review-scope-revendor-prose-paths —
+ —
       закрыт ровно тем прицепом, который сам и предписывал: копия ре-вендорена
       с пина `8cd6456` (он же несёт ПОВЕДЕНЧЕСКУЮ правку —
       `review-kit-scope-agent-instructions` ниже), тело побайтно совпадает с
       SSOT на пине, шапка бампнута. Промежуточный `33bb8b1` перепрыгнут: пин
       называет ревизию SSOT, а не каждый коммит по пути к ней.
 
-- [ ] Приём steward#180 (from devtools#265 ← atp-platform#329): инструкции
-      агентов — код, а не проза. `CODE_OVERRIDE` получает восемь глобов
+- [x] Приём steward#180 (from devtools#265 ← atp-platform#329): инструкции агентов — код, а не проза @owner:github:andrei-shtanakov @id:review-kit-scope-agent-instructions @epic:eco.codex-review-rollout — апстрим PR #182, потребители — волна devtools#292 (2026-09-21)
+      Инструкции агентов — код, а не проза. `CODE_OVERRIDE` получает восемь глобов
       (`.claude/*`, `*/.claude/*`, `.agents/*`, `*/.agents/*`, `CLAUDE.md`,
       `*/CLAUDE.md`, `AGENTS.md`, `*/AGENTS.md`). Это возврат покрытия, а не
       его расширение: до среза B диф шёл ревьюеру целиком, а после — ветка,
@@ -1136,19 +1135,26 @@ PR и осознанно не закрыто; список полон, друг�
       его НЕ накрывает, а в нём живут `merge_policy`, «Мерж: человек» и
       бюджет платных прогонов. Якорь `*/CLAUDE.md` намеренно на `/`-сегменте —
       `CLAUDE-migration.md` и `claude-notes.md` остаются прозой. Наблюдаемый
-      признак: такая ветка перестаёт получать код 5 и уходит модели
-      @owner:github:andrei-shtanakov @id:review-kit-scope-agent-instructions
-      @blocked_by:todo://devtools/review-kit-wave-trusted-base-and-agent-instructions —
-      **апстрим закрыт PR #182**, чекбокс намеренно оставлен снятым:
+      признак: такая ветка перестаёт получать код 5 и уходит модели.
+      **Апстрим закрыт PR #182**; чекбокс был намеренно оставлен снятым:
       признак «сделано» заявителя наблюдается у ПОТРЕБИТЕЛЯ с обновлённым
-      китом, а у нас правило лежит только в апстрим-копии. Закрывается волной
-      (`review-kit-next-wave`). Регрессия проверена, а не предположена: на
+      китом, а у нас правило лежит только в апстрим-копии. Закрывалось волной.
+      **Закрыто 2026-09-22 по признаку заявителя:** волна devtools#292
+      (закрыт 2026-09-21) ре-вендорила steward @ `5bfd829` на 21 потребителя —
+      `chore(review-kit): ре-вендор steward @ 5bfd829 — --trusted-base и
+      инструкции агентов в CODE_OVERRIDE` в arbiter#113, atp-platform#333,
+      deployer#68, dispatcher#266 и далее; исключение — `atp-platform-testing`
+      (devtools `@id:atp-platform-testing-kit-catchup`). Ожидание
+      `@blocked_by:todo://devtools/review-kit-wave-trusted-base-and-agent-instructions`
+      снято: такого пункта у devtools нет и не было — волна велась issue
+      devtools#292, а не пунктом плана (правило devtools: работа для соседей
+      пунктом не является), поэтому ссылка висела [PF-ID-DANGLING]. Регрессия проверена, а не предположена: на
       старом правиле ветка из одних `.claude/skills/*/SKILL.md` + `CLAUDE.md`
       даёт код 5, на новом уходит модели
       (`test_agent_instructions_are_code_override_not_prose`,
       `test_agent_instruction_lookalikes_stay_prose`).
 
-- [x] Приём steward#181 (from devtools#260, их PR #281 в черновике): в ките
+- [x] Приём steward#181 (from devtools#260, их PR #281 в черновике): в ките @owner:github:andrei-shtanakov @id:review-kit-split-diff-range-from-trusted-base
       `--base` отвечал СРАЗУ на два разных вопроса — «какой диапазон показать
       модели» и «откуда читать входы, которым кит верит» (декларация
       `linguist-generated`, курируемый контекст, repo-owned
@@ -1167,7 +1173,7 @@ PR и осознанно не закрыто; список полон, друг�
       признак (негативный контроль из заявки): прогон с суженным `--base` и
       `--trusted-base` на влитой базе НЕ применяет generated-декларацию,
       добавленную коммитом ветки PR
-      @owner:github:andrei-shtanakov @id:review-kit-split-diff-range-from-trusted-base —
+ —
       **закрыт PR этой ветки** по двум из трёх пунктов DoD заявки (третий,
       «правило приезжает потребителям», — волна, `review-kit-next-wave`).
       Доверенных входов оказалось ТРИ, а не два: заявка перечислила
@@ -1220,8 +1226,8 @@ PR и осознанно не закрыто; список полон, друг�
       поверхность добавляла. Край остаётся ОБЪЯВЛЕННЫМ (строка вывода +
       комментарий + README), не спрятанным.
 
-- [ ] Решение владельца: `--base ""` — молчаливая ветка по умолчанию или
-      отказ кодом 2? Соседние опции (`--trusted-base`, `--max-diff-bytes`,
+- [ ] Решение владельца: `--base ""` — молчаливая ветка по умолчанию или отказ кодом 2? @owner:github:andrei-shtanakov @id:review-kit-empty-base-ruling
+      Вопрос: Соседние опции (`--trusted-base`, `--max-diff-bytes`,
       `--max-diff-files`) на пустом значении отказывают с доводом «явная, но
       сломанная настройка не читается молча как её противоположность»; у
       `--base` такого стража нет, и пустая переменная у вызывающего молча
@@ -1230,8 +1236,7 @@ PR и осознанно не закрыто; список полон, друг�
       (`--base ""` включал `base_explicit` и печатал совет про суженную
       базу) — частная форма закрыта там же, общая семантика НЕТ: это смена
       контракта `--base` у ~22 потребителей, и решать её внутри приёма двух
-      чужих заявок нельзя @owner:github:andrei-shtanakov
-      @id:review-kit-empty-base-ruling
+      чужих заявок нельзя.
 
 - [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша; @owner:github:andrei-shtanakov @id:review-kit-diff-marker-hardening @epic:eco.codex-review-rollout
       осталось решить, нужен ли полноценный nonce
@@ -1360,8 +1365,10 @@ PR и осознанно не закрыто; список полон, друг�
     флоту следующей волной (`review-kit-next-wave`); до неё копии
     `checksum.sh` @ `a2d7e71` дают при 7 строках PIN тот же результат.
 
-  - [ ] Следующая волна кита: `collect-context.sh` #154 (21 копия) + промоция члена + spec-runner-lint @owner:github:andrei-shtanakov @id:review-kit-next-wave @blocked_by:todo://devtools/review-kit-wave-trusted-base-and-agent-instructions @epic:eco.codex-review-rollout
+  - [ ] Следующая волна кита: `collect-context.sh` #154 (21 копия) + промоция члена + spec-runner-lint @owner:github:andrei-shtanakov @id:review-kit-next-wave @epic:eco.codex-review-rollout
 
+    Ожидание волны #292 снято 2026-09-22: devtools#292 закрыт 21.09, кит @
+    `5bfd829` у 21 потребителя; следующая волна ждёт своего окна, не прошлого.
     **Окно запрошено 2026-09-21 — devtools#292** (заявка с sha256-таблицей и
     списком 22 потребителей). Решение владельца: раскатывать сразу на все 22,
     без узкого среза-замера. Форма — одношаговая для 21 (состав кита не
