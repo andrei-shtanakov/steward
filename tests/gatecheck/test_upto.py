@@ -186,3 +186,14 @@ def test_declared_scope_lists_only_relaxed_nodes_not_delegates(
     (spec / "a.md").write_text("---\nspec_stage: a\nstatus: draft\nversion: 1\n---\n")
     payload = json.loads(_run(spec, "--upto", "a", "--format", "json").stdout)
     assert payload["upto"]["not_required"] == ["b", "c1", "c2", "d"]
+
+
+def test_upto_with_trace_matrix_is_config_error(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """The matrix payload cannot carry the boundary, and below the behaviour-spec
+    level a missing matrix would read as a broken bundle — so the pair is refused."""
+    spec = _bundle(tmp_path, "a")
+    result = _run(spec, "--upto", "a", "--trace-matrix")
+    assert result.exit_code == 2
+    assert "--upto judges an incomplete bundle" in result.stderr
