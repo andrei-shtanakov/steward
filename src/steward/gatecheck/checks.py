@@ -28,7 +28,7 @@ from steward.graph import SpecGraph
 from steward.meta import ArtifactMeta, MetaError, parse_artifact
 from steward.roleassignments import RoleAssignments
 
-__all__ = ["Artifact", "Finding", "collect_bundle", "run_checks"]
+__all__ = ["Artifact", "Finding", "collect_bundle", "relaxable", "run_checks"]
 
 _APPROVED = "approved"
 
@@ -162,7 +162,7 @@ def check_completeness(
     rather than running without it.
     """
     present = _by_node(artifacts)
-    not_required = not_required - _upstream_closure(graph, present)
+    not_required = relaxable(graph, artifacts, not_required)
     findings = []
     for node in graph.nodes.values():
         if node.delegate is not None:
@@ -179,6 +179,16 @@ def check_completeness(
                 )
             )
     return findings
+
+
+def relaxable(graph: SpecGraph, artifacts: list[Artifact], above: Iterable[str]) -> frozenset[str]:
+    """The part of ``above`` a ``--upto`` boundary actually relaxes.
+
+    A node on which a present artifact (transitively) depends stays required.
+    One function for both the check and the CLI's declaration of the boundary,
+    so the declared scope can never disagree with the findings.
+    """
+    return frozenset(above) - _upstream_closure(graph, _by_node(artifacts))
 
 
 def _upstream_closure(graph: SpecGraph, node_ids: Iterable[str]) -> frozenset[str]:

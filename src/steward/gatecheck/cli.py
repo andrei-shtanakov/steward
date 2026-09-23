@@ -36,7 +36,7 @@ from steward.gatecheck.architecture import (
     load_arch_policy,
 )
 from steward.gatecheck.candidate import NOT_EVALUATED, CandidateGitFacts
-from steward.gatecheck.checks import Finding, collect_bundle, run_checks
+from steward.gatecheck.checks import Artifact, Finding, collect_bundle, relaxable, run_checks
 from steward.gatecheck.git_facts import (
     FactsError,
     GitFacts,
@@ -291,12 +291,14 @@ class UptoScope:
     not_required: tuple[str, ...]
 
 
-def _upto_scope(graph: SpecGraph, node: str) -> UptoScope:
+def _upto_scope(graph: SpecGraph, node: str, artifacts: list[Artifact]) -> UptoScope:
     """Resolve ``--upto <node>`` to a level boundary over the full graph.
 
     The boundary is the node's **level**, not its upstream closure: a
     same-level sibling (``design`` for ``--upto acceptance``) stays required,
-    because a devtools wave approves a whole level at once.
+    because a devtools wave approves a whole level at once. The declared set is
+    exactly what completeness relaxes (:func:`relaxable`): an upstream of a
+    present artifact is not excused and so is not listed.
     """
     if node not in graph.nodes:
         _fail_config(f"--upto {node!r} is not a node of profile {graph.profile!r}")
@@ -304,12 +306,15 @@ def _upto_scope(graph: SpecGraph, node: str) -> UptoScope:
     boundary = levels[node]
     # Only nodes whose requirement is actually relaxed: a delegate or an
     # optional node is never required, so listing it would overstate the scope.
-    above = tuple(
+    above = [
         n
         for n in graph.topo_order()
         if levels[n] > boundary and graph.nodes[n].required and graph.nodes[n].delegate is None
+    ]
+    relaxed = relaxable(graph, artifacts, above)
+    return UptoScope(
+        node=node, level=boundary, not_required=tuple(n for n in above if n in relaxed)
     )
-    return UptoScope(node=node, level=boundary, not_required=above)
 
 
 def _echo_upto(scope: UptoScope) -> None:
@@ -488,8 +493,6 @@ def main(
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm
 
-    upto_scope = _upto_scope(graph, upto) if upto is not None else None
-
     if candidate:
         git: GitFacts = CandidateGitFacts(spec_dir)
         mode = _MODE_CANDIDATE
@@ -498,6 +501,7 @@ def main(
         mode = _MODE_INJECTED if no_fs is not None else _MODE_LIVE
 
     artifacts, findings = collect_bundle(graph, spec_dir)
+    upto_scope = _upto_scope(graph, upto, artifacts) if upto is not None else None
 
     role_problems = unresolved_role_refs(artifacts, roles_catalog)
     if role_problems:

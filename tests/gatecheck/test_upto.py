@@ -234,3 +234,6 @@ def test_upstream_of_a_present_artifact_stays_required_above_the_boundary(
     assert result.exit_code == 1
     missing = {art for rule, art in _rules(result) if rule == "GC-COMPLETENESS"}
     assert missing == {"b", "c1", "c2"}
+    # The declaration names what was actually excused, never a node it then flags.
+    # d itself stays excused (present anyway); b/c1/c2 are not listed.
+    assert json.loads(result.stdout)["upto"]["not_required"] == ["d"]
