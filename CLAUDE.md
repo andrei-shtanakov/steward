@@ -26,7 +26,7 @@ Package management is **uv only** (never pip):
 - `uv run ruff format .` / `uv run ruff check . --fix` — format and lint (line length 100 per the blueprint's pyproject)
 - `uv run gate-check --profile team spec/` — run the gate-check CLI (`--stage authoring|release` selects the GC-ARCH-CONFORMANCE stage policy, `profiles/arch-policy.yaml`; default `authoring`; `--arch-stage` is deprecated alias)
 - `uv run gate-check --profile team --candidate <dir>` — prospective run over a **candidate revision**: directory content that is not a git ref yet (uncommitted files, an assembled bundle), no checkout required. Ref-bound gates are declared not-evaluated, never passed; the stale cascade still runs, content-addressed. Docs: `docs/gate-check-candidate.md`
-- `uv run gate-check --profile team --candidate --upto <node> <dir>` — judge an incomplete bundle up to `<node>`'s DAG level (steward#187): only completeness is relaxed above it, the boundary is declared (`upto` in JSON); incompatible with `--stage release` / `--emit-verdicts` / `--trace-matrix`. Docs: `docs/gate-check-candidate.md`
+- `uv run gate-check --profile team --candidate --upto <node> <dir>` — judge an incomplete bundle up to `<node>`'s DAG level (steward#187): only completeness is relaxed above it, the boundary is declared (`upto` in JSON); incompatible with `--stage release` / `--emit-verdicts` / `--approval-facts` / `--trace-matrix`. Docs: `docs/gate-check-candidate.md`
 - `uv run steward risk-classify …` / `uv run steward waivers-check …` — risk tier + waiver validation (WS-006)
 - `uv run steward-compile project-yaml …` / `uv run steward-compile delegation …` — compile-down emitters
 

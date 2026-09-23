@@ -197,3 +197,27 @@ def test_upto_with_trace_matrix_is_config_error(
     result = _run(spec, "--upto", "a", "--trace-matrix")
     assert result.exit_code == 2
     assert "--upto judges an incomplete bundle" in result.stderr
+
+
+def test_upto_with_approval_facts_is_config_error(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """--upto forbids release, the only stage that reads --approval-facts: the
+    override would be guaranteed inert, so it is refused rather than ignored."""
+    spec = _bundle(tmp_path, "a")
+    facts = tmp_path / "facts.jsonl"
+    facts.write_text("")
+    result = runner.invoke(
+        app,
+        [
+            str(spec),
+            "--profile",
+            str(tmp_path / "waves.yaml"),
+            "--upto",
+            "a",
+            "--approval-facts",
+            str(facts),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--upto judges an incomplete bundle" in result.stderr

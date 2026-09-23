@@ -407,7 +407,7 @@ def main(
         help="Judge an incomplete bundle up to this node's DAG level: nodes on "
         "higher levels are not required, but any present artifact is still fully "
         "checked. The boundary is declared in the output. Incompatible with "
-        "--stage release, --emit-verdicts and --trace-matrix.",
+        "--stage release, --emit-verdicts, --approval-facts and --trace-matrix.",
     ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
@@ -455,6 +455,11 @@ def main(
             _fail_config(
                 "--upto judges an incomplete bundle; its verdicts are not a record "
                 "of the whole bundle — drop --emit-verdicts"
+            )
+        if approval_facts is not None:
+            _fail_config(
+                "--upto judges an incomplete bundle, which never reaches --stage release "
+                "where --approval-facts is read — drop --approval-facts"
             )
         if trace_matrix:
             # The matrix payload has no place to declare the boundary, and below
