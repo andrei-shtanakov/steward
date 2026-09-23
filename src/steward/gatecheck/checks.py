@@ -13,6 +13,7 @@ Deferred by design (documented, not forgotten):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -27,7 +28,7 @@ from steward.graph import SpecGraph
 from steward.meta import ArtifactMeta, MetaError, parse_artifact
 from steward.roleassignments import RoleAssignments
 
-__all__ = ["Artifact", "Finding", "collect_bundle", "run_checks"]
+__all__ = ["Artifact", "Finding", "collect_bundle", "relaxable", "run_checks"]
 
 _APPROVED = "approved"
 
@@ -107,6 +108,7 @@ def run_checks(
     assignments: RoleAssignments | None = None,
     *,
     prospective: bool = False,
+    not_required: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """Run every check and concatenate their findings.
 
@@ -122,12 +124,18 @@ def run_checks(
     reaches only for ``blob_hash``, which is a content address a candidate can
     answer (and answer more accurately than a live checkout, which would read
     the last commit instead of the files in front of it).
+
+    ``not_required`` (``gate-check --upto``) relaxes **only** completeness for
+    the nodes above the boundary. The graph itself is never truncated: an
+    artifact of such a node that is present stays a node of the graph and goes
+    through every other check — a truncated graph would demote it to a
+    ``GC-STAGE`` warning and let it skip traceability and the stale cascade.
     """
     # Local import: behaviour.py imports Artifact/Finding from this module.
     from steward.gatecheck.behaviour import check_behaviour_spec
 
     findings: list[Finding] = []
-    findings.extend(check_completeness(graph, artifacts))
+    findings.extend(check_completeness(graph, artifacts, not_required))
     findings.extend(check_traceability(graph, artifacts))
     findings.extend(check_upstream_approved(graph, artifacts))
     if not prospective:
@@ -142,13 +150,25 @@ def _by_node(artifacts: list[Artifact]) -> dict[str, Artifact]:
     return {a.node_id: a for a in artifacts if a.node_id is not None}
 
 
-def check_completeness(graph: SpecGraph, artifacts: list[Artifact]) -> list[Finding]:
-    """REQ-202: every required, non-delegated node has an artifact."""
+def check_completeness(
+    graph: SpecGraph, artifacts: list[Artifact], not_required: frozenset[str] = frozenset()
+) -> list[Finding]:
+    """REQ-202: every required, non-delegated node has an artifact.
+
+    Nodes in ``not_required`` (above a ``--upto`` boundary) are out of scope —
+    unless a present artifact depends on them. A bundle with a hole below a
+    present artifact is not a level prefix, and later checks (the behaviour
+    gates among them) rely on completeness having flagged a missing upstream
+    rather than running without it.
+    """
     present = _by_node(artifacts)
+    not_required = relaxable(graph, artifacts, not_required)
     findings = []
     for node in graph.nodes.values():
         if node.delegate is not None:
             continue  # delegated leaves live per-workstream, not in the bundle
+        if node.id in not_required:
+            continue
         if node.required and node.id not in present:
             findings.append(
                 Finding(
@@ -159,6 +179,28 @@ def check_completeness(graph: SpecGraph, artifacts: list[Artifact]) -> list[Find
                 )
             )
     return findings
+
+
+def relaxable(graph: SpecGraph, artifacts: list[Artifact], above: Iterable[str]) -> frozenset[str]:
+    """The part of ``above`` a ``--upto`` boundary actually relaxes.
+
+    A node on which a present artifact (transitively) depends stays required.
+    One function for both the check and the CLI's declaration of the boundary,
+    so the declared scope can never disagree with the findings.
+    """
+    return frozenset(above) - _upstream_closure(graph, _by_node(artifacts))
+
+
+def _upstream_closure(graph: SpecGraph, node_ids: Iterable[str]) -> frozenset[str]:
+    """Every transitive upstream of ``node_ids`` (the nodes themselves excluded)."""
+    seen: set[str] = set()
+    frontier = [up for node_id in node_ids for up in graph.nodes[node_id].upstream]
+    while frontier:
+        node_id = frontier.pop()
+        if node_id not in seen:
+            seen.add(node_id)
+            frontier.extend(graph.nodes[node_id].upstream)
+    return frozenset(seen)
 
 
 def check_traceability(graph: SpecGraph, artifacts: list[Artifact]) -> list[Finding]:

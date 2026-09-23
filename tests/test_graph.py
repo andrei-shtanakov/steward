@@ -311,3 +311,34 @@ def test_shipped_team_profile_loads_canonical() -> None:
     assert graph.nodes["acceptance"].owner_role == "qa"
     assert graph.nodes["decomposition"].owner_role == "tech-lead"
     assert graph.nodes["tasks"].owner_role == "stream-owner"
+
+
+def test_levels_on_shipped_team_exp_match_the_devtools_waves() -> None:
+    """level = 0 at a root, else 1 + max over direct upstream — the formula
+    devtools' ``bundle_dag.levels`` uses for its waves (steward#187). design and
+    acceptance share a level: that is what makes --upto a level, not a closure."""
+    catalog = load_roles_catalog(PROFILES / "roles.yaml")
+    graph = load_profile(PROFILES / "team-exp.yaml", catalog)
+    assert graph.levels() == {
+        "charter": 0,
+        "requirements": 1,
+        "behaviour-spec": 2,
+        "design": 3,
+        "acceptance": 3,
+        "decomposition": 4,
+        "tasks": 5,
+    }
+
+
+def test_levels_take_the_longest_upstream_path() -> None:
+    g = _graph(
+        {
+            "profile": "p",
+            "artifacts": [
+                {"id": "a", "owner_role": "product", "upstream": []},
+                {"id": "b", "owner_role": "product", "upstream": ["a"]},
+                {"id": "c", "owner_role": "product", "upstream": ["a", "b"]},
+            ],
+        }
+    )
+    assert g.levels() == {"a": 0, "b": 1, "c": 2}

@@ -68,6 +68,21 @@ class SpecGraph:
         """Return node ids in dependency order (every upstream before its downstream)."""
         return _kahn_order(self.nodes)
 
+    def levels(self) -> dict[str, int]:
+        """Return each node's DAG level: 0 at a root, else ``1 + max`` over direct upstream.
+
+        The longest-path level, not a BFS depth — the same formula devtools'
+        ``bundle_dag.levels`` uses for its approval waves, which is what makes
+        ``gate-check --upto`` and a devtools wave agree on a bundle prefix
+        (steward#187). Nodes sharing a level (``design``/``acceptance``) are
+        one wave.
+        """
+        result: dict[str, int] = {}
+        for node_id in self.topo_order():
+            upstream = self.nodes[node_id].upstream
+            result[node_id] = 1 + max(result[u] for u in upstream) if upstream else 0
+        return result
+
 
 def load_profile(path: str | Path, roles_catalog: RolesCatalog) -> SpecGraph:
     """Load and validate a profile YAML file into a :class:`SpecGraph`.
