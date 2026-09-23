@@ -107,6 +107,7 @@ def run_checks(
     assignments: RoleAssignments | None = None,
     *,
     prospective: bool = False,
+    not_required: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """Run every check and concatenate their findings.
 
@@ -122,12 +123,18 @@ def run_checks(
     reaches only for ``blob_hash``, which is a content address a candidate can
     answer (and answer more accurately than a live checkout, which would read
     the last commit instead of the files in front of it).
+
+    ``not_required`` (``gate-check --upto``) relaxes **only** completeness for
+    the nodes above the boundary. The graph itself is never truncated: an
+    artifact of such a node that is present stays a node of the graph and goes
+    through every other check — a truncated graph would demote it to a
+    ``GC-STAGE`` warning and let it skip traceability and the stale cascade.
     """
     # Local import: behaviour.py imports Artifact/Finding from this module.
     from steward.gatecheck.behaviour import check_behaviour_spec
 
     findings: list[Finding] = []
-    findings.extend(check_completeness(graph, artifacts))
+    findings.extend(check_completeness(graph, artifacts, not_required))
     findings.extend(check_traceability(graph, artifacts))
     findings.extend(check_upstream_approved(graph, artifacts))
     if not prospective:
@@ -142,13 +149,20 @@ def _by_node(artifacts: list[Artifact]) -> dict[str, Artifact]:
     return {a.node_id: a for a in artifacts if a.node_id is not None}
 
 
-def check_completeness(graph: SpecGraph, artifacts: list[Artifact]) -> list[Finding]:
-    """REQ-202: every required, non-delegated node has an artifact."""
+def check_completeness(
+    graph: SpecGraph, artifacts: list[Artifact], not_required: frozenset[str] = frozenset()
+) -> list[Finding]:
+    """REQ-202: every required, non-delegated node has an artifact.
+
+    Nodes in ``not_required`` (above a ``--upto`` boundary) are out of scope.
+    """
     present = _by_node(artifacts)
     findings = []
     for node in graph.nodes.values():
         if node.delegate is not None:
             continue  # delegated leaves live per-workstream, not in the bundle
+        if node.id in not_required:
+            continue
         if node.required and node.id not in present:
             findings.append(
                 Finding(

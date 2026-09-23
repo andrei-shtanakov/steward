@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -48,7 +49,7 @@ from steward.gatecheck.trace_matrix import (
     render_matrix_json,
     render_matrix_text,
 )
-from steward.graph import ProfileError, load_profile
+from steward.graph import ProfileError, SpecGraph, load_profile
 from steward.roleassignments import AssignmentsError, load_role_assignments
 from steward.roles import RolesCatalog, RolesError, load_roles_catalog
 from steward.verdicts import EmitError, emit_verdicts
@@ -281,7 +282,50 @@ def _echo_not_evaluated() -> None:
         typer.echo(f"  {entry.label}: {entry.reason}", err=True)
 
 
-def _render_json(findings: list[Finding], mode: str) -> None:
+@dataclass(frozen=True)
+class UptoScope:
+    """The ``--upto`` boundary: nodes above ``level`` are not required (steward#187)."""
+
+    node: str
+    level: int
+    not_required: tuple[str, ...]
+
+
+def _upto_scope(graph: SpecGraph, node: str) -> UptoScope:
+    """Resolve ``--upto <node>`` to a level boundary over the full graph.
+
+    The boundary is the node's **level**, not its upstream closure: a
+    same-level sibling (``design`` for ``--upto acceptance``) stays required,
+    because a devtools wave approves a whole level at once.
+    """
+    if node not in graph.nodes:
+        _fail_config(f"--upto {node!r} is not a node of profile {graph.profile!r}")
+    levels = graph.levels()
+    boundary = levels[node]
+    # Only nodes whose requirement is actually relaxed: a delegate or an
+    # optional node is never required, so listing it would overstate the scope.
+    above = tuple(
+        n
+        for n in graph.topo_order()
+        if levels[n] > boundary and graph.nodes[n].required and graph.nodes[n].delegate is None
+    )
+    return UptoScope(node=node, level=boundary, not_required=above)
+
+
+def _echo_upto(scope: UptoScope) -> None:
+    """Declare the ``--upto`` boundary on stderr, like the not-evaluated list.
+
+    A partial pass must never read as a full one; stdout stays one payload.
+    """
+    skipped = ", ".join(scope.not_required) or "—"
+    typer.echo(
+        f"граница проверки: --upto {scope.node} (уровень {scope.level}); "
+        f"не требуются узлы выше: {skipped}",
+        err=True,
+    )
+
+
+def _render_json(findings: list[Finding], mode: str, upto: UptoScope | None) -> None:
     payload: dict[str, object] = {
         "mode": mode,
         "findings": [vars(f) for f in findings],
@@ -297,6 +341,12 @@ def _render_json(findings: list[Finding], mode: str) -> None:
         payload["not_evaluated"] = [
             {"gate": e.gate_id, "scope": e.scope, "reason": e.reason} for e in NOT_EVALUATED
         ]
+    if upto is not None:
+        payload["upto"] = {
+            "node": upto.node,
+            "level": upto.level,
+            "not_required": list(upto.not_required),
+        }
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
@@ -351,6 +401,14 @@ def main(
         "(approval-facts/v2 only). Default: <repo-root>/.steward/"
         "approval_facts.jsonl. Consulted at --stage release.",
     ),
+    upto: str | None = typer.Option(
+        None,
+        "--upto",
+        help="Judge an incomplete bundle up to this node's DAG level: nodes on "
+        "higher levels are not required, but any present artifact is still fully "
+        "checked. The boundary is declared in the output. Incompatible with "
+        "--stage release and --emit-verdicts.",
+    ),
 ) -> None:
     """Lint a governance bundle against its profile's gates."""
     resolved_stage = _resolve_stage(stage, arch_stage)
@@ -388,6 +446,17 @@ def main(
                 "cannot have — run the candidate at --stage authoring"
             )
 
+    # An incomplete bundle is neither releasable nor a verdict record: both
+    # would read the partial pass as a full one.
+    if upto is not None:
+        if resolved_stage == "release":
+            _fail_config("--upto judges an incomplete bundle and cannot run at --stage release")
+        if emit_verdicts_flag:
+            _fail_config(
+                "--upto judges an incomplete bundle; its verdicts are not a record "
+                "of the whole bundle — drop --emit-verdicts"
+            )
+
     profile_path = _resolve_profile_path(profile)
     roles_catalog = _load_roles(profile_path)
     try:
@@ -406,6 +475,8 @@ def main(
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm
 
+    upto_scope = _upto_scope(graph, upto) if upto is not None else None
+
     if candidate:
         git: GitFacts = CandidateGitFacts(spec_dir)
         mode = _MODE_CANDIDATE
@@ -421,7 +492,16 @@ def main(
         _fail_config("\n".join([*role_problems, f"roles catalog: {roles_path}"]))
 
     try:
-        findings.extend(run_checks(graph, artifacts, git, assignments, prospective=candidate))
+        findings.extend(
+            run_checks(
+                graph,
+                artifacts,
+                git,
+                assignments,
+                prospective=candidate,
+                not_required=frozenset(upto_scope.not_required) if upto_scope else frozenset(),
+            )
+        )
     except FactsError as err:
         _fail_config(str(err))
         raise AssertionError from None  # unreachable; keeps type-checkers calm
@@ -490,12 +570,14 @@ def main(
         renderer = render_matrix_json if output == "json" else render_matrix_text
         typer.echo(renderer(matrix))
     elif output == "json":
-        _render_json(findings, mode)
+        _render_json(findings, mode, upto_scope)
     else:
         _render_text(findings, mode)
 
     if mode == _MODE_CANDIDATE:
         _echo_not_evaluated()
+    if upto_scope is not None:
+        _echo_upto(upto_scope)
 
     if any(f.severity == "error" for f in findings):
         raise typer.Exit(_EXIT_FINDINGS)
