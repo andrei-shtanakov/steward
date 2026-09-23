@@ -221,3 +221,16 @@ def test_upto_with_approval_facts_is_config_error(
     )
     assert result.exit_code == 2
     assert "--upto judges an incomplete bundle" in result.stderr
+
+
+def test_upstream_of_a_present_artifact_stays_required_above_the_boundary(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """A hole under a present artifact is not a level prefix: --upto a does not
+    excuse b/c1/c2 when d is in the bundle. Otherwise the checks that skip on a
+    missing upstream (the behaviour gates) would go quiet with nothing red."""
+    spec = _bundle(tmp_path, "a", "d")
+    result = _run(spec, "--upto", "a", "--format", "json")
+    assert result.exit_code == 1
+    missing = {art for rule, art in _rules(result) if rule == "GC-COMPLETENESS"}
+    assert missing == {"b", "c1", "c2"}

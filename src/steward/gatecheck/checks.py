@@ -13,6 +13,7 @@ Deferred by design (documented, not forgotten):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -154,9 +155,14 @@ def check_completeness(
 ) -> list[Finding]:
     """REQ-202: every required, non-delegated node has an artifact.
 
-    Nodes in ``not_required`` (above a ``--upto`` boundary) are out of scope.
+    Nodes in ``not_required`` (above a ``--upto`` boundary) are out of scope —
+    unless a present artifact depends on them. A bundle with a hole below a
+    present artifact is not a level prefix, and later checks (the behaviour
+    gates among them) rely on completeness having flagged a missing upstream
+    rather than running without it.
     """
     present = _by_node(artifacts)
+    not_required = not_required - _upstream_closure(graph, present)
     findings = []
     for node in graph.nodes.values():
         if node.delegate is not None:
@@ -173,6 +179,18 @@ def check_completeness(
                 )
             )
     return findings
+
+
+def _upstream_closure(graph: SpecGraph, node_ids: Iterable[str]) -> frozenset[str]:
+    """Every transitive upstream of ``node_ids`` (the nodes themselves excluded)."""
+    seen: set[str] = set()
+    frontier = [up for node_id in node_ids for up in graph.nodes[node_id].upstream]
+    while frontier:
+        node_id = frontier.pop()
+        if node_id not in seen:
+            seen.add(node_id)
+            frontier.extend(graph.nodes[node_id].upstream)
+    return frozenset(seen)
 
 
 def check_traceability(graph: SpecGraph, artifacts: list[Artifact]) -> list[Finding]:
