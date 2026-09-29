@@ -18,6 +18,7 @@ import yaml
 
 from steward.approvalfacts.publish import FACTS_RELPATH, ConfigError, parse_origin
 from steward.gatecatalog import CatalogError, GateCatalog, load_catalog
+from steward.gatecheck.acceptance import acceptance_skip_reason
 from steward.gatecheck.approval import (
     ApprovalPolicy,
     FactsOutcome,
@@ -67,6 +68,11 @@ _DEFAULT_STAGE = "authoring"
 _MODE_LIVE = "live"
 _MODE_INJECTED = "injected"
 _MODE_CANDIDATE = "candidate"
+# The schema-1 skip names a SCOPE inside GC-BEH-COVERAGE: the gate's FR coverage
+# still runs and may fire in the same run; what is skipped is the acceptance
+# clause set — strict AC grammar and orphans (steward#190).
+_ACCEPTANCE_GATE = "GC-BEH-COVERAGE"
+_ACCEPTANCE_SCOPE = "acceptance"
 
 
 def _fail_config(message: str) -> None:
@@ -330,13 +336,27 @@ def _echo_upto(scope: UptoScope) -> None:
     )
 
 
-def _render_json(findings: list[Finding], mode: str, upto: UptoScope | None) -> None:
+def _echo_skipped(reason: str) -> None:
+    """Declare a check the bundle is outside of (steward#190: schema-1 acceptance).
+
+    On stderr like the not-evaluated list; a silent zero would read as "no orphans".
+    """
+    typer.echo(f"не проверено: {_ACCEPTANCE_GATE} [{_ACCEPTANCE_SCOPE}]: {reason}", err=True)
+
+
+def _render_json(
+    findings: list[Finding], mode: str, upto: UptoScope | None, skip_reason: str | None
+) -> None:
     payload: dict[str, object] = {
         "mode": mode,
         "findings": [vars(f) for f in findings],
         "errors": sum(1 for f in findings if f.severity == "error"),
         "warnings": sum(1 for f in findings if f.severity == "warn"),
     }
+    if skip_reason is not None:
+        payload["skipped"] = [
+            {"gate": _ACCEPTANCE_GATE, "scope": _ACCEPTANCE_SCOPE, "reason": skip_reason}
+        ]
     # Only the prospective run declares this: the list is a property of the
     # MODE (which gates it structurally cannot reach), not a per-run audit.
     # Emitting `[]` for a ref-bound run would read as "everything else ran",
@@ -551,6 +571,8 @@ def main(
             _fail_config(str(err))
             raise AssertionError from None  # unreachable; keeps type-checkers calm
 
+    skip_reason = acceptance_skip_reason(graph, artifacts)
+
     arch = collect_arch_bundle(spec_dir)
     if arch is not None:
         try:
@@ -587,12 +609,14 @@ def main(
         renderer = render_matrix_json if output == "json" else render_matrix_text
         typer.echo(renderer(matrix))
     elif output == "json":
-        _render_json(findings, mode, upto_scope)
+        _render_json(findings, mode, upto_scope, skip_reason)
     else:
         _render_text(findings, mode)
 
     if mode == _MODE_CANDIDATE:
         _echo_not_evaluated()
+    if skip_reason is not None:
+        _echo_skipped(skip_reason)
     if upto_scope is not None:
         _echo_upto(upto_scope)
 

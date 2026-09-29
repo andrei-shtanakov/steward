@@ -131,7 +131,8 @@ def run_checks(
     through every other check — a truncated graph would demote it to a
     ``GC-STAGE`` warning and let it skip traceability and the stale cascade.
     """
-    # Local import: behaviour.py imports Artifact/Finding from this module.
+    # Local imports: both modules import Artifact/Finding from this one.
+    from steward.gatecheck.acceptance import check_acceptance
     from steward.gatecheck.behaviour import check_behaviour_spec
 
     findings: list[Finding] = []
@@ -143,6 +144,7 @@ def run_checks(
     findings.extend(check_stale_cascade(graph, artifacts, git))
     findings.extend(check_compile_block(artifacts))
     findings.extend(check_behaviour_spec(graph, artifacts))
+    findings.extend(check_acceptance(graph, artifacts))
     return findings
 
 
