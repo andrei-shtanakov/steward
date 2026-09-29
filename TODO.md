@@ -447,12 +447,18 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 Цель — два парсера бандла (steward gate-check и devtools guards) не расходятся.
 
 - [ ] **Парсеры бандла под оракул devtools** @owner:github:andrei-shtanakov @id:bundle-oracle-parsers @epic:eco.dark-factory
-  - [ ] **PR-1 · парсер BEH + словарь + указание автору** (п.1, 2, 5 заявки): `kind: unit` в
+  - [x] **PR-1 · парсер BEH + словарь + указание автору** (п.1, 2, 5 заявки): `kind: unit` в
         `_CHECK_KINDS`; суффикс ID `-NN[a-z]` у BEH (и FR/NFR — грамматика devtools
         `acceptance_guard` та же); словарь `Must|Should|Could|Won't` уже совпадает — закрепить
         тестом; «поведение — свойство *текста* продукта (докстринг, формулировка в исходнике) →
         `kind: manual`, не тест» — в нормативный формат узла (`gatecheck/behaviour.py`; файлов
-        шаблонов у steward нет, профиль лишь называет `template:`)
+        шаблонов у steward нет, профиль лишь называет `template:`) — PR этой ветки. Сверх заявки
+        (находки локального ревью): near-miss сеть как у devtools — заголовок уровня 2–6 на
+        `FR-`/`NFR-`/`BEH-`, не совпавший с грамматикой целиком (`BEH-01ab`, `### FR-06`,
+        `BEH-01-a`), — ошибка `GC-BEH-TRACE` (BEH) / `GC-BEH-COVERAGE` (FR/NFR upstream), а не
+        молча выпавшее определение; новых GC-id нет. Названные слепые пятна (как у devtools):
+        `FR06` без дефиса, заголовки с отступом и уровня 1. trace-матрица сортирует
+        `FR-03 < FR-03a < FR-10`
   - [ ] **PR-2 · сироты §1.7** (п.4): каждый BEH, кроме Won't, входит в `scenarios` хотя бы
         одного не-Won't AC. **Граница — charter `schema: 2`** (решение владельца 2026-09-29):
         для схемы 2 проверяется строгая AC-грамматика devtools (`#### AC-NN: … · verification:
