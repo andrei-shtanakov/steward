@@ -44,3 +44,10 @@ jobs:
       # WS-005 bundle: the first real team-exp bundle, gated by the
       # behaviour-lifecycle checks it was born from (TODO §6b / §3).
       - run: uv run gate-check --profile team-exp workstreams/WS-005-gate-verdicts/spec/
+      # steward#190 item 3: charter schema 2 + workstream-code registry, same
+      # contract as devtools charter_guard (PR: against the base branch; push:
+      # against the previous tip — deleting/moving a schema-2 charter is red).
+      - name: charter-check
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: uv run steward charter-check --repo-name steward --base "$BASE"

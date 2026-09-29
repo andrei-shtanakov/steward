@@ -28,6 +28,7 @@ Package management is **uv only** (never pip):
 - `uv run gate-check --profile team --candidate <dir>` — prospective run over a **candidate revision**: directory content that is not a git ref yet (uncommitted files, an assembled bundle), no checkout required. Ref-bound gates are declared not-evaluated, never passed; the stale cascade still runs, content-addressed. Docs: `docs/gate-check-candidate.md`
 - `uv run gate-check --profile team --candidate --upto <node> <dir>` — judge an incomplete bundle up to `<node>`'s DAG level (steward#187): only completeness is relaxed above it, the boundary is declared (`upto` in JSON); incompatible with `--stage release` / `--emit-verdicts` / `--approval-facts` / `--trace-matrix`. Docs: `docs/gate-check-candidate.md`
 - `uv run steward risk-classify …` / `uv run steward waivers-check …` — risk tier + waiver validation (WS-006)
+- `uv run steward charter-check [--base <ref>]` — charter schema 2 (`code`, `plan_item`) + workstream-code registry over `workstreams/*/spec/00-charter.md`; same contract as devtools `charter_guard` (steward#190). Docs: `docs/charter-check.md`
 - `uv run steward-compile project-yaml …` / `uv run steward-compile delegation …` — compile-down emitters
 
 Python >= 3.12.
