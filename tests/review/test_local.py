@@ -3809,3 +3809,20 @@ def test_spec_mode_changes_the_fingerprint(tmp_path: Path) -> None:
     spec = run_local(repo, "false", "--fingerprint-only", "--spec", env_overrides=env)
     assert code.returncode == 0 and spec.returncode == 0, (code.stderr, spec.stderr)
     assert code.stdout.strip() != spec.stdout.strip()
+
+
+def test_spec_refusal_does_not_leave_a_stale_verdict(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    stale = tmp_path / "verdict.json"
+    stale.write_text('{"findings":[],"note":"old run"}', encoding="utf-8")
+    result = run_local(
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),
+        "--spec",
+        env_overrides={
+            "REVIEW_PROMPT_SPEC": str(tmp_path / "нет.md"),
+            "REVIEW_VERDICT_OUT": str(stale),
+        },
+    )
+    assert result.returncode == 2
+    assert not stale.exists()

@@ -354,26 +354,6 @@ info() {
     if [ "$fp_only" -eq 1 ]; then echo "$@" >&2; else echo "$@"; fi
 }
 
-# Режим спецификаций: промпт — отдельный файл, проза — в области ревью (спека
-# и есть проза). Промпт входит в отпечаток входа, поэтому смена режима меняет
-# отпечаток сама — вердикт кода не наследуется ревью спеки и наоборот.
-if [ "$spec_mode" -eq 1 ]; then
-    if [ -n "${REVIEW_PROMPT_SPEC+x}" ] && [ -z "$REVIEW_PROMPT_SPEC" ]; then
-        echo "REVIEW_PROMPT_SPEC задан пустым — уберите переменную или назовите" \
-            "файл промпта режима спецификаций" >&2
-        exit 2
-    fi
-    if [ ! -f "$prompt_spec" ]; then
-        echo "--spec: нет промпта режима спецификаций: $prompt_spec" \
-            "(файл кита .github/codex/review-prompt-spec.md — сосед" \
-            "review-prompt.md; либо укажите REVIEW_PROMPT_SPEC)" >&2
-        exit 2
-    fi
-    prompt="$prompt_spec"
-    include_prose=1
-    info "режим спецификаций (steward#184): промпт $prompt_spec, проза в области ревью"
-fi
-
 # --- Инвалидация sidecar-артефактов (после режимов-запросов) ----------------
 # Инвариант контракта: «файл по REVIEW_VERDICT_OUT/REVIEW_USAGE_OUT есть =
 # результат ИМЕННО этого прогона». Поэтому стираем прежний файл до всякой
@@ -407,6 +387,28 @@ if [ "$fp_only" -eq 0 ]; then
         echo "REVIEW_USAGE_OUT: не удалить прежний файл $REVIEW_USAGE_OUT" >&2
         exit 2
     }
+fi
+
+# Режим спецификаций: промпт — отдельный файл, проза — в области ревью (спека
+# и есть проза). Промпт входит в отпечаток входа, поэтому смена режима меняет
+# отпечаток сама — вердикт кода не наследуется ревью спеки и наоборот.
+# Стоит НИЖЕ сброса sidecar: отказ режима не должен оставить прежний вердикт
+# лежать как результат этого прогона (находка приёмочного ревью #196).
+if [ "$spec_mode" -eq 1 ]; then
+    if [ -n "${REVIEW_PROMPT_SPEC+x}" ] && [ -z "$REVIEW_PROMPT_SPEC" ]; then
+        echo "REVIEW_PROMPT_SPEC задан пустым — уберите переменную или назовите" \
+            "файл промпта режима спецификаций" >&2
+        exit 2
+    fi
+    if [ ! -f "$prompt_spec" ]; then
+        echo "--spec: нет промпта режима спецификаций: $prompt_spec" \
+            "(файл кита .github/codex/review-prompt-spec.md — сосед" \
+            "review-prompt.md; либо укажите REVIEW_PROMPT_SPEC)" >&2
+        exit 2
+    fi
+    prompt="$prompt_spec"
+    include_prose=1
+    info "режим спецификаций (steward#184): промпт $prompt_spec, проза в области ревью"
 fi
 
 # --- нужен ли remote вообще -------------------------------------------------
