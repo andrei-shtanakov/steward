@@ -446,7 +446,7 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
 `docs/superpowers/specs/2026-09-28-bundle-criteria-oracle-design.md` rev 10, §1.1–1.7, §6).
 Цель — два парсера бандла (steward gate-check и devtools guards) не расходятся.
 
-- [ ] **Парсеры бандла под оракул devtools** @owner:github:andrei-shtanakov @id:bundle-oracle-parsers @epic:eco.dark-factory
+- [x] **Парсеры бандла под оракул devtools** @owner:github:andrei-shtanakov @id:bundle-oracle-parsers @epic:eco.dark-factory — steward#190 закрыт 2026-09-29 (PR #191–#194, master `b77ee0d`), итог по пунктам — комментарий в #190
   - [x] **PR-1 · парсер BEH + словарь + указание автору** (п.1, 2, 5 заявки): `kind: unit` в
         `_CHECK_KINDS`; суффикс ID `-NN[a-z]` у BEH (и FR/NFR — грамматика devtools
         `acceptance_guard` та же); словарь `Must|Should|Could|Won't` уже совпадает — закрепить
@@ -510,9 +510,8 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
         сценариях (чисто / грамматика / коллизия / надгробие / смена кода — одинаковые
         находки). В CI steward — шаг job `gate-check` (PR: против base-ветки, push: против
         прежней верхушки). Docs: `docs/charter-check.md`
-  - [ ] **Миграция WS-005 на схему 2** — отдельно (решение владельца 2026-09-29): его
-        acceptance сейчас прозой (`**AC-001 · …** Агрегирует BEH-..`), под PR-2 его BEH были бы
-        сиротами
+
+- [ ] **Миграция WS-005 на charter схемы 2** (не часть steward#190 — собственный бандл-пример steward в старом формате): `schema: 2`/`code`/`plan_item` в charter и acceptance в AC-грамматике (`#### AC-NN: … · verification: …` + `traces:`/`scenarios:`) — иначе под проверкой сирот его BEH стали бы сиротами. Не блокирует ничего @owner:github:andrei-shtanakov @id:ws005-charter-schema2-migration
 
 ### 7. Постоянные обязательства и отложенное
 
