@@ -81,10 +81,10 @@ coverage_waivers:
 """
 
 
-def _artifacts() -> list[Artifact]:
+def _artifacts(requirements: str = _REQUIREMENTS) -> list[Artifact]:
     artifacts = []
     for node_id, path, text in (
-        ("requirements", "10-requirements.md", _REQUIREMENTS),
+        ("requirements", "10-requirements.md", requirements),
         ("behaviour-spec", "15-behaviour.md", _BEHAVIOUR),
     ):
         meta = parse_artifact(text)
@@ -114,6 +114,19 @@ def test_matrix_rows_are_id_sorted_and_complete() -> None:
     matrix = _matrix()
     ids = [row["id"] for row in matrix["requirements"]]
     assert ids == ["FR-01", "FR-02", "FR-03", "NFR-01"]  # FR block before NFR, numeric order
+
+
+def test_matrix_orders_lettered_suffix_ids_naturally() -> None:
+    # steward#190: `FR-03a` is a definition now; it sorts after FR-03, not as 0.
+    requirements = _REQUIREMENTS.replace(
+        "#### FR-01:",
+        "#### FR-03a: Suffixed\n**Priority**: 🟡 Could\n\n#### FR-10: Ten\n"
+        "**Priority**: 🟡 Could\n\n#### FR-01:",
+    )
+    matrix = build_trace_matrix(load_profile_data(_PROFILE, _CATALOG), _artifacts(requirements))
+    assert matrix is not None
+    ids = [row["id"] for row in matrix["requirements"]]
+    assert ids == ["FR-01", "FR-02", "FR-03", "FR-03a", "FR-10", "NFR-01"]
 
 
 def test_matrix_derives_all_coverage_kinds() -> None:
