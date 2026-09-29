@@ -410,3 +410,85 @@ def test_dotted_tail_truncated_by_grammar_is_a_finding() -> None:
     behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01.2:")
     findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
     assert any("BEH-01.2" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE")
+
+
+# --- debt @id:near-miss-glued-tail-debt (acceptance review #191) ---
+
+
+def test_glued_tail_names_the_id_it_was_read_as() -> None:
+    # `BEH-03-Title` parses as BEH-03, yet devtools (`:` required after the id)
+    # does not read it as a BEH at all — so it stays an error, honestly worded.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02: Offline render", "#### BEH-02-Offline render")
+    trace = [
+        f
+        for f in check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+        if f.rule_id == "GC-BEH-TRACE"
+    ]
+    assert len(trace) == 1
+    assert "read as 'BEH-02'" in trace[0].message and "dropped" not in trace[0].message
+
+
+def test_truncated_suffix_names_both_readings() -> None:
+    # `BEH-01-a` may be a glued title OR a meant suffix — the message must not
+    # claim one cause; the suffix fix is `BEH-01a`, not a second `BEH-01`.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01-a:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    message = next(f.message for f in findings if "BEH-01-a" in f.message)
+    assert "BEH-01: <title>" in message and "BEH-01a" in message
+
+
+def test_duplicate_beh_id_is_a_finding() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any(
+        "BEH-01 is declared 2 times" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE"
+    )
+
+
+def test_dropped_heading_keeps_the_dropped_wording() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any("is not parsed" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE")
+
+
+def test_near_miss_rule_id_follows_the_artifact_not_the_id_prefix() -> None:
+    # Ruling: a near-miss in the behaviour-spec is GC-BEH-TRACE even for an FR
+    # heading; a near-miss in an upstream artifact is GC-BEH-COVERAGE.
+    behaviour = _BEHAVIOUR_OK + "\n### FR-06: stray requirement heading\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    stray = [f for f in findings if "FR-06" in f.message]
+    assert [(f.rule_id, f.artifact) for f in stray] == [("GC-BEH-TRACE", "15-behaviour.md")]
+
+
+def test_duplicate_requirement_id_is_a_coverage_finding() -> None:
+    # A second `#### FR-01` with Could would silently demote the Must.
+    requirements = _REQUIREMENTS + "\n#### FR-01: Panel revised\n**Priority**: 🟡 Could\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
+    dup = [f for f in findings if "FR-01 is declared 2 times" in f.message]
+    assert [(f.rule_id, f.artifact) for f in dup] == [("GC-BEH-COVERAGE", "10-requirements.md")]
+
+
+def test_suffix_advice_is_not_offered_when_the_id_already_has_one() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02: Offline render", "#### BEH-02a-Offline render")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    message = next(f.message for f in findings if "BEH-02a-Offline" in f.message)
+    assert "BEH-02a: <title>" in message and "BEH-02aa" not in message
+
+
+def test_duplicate_requirement_across_two_upstream_artifacts_is_a_finding() -> None:
+    data = {
+        **_PROFILE,
+        "artifacts": [
+            {"id": "requirements", "owner_role": "product", "upstream": []},
+            {"id": "nfrs", "owner_role": "product", "upstream": []},
+            {"id": "behaviour-spec", "owner_role": "product", "upstream": ["requirements", "nfrs"]},
+        ],
+    }
+    extra = "---\nspec_stage: nfrs\n---\n#### FR-01: Panel again\n**Priority**: 🟡 Could\n"
+    artifacts = _artifacts(_REQUIREMENTS, _BEHAVIOUR_OK)
+    meta = parse_artifact(extra)
+    assert meta is not None
+    artifacts.append(Artifact(path="12-nfrs.md", node_id="nfrs", meta=meta, text=extra))
+    findings = check_behaviour_spec(_graph(data), artifacts)
+    dup = [f for f in findings if "FR-01 is declared 2 times" in f.message]
+    assert [(f.rule_id, f.artifact) for f in dup] == [("GC-BEH-COVERAGE", "12-nfrs.md")]

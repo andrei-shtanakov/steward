@@ -77,50 +77,68 @@ def check_acceptance(graph: SpecGraph, artifacts: list[Artifact]) -> list[Findin
     present = _present(graph, artifacts)
     if present is None:
         return []
-    charter, behaviour, acceptance = present
+    charter, behaviour, acceptance, missing = present
     schema, schema_finding = _charter_schema(charter)
     if schema_finding is not None:
         return [schema_finding]
     if schema != 2:
         return []
 
+    criteria, findings = parse_ac_criteria(acceptance)
+    beh_ids = {s.beh_id for s in parse_scenarios(behaviour.text)}
+    findings.extend(_form_reference_findings(acceptance, criteria, beh_ids))
+    # Without every upstream of acceptance the requirement set is incomplete:
+    # a trace would read as undefined and a Won't-only BEH as an orphan. Those
+    # two clauses are skipped and declared — the declaration, not GC-COMPLETENESS,
+    # is what keeps this loud: completeness reds only a *required* node.
+    if missing:
+        return findings
     priorities = parse_priorities(
         [a.text for a in artifacts if a.node_id in graph.nodes[ACCEPTANCE_NODE].upstream]
     )
-    criteria, findings = parse_ac_criteria(acceptance)
-    beh_ids = {s.beh_id for s in parse_scenarios(behaviour.text)}
-    findings.extend(_reference_findings(acceptance, criteria, priorities, beh_ids))
+    findings.extend(_trace_reference_findings(acceptance, criteria, priorities))
     findings.extend(_orphan_findings(behaviour, criteria, priorities))
     return findings
 
 
 def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str | None:
-    """Why the orphan check did not run on an applicable bundle, or None.
+    """Why acceptance checks did not (fully) run on an applicable bundle, or None.
 
-    None both when it ran (schema 2, or a schema error that is itself a finding)
-    and when it does not apply at all — a profile without charter, behaviour-spec
-    and acceptance nodes, or a bundle missing behaviour-spec or acceptance
-    (completeness owns that). A profile *with* a charter node whose artifact is
-    absent is declared: the schema, and so the boundary, is unknown.
+    Mirrors :func:`check_acceptance` guard for guard. Declared: a charter node
+    whose artifact is absent (boundary unknown), charter schema 1 (nothing ran),
+    and on schema 2 an absent upstream of acceptance (the trace and orphan
+    clauses did not run). None when everything ran, when a schema error was
+    reported as GC-META instead, or when the checks do not apply at all — a
+    profile without charter, behaviour-spec and acceptance nodes, or a bundle
+    missing behaviour-spec or acceptance (completeness owns that).
     """
     present = _present(graph, artifacts)
     if present is None:
         return None
-    charter, _, _ = present
+    charter, _, _, missing = present
     if charter is None:
         return "no charter artifact in the bundle — its schema, and so the boundary, is unknown"
     schema, schema_finding = _charter_schema(charter)
-    if schema_finding is None and schema == 1:
+    if schema_finding is not None:
+        return None
+    if schema == 1:
         return (
             "charter schema 1 — the acceptance checks (strict AC grammar, and every "
             "non-Won't BEH in a non-Won't AC) apply from charter schema 2"
+        )
+    if missing:
+        return (
+            f"acceptance upstream artifact(s) absent from the bundle: {', '.join(missing)} "
+            "— the trace-reference and orphan clauses did not run (AC grammar did); "
+            "GC-COMPLETENESS also reports it when the node is required"
         )
     return None
 
 
 def _present(
     graph: SpecGraph, artifacts: list[Artifact]
-) -> tuple[Artifact | None, Artifact, Artifact] | None:
+) -> tuple[Artifact | None, Artifact, Artifact, tuple[str, ...]] | None:
+    """(charter, behaviour, acceptance, missing acceptance upstreams), or None."""
     if any(node not in graph.nodes for node in (CHARTER_NODE, BEHAVIOUR_NODE, ACCEPTANCE_NODE)):
         return None
     by_node = {a.node_id: a for a in artifacts if a.node_id is not None}
@@ -128,7 +146,8 @@ def _present(
     acceptance = by_node.get(ACCEPTANCE_NODE)
     if behaviour is None or acceptance is None:
         return None
-    return by_node.get(CHARTER_NODE), behaviour, acceptance
+    missing = tuple(up for up in graph.nodes[ACCEPTANCE_NODE].upstream if up not in by_node)
+    return by_node.get(CHARTER_NODE), behaviour, acceptance, missing
 
 
 def _charter_schema(charter: Artifact | None) -> tuple[int | None, Finding | None]:
@@ -216,21 +235,25 @@ def parse_ac_criteria(acceptance: Artifact) -> tuple[list[AcCriterion], list[Fin
     return criteria, findings
 
 
-def _reference_findings(
-    acceptance: Artifact,
-    criteria: list[AcCriterion],
-    priorities: dict[str, str],
-    beh_ids: set[str],
+def _trace_reference_findings(
+    acceptance: Artifact, criteria: list[AcCriterion], priorities: dict[str, str]
 ) -> list[Finding]:
+    return [
+        _finding(acceptance, f"{c.ac_id} traces {ref!r}, which no upstream artifact defines")
+        for c in criteria
+        for ref in c.traces or ()
+        if ref not in priorities
+    ]
+
+
+def _form_reference_findings(
+    acceptance: Artifact, criteria: list[AcCriterion], beh_ids: set[str]
+) -> list[Finding]:
+    """AC reference checks that need no requirement priorities."""
     findings: list[Finding] = []
     for c in criteria:
         if not c.traces:
             findings.append(_finding(acceptance, f"{c.ac_id} has no non-empty `traces:` line"))
-        findings.extend(
-            _finding(acceptance, f"{c.ac_id} traces {ref!r}, which no upstream artifact defines")
-            for ref in c.traces or ()
-            if ref not in priorities
-        )
         if c.verification == "test" and not c.scenarios:
             findings.append(
                 _finding(acceptance, f"{c.ac_id} is verification: test with empty `scenarios`")
