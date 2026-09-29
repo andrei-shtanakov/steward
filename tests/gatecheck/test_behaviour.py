@@ -410,3 +410,34 @@ def test_dotted_tail_truncated_by_grammar_is_a_finding() -> None:
     behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01.2:")
     findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
     assert any("BEH-01.2" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE")
+
+
+# --- debt @id:near-miss-glued-tail-debt (acceptance review #191) ---
+
+
+def test_glued_tail_names_the_id_it_was_read_as() -> None:
+    # `BEH-03-Title` parses as BEH-03, yet devtools (`:` required after the id)
+    # does not read it as a BEH at all — so it stays an error, honestly worded.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02: Offline render", "#### BEH-02-Offline render")
+    trace = [
+        f
+        for f in check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+        if f.rule_id == "GC-BEH-TRACE"
+    ]
+    assert len(trace) == 1
+    assert "read as 'BEH-02'" in trace[0].message and "dropped" not in trace[0].message
+
+
+def test_dropped_heading_keeps_the_dropped_wording() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any("is not parsed" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE")
+
+
+def test_near_miss_rule_id_follows_the_artifact_not_the_id_prefix() -> None:
+    # Ruling: a near-miss in the behaviour-spec is GC-BEH-TRACE even for an FR
+    # heading; a near-miss in an upstream artifact is GC-BEH-COVERAGE.
+    behaviour = _BEHAVIOUR_OK + "\n### FR-06: stray requirement heading\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    stray = [f for f in findings if "FR-06" in f.message]
+    assert [(f.rule_id, f.artifact) for f in stray] == [("GC-BEH-TRACE", "15-behaviour.md")]

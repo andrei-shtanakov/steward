@@ -99,8 +99,8 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
 
     None both when it ran (schema 2, or a schema error that is itself a finding)
     and when it does not apply at all — a profile without charter, behaviour-spec
-    and acceptance nodes, or a bundle missing behaviour-spec or acceptance
-    (completeness owns that). A profile *with* a charter node whose artifact is
+    and acceptance nodes, or a bundle missing behaviour-spec, acceptance or an
+    upstream of acceptance (completeness owns that). A profile *with* a charter node whose artifact is
     absent is declared: the schema, and so the boundary, is unknown.
     """
     present = _present(graph, artifacts)
@@ -127,6 +127,11 @@ def _present(
     behaviour = by_node.get(BEHAVIOUR_NODE)
     acceptance = by_node.get(ACCEPTANCE_NODE)
     if behaviour is None or acceptance is None:
+        return None
+    # Without every upstream of acceptance (requirements) each priority is
+    # unknown: a Won't-only BEH would read as an orphan and every trace as
+    # undefined. GC-COMPLETENESS already reds the bundle; say nothing false.
+    if any(up not in by_node for up in graph.nodes[ACCEPTANCE_NODE].upstream):
         return None
     return by_node.get(CHARTER_NODE), behaviour, acceptance
 

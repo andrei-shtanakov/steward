@@ -391,3 +391,12 @@ def test_prose_still_ends_the_field_region_after_a_blank_line() -> None:
 def test_form_feed_in_prose_does_not_shift_line_indexing() -> None:
     acceptance = _ACCEPTANCE.replace("# Acceptance\n", "# Acceptance\nintro\x0cmore\n")
     assert _check(acceptance=acceptance) == []
+
+
+def test_missing_requirements_artifact_leaves_acceptance_to_completeness() -> None:
+    # Acceptance review #192: without requirements every priority is unknown,
+    # so a Won't-only BEH read as an orphan and each trace as "undefined".
+    graph = load_profile_data(_PROFILE, _CATALOG)
+    artifacts = [a for a in _artifacts(_CHARTER_V2) if a.node_id != "requirements"]
+    assert check_acceptance(graph, artifacts) == []
+    assert acceptance_skip_reason(graph, artifacts) is None

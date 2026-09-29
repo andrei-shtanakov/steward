@@ -126,15 +126,18 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     scenarios = parse_scenarios(behaviour.text)
     priorities = parse_priorities([artifact.text for artifact in upstream])
     # A dropped BEH loses its trace and check binding; a dropped FR/NFR is never
-    # counted by coverage — neither may pass in silence.
+    # counted by coverage — neither may pass in silence. The rule id follows the
+    # ARTIFACT, not the id prefix: any near-miss in the behaviour-spec is
+    # GC-BEH-TRACE (its scenario layer is unreadable), any in an upstream
+    # artifact GC-BEH-COVERAGE (its requirement set is unreadable).
     findings = [
-        Finding("error", "GC-BEH-TRACE", behaviour.path, _near_miss_message(near_id))
-        for near_id in _near_miss_headings(behaviour.text)
+        Finding("error", "GC-BEH-TRACE", behaviour.path, message)
+        for message in _near_miss_messages(behaviour.text)
     ]
     findings.extend(
-        Finding("error", "GC-BEH-COVERAGE", artifact.path, _near_miss_message(near_id))
+        Finding("error", "GC-BEH-COVERAGE", artifact.path, message)
         for artifact in upstream
-        for near_id in _near_miss_headings(artifact.text)
+        for message in _near_miss_messages(artifact.text)
     )
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
@@ -176,29 +179,37 @@ def _check_trace(
     return findings
 
 
-def _near_miss_headings(text: str) -> list[str]:
-    """Headings (``#`` run + id) the definition grammar does not match whole.
+def _near_miss_messages(text: str) -> list[str]:
+    """One message per heading the definition grammar does not match whole.
 
-    Such a heading is dropped (``BEH-01ab``, ``### FR-06``) or truncated
-    (``BEH-01-a`` → ``BEH-01``) by :data:`_DEF_RE` — either way silently, so the
-    callers turn each one into a finding. Mirrors the devtools guards' near-miss
-    net; like theirs, it does not see an indented or level-1 heading.
+    Such a heading is either dropped by :data:`_DEF_RE` (``BEH-01ab``,
+    ``### FR-06``) or read under a shorter id (``BEH-01-a`` and
+    ``BEH-03-Title`` both → the bare id). The second kind stays an error too:
+    ``BEH-01-a`` and a title glued to the id cannot be told apart, and the
+    devtools guards (``:`` required after the id) read neither as a definition.
+    Mirrors their near-miss net; like theirs, it does not see an indented or
+    level-1 heading.
     """
     strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(text)}
-    return [
-        f"{near.group(1)} {near.group(2)}"
-        for near in _NEAR_DEF_RE.finditer(text)
-        if strict.get(near.start()) != near.group(2)
-    ]
-
-
-def _near_miss_message(heading: str) -> str:
-    return (
-        f"heading {heading!r} is outside the definition grammar: a definition is a "
-        "level-4 heading `#### <ID>` whose id matches FR-NN / NFR-NN / BEH-NN "
-        "(optional one-letter suffix) whole — this one is dropped or read under a "
-        "truncated id"
-    )
+    messages = []
+    for near in _NEAR_DEF_RE.finditer(text):
+        read_as = strict.get(near.start())
+        if read_as == near.group(2):
+            continue
+        heading = f"{near.group(1)} {near.group(2)}"
+        if read_as is None:
+            consequence = "it is not parsed as a definition at all"
+        else:
+            consequence = (
+                f"it is read as {read_as!r} — the id runs into its title; separate "
+                f"them (`#### {read_as}: <title>`)"
+            )
+        messages.append(
+            f"heading {heading!r} is outside the definition grammar (a level-4 heading "
+            "`#### <ID>` whose id is FR-NN / NFR-NN / BEH-NN, optional one-letter "
+            f"suffix, matched whole): {consequence}"
+        )
+    return messages
 
 
 def _check_coverage(

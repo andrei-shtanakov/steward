@@ -475,12 +475,25 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
         завендоренного каталога. Skip — **объявление, не находка** (stderr + JSON `skipped`), чтобы WS-005 не нёс
         ложный warn в вердиктах; `schema` читается как у devtools `charter_guard` (нет → 1,
         `2`/`"2"` → 2), вне `1|2` — `GC-META`. Docs: `docs/gate-check-candidate.md`
-  - [ ] **Долг PR-1 (приёмочное ревью #191, minor):** near-miss сеть краснит заголовок с
+  - [x] **Долг PR-1 (приёмочное ревью #191, minor):** near-miss сеть краснит заголовок с
         приклеенным к id хвостом, который `_DEF_RE` читает верно (`#### BEH-03-Title` → `BEH-03`),
         сообщением «dropped or truncated»; и не зафиксировано, по какому признаку выбирается id
         находки — по артефакту (сейчас: BEH-артефакт → `GC-BEH-TRACE`, upstream →
         `GC-BEH-COVERAGE`) или по префиксу id (`### FR-06` внутри behaviour-spec)
-        @owner:github:andrei-shtanakov @id:near-miss-glued-tail-debt
+        @owner:github:andrei-shtanakov @id:near-miss-glued-tail-debt — PR этой ветки: находка
+        остаётся **ошибкой** (`BEH-01-a` и приклеенный заголовок неотличимы, а devtools с
+        обязательным `:` после id не читает как определение ни то, ни другое — это расхождение
+        парсеров), но сообщение честное: «read as 'BEH-03' — the id runs into its title;
+        separate them»; для выпавшего заголовка — «not parsed as a definition at all». Id
+        находки — **по артефакту**, не по префиксу: near-miss в behaviour-spec — `GC-BEH-TRACE`
+        (нечитаем слой сценариев), в upstream — `GC-BEH-COVERAGE` (нечитаемо множество
+        требований); закреплено тестом и комментарием
+  - [x] **Долг PR-2 (приёмочное ревью #192, minor):** без артефакта requirements проверка
+        приёмки давала ложные находки — BEH, трассирующий только Won't, читался сиротой, каждый
+        `traces:` — «не определён» (приоритеты неизвестны) @owner:github:andrei-shtanakov
+        @id:acceptance-missing-upstream-debt — PR этой ветки: без любого upstream узла
+        `acceptance` проверка неприменима и молчит, как `check_behaviour_spec` без upstream —
+        бандл уже красный по `GC-COMPLETENESS`, ложного не утверждаем
   - [ ] **PR-3 · гейт charter схемы 2** (п.3): `schema: 2`, `code: ^[A-Z]{2,6}$`,
         `plan_item: todo://<repo>/<id>`; реестр кодов — сами charter'ы (надгробие: удалить или
         перенести нельзя; коллизия — нарушитель позже влитый по first-parent; смена кода только
