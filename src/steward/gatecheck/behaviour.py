@@ -13,9 +13,11 @@ Normative body format (mirrors the golden run):
   (also matches ``NFR-NN``; an id may carry one lowercase letter suffix,
   ``FR-01a`` / ``BEH-03a``, as devtools' bundle guards accept); the block until
   the next definition may carry a ``**Priority**: 🔴 Must`` line
-  (Must | Should | Could | Won't). An id-shaped heading at levels 2–6 that this
-  grammar does not match whole (``BEH-01ab``, ``### FR-06``, ``BEH-01-a``) is an
-  error, never a silently dropped definition.
+  (Must | Should | Could | Won't). A heading at levels 2–6 opening with
+  ``FR-``/``NFR-``/``BEH-`` that this grammar does not match whole
+  (``BEH-01ab``, ``### FR-06``, ``BEH-01-a``) is an error — as in the devtools
+  guards, which also flag a section header like ``## FR-01 — notes``. Out of the
+  net, like theirs: a missing hyphen (``FR06``), indented or level-1 headings.
 - Scenario definitions: ``#### BEH-01: Title`` headings with an inline
   `` `traces: [FR-01, NFR-02]` `` code span on the heading line or inside the block.
 - Check binding, one line inside the scenario block, all fields as code spans::
