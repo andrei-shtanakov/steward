@@ -89,7 +89,8 @@ def check_acceptance(graph: SpecGraph, artifacts: list[Artifact]) -> list[Findin
     findings.extend(_form_reference_findings(acceptance, criteria, beh_ids))
     # Without every upstream of acceptance the requirement set is incomplete:
     # a trace would read as undefined and a Won't-only BEH as an orphan. Those
-    # two clauses are skipped (and declared); GC-COMPLETENESS reds the gap.
+    # two clauses are skipped and declared — the declaration, not GC-COMPLETENESS,
+    # is what keeps this loud: completeness reds only a *required* node.
     if missing:
         return findings
     priorities = parse_priorities(
@@ -129,7 +130,7 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
         return (
             f"acceptance upstream artifact(s) absent from the bundle: {', '.join(missing)} "
             "— the trace-reference and orphan clauses did not run (AC grammar did); "
-            "GC-COMPLETENESS reports the gap"
+            "GC-COMPLETENESS also reports it when the node is required"
         )
     return None
 
