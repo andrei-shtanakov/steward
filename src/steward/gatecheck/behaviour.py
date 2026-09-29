@@ -194,9 +194,10 @@ def _near_miss_headings(text: str) -> list[str]:
 
 def _near_miss_message(heading: str) -> str:
     return (
-        f"heading {heading!r} is not a definition: a definition is a level-4 "
-        "heading `#### <ID>` whose id matches FR-NN / NFR-NN / BEH-NN (optional "
-        "one-letter suffix) whole — this one is dropped or read under a truncated id"
+        f"heading {heading!r} is outside the definition grammar: a definition is a "
+        "level-4 heading `#### <ID>` whose id matches FR-NN / NFR-NN / BEH-NN "
+        "(optional one-letter suffix) whole — this one is dropped or read under a "
+        "truncated id"
     )
 
 
