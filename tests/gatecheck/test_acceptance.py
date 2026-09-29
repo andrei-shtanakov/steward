@@ -263,3 +263,54 @@ def test_cli_schema_2_runs_without_a_skip_declaration(tmp_path: Path) -> None:
     result = _run(_write_bundle(tmp_path, _CHARTER_V2), "--format", "json")
     assert result.exit_code == 0, result.output
     assert "skipped" not in json.loads(result.stdout)
+
+
+# --- local review, PR-2: a field line must belong to its own AC -------------
+
+_ABSORBING = """---
+spec_stage: acceptance
+---
+## Criteria
+
+#### AC-01: Panel works · verification: manual
+traces: [FR-01]
+scenarios: [BEH-01]
+
+**AC-02 · Trend visible**
+traces: [FR-02]
+scenarios: [BEH-02]
+"""
+
+
+def test_prose_ac_entry_after_a_strict_ac_is_not_absorbed() -> None:
+    text = _messages(_check(acceptance=_ABSORBING))
+    assert "'AC-02'" in text  # the prose entry is a grammar finding
+    assert "BEH-02" in text and "orphan" in text  # and does not cover BEH-02
+
+
+def test_repeated_field_line_in_one_block_is_ambiguous() -> None:
+    acceptance = _ACCEPTANCE.replace(
+        "scenarios: [BEH-01]\n", "scenarios: [BEH-01]\nscenarios: [BEH-02]\n"
+    )
+    assert "more than one `scenarios:`" in _messages(_check(acceptance=acceptance))
+
+
+def test_any_heading_ends_the_ac_block() -> None:
+    acceptance = _ACCEPTANCE.replace(
+        "traces: [FR-02]\nscenarios: [BEH-02]\n",
+        "traces: [FR-02]\n\n#### Rationale\nscenarios: [BEH-02]\n",
+    )
+    assert "BEH-02" in _messages(_check(acceptance=acceptance))
+
+
+def test_ac_mentioned_mid_sentence_is_not_an_entry() -> None:
+    acceptance = _ACCEPTANCE.replace("## Notes\n", "## Notes\nSee AC-01 and AC-02 above.\n")
+    assert _check(acceptance=acceptance) == []
+
+
+@pytest.mark.usefixtures("write_roles", "write_role_assignments")
+def test_cli_declares_missing_charter_skip(tmp_path: Path) -> None:
+    spec = _write_bundle(tmp_path, _CHARTER_V1)
+    (spec / "00-charter.md").unlink()
+    result = _run(spec, "--format", "json")
+    assert "no charter" in json.loads(result.stdout)["skipped"][0]["reason"]

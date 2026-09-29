@@ -13,7 +13,8 @@ declare it: a silent zero would read as "no orphans". ``schema`` absent means 1;
 ``2`` and ``"2"`` both mean 2 (as devtools ``charter_guard`` reads it); anything
 else is a GC-META error, never a quiet fallback to schema 1.
 
-Normative AC format (block ends at the next AC heading or a level 1–3 section)::
+Normative AC format (the block ends at the next AC-shaped entry or any heading;
+a field line appears once per block)::
 
     #### AC-01: Title · verification: test|manual|metric
     traces: [FR-01, NFR-02]
@@ -44,8 +45,13 @@ _WONT = "Won't"
 _AC_HEAD_RE = re.compile(
     r"(?m)^####\s+(AC-\d+[a-z]?):\s*(.+?)\s*·\s*verification:\s*(test|manual|metric)\s*$"
 )
-_AC_NEAR_RE = re.compile(r"(?m)^#{2,6}\s+(AC-[^\s:]*)")
-_SECTION_RE = re.compile(r"(?m)^#{1,3}\s")
+# Any AC-shaped *entry*: a heading, or a line opening with an AC id (optionally
+# bulleted / bold — WS-005's prose form `**AC-001 · …**`). A mid-sentence mention
+# is not an entry. Entries the strict grammar rejects are findings, and every
+# entry ends the block before it, so no field line is read under a foreign AC.
+_AC_NEAR_RE = re.compile(r"(?m)^(?:#{2,6}\s+|[ \t]*(?:[-*+][ \t]+)?\**)(AC-[^\s:*·]*)")
+_HEADING_RE = re.compile(r"(?m)^#{1,6}\s")
+_FIELDS = ("traces", "scenarios")
 
 
 @dataclass(frozen=True)
@@ -148,13 +154,20 @@ def parse_ac_criteria(acceptance: Artifact) -> tuple[list[AcCriterion], list[Fin
     heads = list(_AC_HEAD_RE.finditer(text))
     if not heads:
         findings.append(_finding(acceptance, "charter schema 2 bundle has no AC definition"))
+    entry_starts = [near.start() for near in _AC_NEAR_RE.finditer(text)]
     criteria: list[AcCriterion] = []
-    for i, head in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-        block = text[head.end() : end]
-        section = _SECTION_RE.search(block)
-        if section is not None:
-            block = block[: section.start()]
+    for head in heads:
+        # The block ends at the next AC-shaped entry or at any heading.
+        ends = [start for start in entry_starts if start > head.start()]
+        heading = _HEADING_RE.search(text, head.end())
+        if heading is not None:
+            ends.append(heading.start())
+        block = text[head.end() : min(ends, default=len(text))]
+        findings.extend(
+            _finding(acceptance, f"{head.group(1)} has more than one `{name}:` line")
+            for name in _FIELDS
+            if len(re.findall(rf"(?m)^{name}:", block)) > 1
+        )
         criteria.append(
             AcCriterion(
                 ac_id=head.group(1),
