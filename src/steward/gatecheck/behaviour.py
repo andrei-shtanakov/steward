@@ -11,8 +11,11 @@ Normative body format (mirrors the golden run):
 
 - Requirement definitions in the upstream artifact: ``#### FR-01: Title`` headings
   (also matches ``NFR-NN``; an id may carry one lowercase letter suffix,
-  ``FR-01a`` / ``BEH-03a``, as devtools' bundle guards accept); the block until the next definition may carry a
-  ``**Priority**: 🔴 Must`` line (Must | Should | Could | Won't).
+  ``FR-01a`` / ``BEH-03a``, as devtools' bundle guards accept); the block until
+  the next definition may carry a ``**Priority**: 🔴 Must`` line
+  (Must | Should | Could | Won't). An id-shaped heading at levels 2–6 that this
+  grammar does not match whole (``BEH-01ab``, ``### FR-06``, ``BEH-01-a``) is an
+  error, never a silently dropped definition.
 - Scenario definitions: ``#### BEH-01: Title`` headings with an inline
   `` `traces: [FR-01, NFR-02]` `` code span on the heading line or inside the block.
 - Check binding, one line inside the scenario block, all fields as code spans::
@@ -21,15 +24,15 @@ Normative body format (mirrors the golden run):
 
   ``kind`` is one of ``unit | integration | contract | e2e | atp | manual``.
   ``status: planned`` needs ``kind``/``owner``/``target``; ``materialized`` needs
-  ``ref``; ``waived`` needs ``reason``.
+  ``ref``; ``waived`` needs ``reason``. Two-stage gate (ADR D2): ``planned`` is
+  enough before compile-down; GC-CHECK-READY (workstream/release stage) is out of
+  this slice.
 
   Authoring rule (devtools bundle-criteria oracle §1.6, steward#190): a scenario
   whose behaviour is a property of the product's *text* — a docstring, a wording
   in the source — is bound as ``kind: manual``, not as a test. A test that reads
   the source instead of executing the product proves nothing about behaviour;
-  ``manual`` moves the criterion to the human checklist instead of losing it. Two-stage gate (ADR D2): ``planned`` is
-  enough before compile-down; GC-CHECK-READY (workstream/release stage) is out of
-  this slice.
+  ``manual`` moves the criterion to the human checklist instead of losing it.
 - Frontmatter, structural coverage (FR → ARCH-constraint → verification obligation
   chain, FL-03 as refined at golden-run acceptance) and waivers::
 
@@ -120,9 +123,17 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
 
     scenarios = parse_scenarios(behaviour.text)
     priorities = parse_priorities([artifact.text for artifact in upstream])
-    findings = _malformed_heading_findings(behaviour, "GC-BEH-TRACE")
-    for artifact in upstream:
-        findings.extend(_malformed_heading_findings(artifact, "GC-BEH-COVERAGE"))
+    # A dropped BEH loses its trace and check binding; a dropped FR/NFR is never
+    # counted by coverage — neither may pass in silence.
+    findings = [
+        Finding("error", "GC-BEH-TRACE", behaviour.path, _near_miss_message(near_id))
+        for near_id in _near_miss_headings(behaviour.text)
+    ]
+    findings.extend(
+        Finding("error", "GC-BEH-COVERAGE", artifact.path, _near_miss_message(near_id))
+        for artifact in upstream
+        for near_id in _near_miss_headings(artifact.text)
+    )
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
     findings.extend(_check_planned(behaviour, scenarios, priorities))
@@ -163,29 +174,28 @@ def _check_trace(
     return findings
 
 
-def _malformed_heading_findings(artifact: Artifact, rule_id: str) -> list[Finding]:
-    """A heading outside the id grammar would drop its definition silently.
+def _near_miss_headings(text: str) -> list[str]:
+    """Id-shaped headings the definition grammar does not match whole.
 
-    A dropped BEH loses its trace and check binding (GC-BEH-TRACE); a dropped
-    FR/NFR leaves coverage without ever being counted (GC-BEH-COVERAGE).
+    Such a heading is dropped (``BEH-01ab``, ``### FR-06``) or truncated
+    (``BEH-01-a`` → ``BEH-01``) by :data:`_DEF_RE` — either way silently, so the
+    callers turn each one into a finding. Mirrors the devtools guards' near-miss
+    net; like theirs, it does not see an indented or level-1 heading.
     """
-    strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(artifact.text)}
-    near_misses = [
+    strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(text)}
+    return [
         near.group(2)
-        for near in _NEAR_DEF_RE.finditer(artifact.text)
+        for near in _NEAR_DEF_RE.finditer(text)
         if strict.get(near.start()) != near.group(2)
     ]
-    return [
-        Finding(
-            "error",
-            rule_id,
-            artifact.path,
-            f"heading {near_id!r} is outside the definition id grammar "
-            "(`#### FR-NN` / `NFR-NN` / `BEH-NN`, optional one-letter suffix) — "
-            "it is not parsed as that definition",
-        )
-        for near_id in near_misses
-    ]
+
+
+def _near_miss_message(near_id: str) -> str:
+    return (
+        f"heading {near_id!r} does not match the definition id grammar whole "
+        "(`#### FR-NN` / `NFR-NN` / `BEH-NN`, optional one-letter suffix) — it is "
+        "dropped or read under a truncated id"
+    )
 
 
 def _check_coverage(
