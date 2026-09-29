@@ -177,7 +177,7 @@ def _check_trace(
 
 
 def _near_miss_headings(text: str) -> list[str]:
-    """Id-shaped headings the definition grammar does not match whole.
+    """Headings (``#`` run + id) the definition grammar does not match whole.
 
     Such a heading is dropped (``BEH-01ab``, ``### FR-06``) or truncated
     (``BEH-01-a`` → ``BEH-01``) by :data:`_DEF_RE` — either way silently, so the
@@ -186,17 +186,17 @@ def _near_miss_headings(text: str) -> list[str]:
     """
     strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(text)}
     return [
-        near.group(2)
+        f"{near.group(1)} {near.group(2)}"
         for near in _NEAR_DEF_RE.finditer(text)
         if strict.get(near.start()) != near.group(2)
     ]
 
 
-def _near_miss_message(near_id: str) -> str:
+def _near_miss_message(heading: str) -> str:
     return (
-        f"heading {near_id!r} does not match the definition id grammar whole "
-        "(`#### FR-NN` / `NFR-NN` / `BEH-NN`, optional one-letter suffix) — it is "
-        "dropped or read under a truncated id"
+        f"heading {heading!r} is not a definition: a definition is a level-4 "
+        "heading `#### <ID>` whose id matches FR-NN / NFR-NN / BEH-NN (optional "
+        "one-letter suffix) whole — this one is dropped or read under a truncated id"
     )
 
 

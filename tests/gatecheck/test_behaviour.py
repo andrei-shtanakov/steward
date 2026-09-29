@@ -403,7 +403,7 @@ def test_trailing_punctuation_after_a_whole_id_is_not_a_finding() -> None:
 def test_wrong_heading_level_is_a_finding() -> None:
     requirements = _REQUIREMENTS + "\n### FR-06: Wrong level\n**Priority**: 🔴 Must\n"
     findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
-    assert any("FR-06" in f.message for f in findings if f.rule_id == "GC-BEH-COVERAGE")
+    assert any("'### FR-06'" in f.message for f in findings if f.rule_id == "GC-BEH-COVERAGE")
 
 
 def test_dotted_tail_truncated_by_grammar_is_a_finding() -> None:
