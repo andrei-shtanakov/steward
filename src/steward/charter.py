@@ -9,8 +9,11 @@ rev 10 §1.1–1.2, owner ruling 2026-09-29), so the two parsers of a bundle agr
   (not checked); frontmatter that does not parse is a finding, never schema 1 —
   a YAML typo must not switch the oracle off.
 - The code registry is the schema-2 charters themselves. Two charters with one
-  code: the violator is the one merged later on the default branch's
-  first-parent history (an uncommitted one is always the violator).
+  code: the violator is the one merged later on first-parent history — of
+  ``--base`` when given, else of HEAD (an uncommitted one is always the
+  violator). Judge collisions against ``--base``: on a branch that merged the
+  default branch in, HEAD's first-parent chain lists master's charters at the
+  merge commit, i.e. after the branch's own (devtools has the same property).
 - Against a base: a schema-2 charter is a tombstone — deleting it, moving its
   workstream directory or dropping it to schema 1 is a finding; its code is
   immutable, except for a collision violator already present in the base.
@@ -46,6 +49,7 @@ class Charter:
     code: str | None
     plan_item: str | None
     malformed: bool = False
+    raw_schema: object = None  # the value as written, for the finding message
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,7 @@ def read_charter(text: str) -> Charter:
         schema=int(schema) if str(schema).isdigit() else 0,
         code=None if code is None else str(code),
         plan_item=None if plan_item is None else str(plan_item),
+        raw_schema=schema,
     )
 
 
@@ -121,7 +126,9 @@ def _grammar_findings(
     if charter.schema != 2:
         return [
             CharterFinding(
-                "CHARTER-SCHEMA", path, f"schema {charter.schema} is outside the vocabulary 1|2"
+                "CHARTER-SCHEMA",
+                path,
+                f"schema {charter.raw_schema!r} is outside the vocabulary 1|2",
             )
         ]
     findings = []

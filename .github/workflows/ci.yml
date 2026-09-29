@@ -50,4 +50,11 @@ jobs:
       - name: charter-check
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
-        run: uv run steward charter-check --repo-name steward --base "$BASE"
+        # A branch-creating or force push has no usable `before` (zero SHA or
+        # unreachable): then the working-tree checks run without --base.
+        run: |
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            uv run steward charter-check --repo-name steward --base "$BASE"
+          else
+            uv run steward charter-check --repo-name steward
+          fi

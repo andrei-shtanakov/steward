@@ -22,6 +22,11 @@ uv run steward charter-check --base origin/master # + надгробие и не
 | `CHARTER-CODE-CHANGE` | против `--base`: код сменился не у нарушителя коллизии |
 | `CHARTER-BASE` | `--base` не резолвится в коммит (fail-closed, а не «в базе пусто») |
 
+Порядок влития для `CHARTER-COLLISION` берётся из first-parent истории `--base`, а
+без него — из HEAD. На ветке, в которую влит master, HEAD перечисляет charter'ы
+master на мерж-коммите, то есть позже собственных: решение о коллизии принимайте
+прогоном с `--base` (так делает CI). У devtools `charter_guard` то же свойство.
+
 Без frontmatter — схема 1, не проверяется. Имя репо для `plan_item` — имя каталога
 (канон: имя после `git clone`), переопределяется `--repo-name`. Коды выхода как у
 gate-check: 0 — чисто, 1 — находки, 2 — не git-репо. Коды `CHARTER-*`, а не `GC-*`:

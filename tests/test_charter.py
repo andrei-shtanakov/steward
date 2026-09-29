@@ -204,3 +204,10 @@ def test_cli_exit_codes(tmp_path: Path) -> None:
     assert bad.exit_code == 1 and "CHARTER-CODE" in bad.output
     missing = runner.invoke(app, ["charter-check", "--repo", str(tmp_path / "nope")])
     assert missing.exit_code == 2
+
+
+def test_schema_finding_names_the_value_as_written(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "ws-a", _charter(schema="two"))
+    findings = check_repo(repo, None)
+    assert _codes(findings) == ["CHARTER-SCHEMA"] and "'two'" in findings[0].message
