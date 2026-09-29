@@ -418,6 +418,38 @@ def verdicts_verify(
     typer.echo(f"chained: {report.lines} line(s), chain intact from line {report.chained_from}")
 
 
+@app.command("charter-check")
+def charter_check(
+    repo: Path = typer.Option(Path("."), "--repo", help="repository root to check"),
+    base: str | None = typer.Option(
+        None, "--base", help="base ref (PR base / pre-push commit): enables tombstone checks"
+    ),
+    repo_name: str | None = typer.Option(
+        None, "--repo-name", help="canonical repo name for plan_item (default: directory name)"
+    ),
+) -> None:
+    """Charter schema 2 and workstream-code uniqueness (steward#190 item 3).
+
+    Same contract as devtools ``charter_guard``: schema-2 grammar (code,
+    plan_item into this repo's TODO.md), one code per charter with the later
+    first-parent merge as violator, and — against ``--base`` — no deleting or
+    moving a schema-2 charter and no code change except by a violator. Exit
+    codes mirror gate-check: 0 clean, 1 findings, 2 config error.
+    """
+    from steward.charter import check_repo
+
+    root = repo.resolve()
+    if not (root / ".git").exists():
+        typer.echo(f"config error: {root} is not a git repository root", err=True)
+        raise typer.Exit(_EXIT_CONFIG)
+    findings = check_repo(root, base, repo_name=repo_name)
+    for f in findings:
+        typer.echo(f"error {f.rule_id}: {f.path or '<repo>'}: {f.message}")
+    if findings:
+        raise typer.Exit(1)
+    typer.echo("charter-check: clean")
+
+
 @app.command("proposal-intake")
 def proposal_intake(
     bundle_dir: Path = typer.Argument(
