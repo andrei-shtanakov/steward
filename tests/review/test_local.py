@@ -3726,3 +3726,103 @@ def test_trusted_base_without_value_is_a_config_error(tmp_path: Path) -> None:
     res = run_local(repo, make_stub(tmp_path, "exit 0"), "--trusted-base")
     assert res.returncode == 2, res.stdout + res.stderr
     assert "usage" in res.stderr
+
+
+# --- режим спецификаций (steward#184) ------------------------------------------
+
+SPEC_PROMPT = str(ROOT / ".github" / "codex" / "review-prompt-spec.md")
+
+
+def _prose_commit(tmp_path: Path) -> Path:
+    _, repo = make_repo(tmp_path)
+    (repo / "docs").mkdir(exist_ok=True)
+    (repo / "docs" / "spec.md").write_text("требование\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "spec only")
+    return repo
+
+
+def test_spec_mode_sends_the_spec_prompt_and_includes_prose(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    dump = tmp_path / "prompt-seen.txt"
+    result = run_local(
+        repo,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        "--spec",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES, "REVIEW_PROMPT_SPEC": SPEC_PROMPT},
+    )
+    assert result.returncode == 0, result.stderr
+    seen = dump.read_text()
+    assert "Независимое ревью патча спецификации" in seen
+    assert "docs/spec.md" in seen  # --spec implies --include-prose
+    assert "режим спецификаций" in result.stdout
+
+
+def test_code_mode_keeps_the_code_prompt(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    dump = tmp_path / "prompt-seen.txt"
+    run_local(
+        repo,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        "--include-prose",
+        env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES, "REVIEW_PROMPT_SPEC": SPEC_PROMPT},
+    )
+    assert "Независимое ревью патча спецификации" not in dump.read_text()
+
+
+def test_spec_mode_without_its_prompt_is_a_named_config_error(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    result = run_local(
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),
+        "--spec",
+        env_overrides={"REVIEW_PROMPT_SPEC": str(tmp_path / "нет.md")},
+    )
+    assert result.returncode == 2
+    assert "review-prompt-spec" in result.stderr or "нет.md" in result.stderr
+
+
+def test_spec_mode_default_prompt_resolves_from_repo_root(tmp_path: Path) -> None:
+    # Run from a subdirectory: the default must resolve from the repo root, not
+    # cwd — asserted on the RESOLVED path, not the hint's literal file name.
+    repo = _prose_commit(tmp_path)
+    env = {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
+    result = run_local(
+        repo, make_stub(tmp_path, STUB_BROKEN), "--spec", cwd=repo / "docs", env_overrides=env
+    )
+    resolved = str(repo.resolve() / ".github" / "codex" / "review-prompt-spec.md")
+    assert result.returncode == 2 and resolved in result.stderr
+
+
+def test_empty_review_prompt_spec_is_a_refusal(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    result = run_local(
+        repo, make_stub(tmp_path, STUB_BROKEN), "--spec", env_overrides={"REVIEW_PROMPT_SPEC": ""}
+    )
+    assert result.returncode == 2 and "REVIEW_PROMPT_SPEC задан пустым" in result.stderr
+
+
+def test_spec_mode_changes_the_fingerprint(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    env = {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES, "REVIEW_PROMPT_SPEC": SPEC_PROMPT}
+    code = run_local(repo, "false", "--fingerprint-only", "--include-prose", env_overrides=env)
+    spec = run_local(repo, "false", "--fingerprint-only", "--spec", env_overrides=env)
+    assert code.returncode == 0 and spec.returncode == 0, (code.stderr, spec.stderr)
+    assert code.stdout.strip() != spec.stdout.strip()
+
+
+def test_spec_refusal_does_not_leave_a_stale_verdict(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    stale = tmp_path / "verdict.json"
+    stale.write_text('{"findings":[],"note":"old run"}', encoding="utf-8")
+    result = run_local(
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),
+        "--spec",
+        env_overrides={
+            "REVIEW_PROMPT_SPEC": str(tmp_path / "нет.md"),
+            "REVIEW_VERDICT_OUT": str(stale),
+        },
+    )
+    assert result.returncode == 2
+    assert not stale.exists()
