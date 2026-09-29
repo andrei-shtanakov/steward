@@ -367,3 +367,27 @@ def test_cli_skip_names_its_scope_not_the_whole_gate(tmp_path: Path) -> None:
     assert json.loads(result.stdout)["skipped"][0]["scope"] == "acceptance"
     assert "GC-BEH-COVERAGE [acceptance]" in result.stderr
     assert "AC grammar" in result.stderr and "non-Won't BEH" in result.stderr
+
+
+# --- acceptance review #192: parity with devtools on blank lines, line indexing ---
+
+
+def test_blank_line_between_heading_and_fields_is_accepted() -> None:
+    # devtools reads fields anywhere in the block, so this form passes there.
+    acceptance = _ACCEPTANCE.replace(
+        "verification: test\ntraces: [FR-01]\n", "verification: test\n\ntraces: [FR-01]\n\n"
+    )
+    assert _check(acceptance=acceptance) == []
+
+
+def test_prose_still_ends_the_field_region_after_a_blank_line() -> None:
+    acceptance = _ACCEPTANCE.replace(
+        "traces: [FR-02]\nscenarios: [BEH-02]\n",
+        "traces: [FR-02]\n\nSome prose.\nscenarios: [BEH-02]\n",
+    )
+    assert "belongs to no AC" in _messages(_check(acceptance=acceptance))
+
+
+def test_form_feed_in_prose_does_not_shift_line_indexing() -> None:
+    acceptance = _ACCEPTANCE.replace("# Acceptance\n", "# Acceptance\nintro\x0cmore\n")
+    assert _check(acceptance=acceptance) == []

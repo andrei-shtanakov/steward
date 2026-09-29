@@ -20,8 +20,8 @@ Normative AC format (devtools acceptance-node spec; prose follows the fields)::
     scenarios: [BEH-01, BEH-02]
     <prose: the observable sign of the criterion>
 
-An AC's fields are exactly the field lines *directly under its heading*, each at
-most once. A ``traces:``/``scenarios:`` line anywhere else belongs to no AC and
+An AC's fields are exactly the field lines *directly under its heading* (blank
+lines between them allowed, as devtools accepts), each at most once. A ``traces:``/``scenarios:`` line anywhere else belongs to no AC and
 is a finding — so a field line is never credited to a foreign AC, whatever prose
 (a non-grammar AC entry, a reference list) stands between them.
 
@@ -161,7 +161,9 @@ def parse_ac_criteria(acceptance: Artifact) -> tuple[list[AcCriterion], list[Fin
                     "(`#### AC-NN: <title> · verification: test|manual|metric`)",
                 )
             )
-    lines = text.splitlines()
+    # Split on "\n" only: the heading index below counts "\n", and splitlines()
+    # would also split on \f, \x85, U+2028 … and shift every index after them.
+    lines = text.split("\n")
     head_lines = {text.count("\n", 0, m.start()): m for m in _AC_HEAD_RE.finditer(text)}
     if not head_lines:
         findings.append(_finding(acceptance, "charter schema 2 bundle has no AC definition"))
@@ -170,7 +172,13 @@ def parse_ac_criteria(acceptance: Artifact) -> tuple[list[AcCriterion], list[Fin
     for index, head in sorted(head_lines.items()):
         fields: dict[str, tuple[str, ...] | None] = {}
         cursor = index + 1
-        while cursor < len(lines) and (field := _FIELD_LINE_RE.match(lines[cursor])):
+        while cursor < len(lines):
+            if not lines[cursor].strip():  # blank lines stay inside (devtools parity)
+                cursor += 1
+                continue
+            field = _FIELD_LINE_RE.match(lines[cursor])
+            if field is None:
+                break
             claimed.add(cursor)
             name = field.group(1)
             if name in fields:
