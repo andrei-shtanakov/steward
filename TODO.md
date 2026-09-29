@@ -459,14 +459,25 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
         молча выпавшее определение; новых GC-id нет. Названные слепые пятна (как у devtools):
         `FR06` без дефиса, заголовки с отступом и уровня 1. trace-матрица сортирует
         `FR-03 < FR-03a < FR-10`
-  - [ ] **PR-2 · сироты §1.7** (п.4): каждый BEH, кроме Won't, входит в `scenarios` хотя бы
+  - [x] **PR-2 · сироты §1.7** (п.4): каждый BEH, кроме Won't, входит в `scenarios` хотя бы
         одного не-Won't AC. **Граница — charter `schema: 2`** (решение владельца 2026-09-29):
         для схемы 2 проверяется строгая AC-грамматика devtools (`#### AC-NN: … · verification:
         test|manual|metric` + `scenarios: [...]`) и сироты, отсутствие корректных AC — ошибка, а
         не пропуск; для схемы 1 — **явный skip с причиной**, не молчаливый ноль. Наличие
-        грамматики активацию не определяет. Открыто: id гейта — новый `GC-*` бампит
-        `profiles/gate-catalog.yaml`, завендоренный Maestro/dispatcher (unknown GC-id у них
-        fail-closed) ⇒ вместе с ним handoff на re-vendor
+        грамматики активацию не определяет. — PR этой ветки: `src/steward/gatecheck/acceptance.py`
+        в `run_checks` (работает и в `--candidate` — только байты). **Id гейта — существующий
+        `GC-BEH-COVERAGE`** (покрытие поведения приёмкой): новый `GC-*` бампнул бы
+        `profiles/gate-catalog.yaml`, завендоренный Maestro/dispatcher/spec-runner (unknown GC-id
+        у них fail-closed) — три re-vendor handoff'а ради имени; выделить отдельный id можно
+        позже. Skip — **объявление, не находка** (stderr + JSON `skipped`), чтобы WS-005 не нёс
+        ложный warn в вердиктах; `schema` читается как у devtools `charter_guard` (нет → 1,
+        `2`/`"2"` → 2), вне `1|2` — `GC-META`. Docs: `docs/gate-check-candidate.md`
+  - [ ] **Долг PR-1 (приёмочное ревью #191, minor):** near-miss сеть краснит заголовок с
+        приклеенным к id хвостом, который `_DEF_RE` читает верно (`#### BEH-03-Title` → `BEH-03`),
+        сообщением «dropped or truncated»; и не зафиксировано, по какому признаку выбирается id
+        находки — по артефакту (сейчас: BEH-артефакт → `GC-BEH-TRACE`, upstream →
+        `GC-BEH-COVERAGE`) или по префиксу id (`### FR-06` внутри behaviour-spec)
+        @owner:github:andrei-shtanakov @id:near-miss-glued-tail-debt
   - [ ] **PR-3 · гейт charter схемы 2** (п.3): `schema: 2`, `code: ^[A-Z]{2,6}$`,
         `plan_item: todo://<repo>/<id>`; реестр кодов — сами charter'ы (надгробие: удалить или
         перенести нельзя; коллизия — нарушитель позже влитый по first-parent; смена кода только
