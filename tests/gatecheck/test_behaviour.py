@@ -392,3 +392,21 @@ def test_priority_vocabulary_matches_devtools() -> None:
         "FR-03": "Could",
         "FR-04": "Won't",
     }
+
+
+def test_trailing_punctuation_after_a_whole_id_is_not_a_finding() -> None:
+    # `#### FR-01. Title` parses as FR-01 — the guard must not call it malformed.
+    requirements = _REQUIREMENTS.replace("#### FR-01: Panel", "#### FR-01. Panel")
+    assert check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK)) == []
+
+
+def test_wrong_heading_level_is_a_finding() -> None:
+    requirements = _REQUIREMENTS + "\n### FR-06: Wrong level\n**Priority**: 🔴 Must\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
+    assert any("FR-06" in f.message for f in findings if f.rule_id == "GC-BEH-COVERAGE")
+
+
+def test_dotted_tail_truncated_by_grammar_is_a_finding() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01.2:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any("BEH-01.2" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE")

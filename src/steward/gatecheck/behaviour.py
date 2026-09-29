@@ -78,9 +78,12 @@ _REQUIRED_CHECK_FIELDS = {
 _MANUAL_EVIDENCE_DETECTOR = "manual-evidence"
 
 _DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+[a-z]?)\b")
-# Any definition-looking heading; one _DEF_RE does not match *whole* is malformed,
-# not absent (`BEH-01ab`, and `BEH-01-a`, which _DEF_RE would truncate to BEH-01).
-_NEAR_DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-[^\s:`]*)")
+# A heading at levels 2–6 whose first token is an id-shaped FR/NFR/BEH (the
+# devtools guards' near-miss net). One _DEF_RE does not match *whole* is malformed,
+# not absent: `BEH-01ab`, `### FR-06`, and `BEH-01-a` / `BEH-01.2`, which _DEF_RE
+# would truncate to BEH-01. Trailing punctuation (`FR-01.` + space) is not id.
+# An id wrapped in emphasis (`**FR-06**`) is outside this net.
+_NEAR_DEF_RE = re.compile(r"(?m)^(#{2,6})\s+((?:N?FR|BEH)-[\w-]*(?:\.\w+)*)")
 _PRIORITY_RE = re.compile(r"\*\*Priority\*\*:[^\n]*?\b(Must|Should|Could|Won't)\b")
 _TRACES_RE = re.compile(r"`traces:\s*\[([^\]`]*)\]`")
 _CHECKED_BY_RE = re.compile(r"(?m)^-\s+\*\*checked_by\*\*:([^\n]*)")
@@ -167,17 +170,21 @@ def _malformed_heading_findings(artifact: Artifact, rule_id: str) -> list[Findin
     FR/NFR leaves coverage without ever being counted (GC-BEH-COVERAGE).
     """
     strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(artifact.text)}
+    near_misses = [
+        near.group(2)
+        for near in _NEAR_DEF_RE.finditer(artifact.text)
+        if strict.get(near.start()) != near.group(2)
+    ]
     return [
         Finding(
             "error",
             rule_id,
             artifact.path,
-            f"heading {near.group(1)!r} is outside the definition id grammar "
+            f"heading {near_id!r} is outside the definition id grammar "
             "(`#### FR-NN` / `NFR-NN` / `BEH-NN`, optional one-letter suffix) — "
-            "it is neither parsed nor checked",
+            "it is not parsed as that definition",
         )
-        for near in _NEAR_DEF_RE.finditer(artifact.text)
-        if strict.get(near.start()) != near.group(1)
+        for near_id in near_misses
     ]
 
 
