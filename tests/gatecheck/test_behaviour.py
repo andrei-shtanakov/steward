@@ -351,6 +351,16 @@ def test_lettered_suffix_takes_one_letter_only() -> None:
     assert [s.beh_id for s in parse_scenarios(behaviour)] == ["BEH-02"]
 
 
+def test_heading_outside_id_grammar_is_a_finding_not_silence() -> None:
+    # Local review, steward#190 PR-1: a BEH heading the grammar does not match
+    # would drop its scenario — and its Must check binding — without a word.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    trace = [f for f in findings if f.rule_id == "GC-BEH-TRACE"]
+    assert len(trace) == 1
+    assert "BEH-01ab" in trace[0].message and "grammar" in trace[0].message
+
+
 def test_priority_vocabulary_matches_devtools() -> None:
     requirements = "".join(
         f"#### FR-0{i}: t\n**Priority**: {p}\n\n"

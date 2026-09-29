@@ -78,6 +78,8 @@ _REQUIRED_CHECK_FIELDS = {
 _MANUAL_EVIDENCE_DETECTOR = "manual-evidence"
 
 _DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+[a-z]?)\b")
+# Any BEH-looking heading; one _DEF_RE does not match is malformed, not absent.
+_BEH_NEAR_RE = re.compile(r"(?m)^####\s+(BEH-[^\s:`]*)")
 _PRIORITY_RE = re.compile(r"\*\*Priority\*\*:[^\n]*?\b(Must|Should|Could|Won't)\b")
 _TRACES_RE = re.compile(r"`traces:\s*\[([^\]`]*)\]`")
 _CHECKED_BY_RE = re.compile(r"(?m)^-\s+\*\*checked_by\*\*:([^\n]*)")
@@ -129,7 +131,7 @@ def _check_trace(
     A definition is a ``#### FR-NN``/``#### NFR-NN`` heading; an incidental
     mention of the id in upstream prose does not satisfy the trace.
     """
-    findings = []
+    findings = _malformed_heading_findings(behaviour)
     for scenario in scenarios:
         if not scenario.traces:
             findings.append(
@@ -153,6 +155,23 @@ def _check_trace(
                     )
                 )
     return findings
+
+
+def _malformed_heading_findings(behaviour: Artifact) -> list[Finding]:
+    """A BEH heading outside the id grammar would drop its scenario silently."""
+    strict = {match.start() for match in _DEF_RE.finditer(behaviour.text)}
+    return [
+        Finding(
+            "error",
+            "GC-BEH-TRACE",
+            behaviour.path,
+            f"heading {near.group(1)!r} is outside the scenario id grammar "
+            "(`#### BEH-NN` with an optional one-letter suffix) — it is neither "
+            "parsed nor checked",
+        )
+        for near in _BEH_NEAR_RE.finditer(behaviour.text)
+        if near.start() not in strict
+    ]
 
 
 def _check_coverage(
