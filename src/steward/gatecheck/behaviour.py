@@ -137,11 +137,17 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     findings.extend(
         Finding("error", "GC-BEH-COVERAGE", artifact.path, message)
         for artifact in upstream
-        for message in [*_near_miss_messages(artifact.text), *_duplicate_messages(artifact.text)]
+        for message in _near_miss_messages(artifact.text)
+    )
+    # Across ALL upstream artifacts: parse_priorities merges them, so a later
+    # redefinition anywhere silently wins. Reported where the repeat stands.
+    findings.extend(
+        Finding("error", "GC-BEH-COVERAGE", path, message)
+        for path, message in _duplicate_messages([(a.path, a.text) for a in upstream])
     )
     findings.extend(
-        Finding("error", "GC-BEH-TRACE", behaviour.path, message)
-        for message in _duplicate_messages(behaviour.text)
+        Finding("error", "GC-BEH-TRACE", path, message)
+        for path, message in _duplicate_messages([(behaviour.path, behaviour.text)])
     )
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
@@ -149,13 +155,24 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     return findings
 
 
-def _duplicate_messages(text: str) -> list[str]:
-    """Ids defined more than once: every reference to a BEH becomes ambiguous, and
-    for an FR/NFR the later block's priority silently wins (a Must demoted)."""
+def _duplicate_messages(sources: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(path, message) per id defined more than once across ``sources``.
+
+    Every reference to a duplicated BEH is ambiguous; for an FR/NFR the later
+    block's priority silently wins (a Must demoted). Reported at the path of the
+    last definition — the one that wins.
+    """
     counts: dict[str, int] = {}
-    for def_id, _ in _definition_blocks(text):
-        counts[def_id] = counts.get(def_id, 0) + 1
-    return [f"{def_id} is declared {n} times" for def_id, n in counts.items() if n > 1]
+    last_path: dict[str, str] = {}
+    for path, text in sources:
+        for def_id, _ in _definition_blocks(text):
+            counts[def_id] = counts.get(def_id, 0) + 1
+            last_path[def_id] = path
+    return [
+        (last_path[def_id], f"{def_id} is declared {n} times")
+        for def_id, n in counts.items()
+        if n > 1
+    ]
 
 
 def _check_trace(
@@ -212,6 +229,11 @@ def _near_miss_messages(text: str) -> list[str]:
         heading = f"{near.group(1)} {near.group(2)}"
         if read_as is None:
             consequence = "it is not parsed as a definition at all"
+        elif read_as[-1].isalpha():  # already suffixed: only the glued title fits
+            consequence = (
+                f"it is read as {read_as!r} — a title glued to the id; separate them "
+                f"(`#### {read_as}: <title>`)"
+            )
         else:
             consequence = (
                 f"it is read as {read_as!r} — either a title glued to the id (separate "

@@ -466,3 +466,29 @@ def test_duplicate_requirement_id_is_a_coverage_finding() -> None:
     findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
     dup = [f for f in findings if "FR-01 is declared 2 times" in f.message]
     assert [(f.rule_id, f.artifact) for f in dup] == [("GC-BEH-COVERAGE", "10-requirements.md")]
+
+
+def test_suffix_advice_is_not_offered_when_the_id_already_has_one() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02: Offline render", "#### BEH-02a-Offline render")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    message = next(f.message for f in findings if "BEH-02a-Offline" in f.message)
+    assert "BEH-02a: <title>" in message and "BEH-02aa" not in message
+
+
+def test_duplicate_requirement_across_two_upstream_artifacts_is_a_finding() -> None:
+    data = {
+        **_PROFILE,
+        "artifacts": [
+            {"id": "requirements", "owner_role": "product", "upstream": []},
+            {"id": "nfrs", "owner_role": "product", "upstream": []},
+            {"id": "behaviour-spec", "owner_role": "product", "upstream": ["requirements", "nfrs"]},
+        ],
+    }
+    extra = "---\nspec_stage: nfrs\n---\n#### FR-01: Panel again\n**Priority**: 🟡 Could\n"
+    artifacts = _artifacts(_REQUIREMENTS, _BEHAVIOUR_OK)
+    meta = parse_artifact(extra)
+    assert meta is not None
+    artifacts.append(Artifact(path="12-nfrs.md", node_id="nfrs", meta=meta, text=extra))
+    findings = check_behaviour_spec(_graph(data), artifacts)
+    dup = [f for f in findings if "FR-01 is declared 2 times" in f.message]
+    assert [(f.rule_id, f.artifact) for f in dup] == [("GC-BEH-COVERAGE", "12-nfrs.md")]
