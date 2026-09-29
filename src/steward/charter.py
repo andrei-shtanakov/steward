@@ -168,11 +168,14 @@ def _collision_findings(
     findings = []
     for code, paths in sorted(by_code.items()):
         ranked = sorted(paths, key=lambda p: (order.get(p, _UNMERGED), p))
+        first = ranked[0]
+        # Neither merged: no merge order exists, the tie is broken by path.
+        why = "merged earlier" if first in order else "neither is merged yet; first by path"
         findings.extend(
             CharterFinding(
                 "CHARTER-COLLISION",
                 path,
-                f"code {code} already belongs to {_ws(ranked[0])} (merged earlier) — "
+                f"code {code} already belongs to {_ws(first)} ({why}) — "
                 f"{_ws(path)} is the violator; change its code by reopening its charter",
             )
             for path in ranked[1:]

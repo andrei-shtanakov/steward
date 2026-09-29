@@ -211,3 +211,12 @@ def test_schema_finding_names_the_value_as_written(tmp_path: Path) -> None:
     _write(repo, "ws-a", _charter(schema="two"))
     findings = check_repo(repo, None)
     assert _codes(findings) == ["CHARTER-SCHEMA"] and "'two'" in findings[0].message
+
+
+def test_collision_between_two_unmerged_charters_does_not_claim_a_merge(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "aa", _charter())
+    _write(repo, "bb", _charter(plan_item="todo://repo/other-work"))
+    findings = check_repo(repo, None)
+    assert _codes(findings) == ["CHARTER-COLLISION"]
+    assert "merged earlier" not in findings[0].message and "neither" in findings[0].message

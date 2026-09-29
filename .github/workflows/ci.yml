@@ -56,5 +56,6 @@ jobs:
           if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             uv run steward charter-check --repo-name steward --base "$BASE"
           else
+            echo "::warning::charter-check: base '$BASE' unusable — tombstone and code-immutability checks skipped"
             uv run steward charter-check --repo-name steward
           fi
