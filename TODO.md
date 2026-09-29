@@ -1050,7 +1050,7 @@ product decision record (и наоборот). Как approved proposal стан
       синтетический вердикт + красный report с причиной, не skipped-джобы
       (пропущенный джоб засчитывается required-чеку как пройденный)
 
-- [ ] **Режим ревью спецификаций: своя шкала и протокол завершения** @owner:github:andrei-shtanakov @id:spec-review-mode-severity-and-completion @epic:eco.codex-review-rollout
+- [x] **Режим ревью спецификаций: своя шкала и протокол завершения** @owner:github:andrei-shtanakov @id:spec-review-mode-severity-and-completion @epic:eco.codex-review-rollout — PR #196 (master `80d7bf2`): `local.sh --spec` + `.github/codex/review-prompt-spec.md` (сосед промпта, не член инвентаря кита) + протокол `docs/review-spec-mode.md`; `--spec` запрещён кейсам review-eval. Раскатка потребителям — devtools#501 (ожидание — в «Ждём от других проектов»)
       Приём входящего steward#184 (from spec-runner): ревью док-стадий бандла
       (`local.sh --include-prose`) не сходится по построению — условия §3 и шкала §4
       промпта написаны под исполняемый код, у спеки исполнения нет, и суррогат
@@ -1632,6 +1632,7 @@ PR и осознанно не закрыто; список полон, друг�
 
 ## Ждём от других проектов
 
+- [ ] **devtools → раскатка режима ревью спецификаций** (`local.sh --spec` и `.github/codex/review-prompt-spec.md`) потребителям кита, первым — spec-runner (автор steward#184); по желанию — флаг в `review-pr.sh` @owner:repo:devtools @blocked_by:todo://devtools/review-kit-spec-mode-rollout @id:review-kit-spec-mode-rollout-wait
 - [x] **devtools → догоняющая волна re-vendor кита после steward#129**: промпт с @id:review-kit-prompt-lens-wave-wait @blocked_by:todo://devtools/review-kit-prompt-lens-wave
       линзой ослабления тестов (22 репо с prompt+PIN) + caller-workflow с доводом
       потолка (6 репо); волна 2026-08-27 разъехалась с e4c43cc — ДО #129, а
