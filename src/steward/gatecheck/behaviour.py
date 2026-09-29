@@ -78,8 +78,9 @@ _REQUIRED_CHECK_FIELDS = {
 _MANUAL_EVIDENCE_DETECTOR = "manual-evidence"
 
 _DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+[a-z]?)\b")
-# Any BEH-looking heading; one _DEF_RE does not match is malformed, not absent.
-_BEH_NEAR_RE = re.compile(r"(?m)^####\s+(BEH-[^\s:`]*)")
+# Any definition-looking heading; one _DEF_RE does not match *whole* is malformed,
+# not absent (`BEH-01ab`, and `BEH-01-a`, which _DEF_RE would truncate to BEH-01).
+_NEAR_DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-[^\s:`]*)")
 _PRIORITY_RE = re.compile(r"\*\*Priority\*\*:[^\n]*?\b(Must|Should|Could|Won't)\b")
 _TRACES_RE = re.compile(r"`traces:\s*\[([^\]`]*)\]`")
 _CHECKED_BY_RE = re.compile(r"(?m)^-\s+\*\*checked_by\*\*:([^\n]*)")
@@ -110,13 +111,15 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     behaviour = present.get(BEHAVIOUR_NODE)
     if behaviour is None:
         return []
-    upstream_texts = [present[up].text for up in node.upstream if up in present]
-    if not upstream_texts:
+    upstream = [present[up] for up in node.upstream if up in present]
+    if not upstream:
         return []
 
     scenarios = parse_scenarios(behaviour.text)
-    priorities = parse_priorities(upstream_texts)
-    findings: list[Finding] = []
+    priorities = parse_priorities([artifact.text for artifact in upstream])
+    findings = _malformed_heading_findings(behaviour, "GC-BEH-TRACE")
+    for artifact in upstream:
+        findings.extend(_malformed_heading_findings(artifact, "GC-BEH-COVERAGE"))
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
     findings.extend(_check_planned(behaviour, scenarios, priorities))
@@ -131,7 +134,7 @@ def _check_trace(
     A definition is a ``#### FR-NN``/``#### NFR-NN`` heading; an incidental
     mention of the id in upstream prose does not satisfy the trace.
     """
-    findings = _malformed_heading_findings(behaviour)
+    findings = []
     for scenario in scenarios:
         if not scenario.traces:
             findings.append(
@@ -157,20 +160,24 @@ def _check_trace(
     return findings
 
 
-def _malformed_heading_findings(behaviour: Artifact) -> list[Finding]:
-    """A BEH heading outside the id grammar would drop its scenario silently."""
-    strict = {match.start() for match in _DEF_RE.finditer(behaviour.text)}
+def _malformed_heading_findings(artifact: Artifact, rule_id: str) -> list[Finding]:
+    """A heading outside the id grammar would drop its definition silently.
+
+    A dropped BEH loses its trace and check binding (GC-BEH-TRACE); a dropped
+    FR/NFR leaves coverage without ever being counted (GC-BEH-COVERAGE).
+    """
+    strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(artifact.text)}
     return [
         Finding(
             "error",
-            "GC-BEH-TRACE",
-            behaviour.path,
-            f"heading {near.group(1)!r} is outside the scenario id grammar "
-            "(`#### BEH-NN` with an optional one-letter suffix) — it is neither "
-            "parsed nor checked",
+            rule_id,
+            artifact.path,
+            f"heading {near.group(1)!r} is outside the definition id grammar "
+            "(`#### FR-NN` / `NFR-NN` / `BEH-NN`, optional one-letter suffix) — "
+            "it is neither parsed nor checked",
         )
-        for near in _BEH_NEAR_RE.finditer(behaviour.text)
-        if near.start() not in strict
+        for near in _NEAR_DEF_RE.finditer(artifact.text)
+        if strict.get(near.start()) != near.group(1)
     ]
 
 

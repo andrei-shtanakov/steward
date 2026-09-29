@@ -361,6 +361,26 @@ def test_heading_outside_id_grammar_is_a_finding_not_silence() -> None:
     assert "BEH-01ab" in trace[0].message and "grammar" in trace[0].message
 
 
+def test_heading_truncated_by_grammar_is_a_finding() -> None:
+    # `BEH-01-a` would otherwise parse as a second, duplicate BEH-01.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01-a:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any(
+        "BEH-01-a" in f.message and "grammar" in f.message
+        for f in findings
+        if f.rule_id == "GC-BEH-TRACE"
+    )
+
+
+def test_malformed_requirement_heading_is_a_coverage_finding() -> None:
+    # A Must FR whose heading the grammar drops would leave coverage silently.
+    requirements = _REQUIREMENTS + "\n#### FR-05_a: Critical\n**Priority**: 🔴 Must\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
+    coverage = [f for f in findings if f.rule_id == "GC-BEH-COVERAGE"]
+    assert len(coverage) == 1
+    assert "FR-05_a" in coverage[0].message and coverage[0].artifact == "10-requirements.md"
+
+
 def test_priority_vocabulary_matches_devtools() -> None:
     requirements = "".join(
         f"#### FR-0{i}: t\n**Priority**: {p}\n\n"
