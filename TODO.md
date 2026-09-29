@@ -483,8 +483,8 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
         @owner:github:andrei-shtanakov @id:near-miss-glued-tail-debt — PR этой ветки: находка
         остаётся **ошибкой** (`BEH-01-a` и приклеенный заголовок неотличимы, а devtools с
         обязательным `:` после id не читает как определение ни то, ни другое — это расхождение
-        парсеров), но сообщение честное: «read as 'BEH-03' — the id runs into its title;
-        separate them»; для выпавшего заголовка — «not parsed as a definition at all». Id
+        парсеров), но сообщение честное: «read as 'BEH-03'» + оба возможных исправления; для
+        выпавшего заголовка — «not parsed as a definition at all». Id
         находки — **по артефакту**, не по префиксу: near-miss в behaviour-spec — `GC-BEH-TRACE`
         (нечитаем слой сценариев), в upstream — `GC-BEH-COVERAGE` (нечитаемо множество
         требований); закреплено тестом и комментарием
@@ -492,8 +492,12 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
         приёмки давала ложные находки — BEH, трассирующий только Won't, читался сиротой, каждый
         `traces:` — «не определён» (приоритеты неизвестны) @owner:github:andrei-shtanakov
         @id:acceptance-missing-upstream-debt — PR этой ветки: без любого upstream узла
-        `acceptance` проверка неприменима и молчит, как `check_behaviour_spec` без upstream —
-        бандл уже красный по `GC-COMPLETENESS`, ложного не утверждаем
+        `acceptance` проверка не идёт (ложного не утверждаем, бандл уже красный по
+        `GC-COMPLETENESS`), и пропуск **объявляется** своей причиной, как схема 1 — молчаливого
+        нуля нет. Попутно (находка локального ревью): дубль BEH-id — `GC-BEH-TRACE`, иначе совет
+        near-miss «переименуй в `BEH-01`» гасил бы находку, оставляя два `BEH-01` молча;
+        сообщение near-miss для урезанного id называет оба прочтения — приклеенный заголовок
+        (`#### BEH-01: <title>`) или суффикс вне грамматики (`#### BEH-01a: <title>`)
   - [ ] **PR-3 · гейт charter схемы 2** (п.3): `schema: 2`, `code: ^[A-Z]{2,6}$`,
         `plan_item: todo://<repo>/<id>`; реестр кодов — сами charter'ы (надгробие: удалить или
         перенести нельзя; коллизия — нарушитель позже влитый по first-parent; смена кода только

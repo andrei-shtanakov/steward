@@ -77,10 +77,15 @@ def check_acceptance(graph: SpecGraph, artifacts: list[Artifact]) -> list[Findin
     present = _present(graph, artifacts)
     if present is None:
         return []
-    charter, behaviour, acceptance = present
+    charter, behaviour, acceptance, missing = present
     schema, schema_finding = _charter_schema(charter)
     if schema_finding is not None:
         return [schema_finding]
+    # Without every upstream of acceptance (requirements) each priority is
+    # unknown: a Won't-only BEH would read as an orphan and every trace as
+    # undefined. GC-COMPLETENESS reds the bundle; the skip is declared.
+    if missing:
+        return []
     if schema != 2:
         return []
 
@@ -99,14 +104,20 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
 
     None both when it ran (schema 2, or a schema error that is itself a finding)
     and when it does not apply at all — a profile without charter, behaviour-spec
-    and acceptance nodes, or a bundle missing behaviour-spec, acceptance or an
-    upstream of acceptance (completeness owns that). A profile *with* a charter node whose artifact is
+    and acceptance nodes, or a bundle missing behaviour-spec or acceptance
+    (completeness owns that). Declared: a charter node whose artifact is absent,
+    an absent upstream of acceptance (priorities unknown), and charter schema 1. A profile *with* a charter node whose artifact is
     absent is declared: the schema, and so the boundary, is unknown.
     """
     present = _present(graph, artifacts)
     if present is None:
         return None
-    charter, _, _ = present
+    charter, _, _, missing = present
+    if missing:
+        return (
+            f"acceptance upstream artifact(s) absent from the bundle: {', '.join(missing)} "
+            "— requirement priorities are unknown (GC-COMPLETENESS reports the gap)"
+        )
     if charter is None:
         return "no charter artifact in the bundle — its schema, and so the boundary, is unknown"
     schema, schema_finding = _charter_schema(charter)
@@ -120,7 +131,8 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
 
 def _present(
     graph: SpecGraph, artifacts: list[Artifact]
-) -> tuple[Artifact | None, Artifact, Artifact] | None:
+) -> tuple[Artifact | None, Artifact, Artifact, tuple[str, ...]] | None:
+    """(charter, behaviour, acceptance, missing acceptance upstreams), or None."""
     if any(node not in graph.nodes for node in (CHARTER_NODE, BEHAVIOUR_NODE, ACCEPTANCE_NODE)):
         return None
     by_node = {a.node_id: a for a in artifacts if a.node_id is not None}
@@ -128,12 +140,8 @@ def _present(
     acceptance = by_node.get(ACCEPTANCE_NODE)
     if behaviour is None or acceptance is None:
         return None
-    # Without every upstream of acceptance (requirements) each priority is
-    # unknown: a Won't-only BEH would read as an orphan and every trace as
-    # undefined. GC-COMPLETENESS already reds the bundle; say nothing false.
-    if any(up not in by_node for up in graph.nodes[ACCEPTANCE_NODE].upstream):
-        return None
-    return by_node.get(CHARTER_NODE), behaviour, acceptance
+    missing = tuple(up for up in graph.nodes[ACCEPTANCE_NODE].upstream if up not in by_node)
+    return by_node.get(CHARTER_NODE), behaviour, acceptance, missing
 
 
 def _charter_schema(charter: Artifact | None) -> tuple[int | None, Finding | None]:

@@ -139,10 +139,23 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
         for artifact in upstream
         for message in _near_miss_messages(artifact.text)
     )
+    findings.extend(_duplicate_scenario_findings(behaviour, scenarios))
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
     findings.extend(_check_planned(behaviour, scenarios, priorities))
     return findings
+
+
+def _duplicate_scenario_findings(behaviour: Artifact, scenarios: list[Scenario]) -> list[Finding]:
+    """GC-BEH-TRACE: a BEH id defined twice makes every reference to it ambiguous."""
+    counts: dict[str, int] = {}
+    for scenario in scenarios:
+        counts[scenario.beh_id] = counts.get(scenario.beh_id, 0) + 1
+    return [
+        Finding("error", "GC-BEH-TRACE", behaviour.path, f"{beh_id} is declared {n} times")
+        for beh_id, n in counts.items()
+        if n > 1
+    ]
 
 
 def _check_trace(
@@ -201,8 +214,9 @@ def _near_miss_messages(text: str) -> list[str]:
             consequence = "it is not parsed as a definition at all"
         else:
             consequence = (
-                f"it is read as {read_as!r} — the id runs into its title; separate "
-                f"them (`#### {read_as}: <title>`)"
+                f"it is read as {read_as!r} — either a title glued to the id (separate "
+                f"them: `#### {read_as}: <title>`) or a suffix outside the grammar "
+                f"(exactly one lowercase letter: `#### {read_as}a: <title>`)"
             )
         messages.append(
             f"heading {heading!r} is outside the definition grammar (a level-4 heading "

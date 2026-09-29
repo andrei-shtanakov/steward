@@ -428,6 +428,23 @@ def test_glued_tail_names_the_id_it_was_read_as() -> None:
     assert "read as 'BEH-02'" in trace[0].message and "dropped" not in trace[0].message
 
 
+def test_truncated_suffix_names_both_readings() -> None:
+    # `BEH-01-a` may be a glued title OR a meant suffix — the message must not
+    # claim one cause; the suffix fix is `BEH-01a`, not a second `BEH-01`.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01-a:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    message = next(f.message for f in findings if "BEH-01-a" in f.message)
+    assert "BEH-01: <title>" in message and "BEH-01a" in message
+
+
+def test_duplicate_beh_id_is_a_finding() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any(
+        "BEH-01 is declared 2 times" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE"
+    )
+
+
 def test_dropped_heading_keeps_the_dropped_wording() -> None:
     behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
     findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))

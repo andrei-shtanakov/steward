@@ -397,6 +397,9 @@ def test_missing_requirements_artifact_leaves_acceptance_to_completeness() -> No
     # Acceptance review #192: without requirements every priority is unknown,
     # so a Won't-only BEH read as an orphan and each trace as "undefined".
     graph = load_profile_data(_PROFILE, _CATALOG)
-    artifacts = [a for a in _artifacts(_CHARTER_V2) if a.node_id != "requirements"]
-    assert check_acceptance(graph, artifacts) == []
-    assert acceptance_skip_reason(graph, artifacts) is None
+    for charter in (_CHARTER_V2, _CHARTER_V1):
+        artifacts = [a for a in _artifacts(charter) if a.node_id != "requirements"]
+        assert check_acceptance(graph, artifacts) == []
+        # Local review: the skip is still declared — never a silent zero.
+        reason = acceptance_skip_reason(graph, artifacts)
+        assert reason is not None and "requirements" in reason
