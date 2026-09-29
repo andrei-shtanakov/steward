@@ -10,7 +10,8 @@ these findings.
 Normative body format (mirrors the golden run):
 
 - Requirement definitions in the upstream artifact: ``#### FR-01: Title`` headings
-  (also matches ``NFR-NN``); the block until the next definition may carry a
+  (also matches ``NFR-NN``; an id may carry one lowercase letter suffix,
+  ``FR-01a`` / ``BEH-03a``, as devtools' bundle guards accept); the block until the next definition may carry a
   ``**Priority**: 🔴 Must`` line (Must | Should | Could | Won't).
 - Scenario definitions: ``#### BEH-01: Title`` headings with an inline
   `` `traces: [FR-01, NFR-02]` `` code span on the heading line or inside the block.
@@ -18,8 +19,15 @@ Normative body format (mirrors the golden run):
 
       - **checked_by**: `status: planned` `kind: e2e` `owner: @qa` `target: tests/x.py::t`
 
+  ``kind`` is one of ``unit | integration | contract | e2e | atp | manual``.
   ``status: planned`` needs ``kind``/``owner``/``target``; ``materialized`` needs
-  ``ref``; ``waived`` needs ``reason``. Two-stage gate (ADR D2): ``planned`` is
+  ``ref``; ``waived`` needs ``reason``.
+
+  Authoring rule (devtools bundle-criteria oracle §1.6, steward#190): a scenario
+  whose behaviour is a property of the product's *text* — a docstring, a wording
+  in the source — is bound as ``kind: manual``, not as a test. A test that reads
+  the source instead of executing the product proves nothing about behaviour;
+  ``manual`` moves the criterion to the human checklist instead of losing it. Two-stage gate (ADR D2): ``planned`` is
   enough before compile-down; GC-CHECK-READY (workstream/release stage) is out of
   this slice.
 - Frontmatter, structural coverage (FR → ARCH-constraint → verification obligation
@@ -59,7 +67,7 @@ BEHAVIOUR_NODE = "behaviour-spec"
 
 _BLOCKING_PRIORITY = "Must"
 _COVERED_PRIORITIES = ("Must", "Should")
-_CHECK_KINDS = frozenset({"atp", "contract", "integration", "e2e", "manual"})
+_CHECK_KINDS = frozenset({"unit", "integration", "contract", "e2e", "atp", "manual"})
 _CHECK_STATUSES = frozenset({"planned", "materialized", "waived"})
 # Fields that make a checked_by binding complete, per status (ADR D2 two-stage gate).
 _REQUIRED_CHECK_FIELDS = {
@@ -69,7 +77,7 @@ _REQUIRED_CHECK_FIELDS = {
 }
 _MANUAL_EVIDENCE_DETECTOR = "manual-evidence"
 
-_DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+)\b")
+_DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+[a-z]?)\b")
 _PRIORITY_RE = re.compile(r"\*\*Priority\*\*:[^\n]*?\b(Must|Should|Could|Won't)\b")
 _TRACES_RE = re.compile(r"`traces:\s*\[([^\]`]*)\]`")
 _CHECKED_BY_RE = re.compile(r"(?m)^-\s+\*\*checked_by\*\*:([^\n]*)")

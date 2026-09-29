@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from steward.gatecheck.behaviour import check_behaviour_spec
+from steward.gatecheck.behaviour import check_behaviour_spec, parse_priorities, parse_scenarios
 from steward.gatecheck.checks import Artifact
 from steward.graph import load_profile, load_profile_data
 from steward.meta import parse_artifact
@@ -325,3 +325,40 @@ def test_prose_mention_is_not_a_definition() -> None:
     trace = [f for f in findings if f.rule_id == "GC-BEH-TRACE"]
     assert len(trace) == 1
     assert "FR-77" in trace[0].message and "headings" in trace[0].message
+
+
+# steward#190 (devtools bundle-criteria oracle, spec rev 10 §1.5–1.6): the two
+# bundle parsers must agree — real bundles write `kind: unit` and `BEH-NNa`.
+
+
+def test_unit_kind_is_accepted() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("`kind: e2e`", "`kind: unit`")
+    assert check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour)) == []
+
+
+def test_lettered_suffix_ids_are_definitions() -> None:
+    requirements = _REQUIREMENTS.replace("#### FR-03:", "#### FR-03a:")
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01a:").replace(
+        "[FR-01, FR-03]", "[FR-01, FR-03a]"
+    )
+    assert [s.beh_id for s in parse_scenarios(behaviour)] == ["BEH-01a", "BEH-02"]
+    assert parse_priorities([requirements])["FR-03a"] == "Should"
+    assert check_behaviour_spec(_graph(), _artifacts(requirements, behaviour)) == []
+
+
+def test_lettered_suffix_takes_one_letter_only() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
+    assert [s.beh_id for s in parse_scenarios(behaviour)] == ["BEH-02"]
+
+
+def test_priority_vocabulary_matches_devtools() -> None:
+    requirements = "".join(
+        f"#### FR-0{i}: t\n**Priority**: {p}\n\n"
+        for i, p in enumerate(("Must", "Should", "Could", "Won't"), start=1)
+    )
+    assert parse_priorities([requirements]) == {
+        "FR-01": "Must",
+        "FR-02": "Should",
+        "FR-03": "Could",
+        "FR-04": "Won't",
+    }
