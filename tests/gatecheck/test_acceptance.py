@@ -397,9 +397,25 @@ def test_missing_requirements_artifact_leaves_acceptance_to_completeness() -> No
     # Acceptance review #192: without requirements every priority is unknown,
     # so a Won't-only BEH read as an orphan and each trace as "undefined".
     graph = load_profile_data(_PROFILE, _CATALOG)
-    for charter in (_CHARTER_V2, _CHARTER_V1):
-        artifacts = [a for a in _artifacts(charter) if a.node_id != "requirements"]
-        assert check_acceptance(graph, artifacts) == []
-        # Local review: the skip is still declared — never a silent zero.
-        reason = acceptance_skip_reason(graph, artifacts)
-        assert reason is not None and "requirements" in reason
+    artifacts = [a for a in _artifacts(_CHARTER_V2) if a.node_id != "requirements"]
+    assert check_acceptance(graph, artifacts) == []
+    # Local review: the partial skip is still declared — never a silent zero.
+    reason = acceptance_skip_reason(graph, artifacts)
+    assert reason is not None and "requirements" in reason and "orphan" in reason
+
+
+def test_ac_grammar_still_runs_without_requirements() -> None:
+    graph = load_profile_data(_PROFILE, _CATALOG)
+    acceptance = _ACCEPTANCE.replace("#### AC-02: Trend", "#### AC-01: Trend")
+    artifacts = [
+        a for a in _artifacts(_CHARTER_V2, acceptance=acceptance) if a.node_id != "requirements"
+    ]
+    assert "declared 2 times" in _messages(check_acceptance(graph, artifacts))
+
+
+def test_schema_error_with_missing_upstream_is_a_finding_not_a_skip() -> None:
+    graph = load_profile_data(_PROFILE, _CATALOG)
+    charter = _CHARTER_V2.replace("schema: 2", "schema: 3")
+    artifacts = [a for a in _artifacts(charter) if a.node_id != "requirements"]
+    assert [f.rule_id for f in check_acceptance(graph, artifacts)] == ["GC-META"]
+    assert acceptance_skip_reason(graph, artifacts) is None

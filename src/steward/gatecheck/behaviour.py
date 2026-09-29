@@ -137,25 +137,25 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     findings.extend(
         Finding("error", "GC-BEH-COVERAGE", artifact.path, message)
         for artifact in upstream
-        for message in _near_miss_messages(artifact.text)
+        for message in [*_near_miss_messages(artifact.text), *_duplicate_messages(artifact.text)]
     )
-    findings.extend(_duplicate_scenario_findings(behaviour, scenarios))
+    findings.extend(
+        Finding("error", "GC-BEH-TRACE", behaviour.path, message)
+        for message in _duplicate_messages(behaviour.text)
+    )
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
     findings.extend(_check_planned(behaviour, scenarios, priorities))
     return findings
 
 
-def _duplicate_scenario_findings(behaviour: Artifact, scenarios: list[Scenario]) -> list[Finding]:
-    """GC-BEH-TRACE: a BEH id defined twice makes every reference to it ambiguous."""
+def _duplicate_messages(text: str) -> list[str]:
+    """Ids defined more than once: every reference to a BEH becomes ambiguous, and
+    for an FR/NFR the later block's priority silently wins (a Must demoted)."""
     counts: dict[str, int] = {}
-    for scenario in scenarios:
-        counts[scenario.beh_id] = counts.get(scenario.beh_id, 0) + 1
-    return [
-        Finding("error", "GC-BEH-TRACE", behaviour.path, f"{beh_id} is declared {n} times")
-        for beh_id, n in counts.items()
-        if n > 1
-    ]
+    for def_id, _ in _definition_blocks(text):
+        counts[def_id] = counts.get(def_id, 0) + 1
+    return [f"{def_id} is declared {n} times" for def_id, n in counts.items() if n > 1]
 
 
 def _check_trace(

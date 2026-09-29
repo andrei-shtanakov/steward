@@ -458,3 +458,11 @@ def test_near_miss_rule_id_follows_the_artifact_not_the_id_prefix() -> None:
     findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
     stray = [f for f in findings if "FR-06" in f.message]
     assert [(f.rule_id, f.artifact) for f in stray] == [("GC-BEH-TRACE", "15-behaviour.md")]
+
+
+def test_duplicate_requirement_id_is_a_coverage_finding() -> None:
+    # A second `#### FR-01` with Could would silently demote the Must.
+    requirements = _REQUIREMENTS + "\n#### FR-01: Panel revised\n**Priority**: 🟡 Could\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
+    dup = [f for f in findings if "FR-01 is declared 2 times" in f.message]
+    assert [(f.rule_id, f.artifact) for f in dup] == [("GC-BEH-COVERAGE", "10-requirements.md")]
