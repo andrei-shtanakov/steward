@@ -81,9 +81,11 @@ def _requirement_row(
     }
 
 
-def _id_sort_key(item: tuple[str, str]) -> tuple[str, int]:
+def _id_sort_key(item: tuple[str, str]) -> tuple[str, int, str]:
+    """Natural id order: ``FR-03`` < ``FR-03a`` < ``FR-10`` (same grammar as ``_DEF_RE``)."""
     prefix, _, number = item[0].rpartition("-")
-    return (prefix, int(number) if number.isdigit() else 0)
+    digits = number.rstrip("abcdefghijklmnopqrstuvwxyz")
+    return (prefix, int(digits) if digits.isdigit() else 0, number[len(digits) :])
 
 
 def render_matrix_json(matrix: dict[str, Any]) -> str:

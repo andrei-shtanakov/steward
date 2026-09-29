@@ -10,18 +10,31 @@ these findings.
 Normative body format (mirrors the golden run):
 
 - Requirement definitions in the upstream artifact: ``#### FR-01: Title`` headings
-  (also matches ``NFR-NN``); the block until the next definition may carry a
-  ``**Priority**: 🔴 Must`` line (Must | Should | Could | Won't).
+  (also matches ``NFR-NN``; an id may carry one lowercase letter suffix,
+  ``FR-01a`` / ``BEH-03a``, as devtools' bundle guards accept); the block until
+  the next definition may carry a ``**Priority**: 🔴 Must`` line
+  (Must | Should | Could | Won't). A heading at levels 2–6 opening with
+  ``FR-``/``NFR-``/``BEH-`` that this grammar does not match whole
+  (``BEH-01ab``, ``### FR-06``, ``BEH-01-a``) is an error — as in the devtools
+  guards, which also flag a section header like ``## FR-01 — notes``. Out of the
+  net, like theirs: a missing hyphen (``FR06``), indented or level-1 headings.
 - Scenario definitions: ``#### BEH-01: Title`` headings with an inline
   `` `traces: [FR-01, NFR-02]` `` code span on the heading line or inside the block.
 - Check binding, one line inside the scenario block, all fields as code spans::
 
       - **checked_by**: `status: planned` `kind: e2e` `owner: @qa` `target: tests/x.py::t`
 
+  ``kind`` is one of ``unit | integration | contract | e2e | atp | manual``.
   ``status: planned`` needs ``kind``/``owner``/``target``; ``materialized`` needs
   ``ref``; ``waived`` needs ``reason``. Two-stage gate (ADR D2): ``planned`` is
   enough before compile-down; GC-CHECK-READY (workstream/release stage) is out of
   this slice.
+
+  Authoring rule (devtools bundle-criteria oracle §1.6, steward#190): a scenario
+  whose behaviour is a property of the product's *text* — a docstring, a wording
+  in the source — is bound as ``kind: manual``, not as a test. A test that reads
+  the source instead of executing the product proves nothing about behaviour;
+  ``manual`` moves the criterion to the human checklist instead of losing it.
 - Frontmatter, structural coverage (FR → ARCH-constraint → verification obligation
   chain, FL-03 as refined at golden-run acceptance) and waivers::
 
@@ -59,7 +72,7 @@ BEHAVIOUR_NODE = "behaviour-spec"
 
 _BLOCKING_PRIORITY = "Must"
 _COVERED_PRIORITIES = ("Must", "Should")
-_CHECK_KINDS = frozenset({"atp", "contract", "integration", "e2e", "manual"})
+_CHECK_KINDS = frozenset({"unit", "integration", "contract", "e2e", "atp", "manual"})
 _CHECK_STATUSES = frozenset({"planned", "materialized", "waived"})
 # Fields that make a checked_by binding complete, per status (ADR D2 two-stage gate).
 _REQUIRED_CHECK_FIELDS = {
@@ -69,7 +82,13 @@ _REQUIRED_CHECK_FIELDS = {
 }
 _MANUAL_EVIDENCE_DETECTOR = "manual-evidence"
 
-_DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+)\b")
+_DEF_RE = re.compile(r"(?m)^####\s+((?:N?FR|BEH)-\d+[a-z]?)\b")
+# A heading at levels 2–6 whose first token is an id-shaped FR/NFR/BEH (the
+# devtools guards' near-miss net). One _DEF_RE does not match *whole* is malformed,
+# not absent: `BEH-01ab`, `### FR-06`, and `BEH-01-a` / `BEH-01.2`, which _DEF_RE
+# would truncate to BEH-01. Trailing punctuation (`FR-01.` + space) is not id.
+# An id wrapped in emphasis (`**FR-06**`) is outside this net.
+_NEAR_DEF_RE = re.compile(r"(?m)^(#{2,6})\s+((?:N?FR|BEH)-[\w-]*(?:\.\w+)*)")
 _PRIORITY_RE = re.compile(r"\*\*Priority\*\*:[^\n]*?\b(Must|Should|Could|Won't)\b")
 _TRACES_RE = re.compile(r"`traces:\s*\[([^\]`]*)\]`")
 _CHECKED_BY_RE = re.compile(r"(?m)^-\s+\*\*checked_by\*\*:([^\n]*)")
@@ -100,13 +119,23 @@ def check_behaviour_spec(graph: SpecGraph, artifacts: list[Artifact]) -> list[Fi
     behaviour = present.get(BEHAVIOUR_NODE)
     if behaviour is None:
         return []
-    upstream_texts = [present[up].text for up in node.upstream if up in present]
-    if not upstream_texts:
+    upstream = [present[up] for up in node.upstream if up in present]
+    if not upstream:
         return []
 
     scenarios = parse_scenarios(behaviour.text)
-    priorities = parse_priorities(upstream_texts)
-    findings: list[Finding] = []
+    priorities = parse_priorities([artifact.text for artifact in upstream])
+    # A dropped BEH loses its trace and check binding; a dropped FR/NFR is never
+    # counted by coverage — neither may pass in silence.
+    findings = [
+        Finding("error", "GC-BEH-TRACE", behaviour.path, _near_miss_message(near_id))
+        for near_id in _near_miss_headings(behaviour.text)
+    ]
+    findings.extend(
+        Finding("error", "GC-BEH-COVERAGE", artifact.path, _near_miss_message(near_id))
+        for artifact in upstream
+        for near_id in _near_miss_headings(artifact.text)
+    )
     findings.extend(_check_trace(behaviour, scenarios, priorities))
     findings.extend(_check_coverage(behaviour, scenarios, priorities))
     findings.extend(_check_planned(behaviour, scenarios, priorities))
@@ -145,6 +174,31 @@ def _check_trace(
                     )
                 )
     return findings
+
+
+def _near_miss_headings(text: str) -> list[str]:
+    """Headings (``#`` run + id) the definition grammar does not match whole.
+
+    Such a heading is dropped (``BEH-01ab``, ``### FR-06``) or truncated
+    (``BEH-01-a`` → ``BEH-01``) by :data:`_DEF_RE` — either way silently, so the
+    callers turn each one into a finding. Mirrors the devtools guards' near-miss
+    net; like theirs, it does not see an indented or level-1 heading.
+    """
+    strict = {match.start(): match.group(1) for match in _DEF_RE.finditer(text)}
+    return [
+        f"{near.group(1)} {near.group(2)}"
+        for near in _NEAR_DEF_RE.finditer(text)
+        if strict.get(near.start()) != near.group(2)
+    ]
+
+
+def _near_miss_message(heading: str) -> str:
+    return (
+        f"heading {heading!r} is outside the definition grammar: a definition is a "
+        "level-4 heading `#### <ID>` whose id matches FR-NN / NFR-NN / BEH-NN "
+        "(optional one-letter suffix) whole — this one is dropped or read under a "
+        "truncated id"
+    )
 
 
 def _check_coverage(

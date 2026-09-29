@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from steward.gatecheck.behaviour import check_behaviour_spec
+from steward.gatecheck.behaviour import check_behaviour_spec, parse_priorities, parse_scenarios
 from steward.gatecheck.checks import Artifact
 from steward.graph import load_profile, load_profile_data
 from steward.meta import parse_artifact
@@ -325,3 +325,88 @@ def test_prose_mention_is_not_a_definition() -> None:
     trace = [f for f in findings if f.rule_id == "GC-BEH-TRACE"]
     assert len(trace) == 1
     assert "FR-77" in trace[0].message and "headings" in trace[0].message
+
+
+# steward#190 (devtools bundle-criteria oracle, spec rev 10 §1.5–1.6): the two
+# bundle parsers must agree — real bundles write `kind: unit` and `BEH-NNa`.
+
+
+def test_unit_kind_is_accepted() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("`kind: e2e`", "`kind: unit`")
+    assert check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour)) == []
+
+
+def test_lettered_suffix_ids_are_definitions() -> None:
+    requirements = _REQUIREMENTS.replace("#### FR-03:", "#### FR-03a:")
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01a:").replace(
+        "[FR-01, FR-03]", "[FR-01, FR-03a]"
+    )
+    assert [s.beh_id for s in parse_scenarios(behaviour)] == ["BEH-01a", "BEH-02"]
+    assert parse_priorities([requirements])["FR-03a"] == "Should"
+    assert check_behaviour_spec(_graph(), _artifacts(requirements, behaviour)) == []
+
+
+def test_lettered_suffix_takes_one_letter_only() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
+    assert [s.beh_id for s in parse_scenarios(behaviour)] == ["BEH-02"]
+
+
+def test_heading_outside_id_grammar_is_a_finding_not_silence() -> None:
+    # Local review, steward#190 PR-1: a BEH heading the grammar does not match
+    # would drop its scenario — and its Must check binding — without a word.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-01:", "#### BEH-01ab:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    trace = [f for f in findings if f.rule_id == "GC-BEH-TRACE"]
+    assert len(trace) == 1
+    assert "BEH-01ab" in trace[0].message and "grammar" in trace[0].message
+
+
+def test_heading_truncated_by_grammar_is_a_finding() -> None:
+    # `BEH-01-a` would otherwise parse as a second, duplicate BEH-01.
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01-a:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any(
+        "BEH-01-a" in f.message and "grammar" in f.message
+        for f in findings
+        if f.rule_id == "GC-BEH-TRACE"
+    )
+
+
+def test_malformed_requirement_heading_is_a_coverage_finding() -> None:
+    # A Must FR whose heading the grammar drops would leave coverage silently.
+    requirements = _REQUIREMENTS + "\n#### FR-05_a: Critical\n**Priority**: 🔴 Must\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
+    coverage = [f for f in findings if f.rule_id == "GC-BEH-COVERAGE"]
+    assert len(coverage) == 1
+    assert "FR-05_a" in coverage[0].message and coverage[0].artifact == "10-requirements.md"
+
+
+def test_priority_vocabulary_matches_devtools() -> None:
+    requirements = "".join(
+        f"#### FR-0{i}: t\n**Priority**: {p}\n\n"
+        for i, p in enumerate(("Must", "Should", "Could", "Won't"), start=1)
+    )
+    assert parse_priorities([requirements]) == {
+        "FR-01": "Must",
+        "FR-02": "Should",
+        "FR-03": "Could",
+        "FR-04": "Won't",
+    }
+
+
+def test_trailing_punctuation_after_a_whole_id_is_not_a_finding() -> None:
+    # `#### FR-01. Title` parses as FR-01 — the guard must not call it malformed.
+    requirements = _REQUIREMENTS.replace("#### FR-01: Panel", "#### FR-01. Panel")
+    assert check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK)) == []
+
+
+def test_wrong_heading_level_is_a_finding() -> None:
+    requirements = _REQUIREMENTS + "\n### FR-06: Wrong level\n**Priority**: 🔴 Must\n"
+    findings = check_behaviour_spec(_graph(), _artifacts(requirements, _BEHAVIOUR_OK))
+    assert any("'### FR-06'" in f.message for f in findings if f.rule_id == "GC-BEH-COVERAGE")
+
+
+def test_dotted_tail_truncated_by_grammar_is_a_finding() -> None:
+    behaviour = _BEHAVIOUR_OK.replace("#### BEH-02:", "#### BEH-01.2:")
+    findings = check_behaviour_spec(_graph(), _artifacts(_REQUIREMENTS, behaviour))
+    assert any("BEH-01.2" in f.message for f in findings if f.rule_id == "GC-BEH-TRACE")

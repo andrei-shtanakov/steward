@@ -439,6 +439,43 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
       **Сделано =** флаг + тесты (уровни на `team-exp`, сосед того же уровня входит, узел выше границы не требуется, конфликтующие флаги → exit 2) + `docs/gate-check-candidate.md`. Ход за devtools: замена `wave_profile_dir`/`verify_wave_profile_dir` на `--upto` в `runner._step_gate` pin-bump'ом.
       **Сделано** (PR этой ветки): `SpecGraph.levels()` (`graph.py`), `run_checks(..., not_required=)` → `check_completeness` (граф не усекается), флаг `--upto` + `UptoScope` в `cli.py` (ключ `upto` в JSON, строка на stderr; `not_required` — только обязательные не-делегированные узлы выше границы: делегат и так не требуется, перечислять его значило бы завысить объём). Открытый вопрос из формы закрыт так: артефакт выше границы в бандле проверяется целиком, **и его транзитивные upstream снова обязательны** (находка локального ревью, major: «дыра» под присутствующим behaviour-spec при `--upto charter` делала отсутствие `requirements` законным, и `check_behaviour_spec` молча выходил по `if not upstream_texts` — fail-open; теперь дыра красится `GC-COMPLETENESS`, как без флага). Флаг не привязан к `--candidate`; конфликты с `--stage release` / `--emit-verdicts` — в любом режиме; `--approval-facts` (читается только на release — был бы гарантированно пустым override'ом) и `--trace-matrix` тоже отвергаются (находки локального ревью; у пейлоада матрицы нет места для `upto`, а ниже уровня behaviour-spec отсутствие матрицы выдавалось бы config error про сломанный бандл; потребителя пары нет — devtools строит матрицу через internal API). Тесты: `tests/gatecheck/test_upto.py`, уровни `team-exp` — `tests/test_graph.py`. Docs: `docs/gate-check-candidate.md`.
 
+### 6d. Парсеры бандла под оракул devtools (steward#190)
+
+Приём входящего steward#190 (slug `bundle-oracle-parsers`, from devtools — DarkFactory E,
+«документы бандла как оракул», спека devtools
+`docs/superpowers/specs/2026-09-28-bundle-criteria-oracle-design.md` rev 10, §1.1–1.7, §6).
+Цель — два парсера бандла (steward gate-check и devtools guards) не расходятся.
+
+- [ ] **Парсеры бандла под оракул devtools** @owner:github:andrei-shtanakov @id:bundle-oracle-parsers @epic:eco.dark-factory
+  - [x] **PR-1 · парсер BEH + словарь + указание автору** (п.1, 2, 5 заявки): `kind: unit` в
+        `_CHECK_KINDS`; суффикс ID `-NN[a-z]` у BEH (и FR/NFR — грамматика devtools
+        `acceptance_guard` та же); словарь `Must|Should|Could|Won't` уже совпадает — закрепить
+        тестом; «поведение — свойство *текста* продукта (докстринг, формулировка в исходнике) →
+        `kind: manual`, не тест» — в нормативный формат узла (`gatecheck/behaviour.py`; файлов
+        шаблонов у steward нет, профиль лишь называет `template:`) — PR этой ветки. Сверх заявки
+        (находки локального ревью): near-miss сеть как у devtools — заголовок уровня 2–6 на
+        `FR-`/`NFR-`/`BEH-`, не совпавший с грамматикой целиком (`BEH-01ab`, `### FR-06`,
+        `BEH-01-a`), — ошибка `GC-BEH-TRACE` (BEH) / `GC-BEH-COVERAGE` (FR/NFR upstream), а не
+        молча выпавшее определение; новых GC-id нет. Названные слепые пятна (как у devtools):
+        `FR06` без дефиса, заголовки с отступом и уровня 1. trace-матрица сортирует
+        `FR-03 < FR-03a < FR-10`
+  - [ ] **PR-2 · сироты §1.7** (п.4): каждый BEH, кроме Won't, входит в `scenarios` хотя бы
+        одного не-Won't AC. **Граница — charter `schema: 2`** (решение владельца 2026-09-29):
+        для схемы 2 проверяется строгая AC-грамматика devtools (`#### AC-NN: … · verification:
+        test|manual|metric` + `scenarios: [...]`) и сироты, отсутствие корректных AC — ошибка, а
+        не пропуск; для схемы 1 — **явный skip с причиной**, не молчаливый ноль. Наличие
+        грамматики активацию не определяет. Открыто: id гейта — новый `GC-*` бампит
+        `profiles/gate-catalog.yaml`, завендоренный Maestro/dispatcher (unknown GC-id у них
+        fail-closed) ⇒ вместе с ним handoff на re-vendor
+  - [ ] **PR-3 · гейт charter схемы 2** (п.3): `schema: 2`, `code: ^[A-Z]{2,6}$`,
+        `plan_item: todo://<repo>/<id>`; реестр кодов — сами charter'ы (надгробие: удалить или
+        перенести нельзя; коллизия — нарушитель позже влитый по first-parent; смена кода только
+        им). Открыто: вендорить devtools `governance/charter_guard.py` или свой гейт с тем же
+        контрактом — решение владельца
+  - [ ] **Миграция WS-005 на схему 2** — отдельно (решение владельца 2026-09-29): его
+        acceptance сейчас прозой (`**AC-001 · …** Агрегирует BEH-..`), под PR-2 его BEH были бы
+        сиротами
+
 ### 7. Постоянные обязательства и отложенное
 
 - [ ] Handoff в arbiter на ре-вендоринг `config/authority.toml` + бамп `AUTHORITY_PINNED_SHA` @owner:github:andrei-shtanakov @trigger:"любая правка profiles/authority.yaml" @id:arbiter-authority-revendor-handoff @epic:eco.governance-plane
