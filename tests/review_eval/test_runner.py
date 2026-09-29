@@ -872,6 +872,7 @@ def test_run_all_generated_run_id_is_stable(tmp_path: Path) -> None:
         ("--print-review-cmd",),
         ("--head=" + "c" * 40,),
         ("--include-prose",),
+        ("--spec",),
     ],
     ids=[
         "head",
@@ -884,6 +885,7 @@ def test_run_all_generated_run_id_is_stable(tmp_path: Path) -> None:
         "print-review-cmd",
         "head-with-equals",
         "include-prose",
+        "spec",
     ],
 )
 def test_run_case_refuses_range_overriding_local_args(

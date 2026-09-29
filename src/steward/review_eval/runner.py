@@ -184,8 +184,10 @@ _SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("REVIEW_", "GIT_")
 #: вызову, и кейс не вправе управлять измерительной поверхностью — второй
 #: `--include-prose` от кейса безвреден для `local.sh` (флаг идемпотентен), но
 #: разрешать его значило бы объявлять область ревью решением автора корпуса,
-#: а не раннера. Схема корпуса такие `local_args` не пропускает — это вторая
-#: линия обороны для `Case`, собранных в коде.
+#: а не раннера. `--spec` (steward#184) подменяет сам измеряемый промпт, а
+#: `kit_under_test.prompt_sha256` считается от review-prompt.md — провенанс
+#: назвал бы не тот reviewer core. Схема корпуса такие `local_args` не
+#: пропускает — это вторая линия обороны для `Case`, собранных в коде.
 _FORBIDDEN_LOCAL_ARG_PREFIXES: tuple[str, ...] = (
     "--base",
     "--trusted-base",
@@ -196,6 +198,7 @@ _FORBIDDEN_LOCAL_ARG_PREFIXES: tuple[str, ...] = (
     "--fingerprint-only",
     "--print-review-cmd",
     "--include-prose",
+    "--spec",
 )
 
 #: `review-eval` — третий потребитель кита, но не боевой канал: он измеряет

@@ -3736,7 +3736,7 @@ SPEC_PROMPT = str(ROOT / ".github" / "codex" / "review-prompt-spec.md")
 def _prose_commit(tmp_path: Path) -> Path:
     _, repo = make_repo(tmp_path)
     (repo / "docs").mkdir(exist_ok=True)
-    (repo / "docs" / "spec.md").write_text("требование\n")
+    (repo / "docs" / "spec.md").write_text("требование\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "spec only")
     return repo
@@ -3783,11 +3783,23 @@ def test_spec_mode_without_its_prompt_is_a_named_config_error(tmp_path: Path) ->
 
 
 def test_spec_mode_default_prompt_resolves_from_repo_root(tmp_path: Path) -> None:
+    # Run from a subdirectory: the default must resolve from the repo root, not
+    # cwd — asserted on the RESOLVED path, not the hint's literal file name.
     repo = _prose_commit(tmp_path)
     env = {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
-    result = run_local(repo, make_stub(tmp_path, STUB_BROKEN), "--spec", env_overrides=env)
-    # run_local does not set REVIEW_PROMPT_SPEC: the default is the repo's own file.
-    assert result.returncode == 2 and ".github/codex/review-prompt-spec.md" in result.stderr
+    result = run_local(
+        repo, make_stub(tmp_path, STUB_BROKEN), "--spec", cwd=repo / "docs", env_overrides=env
+    )
+    resolved = str(repo.resolve() / ".github" / "codex" / "review-prompt-spec.md")
+    assert result.returncode == 2 and resolved in result.stderr
+
+
+def test_empty_review_prompt_spec_is_a_refusal(tmp_path: Path) -> None:
+    repo = _prose_commit(tmp_path)
+    result = run_local(
+        repo, make_stub(tmp_path, STUB_BROKEN), "--spec", env_overrides={"REVIEW_PROMPT_SPEC": ""}
+    )
+    assert result.returncode == 2 and "REVIEW_PROMPT_SPEC задан пустым" in result.stderr
 
 
 def test_spec_mode_changes_the_fingerprint(tmp_path: Path) -> None:
