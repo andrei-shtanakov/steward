@@ -68,8 +68,10 @@ _DEFAULT_STAGE = "authoring"
 _MODE_LIVE = "live"
 _MODE_INJECTED = "injected"
 _MODE_CANDIDATE = "candidate"
-# The gate whose schema-1 skip is declared (orphans ride on GC-BEH-COVERAGE).
+# The schema-1 skip names a SCOPE inside GC-BEH-COVERAGE: the gate's FR coverage
+# still runs and may fire in the same run; only its orphan clause is skipped.
 _ACCEPTANCE_GATE = "GC-BEH-COVERAGE"
+_ACCEPTANCE_SCOPE = "orphans"
 
 
 def _fail_config(message: str) -> None:
@@ -338,7 +340,7 @@ def _echo_skipped(reason: str) -> None:
 
     On stderr like the not-evaluated list; a silent zero would read as "no orphans".
     """
-    typer.echo(f"не проверено: {_ACCEPTANCE_GATE}: {reason}", err=True)
+    typer.echo(f"не проверено: {_ACCEPTANCE_GATE} [{_ACCEPTANCE_SCOPE}]: {reason}", err=True)
 
 
 def _render_json(
@@ -351,7 +353,9 @@ def _render_json(
         "warnings": sum(1 for f in findings if f.severity == "warn"),
     }
     if skip_reason is not None:
-        payload["skipped"] = [{"gate": _ACCEPTANCE_GATE, "reason": skip_reason}]
+        payload["skipped"] = [
+            {"gate": _ACCEPTANCE_GATE, "scope": _ACCEPTANCE_SCOPE, "reason": skip_reason}
+        ]
     # Only the prospective run declares this: the list is a property of the
     # MODE (which gates it structurally cannot reach), not a per-run audit.
     # Emitting `[]` for a ref-bound run would read as "everything else ran",

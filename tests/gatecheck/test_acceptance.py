@@ -335,3 +335,34 @@ def test_profile_without_charter_node_is_inapplicable() -> None:
     artifacts = _artifacts(_CHARTER_V2)[1:]
     assert acceptance_skip_reason(graph, artifacts) is None
     assert check_acceptance(graph, artifacts) == []
+
+
+def test_field_line_after_an_unrecognised_entry_belongs_to_no_ac() -> None:
+    # Local review round 3: `AC-02 — …` is no entry, yet its `scenarios:` must
+    # not be credited to AC-01 (a manual AC without scenarios of its own).
+    acceptance = """---
+spec_stage: acceptance
+---
+# Acceptance
+
+#### AC-01: Panel works · verification: manual
+traces: [FR-01]
+
+AC-02 — Trend visible
+scenarios: [BEH-01, BEH-02]
+"""
+    text = _messages(_check(acceptance=acceptance))
+    assert "belongs to no AC" in text
+    assert "BEH-01 is an orphan" in text and "BEH-02 is an orphan" in text
+
+
+def test_field_value_must_be_a_list() -> None:
+    acceptance = _ACCEPTANCE.replace("scenarios: [BEH-01]", "scenarios: BEH-01")
+    assert "not a `[...]` list" in _messages(_check(acceptance=acceptance))
+
+
+@pytest.mark.usefixtures("write_roles", "write_role_assignments")
+def test_cli_skip_names_its_scope_not_the_whole_gate(tmp_path: Path) -> None:
+    result = _run(_write_bundle(tmp_path, _CHARTER_V1), "--format", "json")
+    assert json.loads(result.stdout)["skipped"][0]["scope"] == "orphans"
+    assert "GC-BEH-COVERAGE [orphans]" in result.stderr

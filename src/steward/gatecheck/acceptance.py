@@ -13,12 +13,17 @@ declare it: a silent zero would read as "no orphans". ``schema`` absent means 1;
 ``2`` and ``"2"`` both mean 2 (as devtools ``charter_guard`` reads it); anything
 else is a GC-META error, never a quiet fallback to schema 1.
 
-Normative AC format (the block ends at the next AC-shaped entry or any heading;
-a field line appears once per block)::
+Normative AC format (devtools acceptance-node spec; prose follows the fields)::
 
     #### AC-01: Title · verification: test|manual|metric
     traces: [FR-01, NFR-02]
     scenarios: [BEH-01, BEH-02]
+    <prose: the observable sign of the criterion>
+
+An AC's fields are exactly the field lines *directly under its heading*, each at
+most once. A ``traces:``/``scenarios:`` line anywhere else belongs to no AC and
+is a finding — so a field line is never credited to a foreign AC, whatever prose
+(a non-grammar AC entry, a reference list) stands between them.
 
 ``verification: test`` needs a non-empty ``scenarios``. A BEH's or AC's priority
 is the maximum over the requirements it traces; it is Won't only when every
@@ -48,14 +53,13 @@ _AC_HEAD_RE = re.compile(
 # Any AC-shaped *entry*: a heading, or a line opening with an AC id (optionally
 # bulleted / bold, followed by a definition separator `:`/`·` — WS-005's prose
 # form `**AC-001 · …**`). A reference (`- AC-01 — panel`, a mid-sentence mention)
-# is not an entry. Entries the strict grammar rejects are findings, and every
-# entry ends the block before it, so no field line is read under a foreign AC.
+# is not an entry. Entries the strict grammar rejects are findings.
 _AC_NEAR_RE = re.compile(
     r"(?m)^(?:#{2,6}\s+(AC-[^\s:]*)"
     r"|[ \t]*(?:[-*+][ \t]+)?\**(AC-[^\s:*·]*)\**[ \t]*[:·])"
 )
-_HEADING_RE = re.compile(r"(?m)^#{1,6}\s")
-_FIELDS = ("traces", "scenarios")
+_FIELD_LINE_RE = re.compile(r"^(traces|scenarios):")
+_FIELD_VALUE_RE = re.compile(r"^(?:traces|scenarios):\s*\[([^\]]*)\]\s*$")
 
 
 @dataclass(frozen=True)
@@ -157,31 +161,46 @@ def parse_ac_criteria(acceptance: Artifact) -> tuple[list[AcCriterion], list[Fin
                     "(`#### AC-NN: <title> · verification: test|manual|metric`)",
                 )
             )
-    heads = list(_AC_HEAD_RE.finditer(text))
-    if not heads:
+    lines = text.splitlines()
+    head_lines = {text.count("\n", 0, m.start()): m for m in _AC_HEAD_RE.finditer(text)}
+    if not head_lines:
         findings.append(_finding(acceptance, "charter schema 2 bundle has no AC definition"))
-    entry_starts = [near.start() for near in _AC_NEAR_RE.finditer(text)]
+    claimed: set[int] = set()
     criteria: list[AcCriterion] = []
-    for head in heads:
-        # The block ends at the next AC-shaped entry or at any heading.
-        ends = [start for start in entry_starts if start > head.start()]
-        heading = _HEADING_RE.search(text, head.end())
-        if heading is not None:
-            ends.append(heading.start())
-        block = text[head.end() : min(ends, default=len(text))]
-        findings.extend(
-            _finding(acceptance, f"{head.group(1)} has more than one `{name}:` line")
-            for name in _FIELDS
-            if len(re.findall(rf"(?m)^{name}:", block)) > 1
-        )
+    for index, head in sorted(head_lines.items()):
+        fields: dict[str, tuple[str, ...] | None] = {}
+        cursor = index + 1
+        while cursor < len(lines) and (field := _FIELD_LINE_RE.match(lines[cursor])):
+            claimed.add(cursor)
+            name = field.group(1)
+            if name in fields:
+                findings.append(
+                    _finding(acceptance, f"{head.group(1)} has more than one `{name}:` line")
+                )
+            value = _FIELD_VALUE_RE.match(lines[cursor])
+            if value is None:
+                findings.append(
+                    _finding(acceptance, f"{head.group(1)} `{name}:` is not a `[...]` list")
+                )
+            fields.setdefault(name, _split_list(value.group(1)) if value else None)
+            cursor += 1
         criteria.append(
             AcCriterion(
                 ac_id=head.group(1),
                 verification=head.group(3),
-                traces=_list_field(block, "traces"),
-                scenarios=_list_field(block, "scenarios") or (),
+                traces=fields.get("traces"),
+                scenarios=fields.get("scenarios") or (),
             )
         )
+    findings.extend(
+        _finding(
+            acceptance,
+            f"`{line.split(':', 1)[0]}:` on line {number + 1} belongs to no AC — fields "
+            "must stand directly under their `#### AC-NN` heading",
+        )
+        for number, line in enumerate(lines)
+        if _FIELD_LINE_RE.match(line) and number not in claimed
+    )
     for ac_id in sorted({c.ac_id for c in criteria}):
         count = sum(1 for c in criteria if c.ac_id == ac_id)
         if count > 1:
@@ -238,11 +257,8 @@ def _is_wont(traces: tuple[str, ...], priorities: dict[str, str]) -> bool:
     return bool(traces) and all(priorities.get(ref) == _WONT for ref in traces)
 
 
-def _list_field(block: str, name: str) -> tuple[str, ...] | None:
-    match = re.search(rf"(?m)^{name}:\s*\[([^\]]*)\]\s*$", block)
-    if match is None:
-        return None
-    return tuple(part.strip() for part in match.group(1).split(",") if part.strip())
+def _split_list(inner: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in inner.split(",") if part.strip())
 
 
 def _finding(artifact: Artifact, message: str) -> Finding:
