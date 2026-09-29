@@ -364,5 +364,6 @@ def test_field_value_must_be_a_list() -> None:
 @pytest.mark.usefixtures("write_roles", "write_role_assignments")
 def test_cli_skip_names_its_scope_not_the_whole_gate(tmp_path: Path) -> None:
     result = _run(_write_bundle(tmp_path, _CHARTER_V1), "--format", "json")
-    assert json.loads(result.stdout)["skipped"][0]["scope"] == "orphans"
-    assert "GC-BEH-COVERAGE [orphans]" in result.stderr
+    assert json.loads(result.stdout)["skipped"][0]["scope"] == "acceptance"
+    assert "GC-BEH-COVERAGE [acceptance]" in result.stderr
+    assert "AC grammar" in result.stderr and "non-Won't BEH" in result.stderr

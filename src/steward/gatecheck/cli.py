@@ -69,9 +69,10 @@ _MODE_LIVE = "live"
 _MODE_INJECTED = "injected"
 _MODE_CANDIDATE = "candidate"
 # The schema-1 skip names a SCOPE inside GC-BEH-COVERAGE: the gate's FR coverage
-# still runs and may fire in the same run; only its orphan clause is skipped.
+# still runs and may fire in the same run; what is skipped is the acceptance
+# clause set — strict AC grammar and orphans (steward#190).
 _ACCEPTANCE_GATE = "GC-BEH-COVERAGE"
-_ACCEPTANCE_SCOPE = "orphans"
+_ACCEPTANCE_SCOPE = "acceptance"
 
 
 def _fail_config(message: str) -> None:
@@ -336,7 +337,7 @@ def _echo_upto(scope: UptoScope) -> None:
 
 
 def _echo_skipped(reason: str) -> None:
-    """Declare a check the bundle is outside of (steward#190: schema-1 orphans).
+    """Declare a check the bundle is outside of (steward#190: schema-1 acceptance).
 
     On stderr like the not-evaluated list; a silent zero would read as "no orphans".
     """

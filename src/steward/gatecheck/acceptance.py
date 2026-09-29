@@ -112,8 +112,8 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
     schema, schema_finding = _charter_schema(charter)
     if schema_finding is None and schema == 1:
         return (
-            "charter schema 1 — the orphan check (every non-Won't BEH in a non-Won't "
-            "AC) applies from charter schema 2"
+            "charter schema 1 — the acceptance checks (strict AC grammar, and every "
+            "non-Won't BEH in a non-Won't AC) apply from charter schema 2"
         )
     return None
 

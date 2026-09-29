@@ -469,7 +469,10 @@ status↔git уже даёт `gate-check`; role-resolver переехал в п�
         `GC-BEH-COVERAGE`** (покрытие поведения приёмкой): новый `GC-*` бампнул бы
         `profiles/gate-catalog.yaml`, завендоренный Maestro/dispatcher/spec-runner (unknown GC-id
         у них fail-closed) — три re-vendor handoff'а ради имени; выделить отдельный id можно
-        позже. Skip — **объявление, не находка** (stderr + JSON `skipped`), чтобы WS-005 не нёс
+        позже — **открыто на владельце** (находка локального ревью, minor): находки о *форме* AC
+        (грамматика, поля) идут под заголовком каталога «Must/Should requirement lacks
+        coverage»; развести — отдельный id или расширенный title, и то и другое — правка
+        завендоренного каталога. Skip — **объявление, не находка** (stderr + JSON `skipped`), чтобы WS-005 не нёс
         ложный warn в вердиктах; `schema` читается как у devtools `charter_guard` (нет → 1,
         `2`/`"2"` → 2), вне `1|2` — `GC-META`. Docs: `docs/gate-check-candidate.md`
   - [ ] **Долг PR-1 (приёмочное ревью #191, minor):** near-miss сеть краснит заголовок с
