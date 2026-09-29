@@ -314,3 +314,24 @@ def test_cli_declares_missing_charter_skip(tmp_path: Path) -> None:
     (spec / "00-charter.md").unlink()
     result = _run(spec, "--format", "json")
     assert "no charter" in json.loads(result.stdout)["skipped"][0]["reason"]
+
+
+def test_line_start_reference_without_separator_is_not_an_entry() -> None:
+    acceptance = _ACCEPTANCE.replace(
+        "# Acceptance\n", "# Acceptance\n\n- AC-01 — panel\n- AC-02 — trend\n"
+    )
+    assert _check(acceptance=acceptance) == []
+
+
+def test_prose_entry_finding_does_not_claim_a_heading() -> None:
+    text = _messages(_check(acceptance=_ABSORBING))
+    assert "AC entry 'AC-02'" in text and "heading 'AC-02'" not in text
+
+
+def test_profile_without_charter_node_is_inapplicable() -> None:
+    data = {**_PROFILE, "artifacts": [dict(a) for a in _PROFILE["artifacts"][1:]]}
+    data["artifacts"][0]["upstream"] = []
+    graph = load_profile_data(data, _CATALOG)
+    artifacts = _artifacts(_CHARTER_V2)[1:]
+    assert acceptance_skip_reason(graph, artifacts) is None
+    assert check_acceptance(graph, artifacts) == []

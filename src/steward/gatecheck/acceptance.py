@@ -46,10 +46,14 @@ _AC_HEAD_RE = re.compile(
     r"(?m)^####\s+(AC-\d+[a-z]?):\s*(.+?)\s*·\s*verification:\s*(test|manual|metric)\s*$"
 )
 # Any AC-shaped *entry*: a heading, or a line opening with an AC id (optionally
-# bulleted / bold — WS-005's prose form `**AC-001 · …**`). A mid-sentence mention
+# bulleted / bold, followed by a definition separator `:`/`·` — WS-005's prose
+# form `**AC-001 · …**`). A reference (`- AC-01 — panel`, a mid-sentence mention)
 # is not an entry. Entries the strict grammar rejects are findings, and every
 # entry ends the block before it, so no field line is read under a foreign AC.
-_AC_NEAR_RE = re.compile(r"(?m)^(?:#{2,6}\s+|[ \t]*(?:[-*+][ \t]+)?\**)(AC-[^\s:*·]*)")
+_AC_NEAR_RE = re.compile(
+    r"(?m)^(?:#{2,6}\s+(AC-[^\s:]*)"
+    r"|[ \t]*(?:[-*+][ \t]+)?\**(AC-[^\s:*·]*)\**[ \t]*[:·])"
+)
 _HEADING_RE = re.compile(r"(?m)^#{1,6}\s")
 _FIELDS = ("traces", "scenarios")
 
@@ -90,8 +94,10 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
     """Why the orphan check did not run on an applicable bundle, or None.
 
     None both when it ran (schema 2, or a schema error that is itself a finding)
-    and when it does not apply at all — a profile without behaviour-spec and
-    acceptance nodes, or a bundle missing one of them (completeness owns that).
+    and when it does not apply at all — a profile without charter, behaviour-spec
+    and acceptance nodes, or a bundle missing behaviour-spec or acceptance
+    (completeness owns that). A profile *with* a charter node whose artifact is
+    absent is declared: the schema, and so the boundary, is unknown.
     """
     present = _present(graph, artifacts)
     if present is None:
@@ -111,7 +117,7 @@ def acceptance_skip_reason(graph: SpecGraph, artifacts: list[Artifact]) -> str |
 def _present(
     graph: SpecGraph, artifacts: list[Artifact]
 ) -> tuple[Artifact | None, Artifact, Artifact] | None:
-    if BEHAVIOUR_NODE not in graph.nodes or ACCEPTANCE_NODE not in graph.nodes:
+    if any(node not in graph.nodes for node in (CHARTER_NODE, BEHAVIOUR_NODE, ACCEPTANCE_NODE)):
         return None
     by_node = {a.node_id: a for a in artifacts if a.node_id is not None}
     behaviour = by_node.get(BEHAVIOUR_NODE)
@@ -147,7 +153,7 @@ def parse_ac_criteria(acceptance: Artifact) -> tuple[list[AcCriterion], list[Fin
             findings.append(
                 _finding(
                     acceptance,
-                    f"heading {near.group(1)!r} is outside the AC grammar "
+                    f"AC entry {near.group(1) or near.group(2)!r} is outside the AC grammar "
                     "(`#### AC-NN: <title> · verification: test|manual|metric`)",
                 )
             )
