@@ -24,6 +24,9 @@ spec_runner:
   test_command: uv run pytest
   run_lint_on_done: true
   lint_command: uv run ruff check .
+  extra_executor_config:
+    executor:
+      harness_guard: strict
 workstreams:
 - id: profiles-frontmatter-core
   title: Profiles + frontmatter core

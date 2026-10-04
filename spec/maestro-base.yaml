@@ -21,3 +21,10 @@ spec_runner:
   test_command: "uv run pytest"
   run_lint_on_done: true
   lint_command: "uv run ruff check ."
+  # Политика флота (devtools contracts/fleet-config-policy/v1, 2026-10-04):
+  # харнесс-гард в strict — попытка, правящая файлы верификации, проваливается.
+  # Оверлей Maestro накладывается на весь сгенерированный конфиг spec-runner,
+  # поэтому ключ — под `executor:` (maestro SpecRunnerConfig.to_executor_config).
+  extra_executor_config:
+    executor:
+      harness_guard: strict
