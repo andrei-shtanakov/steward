@@ -815,3 +815,29 @@ def test_rename_with_spaces_into_declared_path_stays_in_diff(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     assert "generated-файл опущен" not in result.stdout
     assert "smuggled-code" in result.stdout
+
+
+def test_rename_mimicking_equal_halves_stays_in_diff(tmp_path: Path) -> None:
+    """Parser differential: `a/x b/y b/x b/y` читается и как неизменённый
+    `x b/y`, и как rename `x` → `y b/x b/y`. Объявленный `x b/y` не должен
+    прятать rename рукописного файла — неоднозначный заголовок остаётся."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        "diff --git a/x b/y b/x b/y\n"
+        "similarity index 90%\n"
+        "rename from x\n"
+        "rename to y b/x b/y\n"
+        "@@ -1 +1 @@\n"
+        "+smuggled-code\n",
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("x b/y\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "smuggled-code" in result.stdout

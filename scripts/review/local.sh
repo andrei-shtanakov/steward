@@ -752,7 +752,14 @@ work=$(mktemp -d)
 verdict_tmp=""
 trap 'rm -rf "$work"; [ -z "$verdict_tmp" ] || rm -f "$verdict_tmp"' EXIT
 
-git diff "$mb..$head_sha" > "$work/diff.patch"
+# Форма дифа пинится: generated-фильтр build-prompt.sh разбирает заголовок
+# `diff --git a/… b/…`, и `diff.noprefix`/`srcPrefix`/цвет/внешний diff из
+# конфига пользователя молча выключили бы его. При конфиге по умолчанию
+# вывод побайтово тот же — отпечаток не меняется.
+diff_form="-c diff.noprefix=false -c diff.mnemonicPrefix=false"
+diff_form="$diff_form -c diff.srcPrefix=a/ -c diff.dstPrefix=b/"
+# shellcheck disable=SC2086 # diff_form — намеренно список слов
+git $diff_form diff --no-color --no-ext-diff "$mb..$head_sha" > "$work/diff.patch"
 if [ ! -s "$work/diff.patch" ]; then
     # Отдельный штатный исход и в fp-режиме: отпечаток пустому входу не
     # выдумывается — stdout остаётся пустым, вызывающий читает «ревьюировать
@@ -1170,7 +1177,9 @@ if [ -n "$prose_globs" ]; then
     # соседний `--name-only` чуть выше обёрнут именно с доводом «сбой git не
     # должен читаться как результат» — здесь сбой (128) под `set -e` утёк бы
     # кодом вне объявленного набора 0/1/2/3/5.
-    if ! git diff "$mb..$head_sha" -- "$@" > "$work/diff.patch"; then
+    # shellcheck disable=SC2086 # diff_form — намеренно список слов
+    if ! git $diff_form diff --no-color --no-ext-diff "$mb..$head_sha" -- "$@" \
+        > "$work/diff.patch"; then
         echo "не удалось собрать диф после фильтра области ревью" \
             "(git diff -- <pathspec>, диапазон ${mb}..${head_sha})." >&2
         exit 3
@@ -1304,7 +1313,7 @@ fi
 # курируемые каталоги, снапшот-каталоги) строится контрпример; декларация
 # же сама проходит ревью через PR. `core.quotePath=false` даёт сырые пути,
 # согласованные между diff --name-only и check-attr; кавыченные заголовки
-# самого дифа — @id:review-kit-quoted-diff-headers.
+# самого дифа build-prompt.sh раскодирует в те же сырые байты.
 git -c core.quotePath=false diff --name-only "$mb..$head_sha" \
     > "$work/changed-paths.txt"
 # `--source` появился в git 2.38, и возможность ПРОБУЕТСЯ отдельно от

@@ -883,6 +883,42 @@ def test_anchored_declaration_is_filtered_from_subdir(tmp_path: Path) -> None:
     assert "диф больше поддерживаемого" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        "[diff]\n\tnoprefix = true\n",
+        "[diff]\n\tsrcPrefix = x/\n\tdstPrefix = y/\n",
+        "[color]\n\tui = always\n",
+    ],
+)
+def test_user_diff_config_does_not_disable_generated_filter(tmp_path: Path, config: str) -> None:
+    """Форма заголовка `diff --git a/… b/…` пинится local.sh: разбор
+    build-prompt.sh опирается на префиксы, и `diff.noprefix`/`srcPrefix`/
+    цвет в конфиге пользователя молча выключали бы фильтр — отказ по потолку
+    без названной причины (находка локального ревью батча 2026-10-06)."""
+    _, local = make_repo(tmp_path)
+    (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "декларация влита в базу")
+    base_sha = git(local, "rev-parse", "HEAD")
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+    gitconfig = tmp_path / "user.gitconfig"
+    gitconfig.write_text(config, encoding="utf-8")
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, STUB_OK),
+        "--base",
+        base_sha,
+        env_overrides={"GIT_CONFIG_GLOBAL": str(gitconfig)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
 def test_same_patch_declaration_does_not_hide_code(tmp_path: Path) -> None:
     """Декларация из того же патча НЕ прячет код: действует только влитая.
 
