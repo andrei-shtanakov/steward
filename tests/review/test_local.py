@@ -98,6 +98,7 @@ def run_local(
     *args: str,
     cwd: Path | None = None,
     env_overrides: dict[str, str] | None = None,
+    env_unset: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["REVIEW_CMD"] = stub
@@ -107,6 +108,8 @@ def run_local(
     env["REVIEW_SCOPE_RULES"] = NO_SCOPE_RULES
     if env_overrides:
         env.update(env_overrides)
+    for key in env_unset:
+        env.pop(key, None)
     return subprocess.run(
         ["sh", str(SCRIPT), *args],
         cwd=str(cwd or repo),
@@ -842,6 +845,30 @@ def test_declared_generated_is_filtered_from_subdir(tmp_path: Path) -> None:
     (local / ".gitattributes").write_text(DECLARATION, encoding="utf-8")
     git(local, "add", "-A")
     git(local, "commit", "-qm", "декларация влита в базу диапазона")
+    base_sha = git(local, "rev-parse", "HEAD")
+
+    (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "перегенерированный lock")
+
+    subdir = local / "sub"
+    subdir.mkdir()
+    result = run_local(local, make_stub(tmp_path, STUB_OK), "--base", base_sha, cwd=subdir)
+
+    assert result.returncode == 0, result.stderr
+    assert "диф больше поддерживаемого" not in result.stderr
+
+
+def test_anchored_declaration_is_filtered_from_subdir(tmp_path: Path) -> None:
+    """Анкорный паттерн `/uv.lock` из подкаталога (review-kit-generated-filter-cwd).
+
+    `check-attr` трактует пути относительно cwd: root-относительный `uv.lock`
+    из `sub/` искался как `sub/uv.lock` и анкорный паттерн его не покрывал.
+    Неанкорный `uv.lock` в тесте выше совпадает с обоими и дефект прячет."""
+    _, local = make_repo(tmp_path)
+    (local / ".gitattributes").write_text("/uv.lock linguist-generated=true\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "анкорная декларация влита в базу")
     base_sha = git(local, "rev-parse", "HEAD")
 
     (local / "uv.lock").write_text(_big_lock_body(), encoding="utf-8")
@@ -3681,19 +3708,16 @@ def test_trusted_base_run_declares_that_its_freshness_is_unchecked(
     assert "свежесть доверенной базы кит не проверяет" in res.stdout
 
 
-def test_empty_base_value_keeps_the_default_path_silent(tmp_path: Path) -> None:
-    """`--base ""` уезжает на ветку по умолчанию (`[ -z "$base" ]`), то есть
-    прогон идёт ПУТЁМ УМОЛЧАНИЯ — и совет «передайте --trusted-base для
-    суженной базы» адресовался бы состоянию, которого нет (находка minor
-    круга 3). Отказ на пустом значении был бы честнее, но это смена
-    семантики `--base` у ~22 потребителей — отдельное решение владельца,
-    `@id:review-kit-empty-base-ruling`."""
+def test_empty_base_is_a_config_error(tmp_path: Path) -> None:
+    """`--base ""` — отказ кодом 2, как у `--trusted-base`: пустая переменная
+    у вызывающего раньше молча превращалась в прогон против ветки по
+    умолчанию (решение владельца 2026-10-06, review-kit-empty-base-ruling)."""
     _, repo = make_repo(tmp_path)
     (repo / "tool.py").write_text("x = 1\n", encoding="utf-8")
     _commit(repo, "код")
-    res = run_local(repo, make_stub(tmp_path, STUB_OK), "--base", "")
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert "граница доверия" not in res.stdout
+    res = run_local(repo, make_stub(tmp_path, STUB_BROKEN), "--base", "")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "--base передан с пустым значением" in res.stderr
 
 
 def test_empty_trusted_base_is_a_config_error(tmp_path: Path) -> None:
@@ -3731,6 +3755,9 @@ def test_trusted_base_without_value_is_a_config_error(tmp_path: Path) -> None:
 # --- режим спецификаций (steward#184) ------------------------------------------
 
 SPEC_PROMPT = str(ROOT / ".github" / "codex" / "review-prompt-spec.md")
+# `run_local` всегда задаёт REVIEW_PROMPT (промпт кода), а с `--spec` это
+# отказ (steward#198/#199) — спек-тесты снимают его явно.
+SPEC_UNSET = ("REVIEW_PROMPT",)
 
 
 def _prose_commit(tmp_path: Path) -> Path:
@@ -3749,6 +3776,7 @@ def test_spec_mode_sends_the_spec_prompt_and_includes_prose(tmp_path: Path) -> N
         repo,
         make_stub(tmp_path, _capturing_stub(dump)),
         "--spec",
+        env_unset=SPEC_UNSET,
         env_overrides={"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES, "REVIEW_PROMPT_SPEC": SPEC_PROMPT},
     )
     assert result.returncode == 0, result.stderr
@@ -3776,6 +3804,7 @@ def test_spec_mode_without_its_prompt_is_a_named_config_error(tmp_path: Path) ->
         repo,
         make_stub(tmp_path, STUB_BROKEN),
         "--spec",
+        env_unset=SPEC_UNSET,
         env_overrides={"REVIEW_PROMPT_SPEC": str(tmp_path / "нет.md")},
     )
     assert result.returncode == 2
@@ -3788,7 +3817,12 @@ def test_spec_mode_default_prompt_resolves_from_repo_root(tmp_path: Path) -> Non
     repo = _prose_commit(tmp_path)
     env = {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES}
     result = run_local(
-        repo, make_stub(tmp_path, STUB_BROKEN), "--spec", cwd=repo / "docs", env_overrides=env
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),
+        "--spec",
+        cwd=repo / "docs",
+        env_overrides=env,
+        env_unset=SPEC_UNSET,
     )
     resolved = str(repo.resolve() / ".github" / "codex" / "review-prompt-spec.md")
     assert result.returncode == 2 and resolved in result.stderr
@@ -3797,7 +3831,11 @@ def test_spec_mode_default_prompt_resolves_from_repo_root(tmp_path: Path) -> Non
 def test_empty_review_prompt_spec_is_a_refusal(tmp_path: Path) -> None:
     repo = _prose_commit(tmp_path)
     result = run_local(
-        repo, make_stub(tmp_path, STUB_BROKEN), "--spec", env_overrides={"REVIEW_PROMPT_SPEC": ""}
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),
+        "--spec",
+        env_overrides={"REVIEW_PROMPT_SPEC": ""},
+        env_unset=SPEC_UNSET,
     )
     assert result.returncode == 2 and "REVIEW_PROMPT_SPEC задан пустым" in result.stderr
 
@@ -3806,7 +3844,9 @@ def test_spec_mode_changes_the_fingerprint(tmp_path: Path) -> None:
     repo = _prose_commit(tmp_path)
     env = {"REVIEW_SCOPE_RULES": REAL_SCOPE_RULES, "REVIEW_PROMPT_SPEC": SPEC_PROMPT}
     code = run_local(repo, "false", "--fingerprint-only", "--include-prose", env_overrides=env)
-    spec = run_local(repo, "false", "--fingerprint-only", "--spec", env_overrides=env)
+    spec = run_local(
+        repo, "false", "--fingerprint-only", "--spec", env_overrides=env, env_unset=SPEC_UNSET
+    )
     assert code.returncode == 0 and spec.returncode == 0, (code.stderr, spec.stderr)
     assert code.stdout.strip() != spec.stdout.strip()
 
@@ -3819,6 +3859,7 @@ def test_spec_refusal_does_not_leave_a_stale_verdict(tmp_path: Path) -> None:
         repo,
         make_stub(tmp_path, STUB_BROKEN),
         "--spec",
+        env_unset=SPEC_UNSET,
         env_overrides={
             "REVIEW_PROMPT_SPEC": str(tmp_path / "нет.md"),
             "REVIEW_VERDICT_OUT": str(stale),
@@ -3826,3 +3867,21 @@ def test_spec_refusal_does_not_leave_a_stale_verdict(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert not stale.exists()
+
+
+@pytest.mark.parametrize("value", ["/abs/my-spec-prompt.md", ""])
+def test_spec_mode_with_explicit_review_prompt_is_a_refusal(tmp_path: Path, value: str) -> None:
+    """steward#198/#199: явный REVIEW_PROMPT с `--spec` раньше молча
+    подменялся промптом спеки — ревью шло не тем промптом, который просили, а
+    доверенный промпт devtools заменялся копией из дерева PR. Теперь отказ
+    кодом 2 с упоминанием REVIEW_PROMPT; канал промпта спеки — REVIEW_PROMPT_SPEC."""
+    repo = _prose_commit(tmp_path)
+    result = run_local(
+        repo,
+        make_stub(tmp_path, STUB_BROKEN),
+        "--spec",
+        env_overrides={"REVIEW_PROMPT": value, "REVIEW_PROMPT_SPEC": SPEC_PROMPT},
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REVIEW_PROMPT" in result.stderr
+    assert "REVIEW_PROMPT_SPEC" in result.stderr

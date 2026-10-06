@@ -739,3 +739,79 @@ def test_withheld_list_is_rendered_inside_the_diff_region(tmp_path: Path) -> Non
     out = result.stdout
     assert "docs/note.md" in out
     assert out.index("ДИФ НАЧАЛО") < out.index("docs/note.md") < out.index("ДИФ КОНЕЦ")
+
+
+def _git_diff_with_lockfile(tmp_path: Path, path: str) -> tuple[Path, Path]:
+    """Реальный `git diff` (как у local.sh: quotePath по умолчанию) и список
+    generated (как у local.sh: `core.quotePath=false diff --name-only`)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ).stdout
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "README").write_text("r\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(f"locked-{i}\n" for i in range(5)), encoding="utf-8")
+    (repo / "src.py").write_text("src-0\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "lock")
+    diff = tmp_path / "d.patch"
+    diff.write_bytes(
+        subprocess.run(
+            ["git", "-C", str(repo), "diff", "HEAD~1..HEAD"], check=True, capture_output=True
+        ).stdout
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text(f"{path}\n", encoding="utf-8")
+    return diff, gen
+
+
+@pytest.mark.parametrize("path", ["my dir/uv.lock", "dé/uv.lock", 'q"uote/uv.lock'])
+def test_declared_path_needing_quotes_or_spaces_is_omitted(tmp_path: Path, path: str) -> None:
+    """review-kit-quoted-diff-headers: git кавычит заголовок (`"a/d\\303\\251/…"`)
+    для не-ASCII и спецсимволов, а пробел оставляет как есть — разбор по
+    `$NF` не находил такой путь в сыром списке, и блок оставался в дифе."""
+    diff, gen = _git_diff_with_lockfile(tmp_path, path)
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert f"generated-файл опущен из дифа: {path}" in result.stdout
+    assert "locked-0" not in result.stdout
+    assert "src-0" in result.stdout
+
+
+def test_rename_with_spaces_into_declared_path_stays_in_diff(tmp_path: Path) -> None:
+    """Rename с пробелами в путях неоднозначен по точкам раздела ` b/`:
+    `a/x b/y.py b/uv.lock` — кит не угадывает, блок остаётся в дифе."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        "diff --git a/x b/y.py b/uv.lock\n"
+        "similarity index 50%\n"
+        "rename from x b/y.py\n"
+        "rename to uv.lock\n"
+        "@@ -1 +1 @@\n"
+        "+smuggled-code\n",
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("x\nuv.lock\ny.py b/uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "generated-файл опущен" not in result.stdout
+    assert "smuggled-code" in result.stdout
