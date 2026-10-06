@@ -1630,6 +1630,23 @@ PR и осознанно не закрыто; список полон, друг�
       мержа — синк caller'ов по флоту; в синк-PR kapelle/atp-platform/
       arbiter/dispatcher попутно закрыть их чекбоксы `codex-review-caller`
 
+- [ ] `local.sh --spec` молча подменяет явно заданный `REVIEW_PROMPT` @owner:github:andrei-shtanakov @id:review-kit-spec-respects-review-prompt @epic:eco.codex-review-rollout
+      Приём steward#198 (from dispatcher, dispatcher#297) и steward#199 (from
+      devtools, spec-runner#657) — один запрос, один slug. Решение кита: пара
+      «`REVIEW_PROMPT` задан + `--spec`» — отказ кодом 2 с упоминанием
+      `REVIEW_PROMPT`; доверенный промпт спеки подаётся отдельным каналом
+      `REVIEW_PROMPT_SPEC`, который уже есть. Уважать `REVIEW_PROMPT` в `--spec`
+      нельзя: devtools подаёт через него доверенный промпт кода, и спека
+      ревьюировалась бы не тем промптом. Разблокирует проброс `--spec` в
+      `review-pr.sh` (devtools#501 п.2).
+- [ ] `review-prompt-spec.md` §5: чистое удаление в спеке нерепортуемо; область `file-missing` в §3 и §5 расходится @owner:github:andrei-shtanakov @id:review-prompt-spec-pure-deletion @epic:eco.codex-review-rollout
+      Приём steward#200 (from devtools, devtools#557). Major: изъятие критерия
+      приёмки/требования не имеет легальной строки для находки — перенести из
+      `review-prompt.md` правило ближайшего оставшегося контекста (`line: 0` для
+      удалённого файла) и норму «ослабление без равноценной замены — минимум
+      major». Minor: одно правило `file-missing` для §3 и §5. Держит devtools#557
+      и spec-runner#657 до ре-вендора.
+
 ## Ждём от других проектов
 
 - [ ] **devtools → раскатка режима ревью спецификаций** (`local.sh --spec` и `.github/codex/review-prompt-spec.md`) потребителям кита, первым — spec-runner (автор steward#184); по желанию — флаг в `review-pr.sh` @owner:repo:devtools @blocked_by:todo://devtools/review-kit-spec-mode-rollout @id:review-kit-spec-mode-rollout-wait
