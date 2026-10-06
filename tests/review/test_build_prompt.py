@@ -841,3 +841,24 @@ def test_rename_mimicking_equal_halves_stays_in_diff(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "generated-файл опущен" not in result.stdout
     assert "smuggled-code" in result.stdout
+
+
+def test_unparsed_header_is_named_not_silent(tmp_path: Path) -> None:
+    """Заголовок, который фильтр не разобрал (здесь — без префиксов `a/`/`b/`,
+    форма `--no-prefix`), остаётся в дифе, но это называется в stderr — иначе
+    единственным следом был бы отказ по потолку с советом про размер PR."""
+    prompt = tmp_path / "p.md"
+    prompt.write_text("И", encoding="utf-8")
+    diff = tmp_path / "d.patch"
+    diff.write_text(
+        "diff --git uv.lock uv.lock\n--- uv.lock\n+++ uv.lock\n@@ -0,0 +1 @@\n+locked-0\n",
+        encoding="utf-8",
+    )
+    gen = tmp_path / "gen.lst"
+    gen.write_text("uv.lock\n", encoding="utf-8")
+
+    result = run_gen(prompt, diff, gen)
+
+    assert result.returncode == 0, result.stderr
+    assert "locked-0" in result.stdout
+    assert "не разобран" in result.stderr

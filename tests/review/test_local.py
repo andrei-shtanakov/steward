@@ -919,6 +919,41 @@ def test_user_diff_config_does_not_disable_generated_filter(tmp_path: Path, conf
     assert "диф больше поддерживаемого" not in result.stderr
 
 
+def test_diff_relative_from_subdir_does_not_hide_handwritten_file(tmp_path: Path) -> None:
+    """`diff.relative=true` печатает пути от cwd: из `sub/` рукописный
+    `sub/uv.lock` выходил как `uv.lock`, а check-attr от корня совпадал с
+    анкорной `/uv.lock` — файл прятался (находка ревью батча 2026-10-06).
+    Пин `diff.relative=false` держит пути от корня у всех вызовов git diff."""
+    _, local = make_repo(tmp_path)
+    (local / ".gitattributes").write_text("/uv.lock linguist-generated=true\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "анкорная декларация влита в базу")
+    base_sha = git(local, "rev-parse", "HEAD")
+    (local / "sub").mkdir()
+    (local / "sub" / "uv.lock").write_text("handwritten-secret\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-qm", "рукописный sub/uv.lock")
+    gitconfig = tmp_path / "user.gitconfig"
+    gitconfig.write_text("[diff]\n\trelative = true\n", encoding="utf-8")
+    dump = tmp_path / "prompt-seen.txt"
+
+    result = run_local(
+        local,
+        make_stub(tmp_path, _capturing_stub(dump)),
+        "--base",
+        base_sha,
+        cwd=local / "sub",
+        env_overrides={"GIT_CONFIG_GLOBAL": str(gitconfig)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    seen = dump.read_text()
+    assert "опущен из дифа: uv.lock" not in seen
+    assert "опущен из дифа: sub/uv.lock" not in seen
+    assert "handwritten-secret" in seen
+    assert "b/sub/uv.lock" in seen
+
+
 def test_same_patch_declaration_does_not_hide_code(tmp_path: Path) -> None:
     """Декларация из того же патча НЕ прячет код: действует только влитая.
 

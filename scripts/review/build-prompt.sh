@@ -270,7 +270,8 @@ LC_ALL=C awk -v gen_file="$generated_list" '
         # гейта на #99). Для обычного блока стороны совпадают и правило
         # вырождается в прежнее членство.
         old_path = ""; new_path = ""
-        generated = parse_header(substr($0, 12)) && (new_path in gen) && (old_path in gen)
+        if (!parse_header(substr($0, 12)) || old_path == "" || new_path == "") unparsed++
+        generated = (new_path in gen) && (old_path in gen)
         if (generated) {
             printf "--- generated-файл опущен из дифа: %s — не ревьюируется построчно, проверяй согласованность с источником по дереву ---\n", new_path
             next
@@ -278,6 +279,10 @@ LC_ALL=C awk -v gen_file="$generated_list" '
     }
     generated { next }
     { print }
+    END {
+        if (unparsed > 0)
+            printf "предупреждение: %d заголовок(ов) diff --git не разобран(о) — generated-фильтр к ним не применён, блоки остаются в дифе (ожидается форма git diff с префиксами a/ b/).\n", unparsed > "/dev/stderr"
+    }
 ' "$diff" > "$filtered"
 diff="$filtered"
 fi
