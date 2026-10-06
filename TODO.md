@@ -666,13 +666,14 @@ product decision record (и наоборот). Как approved proposal стан
   `(file, line, нормализованное сообщение)` — одна находка приедет из
   нескольких чанков.
 - [x] **Машинный тип находки в вердикте: `kind: defect | file-missing`** @owner:github:andrei-shtanakov @id:review-kit-file-missing-finding-type — приём входящего steward#141 (from devtools#behaviour-runner). Известный ложный класс: ревьюер заявляет «файлов нет» на файлы, которые в PR есть (опровергается `git cat-file -e <head>:<путь>`); behaviour-runner devtools на таком request-changes останавливался на человеке, потому что находка приезжала только прозой и машинно не отличалась от настоящей. PR этой ветки: поле `kind` в `.github/codex/review-schema.json` — **обязательное**, как и остальные поля схемы: необязательное не дало бы потребителю отличить «старый кит без типов» от «находка не про отсутствие файла». Путь отдельным полем не заводится — при `kind: file-missing` субъектом объявлен сам `file` (один путь на находку, `line: 0`), правило записано в промпт §3. `apply-threshold.sh` тип **валидирует** (значение вне enum = негодный вердикт, код 2, наравне с severity/confidence) и рендерит, но порога не меняет: опровержение — работа потребителя, у которого есть дерево, а скрипт дерева не видит. Там же единственный оракул правила `line: 0` для этого класса — JSON-схема условных конструкций не принимает (структурированный вывод модели), поэтому без проверки в скрипте требование промпта разошлось бы с вердиктами молча (находка ревью-гейта на этом PR, minor). Ход за devtools: авто-ветка опровержения в runner (спека §7) отдельным PR.
-- [ ] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers @epic:eco.codex-review-rollout
+- [x] Generated-фильтр не разбирает кавыченные `diff --git`-заголовки (пути со @owner:github:andrei-shtanakov @id:review-kit-quoted-diff-headers @epic:eco.codex-review-rollout
       спецсимволами/пробелами): такой путь не совпадает с сырым членом
       `--generated-list` и остаётся в дифе — худший исход сегодня это явный
       отказ по потолку (fail в сторону ревью, находка minor гейта на #99,
       подтверждена шестым заходом). Правка — нормализация кавыченной формы в
       awk `build-prompt.sh` согласованно с `core.quotePath=false` у сборки
       списка в local.sh
+      **Сделано (PR этой ветки):** заголовок разбирается по форме git: кавыченная сторона раскодируется из C-escape (`LC_ALL=C`), некавыченная с пробелами делится по единственной точке ` b/`, неоднозначный — остаётся в дифе; форму дифа пинит `local.sh` (`diff.noprefix`/`srcPrefix`/цвет/ext-diff).
 - [x] CI передаёт `--generated-list` в `build-prompt.sh` — включается @owner:github:andrei-shtanakov @id:review-kit-ci-generated-list
       ДЕТЕКЦИЕЙ литерала флага в извлечённой из base механике (деплой-
       ограничение head-YAML × base-скрипты обойдено без второго PR; до мержа
@@ -1323,7 +1324,7 @@ PR и осознанно не закрыто; список полон, друг�
       поверхность добавляла. Край остаётся ОБЪЯВЛЕННЫМ (строка вывода +
       комментарий + README), не спрятанным.
 
-- [ ] Решение владельца: `--base ""` — молчаливая ветка по умолчанию или отказ кодом 2? @owner:github:andrei-shtanakov @id:review-kit-empty-base-ruling @epic:eco.codex-review-rollout
+- [x] Решение владельца: `--base ""` — молчаливая ветка по умолчанию или отказ кодом 2? @owner:github:andrei-shtanakov @id:review-kit-empty-base-ruling @epic:eco.codex-review-rollout
       Вопрос: Соседние опции (`--trusted-base`, `--max-diff-bytes`,
       `--max-diff-files`) на пустом значении отказывают с доводом «явная, но
       сломанная настройка не читается молча как её противоположность»; у
@@ -1334,6 +1335,7 @@ PR и осознанно не закрыто; список полон, друг�
       базу) — частная форма закрыта там же, общая семантика НЕТ: это смена
       контракта `--base` у ~22 потребителей, и решать её внутри приёма двух
       чужих заявок нельзя.
+      **Сделано (PR этой ветки):** решение владельца 2026-10-06 — отказ кодом 2 (`--base передан с пустым значением`), README рядом с `--trusted-base`.
 
 - [ ] Усиление разделителя дифа: литеральные маркеры → уже сделано суффиксом от хеша; @owner:github:andrei-shtanakov @id:review-kit-diff-marker-hardening @epic:eco.codex-review-rollout
       осталось решить, нужен ли полноценный nonce
@@ -1530,7 +1532,7 @@ PR и осознанно не закрыто; список полон, друг�
   0/0. Оговорка: файл фактов локальный с lease 24 ч, зелёный держится, пока
   host-local расписание A0 собирает факты — свойство Stage A0 по построению.
 
-- [ ] generated-фильтр `local.sh` из подкаталога: `check-attr` приклеивает cwd-префикс @owner:github:andrei-shtanakov @id:review-kit-generated-filter-cwd @epic:eco.codex-review-rollout
+- [x] generated-фильтр `local.sh` из подкаталога: `check-attr` приклеивает cwd-префикс @owner:github:andrei-shtanakov @id:review-kit-generated-filter-cwd @epic:eco.codex-review-rollout
 
   Найдено приёмочным ревью #151 (дважды, вне рамки патча). `collect_declared`
   кормит `git check-attr --stdin --source=<tree>` root-относительными путями из
@@ -1543,6 +1545,8 @@ PR и осознанно не закрыто; список полон, друг�
   АНКОРНЫМ паттерном в `.gitattributes` (существующий
   `test_declared_generated_is_filtered_from_subdir` зелёный только потому, что
   неанкорный `uv.lock` совпадает и с `src/uv.lock`).
+
+  **Сделано (PR этой ветки):** `git -C "$repo_root" check-attr`, регресс-тест с анкорным `/uv.lock` из подкаталога.
 
 - [x] Запись манифеста `dir/` проходила как файл — в пакет попадал листинг каталога @owner:github:andrei-shtanakov @id:review-context-trailing-slash-entry @epic:eco.codex-review-rollout
 
@@ -1630,7 +1634,7 @@ PR и осознанно не закрыто; список полон, друг�
       мержа — синк caller'ов по флоту; в синк-PR kapelle/atp-platform/
       arbiter/dispatcher попутно закрыть их чекбоксы `codex-review-caller`
 
-- [ ] `local.sh --spec` молча подменяет явно заданный `REVIEW_PROMPT` @owner:github:andrei-shtanakov @id:review-kit-spec-respects-review-prompt @epic:eco.codex-review-rollout
+- [x] `local.sh --spec` молча подменяет явно заданный `REVIEW_PROMPT` @owner:github:andrei-shtanakov @id:review-kit-spec-respects-review-prompt @epic:eco.codex-review-rollout
       Приём steward#198 (from dispatcher, dispatcher#297) и steward#199 (from
       devtools, spec-runner#657) — один запрос, один slug. Решение кита: пара
       «`REVIEW_PROMPT` задан + `--spec`» — отказ кодом 2 с упоминанием
@@ -1639,13 +1643,15 @@ PR и осознанно не закрыто; список полон, друг�
       нельзя: devtools подаёт через него доверенный промпт кода, и спека
       ревьюировалась бы не тем промптом. Разблокирует проброс `--spec` в
       `review-pr.sh` (devtools#501 п.2).
-- [ ] `review-prompt-spec.md` §5: чистое удаление в спеке нерепортуемо; область `file-missing` в §3 и §5 расходится @owner:github:andrei-shtanakov @id:review-prompt-spec-pure-deletion @epic:eco.codex-review-rollout
+      **Сделано (PR этой ветки):** явный `REVIEW_PROMPT` (даже пустой) с `--spec` — отказ кодом 2, промпт спеки только через `REVIEW_PROMPT_SPEC`; закрывает steward#198/#199.
+- [x] `review-prompt-spec.md` §5: чистое удаление в спеке нерепортуемо; область `file-missing` в §3 и §5 расходится @owner:github:andrei-shtanakov @id:review-prompt-spec-pure-deletion @epic:eco.codex-review-rollout
       Приём steward#200 (from devtools, devtools#557). Major: изъятие критерия
       приёмки/требования не имеет легальной строки для находки — перенести из
       `review-prompt.md` правило ближайшего оставшегося контекста (`line: 0` для
       удалённого файла) и норму «ослабление без равноценной замены — минимум
       major». Minor: одно правило `file-missing` для §3 и §5. Держит devtools#557
       и spec-runner#657 до ре-вендора.
+      **Сделано (PR этой ветки):** §5 — второе исключение «чистое удаление» (строка ближайшего контекста / `line: 0`), §4 — изъятие критерия/требования без замены минимум major, одно правило `file-missing` для §3/§5; закрывает steward#200.
 
 ## Ждём от других проектов
 
