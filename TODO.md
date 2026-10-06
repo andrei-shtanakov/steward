@@ -1655,7 +1655,7 @@ PR и осознанно не закрыто; список полон, друг�
 
 ## Ждём от других проектов
 
-- [ ] **devtools → раскатка режима ревью спецификаций** (`local.sh --spec` и `.github/codex/review-prompt-spec.md`) потребителям кита, первым — spec-runner (автор steward#184); по желанию — флаг в `review-pr.sh` @owner:repo:devtools @blocked_by:todo://devtools/review-kit-spec-mode-rollout @id:review-kit-spec-mode-rollout-wait
+- [ ] **devtools → раскатка режима ревью спецификаций** (`local.sh --spec` и `.github/codex/review-prompt-spec.md`) потребителям кита, первым — spec-runner (автор steward#184); по желанию — флаг в `review-pr.sh` @owner:repo:devtools @blocked_by:todo://devtools/review-kit-spec-mode-rollout @id:review-kit-spec-mode-rollout-wait @epic:eco.codex-review-rollout
 - [x] **devtools → догоняющая волна re-vendor кита после steward#129**: промпт с @id:review-kit-prompt-lens-wave-wait @blocked_by:todo://devtools/review-kit-prompt-lens-wave
       линзой ослабления тестов (22 репо с prompt+PIN) + caller-workflow с доводом
       потолка (6 репо); волна 2026-08-27 разъехалась с e4c43cc — ДО #129, а
