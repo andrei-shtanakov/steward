@@ -208,7 +208,8 @@ def test_dataclasses_are_frozen():
   снимков: `live(name) -> dict` — одиночный обмен или `{"exchanges": [...]}`;
   `request_from(ex) -> Request`; `key(r: Request) -> tuple` и `key_of(ex) -> tuple` —
   `(method, path, op, variables, query)` для сравнения журнала `ReplayTransport.log` с
-  порядком снимка; `LIVE_CAPTURES` — имена всех файлов снимков, кроме `MANIFEST.json`)
+  порядком снимка; `LIVE_CAPTURES` — имена из `files` манифеста `MANIFEST.json` (источник — манифест с
+  sha256, сверенный с каталогом `tests/approvalfacts/test_capture_live.py`, а не листинг))
 - Modify: `scripts/capture_approval_facts_v3_live.py` — константы запросов заменяются импортом
   из `queries.py` (тот же коммит; скрипт и библиотека не могут разойтись)
 - Test: `tests/approvalfacts/v3/test_transport.py`, `tests/approvalfacts/v3/test_github.py`,
@@ -243,7 +244,7 @@ def _exchanges(name: str) -> list[dict]:
 def _blob_paths(req: dict) -> int:
     return sum(1 for k in req["variables"] if re.fullmatch(r"m\d+", k))
 
-@pytest.mark.parametrize("name", LIVE_CAPTURES)          # все файлы снимков, кроме MANIFEST
+@pytest.mark.parametrize("name", LIVE_CAPTURES)          # все снимки манифеста
 def test_library_query_text_equals_live_capture(name):
     for ex in _exchanges(name):
         req = ex["request"]
@@ -436,8 +437,8 @@ def test_bad_t_raises():
 
 ```python
 def test_reviews_user_and_bot_live_positive_twin():
-    # pr657_act_sequence / probe1_review_pass без преобразований: databaseId int → "5711633458",
-    # Bot-автор (copilot-pull-request-reviewer, df-probe-reviewer-ashtanakov) — установлен
+    # pr657_act_sequence / closed606_review_pass без преобразований: databaseId int →
+    # "5711633458", Bot-автор (copilot-pull-request-reviewer) — установлен
 def test_timeline_query_requests_actor_typename():
     assert "actor{login __typename}" in Q_TIMELINE
 def test_normal_dismissal_positive_twin():
@@ -531,14 +532,14 @@ def test_repo_must_have_one_slash():
 
 ```python
 def test_not_merged_live_capture_is_waiting_delivery():
-    """Живой снимок df-roles-probe-private #1: REST merged=false c НЕНУЛЕВЫМ тестовым
+    """Живой снимок devtools #606: REST merged=false c НЕНУЛЕВЫМ тестовым
     merge_commit_sha, GraphQL mergeCommit=null → сначала merged, поля мержа не сверяются."""
-    seq = live("probe1_act_sequence")
+    seq = live("closed606_act_sequence")
     t = replay_transport(seq)                                       # набор — один раз
     pull = next(ex for ex in seq["exchanges"] if ex["request"]["method"] == "GET")
     assert pull["response"]["body"]["merge_commit_sha"]             # тестовый SHA не null
     assert pull["response"]["body"]["merged"] is False
-    d, facts = read_act_facts(t, "andrei-shtanakov/df-roles-probe-private", 1, paths=[P])
+    d, facts = read_act_facts(t, "andrei-shtanakov/devtools", 606, paths=[P])
     assert facts is None and d == Delivery(False, None, None, None, None, None, False, ())
     assert t.unused() == [] and [key(r) for r in t.log] == [key_of(ex) for ex in seq["exchanges"]]
 def test_merged_disagreement_is_delivery_mismatch(): ...   # set_field merged по одну сторону
@@ -753,7 +754,7 @@ def test_activation_no_pr():               # → "no_pr_for_commit"
 | `unknown_state.json` / `missing_commit_id.json` / `dismissed_without_event.json` | соответствующий `unavailable` (все — от `read_act_facts`) |
 | `actor_unresolved_other_reviewer_null.json` / `…_other_reviewer_ghost.json` / `…_dismissal_actor.json` / `…_merger.json` / `…_mannequin.json` (все — при действительном APPROVED Alice) | `unavailable: actor_unresolved` |
 | `open_review/actor_unresolved_ghost.json` | `unavailable: actor_unresolved` |
-| `not_merged.json` (живые `e1/probe1_act_sequence` без преобразований; REST `merge_commit_sha` ненулевой) | `waiting_delivery: true` |
+| `not_merged.json` (живой `closed606_act_sequence` без преобразований; REST `merge_commit_sha` ненулевой) | `waiting_delivery: true` |
 | `live_pr657.json` / `live_pr636.json` — **неизменённые** живые последовательности `pr657_act_sequence` / `pr636_act_sequence` (E2, E1, E5, E6 с одним реальным путём, E3, E4 ×2, E2, E1), `t = merged_at`; `transforms: []` | `effective` и `delivery` — как в снимке (`in_base: true`: #657 `identical`, #636 `behind`) |
 | `paths_three_negative.json` — `neg_e6_blobs_present_absent_tree` (отдельный отрицательный) | `unavailable: path_absent_at_head` |
 | `dismissal_normal_twin.json` (Alice APPROVED + отзыв ревью Bob актором User, `unverified_shape`) / `dismissal_actor_no_typename.json` | `effective {"alice": "APPROVED", "bob": "DISMISSED"}` / `unavailable: actor_unresolved` |
@@ -1251,8 +1252,9 @@ E5 `identical`; E6 Blob/`null`/Tree; E7; H1–H6 (корень без родит
 
 1. `ReviewDismissedEvent` (E4): форма узла, `previousReviewState`, `actor{login __typename}`,
    `review{databaseId}`; число событий = число ревью в `DISMISSED`. В разрешённых репо отзывов
-   нет — смоук ставит отзыв на **стенде** (`df-roles-probe-private`, отдельное решение
-   владельца на запись) либо фиксирует `not_verified`;
+   нет — смоук ставит отзыв на **стенде** (отдельное решение владельца на запись) либо
+   фиксирует `not_verified`; ответы приватного стенда в публичный steward **не коммитятся**
+   (в evidence — только вердикт строки и SHA, без тел ответов);
 2. **App-мержер** (E1/E2): REST `merged_by{login: "<slug>[bot]", type: "Bot"}`, GraphQL
    `mergedBy{login: "<slug>", __typename: "Bot"}`;
 3. **открытый PR** (E1/E2 `state: open`/`OPEN`, `read_open_review`): в разрешённых репо открытых

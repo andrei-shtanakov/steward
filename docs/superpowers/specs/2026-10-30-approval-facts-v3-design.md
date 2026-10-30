@@ -212,8 +212,8 @@ GitHub REST pagination), лишний запрос пустой страницы
    **и** REST `GET repos/{o}/{r}/pulls/{n}`. **Сначала `merged`:** значения обязаны совпасть
    (иначе `delivery_mismatch`); оба `False` → п. 2 (`waiting_delivery`), **остальные поля
    мержа не сверяются** — у несмёрженного PR REST несёт тестовый `merge_commit_sha`, а GraphQL
-   — `mergeCommit: null` (снято живьём: `probe1_act_sequence`,
-   `probe1_act_sequence`). Оба `True` → обязаны совпасть мерж-коммит,
+   — `mergeCommit: null` (снято живьём: `closed606_act_sequence`,
+   devtools #606). Оба `True` → обязаны совпасть мерж-коммит,
    `merged_at`, голова (`headRefOid` = `head.sha` — §5.4, проверено на стенде devtools PR #1,
    #4 и живьём на devtools #657, #636), база. Расхождение → `delivery_mismatch`. Логин мержера: REST-форма бота `slug[bot]`
    при `type = "Bot"` сводится к GraphQL-форме `slug`; после сведения логины и типы обязаны
@@ -457,11 +457,19 @@ PR с `merge_commit_sha == merge_commit` и `merged_at ≠ null` (нет → `no
 
 Единственный источник форм. Каждая строка снята **живым read-only** запросом
 (`scripts/capture_approval_facts_v3_live.py`, учётка `gh` по умолчанию, только репо
-`andrei-shtanakov/{devtools, approval-policy, df-roles-probe-private}`, только `GET` и
+`andrei-shtanakov/{devtools, approval-policy}` — **только публичные**: steward публичен, снимков
+приватных репо в нём нет; только `GET` и
 GraphQL-query) и лежит обезличенной в `tests/fixtures/approvalfacts_v3/live/` (столбец
 «снимки»). Фикстуры и векторы **выводятся из снимков** именованными преобразованиями
 (§5), а не пишутся руками. Каждая проверка §3.2–3.7 ссылается на строку; для каждой строки
 есть положительный двойник — вектор, проходящий на неизменённом снимке.
+
+**Захват — fail-closed и атомарный.** Каждый обмен обязан совпасть с объявленным ожиданием
+(код выхода `gh`, строка HTTP-статуса, разбираемое JSON-тело, GraphQL `errors` только где
+объявлены — отрицательные снимки `neg_e2_delivery_absent_pr` и `h5_tree_absent_422` объявлены
+явно); любое расхождение прерывает прогон до записи. Файлы пишутся во временный каталог и
+подменяют `live/` целиком (устаревшие снимки не выживают); `MANIFEST.json` несёт sha256
+каждого снимка, тест сверяет манифест с каталогом в обе стороны и по байтам.
 
 **Согласованные положительные наборы (r5).** Положительный вектор акта — это **неизменённая
 живая последовательность** всех обменов одного вызова `read_act_facts(repo, pr,
@@ -471,7 +479,7 @@ paths=[path])` в порядке библиотеки: E2, E1 (доставка)
 `docs/evidence/2026-10-30-df-stage2a-acceptance.md`) и `pr636_act_sequence` (squash; путь
 `TODO.md`) сняты именно так — каждый обмен отдельным живым запросом, второй проход —
 настоящим вторым запросом; replay без преобразований обязан дать `Delivery` и
-`ReviewFacts`. `probe1_act_sequence` — несмёрженный PR: только E2, E1 (дальше библиотека не
+`ReviewFacts`. `closed606_act_sequence` — несмёрженный PR devtools #606: только E2, E1 (дальше библиотека не
 читает). Трёхпутевой `neg_e6_blobs_present_absent_tree` — **отдельный отрицательный**
 снимок (`path_absent_at_head` / `not_a_blob`), в положительные наборы не входит.
 
@@ -491,10 +499,10 @@ query StewardV3Blobs($owner:String!,$name:String!,$merge:GitObjectID!,$head:GitO
 | **G0** | любой GraphQL | объект `{data, errors?}`; `data` — объект | — | непустой `errors` при любом статусе → `graphql_errors`; `data` не объект → `malformed` | `neg_e2_delivery_absent_pr` (200 + `errors[NOT_FOUND]` + `pullRequest: null`) | любой E2–E7 |
 | **R0** | любой REST | форма — по строке endpoint | — | не-2xx → `http`; нет строки статуса → `transport` | `h5_tree_absent_422` (фактически **422**, не 404) | любой E1, H1–H6 |
 | **P1** | REST-список (H4) | заголовок `Link` отсутствует **или** `<url>; rel="x"` через `, ` | `rel="next"` → URL следующей страницы | нет `next` → конец; заголовок есть, грамматика не сошлась → `malformed`; > 50 страниц → `pagination` | `p1_rest_list_with_link_next` (`rel="next"`, `rel="last"`); H4 без `Link` | H4 одностраничный |
-| **E1** | `GET repos/{o}/{r}/pulls/{n}` | **объект**: `merged: bool`, `state: open\|closed`, `merge_commit_sha: str\|null`, `merged_at: str\|null`, `merged_by: {login, type}\|null`, `head.sha`, `base.ref` | `merged` первым; при `True`: `merged_at` → канон, `merged_by.login` `slug[bot]` → `slug` при `type = Bot` | §3.3 п. 1: `merged` ≠ E2 → `delivery_mismatch`; при `False` прочее **не читается**; при `True` — поля мержа ≠ E2 → `delivery_mismatch`, мержер → §3.4.1 | `pr657_act_sequence` (User), `pr636_act_sequence`, `probe1_act_sequence` (`merged: false`, **`merge_commit_sha` не null**, `merged_by: null`) | merge-commit и squash; несмёрженный → `waiting_delivery` |
-| **E2** | `StewardV3Delivery` | G0 + `pullRequest`: `state ∈ {OPEN, CLOSED, MERGED}`, `merged: bool`, `mergedAt: str\|null`, `mergeCommit: {oid}\|null`, `mergedBy: {login, __typename}\|null`, `headRefOid`, `baseRefName` | то же | §3.3 п. 1; `state` вне словаря → `unknown_state`; `merged: true` и `mergedAt`/`mergeCommit` null → `malformed` | `pr657_act_sequence`, `pr636_act_sequence`, `probe1_act_sequence` | те же |
-| **E3** | `StewardV3Reviews` | G0 + `pullRequest{state, headRefOid, baseRefName, reviews{nodes[], pageInfo}}`; узел: `databaseId: int`, `state`, `submittedAt: str\|null`, `commit: {oid}\|null`, `author: {login, __typename}\|null` | `databaseId` → десятичная строка; метки → канон | §3.4 таблица; §3.4.1 (автор) | `pr657_act_sequence` (`User` APPROVED, `Bot` `copilot-pull-request-reviewer` COMMENTED), `probe1_review_pass` (App-ревьюер `__typename: Bot`) | оба снимка; Bot-автор — установлен |
-| **E4** | `StewardV3Timeline` | G0 + `timelineItems{nodes[], pageInfo}`; узел `MergedEvent{createdAt, commit{oid}}` или `ReviewDismissedEvent{createdAt, actor{login, __typename}\|null, previousReviewState\|null, review{databaseId}\|null}` | метки → канон | §3.3 (ровно один `MergedEvent`, `commit.oid` = мерж-коммит); §3.4 таблица; §3.4.1 (актор отзыва) | `pr657_act_sequence` (один `MergedEvent`; наблюдение: `createdAt` = `mergedAt`, не проверка), `probe1_review_pass` (пусто). **`ReviewDismissedEvent` живьём не снят** — в разрешённых репо нет ни одного отзыва (полный обход devtools, 30.10) | merged-снимок; отзыв — производный от схемы вектор, помечен «не проверено» (Task 13) |
+| **E1** | `GET repos/{o}/{r}/pulls/{n}` | **объект**: `merged: bool`, `state: open\|closed`, `merge_commit_sha: str\|null`, `merged_at: str\|null`, `merged_by: {login, type}\|null`, `head.sha`, `base.ref` | `merged` первым; при `True`: `merged_at` → канон, `merged_by.login` `slug[bot]` → `slug` при `type = Bot` | §3.3 п. 1: `merged` ≠ E2 → `delivery_mismatch`; при `False` прочее **не читается**; при `True` — поля мержа ≠ E2 → `delivery_mismatch`, мержер → §3.4.1 | `pr657_act_sequence` (User), `pr636_act_sequence`, `closed606_act_sequence` (`merged: false`, **`merge_commit_sha` не null**, `merged_by: null`) | merge-commit и squash; несмёрженный → `waiting_delivery` |
+| **E2** | `StewardV3Delivery` | G0 + `pullRequest`: `state ∈ {OPEN, CLOSED, MERGED}`, `merged: bool`, `mergedAt: str\|null`, `mergeCommit: {oid}\|null`, `mergedBy: {login, __typename}\|null`, `headRefOid`, `baseRefName` | то же | §3.3 п. 1; `state` вне словаря → `unknown_state`; `merged: true` и `mergedAt`/`mergeCommit` null → `malformed` | `pr657_act_sequence`, `pr636_act_sequence`, `closed606_act_sequence` | те же |
+| **E3** | `StewardV3Reviews` | G0 + `pullRequest{state, headRefOid, baseRefName, reviews{nodes[], pageInfo}}`; узел: `databaseId: int`, `state`, `submittedAt: str\|null`, `commit: {oid}\|null`, `author: {login, __typename}\|null` | `databaseId` → десятичная строка; метки → канон | §3.4 таблица; §3.4.1 (автор) | `pr657_act_sequence` (`User` APPROVED, `Bot` `copilot-pull-request-reviewer` COMMENTED), `closed606_review_pass` (User APPROVED, Bot `copilot-pull-request-reviewer`) | оба снимка; Bot-автор — установлен |
+| **E4** | `StewardV3Timeline` | G0 + `timelineItems{nodes[], pageInfo}`; узел `MergedEvent{createdAt, commit{oid}}` или `ReviewDismissedEvent{createdAt, actor{login, __typename}\|null, previousReviewState\|null, review{databaseId}\|null}` | метки → канон | §3.3 (ровно один `MergedEvent`, `commit.oid` = мерж-коммит); §3.4 таблица; §3.4.1 (актор отзыва) | `pr657_act_sequence` (один `MergedEvent`; наблюдение: `createdAt` = `mergedAt`, не проверка), `closed606_review_pass` (пусто). **`ReviewDismissedEvent` живьём не снят** — в разрешённых репо нет ни одного отзыва (полный обход devtools, 30.10) | merged-снимок; отзыв — производный от схемы вектор, помечен «не проверено» (Task 13) |
 | **E5** | `GET repos/{o}/{r}/compare/{base}...{merge}` | **объект**, `status ∈ {identical, behind, ahead, diverged}` | — | §3.3 п. 3; иной `status` → `malformed` | `pr657_act_sequence` (`identical`), `pr636_act_sequence` (**`behind`**) | оба → `in_base = True`; `ahead`/`diverged` живьём не сняты (Task 13) |
 | **E6** | `StewardV3Blobs` | G0 + `mc`/`hc`: `{oid}\|null`; `m{i}`/`h{i}`: `null` \| `{__typename: "Blob", oid}` \| `{__typename: <иное>}` | — | §3.3 п. 4: `mc`/`hc` null → `object_missing`; `m{i}` null → `blob_at_merge = None`; `h{i}` null → `path_absent_at_head`; не `Blob` → `not_a_blob` | `pr657_act_sequence`, `pr636_act_sequence` (один путь, Blob в мерже и на голове); отрицательный `neg_e6_blobs_present_absent_tree` (Blob, `null`, `{__typename: "Tree"}` без `oid`) | однопутевые наборы без преобразований |
 | **E7** | `StewardV3CommitPulls` (release-продюсер) | G0 + `object`: `null` \| `{associatedPullRequests{nodes[{number, mergeCommit: {oid}\|null}], pageInfo}}` | — | §6 продюсер: PR с `mergeCommit.oid = sha` → E1/E2 | `e7_commit_pulls_graphql_merge` | merge-коммит → PR #657 |
@@ -590,9 +598,9 @@ files_sha256}, ...]}` | `{"violation": "<code>"}` | `{"unavailable": "<code>"}`;
 | равные метки (§8.2, применение потребителем) | отзыв с `created_at = T`: ключ в `before` ⇒ `DISMISSED`, нет ⇒ `APPROVED`; approve с `submitted_at = T`: в `before` ⇒ `APPROVED`, нет ⇒ логина нет |
 | PENDING | APPROVED + PENDING без `submitted_at` ⇒ `APPROVED`; отправленное без `submitted_at` ⇒ `missing_submitted_at` (от `read_act_facts`) |
 | неустановленный актор (R-M0-6) | действительный APPROVED Alice + ревью автора `null` ⇒ `actor_unresolved`; то же с логином `ghost`; актор отзыва `null`; мержер `null`; тип `Mannequin` — все `actor_unresolved` от `read_act_facts`; open: ревью `ghost` ⇒ `actor_unresolved` |
-| прочие отказы §5.5 | неизвестный `state`; нет `commit`; `DISMISSED` без события (от `read_act_facts`, R-M0-4); PR не смёржен ⇒ `waiting_delivery` — **из живого снимка с ненулевым тестовым REST `merge_commit_sha`** (`probe1_act_sequence` + `probe1_act_sequence`, без преобразований) |
+| прочие отказы §5.5 | неизвестный `state`; нет `commit`; `DISMISSED` без события (от `read_act_facts`, R-M0-4); PR не смёржен ⇒ `waiting_delivery` — **из живого снимка с ненулевым тестовым REST `merge_commit_sha`** (`closed606_act_sequence`, без преобразований) |
 | отзыв — положительный двойник типа актора | действительный APPROVED Alice + обычный отзыв ревью Bob актором-`User` (`actor{login, __typename}` заполнены) ⇒ `effective {"alice": "APPROVED", "bob": "DISMISSED"}`, не `actor_unresolved`; двойник: тот же отзыв с `actor` без `__typename` ⇒ `actor_unresolved` |
-| положительные двойники строк §3.8 | `live_pr657.json` и `live_pr636.json` — **неизменённые** живые последовательности E1–E6 одного PR (merge-коммит и squash, по одному реальному пути); E3 Bot-автор (`probe1_review_pass`) — установлен; H1–H6 — история из снимков `approval-policy`/devtools |
+| положительные двойники строк §3.8 | `live_pr657.json` и `live_pr636.json` — **неизменённые** живые последовательности E1–E6 одного PR (merge-коммит и squash, по одному реальному пути); E3 Bot-автор (`copilot-pull-request-reviewer` в `pr657_act_sequence`, `closed606_review_pass`) — установлен; H1–H6 — история из снимков `approval-policy`/devtools |
 | история (§6.1, приёмка №28) | merge-коммит + squash + нейтральное звено ⇒ активации; **многокоммитный rebase-merge ⇒ `HistoryViolation: rebase_intermediate`** и его двойник при второй гипотезе об API (у промежуточного коммита нет ассоциаций) ⇒ `HistoryViolation: commit_without_pr`; **однокоммитный rebase-merge ⇒ принят как `Activation` (предел, не нарушение)**; прямой push ⇒ `commit_without_pr`; якорь не достигнут ⇒ `anchor_not_reached`; база PR другая ⇒ `pr_base_mismatch`; возврат байтов X→Y→X ⇒ три активации; ветка не по умолчанию ⇒ `branch_not_default`; 404 звена ⇒ `http`; коммит прочитан, а 404 на его дереве ⇒ `http` (не «файлов нет»); дерево `truncated` ⇒ `tree_truncated`; файл политики установленно отсутствует в полном дереве ⇒ активация без ключа |
 | активация | PR-мерж ⇒ `Activation`; коммит без PR ⇒ `no_pr_for_commit` |
 
@@ -890,7 +898,7 @@ fail-closed при обеих, а факт входит в чек-лист жи�
 | Факт GitHub | Векторы | Если гипотеза неверна | Живое подтверждение |
 |---|---|---|---|
 | Форма ответов, отказы, пагинация, два прохода, срез T | да | — | — |
-| `previousReviewState` присутствует у отзывов | **не снято**: в devtools и df-roles-probe-private нет ни одного `ReviewDismissedEvent` (полный обход 30.10) | `null` → `dismissal_without_previous_state` (отказ) | **не проверено**; Task 13 (отзыв на стенде), спека devtools §8 — вектор M3 |
+| `previousReviewState` присутствует у отзывов | **не снято**: в devtools нет ни одного `ReviewDismissedEvent` (полный обход 30.10; приватные стенды в публичный steward не снимаются) | `null` → `dismissal_without_previous_state` (отказ) | **не проверено**; Task 13 (отзыв на стенде), спека devtools §8 — вектор M3 |
 | Полнота событий `REVIEW_DISMISSED_EVENT` в таймлайне | нет | отозванное ревью GitHub отдаёт в `DISMISSED`, поэтому пропущенное событие обнаруживается: `dismissed_without_event` (отказ) | смоук (число событий = число ревью в `DISMISSED`) |
 | REST `head.sha` = GraphQL `headRefOid` у смёрженного PR | **снято** (E1/E2: devtools #657, #636) | расхождение → `delivery_mismatch` | **проверено живьём 30.10** |
 | `merged_by` REST `slug[bot]`/`Bot`, GraphQL `slug`/`Bot`; формы для App и User | **User снят** (E1/E2); **App-мержер не снят** — в разрешённых репо мержей App нет | несводимые → `bot_login_mismatch` | User — проверено; App — **не проверено** (spike 12.10, спека devtools §1; Task 13) |

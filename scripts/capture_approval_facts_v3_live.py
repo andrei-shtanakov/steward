@@ -9,11 +9,20 @@ Rules, enforced by construction:
 
 - only ``GET`` REST requests and GraphQL **queries** (no mutation keyword is
   ever sent; the script refuses any query text containing ``mutation``);
-- only the repositories in ``ALLOWED_REPOS``;
+- only the **public** repositories in ``ALLOWED_REPOS`` (steward itself is
+  public: nothing from a private repository may land in its tree);
+- **fail-closed**: every exchange must match its declared expectation — ``gh``
+  exit code, an HTTP status line, a parseable JSON body, and GraphQL ``errors``
+  present only where the capture declares them (``Expect``). Any mismatch aborts
+  the run before a single file is written;
+- **atomic**: all files are written to a temporary sibling directory and swapped
+  in only after every exchange succeeded; stale files of a previous capture do
+  not survive the swap;
+- ``MANIFEST.json`` records the sha256 of every capture file;
 - sanitized output: response headers are dropped except the status line and
   ``Link``; every ``email`` key, every key containing ``token``, commit
-  ``signature``/``payload`` and
-  ``files[].patch`` are removed; no tokens are ever written.
+  ``signature``/``payload`` and ``files[].patch`` are removed; no tokens are
+  ever written.
 
 Usage (default ``gh`` account)::
 
@@ -29,18 +38,24 @@ there; a test asserts the captured ``request.query`` equals the library text).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+DESCRIPTION = "Read-only, fail-closed capture of GitHub responses for approval-facts/v3."
 
 ALLOWED_REPOS = frozenset(
     {
         "andrei-shtanakov/devtools",
         "andrei-shtanakov/approval-policy",
-        "andrei-shtanakov/df-roles-probe-private",
     }
 )
 
@@ -91,6 +106,29 @@ def q_blobs(n: int) -> str:
 _DROP_KEYS = frozenset({"email", "signature", "payload", "patch"})
 
 
+class CaptureError(RuntimeError):
+    """An exchange did not match its declared expectation — nothing is written."""
+
+
+@dataclass(frozen=True)
+class Expect:
+    """Declared outcome of one exchange (spec §3.8: row R0/G0).
+
+    The default is the normal case: ``gh`` exit 0, HTTP 200, a JSON body and —
+    for GraphQL — no ``errors``. A capture of a *negative* shape declares it here
+    explicitly (``neg_e2_delivery_absent_pr``: 200 with ``errors``;
+    ``h5_tree_absent_422``: 422); an undeclared deviation aborts the run.
+    """
+
+    status: int = 200
+    graphql_errors: bool = False
+
+    @property
+    def gh_ok(self) -> bool:
+        """``gh api`` exits 0 only for a 2xx response without GraphQL ``errors``."""
+        return 200 <= self.status < 300 and not self.graphql_errors
+
+
 def _dropped(key: str) -> bool:
     return key in _DROP_KEYS or "token" in key
 
@@ -104,50 +142,81 @@ def sanitize(value: Any) -> Any:
     return value
 
 
-def _split(raw: str) -> tuple[int | None, str | None, Any]:
+def _split(raw: str, what: str) -> tuple[int, str | None, Any]:
+    """Status line, ``Link`` header and JSON body of ``gh api --include`` output.
+
+    Raises :class:`CaptureError` when there is no header/body separator, no HTTP
+    status line, or the body is not JSON — never substitutes a placeholder.
+    """
     head, sep, body = raw.replace("\r\n", "\n").partition("\n\n")
     if not sep:
-        return None, None, None
+        raise CaptureError(f"{what}: no header/body separator in gh output")
     lines = head.split("\n")
-    status: int | None = None
     parts = lines[0].split()
-    if len(parts) >= 2 and parts[0].startswith("HTTP/") and parts[1].isdigit():
-        status = int(parts[1])
+    if len(parts) < 2 or not parts[0].startswith("HTTP/") or not parts[1].isdigit():
+        raise CaptureError(f"{what}: no HTTP status line: {lines[0][:80]!r}")
     link = next(
         (ln.split(":", 1)[1].strip() for ln in lines if ln.lower().startswith("link:")), None
     )
     try:
-        parsed: Any = json.loads(body) if body.strip() else None
-    except json.JSONDecodeError:
-        parsed = {"__unparsed_body__": body[:200]}
-    return status, link, parsed
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise CaptureError(f"{what}: body is not JSON: {exc}") from exc
+    return int(parts[1]), link, parsed
 
 
-def _gh(args: list[str], stdin: str | None = None) -> tuple[int | None, str | None, Any]:
-    proc = subprocess.run(  # noqa: S603 S607 — fixed argv, read-only gh api
-        ["gh", "api", "--include", *args],
-        input=stdin,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    return _split(proc.stdout)
+def _run_gh(argv: list[str], stdin: str | None) -> tuple[int, str, str]:
+    """The only process boundary; tests replace it with a stub."""
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, read-only gh api
+            argv, input=stdin, capture_output=True, text=True, timeout=120, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CaptureError(f"{argv[2:]}: gh did not run: {exc}") from exc
+    return proc.returncode, proc.stdout, proc.stderr
 
 
-def rest(path: str) -> dict[str, Any]:
-    status, link, body = _gh([path])
+def _gh(
+    args: list[str], what: str, expect: Expect, stdin: str | None = None
+) -> tuple[int, str | None, Any]:
+    rc, out, err = _run_gh(["gh", "api", "--include", *args], stdin)
+    if (rc == 0) != expect.gh_ok:
+        raise CaptureError(f"{what}: gh exit code {rc} (stderr: {err.strip()[:200]!r})")
+    status, link, body = _split(out, what)
+    if status != expect.status:
+        raise CaptureError(f"{what}: HTTP {status}, expected {expect.status}")
+    if body is None:
+        raise CaptureError(f"{what}: empty JSON body")
+    return status, link, body
+
+
+def _check_repo_path(path: str) -> None:
+    parts = path.split("/")
+    if len(parts) < 3 or parts[0] != "repos" or f"{parts[1]}/{parts[2]}" not in ALLOWED_REPOS:
+        raise CaptureError(f"repository outside the read-only allowlist: {path}")
+
+
+def rest(path: str, expect: Expect = Expect()) -> dict[str, Any]:
+    _check_repo_path(path)
+    status, link, body = _gh([path], path, expect)
     return {
         "request": {"method": "GET", "path": path},
         "response": {"status": status, "link": link, "body": sanitize(body)},
     }
 
 
-def graphql(op: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+def graphql(
+    op: str, query: str, variables: dict[str, Any], expect: Expect = Expect()
+) -> dict[str, Any]:
     if "mutation" in query:
-        raise SystemExit("refusing a GraphQL text containing 'mutation'")
+        raise CaptureError("refusing a GraphQL text containing 'mutation'")
+    _repo(f"{variables.get('owner')}/{variables.get('name')}")
     payload = json.dumps({"query": query, "variables": variables, "operationName": op})
-    status, link, body = _gh(["graphql", "--input", "-"], stdin=payload)
+    status, link, body = _gh(["graphql", "--input", "-"], op, expect, stdin=payload)
+    if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+        raise CaptureError(f"{op}: GraphQL envelope without a data object")
+    if bool(body.get("errors")) != expect.graphql_errors:
+        raise CaptureError(f"{op}: GraphQL errors {body.get('errors')!r} not declared")
     return {
         "request": {
             "method": "POST",
@@ -162,35 +231,32 @@ def graphql(op: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
 
 def _repo(full: str) -> dict[str, str]:
     if full not in ALLOWED_REPOS:
-        raise SystemExit(f"repository outside the read-only allowlist: {full}")
+        raise CaptureError(f"repository outside the read-only allowlist: {full}")
     owner, name = full.split("/")
     return {"owner": owner, "name": name}
 
 
 DEV = "andrei-shtanakov/devtools"
 POL = "andrei-shtanakov/approval-policy"
-PROBE = "andrei-shtanakov/df-roles-probe-private"
 
-# Real objects (found read-only 2026-10-30; see README in the output dir).
+# Real objects (found read-only 2026-10-30; see the README one level up).
 # Each positive set is one PR with ONE real path that the vector uses: the
 # exchanges are replayed unmodified (spec §5, R-M0-7).
 POSITIVE_SETS = (
     # (label, repo, pr, path) — merge-commit merge by a User; squash merge by a User.
-    (
-        "pr657",
-        "andrei-shtanakov/devtools",
-        657,
-        "docs/evidence/2026-10-30-df-stage2a-acceptance.md",
-    ),
-    ("pr636", "andrei-shtanakov/devtools", 636, "TODO.md"),
+    ("pr657", DEV, 657, "docs/evidence/2026-10-30-df-stage2a-acceptance.md"),
+    ("pr636", DEV, 636, "TODO.md"),
 )
-PROBE_CLOSED_PR = 1
+#: Closed, never merged PR of a public repo: REST still carries a test merge_commit_sha.
+CLOSED_UNMERGED = (DEV, 606)
 POL_ROOT_BRANCH = "main"
 
 
 def _full_sha(repo: str, ref: str) -> str:
-    _, _, body = _gh([f"repos/{repo}/commits/{ref}"])
-    return str(body["sha"])
+    sha = rest(f"repos/{repo}/commits/{ref}")["response"]["body"].get("sha")
+    if not isinstance(sha, str):
+        raise CaptureError(f"repos/{repo}/commits/{ref}: no sha")
+    return sha
 
 
 def _delivery_pair(repo: str, pr: int) -> list[dict[str, Any]]:
@@ -243,18 +309,22 @@ def captures() -> dict[str, dict[str, Any]]:
             "paths": [path],
             "exchanges": act_sequence(repo, pr, path),
         }
-    # Closed, never merged: delivery only (REST carries a test merge_commit_sha).
-    out["probe1_act_sequence"] = {
-        "pr": PROBE_CLOSED_PR,
-        "repo": PROBE,
+    # Closed, never merged: delivery only (the library stops there), plus one review pass.
+    closed_repo, closed_pr = CLOSED_UNMERGED
+    out[f"closed{closed_pr}_act_sequence"] = {
+        "pr": closed_pr,
+        "repo": closed_repo,
         "paths": ["README.md"],
-        "exchanges": _delivery_pair(PROBE, PROBE_CLOSED_PR),
+        "exchanges": _delivery_pair(closed_repo, closed_pr),
     }
-    out["probe1_review_pass"] = {"exchanges": _review_pass(PROBE, PROBE_CLOSED_PR)}
-    # Negative shapes kept separately.
+    out[f"closed{closed_pr}_review_pass"] = {"exchanges": _review_pass(closed_repo, closed_pr)}
+    # Negative shapes, declared explicitly (Expect), kept separately.
     dev = _repo(DEV)
     out["neg_e2_delivery_absent_pr"] = graphql(
-        "StewardV3Delivery", Q_DELIVERY, {**dev, "number": 999999}
+        "StewardV3Delivery",
+        Q_DELIVERY,
+        {**dev, "number": 999999},
+        Expect(status=200, graphql_errors=True),
     )
     m657 = out["pr657_act_sequence"]["exchanges"][1]["response"]["body"]
     merge_sha, merge_head = m657["merge_commit_sha"], m657["head"]["sha"]
@@ -294,27 +364,55 @@ def captures() -> dict[str, dict[str, Any]]:
         if e["path"] == "policy/approvers.env"
     )
     out["h6_blob_policy_approvers"] = rest(f"repos/{POL}/git/blobs/{blob}")
-    out["h5_tree_absent_422"] = rest(f"repos/{POL}/git/trees/{'0' * 40}?recursive=1")
+    out["h5_tree_absent_422"] = rest(
+        f"repos/{POL}/git/trees/{'0' * 40}?recursive=1", Expect(status=422)
+    )
     # P1 — REST Link header (pagination) on a list endpoint.
     out["p1_rest_list_with_link_next"] = rest(f"repos/{DEV}/pulls?state=closed&per_page=2")
     return out
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def _dump(record: Any) -> bytes:
+    return (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
+
+
+def write_atomically(out: Path, data: dict[str, dict[str, Any]], captured_at: str) -> None:
+    """Write every capture and MANIFEST into a temp sibling, then swap it in.
+
+    The previous directory (if any) is replaced as a whole, so a renamed or
+    dropped capture does not survive as a stale «live» file.
+    """
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
+    try:
+        digests: dict[str, str] = {}
+        for name, record in sorted(data.items()):
+            payload = _dump(record)
+            (tmp / f"{name}.json").write_bytes(payload)
+            digests[f"{name}.json"] = hashlib.sha256(payload).hexdigest()
+        manifest = {"captured_at": captured_at, "repos": sorted(ALLOWED_REPOS), "files": digests}
+        (tmp / "MANIFEST.json").write_bytes(_dump(manifest))
+        old = out.with_name(f".{out.name}.old")
+        shutil.rmtree(old, ignore_errors=True)
+        if out.exists():
+            out.rename(old)
+        tmp.rename(out)
+        shutil.rmtree(old, ignore_errors=True)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    data = captures()
-    for name, record in sorted(data.items()):
-        path = args.out / f"{name}.json"
-        path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-    manifest = {
-        "captured_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "captures": sorted(data),
-        "repos": sorted(ALLOWED_REPOS),
-    }
-    (args.out / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    args = parser.parse_args(argv)
+    try:
+        data = captures()
+    except CaptureError as exc:
+        print(f"capture aborted, nothing written: {exc}", file=sys.stderr)
+        return 1
+    write_atomically(args.out, data, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     print(f"{len(data)} captures → {args.out}", file=sys.stderr)
     return 0
 
