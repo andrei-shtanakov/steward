@@ -81,7 +81,7 @@ def graphql_pages(
     variables: Mapping[str, object],
     *,
     connection: Sequence[str],
-    null_path_ok: bool = False,
+    null_ok_at: str | None = None,
 ) -> list[dict]:
     """Все страницы GraphQL-соединения `connection` (путь ключей от `data`); объекты `data`.
 
@@ -90,21 +90,23 @@ def graphql_pages(
     `pageInfo` не той формы — `malformed`.
 
     Путь к соединению на первой странице: отсутствующий ключ — `malformed`; `null` —
-    `malformed`, если вызывающий не передал `null_path_ok=True`. Тогда возвращается
-    `[data]` с этим `null` (отличим от пустого соединения `nodes: []`). `null_path_ok`
-    разрешён только строке §3.8, чья форма допускает `null` на пути: **E7**
-    (`object: null`). На любой следующей странице `null` или отсутствующий ключ на пути —
+    `malformed` на любом шаге, кроме единственного шага `null_ok_at`, названного
+    вызывающим. На нём возвращается `[data]` с этим `null` (отличим от пустого соединения
+    `nodes: []`). `null_ok_at` разрешён только строке §3.8, чья форма допускает `null` на
+    пути: **E7**, `null_ok_at="object"` (`object: null`); `null` у
+    `associatedPullRequests` и прочих шагов остаётся `malformed`. Шаг вне `connection` —
+    `ValueError`. На любой следующей странице `null` или отсутствующий ключ на пути —
     `pagination` (неполная пагинация, не конец).
     """
+    if null_ok_at is not None and null_ok_at not in connection:
+        raise ValueError(f"null_ok_at {null_ok_at!r} is not a step of {list(connection)}")
     pages: list[dict] = []
     cursor: str | None = None
     for _ in range(MAX_PAGES):
         data = graphql(t, op, query, {**variables, "after": cursor})
         pages.append(data)
-        conn = _connection(data, connection, op, first=cursor is None)
+        conn = _connection(data, connection, op, first=cursor is None, null_ok_at=null_ok_at)
         if conn is None:
-            if not null_path_ok:
-                raise _Fail("malformed", f"{op}: null on the path to {'.'.join(connection)}")
             return pages
         cursor = _next_cursor(conn, op)
         if cursor is None:
@@ -112,17 +114,21 @@ def graphql_pages(
     raise _Fail("pagination", f"{op}: more than {MAX_PAGES} pages")
 
 
-def _connection(data: dict, connection: Sequence[str], op: str, *, first: bool) -> dict | None:
-    """Объект соединения; `None` — `null` на пути первой страницы (решает вызывающий)."""
+def _connection(
+    data: dict, connection: Sequence[str], op: str, *, first: bool, null_ok_at: str | None
+) -> dict | None:
+    """Объект соединения; `None` — `null` на шаге `null_ok_at` первой страницы."""
     node: object = data
     where = "data"
     for step in connection:
         if not isinstance(node, dict) or step not in node or node[step] is None:
             if not first:
                 raise _Fail("pagination", f"{op}: {where}.{step} lost on a later page")
-            if isinstance(node, dict) and step in node:
+            if not isinstance(node, dict) or step not in node:
+                raise _Fail("malformed", f"{op}: {where}.{step} is missing")
+            if step == null_ok_at:
                 return None
-            raise _Fail("malformed", f"{op}: {where}.{step} is missing")
+            raise _Fail("malformed", f"{op}: {where}.{step} is null")
         node = node[step]
         where = f"{where}.{step}"
     if not isinstance(node, dict):

@@ -322,7 +322,15 @@ def test_p1_failure_on_later_page_is_refusal_not_partial(live, status, body, cod
 
 @pytest.mark.parametrize(
     "next_url",
-    ["https://evil.example/repos/o/r/pulls?page=2", "http://api.github.com/x", API, f"{API}-X"],
+    [
+        "https://evil.example/repos/o/r/pulls?page=2",
+        "http://api.github.com/x",
+        API,
+        f"{API}-X",
+        "https://api.github.com",
+        "https://api.github.com.evil/repos/o/r/pulls?page=2",
+        "https://api.github.com.evil.example/repos/o/r/pulls?page=2",
+    ],
 )
 def test_p1_next_outside_api_host_is_malformed(live, next_url):
     ex = _with_response(live("h4_commit_pulls_squash"), link=f'<{next_url}>; rel="next"')
@@ -409,7 +417,7 @@ def test_first_page_missing_key_on_path_is_malformed(reviews_ex, pages, path):
 
 def test_missing_key_is_malformed_even_when_null_is_allowed(e7_ex, pages):
     ex = _at_path(e7_ex, COMMIT_PULLS[:2], drop=True)
-    got = _fail(pages, _replay(ex), ex, connection=COMMIT_PULLS, null_path_ok=True)
+    got = _fail(pages, _replay(ex), ex, connection=COMMIT_PULLS, null_ok_at="object")
     assert got.code == "malformed"
 
 
@@ -428,7 +436,7 @@ def test_e7_later_page_null_is_pagination_even_when_null_allowed(e7_ex, pages, d
     first = _paged(e7_ex, COMMIT_PULLS, None, True, "c1")
     second = _at_path(_paged(e7_ex, COMMIT_PULLS, "c1", False, None), COMMIT_PULLS[:2], drop=drop)
     t = _replay(first, second)
-    got = _fail(pages, t, e7_ex, connection=COMMIT_PULLS, null_path_ok=True)
+    got = _fail(pages, t, e7_ex, connection=COMMIT_PULLS, null_ok_at="object")
     assert got.code == "pagination"
 
 
@@ -453,7 +461,7 @@ def test_graphql_failure_on_later_page_is_refusal_not_partial(
 def test_e7_first_page_null_is_returned_when_allowed(e7_ex, pages):
     # E7: `object: null` — допустимая форма строки; `null` виден вызывающему (Task 10).
     ex = _at_path(e7_ex, COMMIT_PULLS[:2], None)
-    got = pages(_replay(ex), ex, connection=COMMIT_PULLS, null_path_ok=True)
+    got = pages(_replay(ex), ex, connection=COMMIT_PULLS, null_ok_at="object")
     assert got == [ex["response"]["body"]["data"]]
     assert got[0]["repository"]["object"] is None
 
@@ -463,8 +471,21 @@ def test_e7_first_page_null_without_permission_is_malformed(e7_ex, pages):
     assert _fail(pages, _replay(ex), ex, connection=COMMIT_PULLS).code == "malformed"
 
 
+@pytest.mark.parametrize("path", [COMMIT_PULLS[:1], COMMIT_PULLS])
+def test_e7_null_on_other_step_is_malformed_when_object_allowed(e7_ex, pages, path):
+    # §3.8 E7 допускает только `object: null`; `associatedPullRequests: null` — не «PR нет».
+    ex = _at_path(e7_ex, path, None)
+    got = _fail(pages, _replay(ex), ex, connection=COMMIT_PULLS, null_ok_at="object")
+    assert got.code == "malformed"
+
+
+def test_null_ok_at_must_be_a_step_of_the_connection(e7_ex, pages):
+    with pytest.raises(ValueError):
+        pages(_replay(e7_ex), e7_ex, connection=COMMIT_PULLS, null_ok_at="pullRequest")
+
+
 def test_e7_positive_twin_single_page(e7_ex, pages):
     t = _replay(e7_ex)
-    got = pages(t, e7_ex, connection=COMMIT_PULLS, null_path_ok=True)
+    got = pages(t, e7_ex, connection=COMMIT_PULLS, null_ok_at="object")
     nodes = got[0]["repository"]["object"]["associatedPullRequests"]["nodes"]
     assert nodes[0]["number"] == 657 and t.unused() == []
