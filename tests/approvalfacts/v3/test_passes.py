@@ -8,6 +8,7 @@
 """
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from steward.approvalfacts.v3.passes import (
 )
 from steward.approvalfacts.v3.queries import Q_TIMELINE
 from steward.approvalfacts.v3.transport import ReplayTransport, replay_transport
+from steward.approvalfacts.v3.validate import validate_review_facts
 
 Record = dict[str, Any]
 Derive = Callable[[list[str], list[Record]], Record]
@@ -518,13 +520,13 @@ def test_derive_repeat_exchange_adds_second_pass(derive):
 UNTYPED = [
     (kind, sub, value, code)
     for kind, sub, code in [
-        ("review", ["state"], "malformed"),
+        ("review", ["state"], "unknown_state"),
         ("review", ["author", "__typename"], "actor_unresolved"),
         ("review", ["author", "login"], "actor_unresolved"),
-        ("review", ["commit", "oid"], "malformed"),
+        ("review", ["commit", "oid"], "missing_commit_id"),
         ("dismissal", ["actor", "__typename"], "actor_unresolved"),
         ("dismissal", ["actor", "login"], "actor_unresolved"),
-        ("dismissal", ["previousReviewState"], "malformed"),
+        ("dismissal", ["previousReviewState"], "unknown_state"),
     ]
     for value in [{"x": 1}, ["APPROVED"]]
 ]
@@ -670,3 +672,35 @@ def test_derive_non_string_typename_is_value_error(derive, dismissal_node):
     node["__typename"] = ["ReviewDismissedEvent"]
     with pytest.raises(ValueError):
         derive(BASE, [_tf("append_node", [T1, *TIMELINE_NODES], node=node)])
+
+
+# --- один дефект — один код на чтении и в валидаторе (ре-ревью Task 4, №8) ----------------
+
+#: (поле ридера, поле модели, значение): не-строка и неизвестная строка.
+SAME_DEFECT = [
+    (kind, sub, attr, value)
+    for kind, sub, attr in [
+        ("review", ["state"], "state"),
+        ("review", ["commit", "oid"], "commit_id"),
+        ("dismissal", ["previousReviewState"], "previous_state"),
+    ]
+    for value in [{"x": 1}, ["APPROVED"], 5, True]
+] + [
+    ("review", ["state"], "state", "SUPERSEDED"),
+    ("dismissal", ["previousReviewState"], "previous_state", "PENDING"),
+]
+
+
+@pytest.mark.parametrize("kind,sub,attr,value", SAME_DEFECT)
+def test_read_path_code_equals_validator_code(derive, dismissal_node, kind, sub, attr, value):
+    clean, _ = _read(derive(BASE, _dismiss_bob(dismissal_node)))
+    assert isinstance(clean, ReviewFacts)
+    if kind == "review":
+        broken = replace(
+            clean, reviews=(clean.reviews[0], replace(clean.reviews[BOB], **{attr: value}))
+        )
+    else:
+        broken = replace(clean, dismissals=(replace(clean.dismissals[0], **{attr: value}),))
+    by_validator = validate_review_facts(broken)
+    assert by_validator is not None
+    assert _code(_untyped(derive, dismissal_node, kind, sub, value)) == by_validator.code

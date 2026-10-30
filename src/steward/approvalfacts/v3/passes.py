@@ -4,9 +4,10 @@
 `StewardV3Timeline` (E4). Граница нормализации: каждое поле узла, ставшее полем модели,
 проходит типизированный доступ (`_str`, `_opt_str`, `_database_id`, `_stamp`, `_actor`) —
 в `Pass`/`Review`/`Dismissal` попадают только строки (и `None`, где модель его держит), не
-сырые значения JSON. Неверный тип — `malformed`; отсутствие, у которого есть свой код
-спеки (§3.4: автор/актор, коммит), — этот код. Целостность фактов (словари состояний,
-связи отзывов, шаг 0 §3.5) решает общая `validate_review_facts`.
+сырые значения JSON. Поле, у которого в таблице §3.4 есть свой код (состояние, коммит,
+автор/актор), отвергается этим кодом — тем же, что дал бы валидатор на том же дефекте;
+`malformed` — только дефекты формы, которых таблица не называет. Целостность фактов
+(словари состояний, связи отзывов, шаг 0 §3.5) решает общая `validate_review_facts`.
 """
 
 from dataclasses import dataclass, fields
@@ -183,8 +184,8 @@ def _review(node: dict) -> Review:
         review_id=review_id,
         login=login,
         type_hint=type_hint,
-        state=_str(node, "state", where),
-        commit_id=_commit_id(node.get("commit"), where),
+        state=_str(node, "state", where, code="unknown_state"),
+        commit_id=_str(node.get("commit"), "oid", where, nonempty=True, code="missing_commit_id"),
         submitted_at=None if submitted is None else _stamp(submitted),
     )
 
@@ -202,7 +203,7 @@ def _dismissal(node: dict) -> Dismissal:
         review_id=review_id,
         actor=login,
         created_at=_stamp(node.get("createdAt")),
-        previous_state=_opt_str(node, "previousReviewState", where),
+        previous_state=_opt_str(node, "previousReviewState", where, code="unknown_state"),
     )
 
 
@@ -221,17 +222,6 @@ def _actor(obj: object, where: str) -> tuple[str, str]:
     return login, kind
 
 
-def _commit_id(commit: object, where: str) -> str:
-    """`commit.oid`: commit null, нет `oid` или пустой — `missing_commit_id`; не строка —
-    `malformed`."""
-    oid = _get(commit, "oid")
-    if oid is None or oid == "":
-        raise _Fail("missing_commit_id", where)
-    if not isinstance(oid, str):
-        raise _Fail("malformed", f"{where}: commit.oid {oid!r} is not a string")
-    return oid
-
-
 def _database_id(raw: object, where: str) -> str:
     """`databaseId` — целое JSON (не bool) → десятичная строка; иначе `malformed`."""
     if type(raw) is not int:
@@ -246,19 +236,21 @@ def _stamp(raw: object) -> str:
         raise _Fail("bad_timestamp", str(exc)) from exc
 
 
-def _str(obj: object, key: str, where: str, *, nonempty: bool = False) -> str:
-    """Строковое поле объекта; нет, не строка (или пусто при `nonempty`) — `malformed`."""
+def _str(
+    obj: object, key: str, where: str, *, nonempty: bool = False, code: str = "malformed"
+) -> str:
+    """Строковое поле объекта; нет, не строка (или пусто при `nonempty`) — `code`."""
     value = _get(obj, key)
     if not isinstance(value, str) or (nonempty and not value):
-        raise _Fail("malformed", f"{where}: {key} {value!r} is not a string")
+        raise _Fail(code, f"{where}: {key} {value!r} is not a string")
     return value
 
 
-def _opt_str(obj: object, key: str, where: str) -> str | None:
-    """Строка или JSON null; иное — `malformed`."""
+def _opt_str(obj: object, key: str, where: str, *, code: str = "malformed") -> str | None:
+    """Строка или JSON null; иное — `code`."""
     value = _get(obj, key)
     if value is not None and not isinstance(value, str):
-        raise _Fail("malformed", f"{where}: {key} {value!r} is not a string or null")
+        raise _Fail(code, f"{where}: {key} {value!r} is not a string or null")
     return value
 
 
