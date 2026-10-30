@@ -4,12 +4,17 @@
 повторить) и применяет закрытый список преобразований спеки §5. Преобразование — словарь
 `{"op": <имя>, ...}`:
 
-- `{"op": "set_field", "path": P, "value": V}` — заменить **существующее** поле;
-- `{"op": "drop_field", "path": P}` — стереть существующий ключ объекта;
+- `{"op": "set_field", "path": P, "value": V}` — заменить **существующее** поле; под
+  `data` поле обязано быть в тексте запроса, а объект `V` — без незапрошенных ключей
+  (пропуск ключа допустим: так строятся отрицательные векторы неполной записи); `V` на
+  месте всего `response.body` — так же для его `data`;
+- `{"op": "drop_field", "path": P}` — стереть существующий ключ объекта (под `data` —
+  запрошенный);
 - `{"op": "append_node", "path": P, "node": N}` — дописать узел в список; ключи узла
   (рекурсивно) обязаны совпасть с полями текста запроса обмена — незапрошенное или
   пропущенное поле — `ValueError`;
-- `{"op": "retime", "path": P, "ts": S}` — заменить существующую метку времени;
+- `{"op": "retime", "path": P, "ts": S}` — заменить существующую метку времени (поле
+  запроса);
 - `{"op": "repeat_exchange", "name": OP}` — дописать в конец копии всех текущих обменов
   операции `OP` (второй проход);
 - `{"op": "page_split", "path": P, "n": K}` — разрезать список `nodes` страницы на две:
@@ -105,15 +110,25 @@ def _apply(exchanges: list[dict[str, Any]], transform: Transform) -> bool:
         node = transform["node"]
         if not isinstance(parent[last], list):
             raise ValueError(f"append_node: {path} is not a list")
-        _check(node, _selection_at(exchanges, path), f"{path}")
+        sel = _selection_at(exchanges, path)
+        if sel is None:
+            raise ValueError(f"append_node: {path} is not under response.body.data")
+        _check(node, sel, f"{path}", exact=True)
         parent[last].append(copy.deepcopy(node))
         return node.get("__typename") == UNVERIFIED_SHAPE
+    sel = _selection_at(exchanges, path)
     if op == "drop_field":
         if not isinstance(parent, dict):
             raise ValueError(f"drop_field: {path} is not an object key")
         del parent[last]
-    else:  # set_field, retime
-        parent[last] = copy.deepcopy(transform["value" if op == "set_field" else "ts"])
+        return False
+    value = transform["value" if op == "set_field" else "ts"]
+    if sel is not None:
+        _check(value, sel, f"{path}", exact=False)
+    elif tuple(path[1:]) == _DATA[:2] and isinstance(value, dict) and "data" in value:
+        root = _parse(exchanges[path[0]]["request"]["query"])
+        _check(value["data"], root, f"{path}.data", exact=False)
+    parent[last] = copy.deepcopy(value)
     return False
 
 
@@ -158,24 +173,29 @@ class _Selection:
     fragments: dict[str, "_Selection"] = field(default_factory=dict)
 
 
-def _selection_at(exchanges: list[dict[str, Any]], path: Path_) -> "_Selection":
-    """Выборка текста запроса для значения по пути `[i, "response", "body", "data", ...]`."""
+def _selection_at(exchanges: list[dict[str, Any]], path: Path_) -> "_Selection | None":
+    """Выборка запроса для значения по пути `[i, "response", "body", "data", ...]`.
+
+    Путь не под `data` — `None` (проверять нечего); листовое поле — `None`; ключ, которого
+    запрос не просит, или шаг вглубь листа — `ValueError`.
+    """
     if tuple(path[1:4]) != _DATA:
-        raise ValueError(f"append_node: {path} is not under response.body.data")
-    sel = _parse(exchanges[path[0]]["request"]["query"])
+        return None
+    sel: _Selection | None = _parse(exchanges[path[0]]["request"]["query"])
     for step in path[4:]:
         if isinstance(step, int):
             continue
-        sel = _child(sel, step)
+        if sel is None:
+            raise ValueError(f"path {path}: {step!r} is below a leaf field")
+        sel = _child(sel, step, path)
     return sel
 
 
-def _child(sel: _Selection, key: str) -> _Selection:
-    candidates = [sel.fields.get(key)] + [f.fields.get(key) for f in sel.fragments.values()]
-    for sub in candidates:
-        if sub is not None:
-            return sub
-    raise ValueError(f"query selects no object field {key!r}")
+def _child(sel: _Selection, key: str, path: Path_) -> "_Selection | None":
+    for scope in [sel, *sel.fragments.values()]:
+        if key in scope.fields:
+            return scope.fields[key]
+    raise ValueError(f"path {path}: query does not request {key!r}")
 
 
 def _parse(query: str) -> _Selection:
@@ -203,22 +223,28 @@ def _block(tokens: list[str], i: int) -> tuple[_Selection, int]:
     return sel, i + 1
 
 
-def _check(value: Any, sel: _Selection, where: str) -> None:
-    """Ключи значения совпадают с полями выборки (с фрагментом по `__typename`)."""
-    if value is None:
-        return
+def _check(value: Any, sel: _Selection, where: str, *, exact: bool) -> None:
+    """Ключи объектов значения — поля выборки (с фрагментом по строковому `__typename`).
+
+    `exact` — ровно поля запроса (узел `append_node`); иначе — без незапрошенных ключей
+    (`set_field`: пропуск и не-объект на месте объекта допустимы — отрицательные векторы).
+    """
     if isinstance(value, list):
         for item in value:
-            _check(item, sel, where)
+            _check(item, sel, where, exact=exact)
         return
     if not isinstance(value, dict):
-        raise ValueError(f"{where}: object expected for a selection")
+        if exact and value is not None:
+            raise ValueError(f"{where}: object expected for a selection")
+        return
     allowed = dict(sel.fields)
-    fragment = sel.fragments.get(value.get("__typename", ""))
+    typename = value.get("__typename")
+    fragment = sel.fragments.get(typename) if isinstance(typename, str) else None
     if fragment is not None:
         allowed.update(fragment.fields)
-    if set(value) != set(allowed):
-        raise ValueError(f"{where}: fields {sorted(value)} != query fields {sorted(allowed)}")
+    keys = set(value)
+    if keys - set(allowed) or (exact and keys != set(allowed)):
+        raise ValueError(f"{where}: fields {sorted(keys)} != query fields {sorted(allowed)}")
     for key, sub in allowed.items():
-        if sub is not None:
-            _check(value[key], sub, f"{where}.{key}")
+        if sub is not None and key in value:
+            _check(value[key], sub, f"{where}.{key}", exact=exact)

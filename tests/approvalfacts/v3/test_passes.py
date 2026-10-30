@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from steward.approvalfacts import v3
+from steward.approvalfacts.v3._github import _Fail
 from steward.approvalfacts.v3.effective import effective_reviews
 from steward.approvalfacts.v3.model import Dismissal, Review, ReviewFacts, Unavailable
 from steward.approvalfacts.v3.passes import (
@@ -75,9 +77,13 @@ def _code(spec: Record) -> str:
     return got.code
 
 
-def _dismiss_bob(dismissal_node: Callable[..., Record], prev: str | None = "COMMENTED"):
-    """Ревью Bob в DISMISSED и событие его отзыва актором User — в обоих проходах."""
-    node = dismissal_node(BOB_ID, LATER, prev, "andrei-shtanakov", "User")
+def _dismiss_bob(
+    dismissal_node: Callable[..., Record],
+    prev: str | None = "COMMENTED",
+    actor: tuple[str, str] = ("andrei-shtanakov", "User"),
+):
+    """Ревью Bob в DISMISSED и событие его отзыва актором `actor` — в обоих проходах."""
+    node = dismissal_node(BOB_ID, LATER, prev, *actor)
     return _reviews("set_field", [BOB, "state"], value="DISMISSED") + _timeline(
         "append_node", [], node=node
     )
@@ -197,15 +203,19 @@ def test_submitted_at_offset_is_canonicalised(derive):
 # --- отзыв: положительный двойник типа актора и его отрицательные двойники ---------------
 
 
-def test_normal_dismissal_positive_twin(derive, dismissal_node):
+@pytest.mark.parametrize(
+    "actor", [("andrei-shtanakov", "User"), ("df-reviewer", "Bot")], ids=["user", "bot"]
+)
+def test_normal_dismissal_positive_twin(derive, dismissal_node, actor):
     spec = derive(
         BASE,
-        _reviews("set_field", [BOB, "author", "login"], value="bob") + _dismiss_bob(dismissal_node),
+        _reviews("set_field", [BOB, "author", "login"], value="bob")
+        + _dismiss_bob(dismissal_node, actor=actor),
     )
     assert spec["unverified_shape"] == "ReviewDismissedEvent"
     got, t = _read(spec)
     assert isinstance(got, ReviewFacts), got
-    assert got.dismissals == (Dismissal(str(BOB_ID), "andrei-shtanakov", LATER, "COMMENTED"),)
+    assert got.dismissals == (Dismissal(str(BOB_ID), actor[0], LATER, "COMMENTED"),)
     effective = effective_reviews(got, "2026-10-12T18:00:00Z", before=frozenset())
     assert isinstance(effective, dict)
     assert {login: r.state for login, r in effective.items()} == {
@@ -222,8 +232,10 @@ def test_normal_dismissal_positive_twin(derive, dismissal_node):
         ("set_field", ["actor", "__typename"], {"value": "Mannequin"}),
         ("set_field", ["actor"], {"value": None}),
         ("set_field", ["actor", "login"], {"value": "Ghost"}),
+        ("set_field", ["actor"], {"value": {}}),
+        ("set_field", ["actor", "login"], {"value": ""}),
     ],
-    ids=["no_typename", "mannequin", "actor_null", "ghost"],
+    ids=["no_typename", "mannequin", "actor_null", "ghost", "actor_empty", "login_empty"],
 )
 def test_unresolved_dismissal_actor_fails_whole_pr(derive, dismissal_node, op, sub, kw):
     """R-M0-6: действительный APPROVED Alice + отзыв ревью Bob неустановленным актором."""
@@ -497,3 +509,164 @@ def test_derive_repeat_exchange_adds_second_pass(derive):
     )
     assert twice["exchanges"] == once["exchanges"] * 2
     assert "unverified_shape" not in twice
+
+
+# --- граница нормализации: в модель не попадает сырое значение JSON (ревью Task 4, №1) ------
+
+#: (что, путь от узла ревью/таймлайна прохода, значение, код). Объект и массив JSON на месте
+#: строки нехешируемы: без типизированного доступа чтение бросало `TypeError`.
+UNTYPED = [
+    (kind, sub, value, code)
+    for kind, sub, code in [
+        ("review", ["state"], "malformed"),
+        ("review", ["author", "__typename"], "actor_unresolved"),
+        ("review", ["author", "login"], "actor_unresolved"),
+        ("review", ["commit", "oid"], "malformed"),
+        ("dismissal", ["actor", "__typename"], "actor_unresolved"),
+        ("dismissal", ["actor", "login"], "actor_unresolved"),
+        ("dismissal", ["previousReviewState"], "malformed"),
+    ]
+    for value in [{"x": 1}, ["APPROVED"]]
+]
+
+
+def _untyped(derive: Derive, dismissal_node: Callable[..., Record], kind: str, sub, value):
+    if kind == "review":
+        return derive(BASE, _reviews("set_field", [BOB, *sub], value=value))
+    return derive(
+        BASE, _dismiss_bob(dismissal_node) + _timeline("set_field", [0, *sub], value=value)
+    )
+
+
+@pytest.mark.parametrize("kind,sub,value,code", UNTYPED)
+def test_untyped_json_value_is_refused(derive, dismissal_node, kind, sub, value, code):
+    assert _code(_untyped(derive, dismissal_node, kind, sub, value)) == code
+
+
+@pytest.mark.parametrize("kind,sub,value,code", UNTYPED)
+def test_pass_never_holds_untyped_values(derive, dismissal_node, kind, sub, value, code):
+    """`projection_at` хеширует поля прохода: `Pass` с сырым JSON не может быть построен."""
+    t = replay_transport(_untyped(derive, dismissal_node, kind, sub, value))
+    with pytest.raises(_Fail) as failed:
+        read_pass(t, "andrei-shtanakov", "devtools", 606)
+    assert failed.value.code == code
+
+
+def test_projection_of_read_pass_is_hashable(derive, dismissal_node):
+    t = replay_transport(derive(BASE, _dismiss_bob(dismissal_node)))
+    p = read_pass(t, "andrei-shtanakov", "devtools", 606)
+    assert len(projection_at(p, "2026-10-12T18:00:00Z")) == 3
+
+
+def test_timeline_typename_not_string_is_malformed(derive, dismissal_node):
+    spec = derive(
+        BASE,
+        _dismiss_bob(dismissal_node)
+        + _timeline("set_field", [0, "__typename"], value=["ReviewDismissedEvent"]),
+    )
+    assert _code(spec) == "malformed"
+
+
+# --- публичная поверхность (Ruling M0-E) -------------------------------------------------------
+
+
+def test_read_open_review_is_exported():
+    assert v3.read_open_review is read_open_review and "read_open_review" in v3.__all__
+    for internal in ("Pass", "projection_at", "read_pass", "pass_facts"):
+        assert internal not in v3.__all__
+
+
+# --- проход, разорванный между своими страницами (ревью Task 4, №4) -----------------------------
+
+
+def test_pass_torn_between_its_pages_unstable(derive, dismissal_node):
+    """§5.6 «отзыв + новое CR между страницами»: проход 1 — страница 1 до перемены (Alice
+    APPROVED), страница 2 и таймлайн после (CR Bob, отзыв Alice); проход 2 — целиком после.
+    Сам проход 1 нецелен (отзыв ревью не в DISMISSED), но проходы сравниваются раньше
+    проверки фактов — `unstable`, не `malformed`."""
+    alice = dismissal_node(ALICE_ID, LATER, "APPROVED", "andrei-shtanakov", "User")
+    cr = _review_node(5493999999, "bob", "CHANGES_REQUESTED", LATER)
+    spec = derive(
+        BASE,
+        [
+            _tf("set_field", [R2, *REVIEW_NODES, 0, "state"], value="DISMISSED"),
+            *_reviews("append_node", [], node=cr),
+            *_timeline("append_node", [], node=alice),
+            _tf("page_split", [R2, *REVIEW_NODES], n=1),
+            _tf("page_split", [R1, *REVIEW_NODES], n=1),
+        ],
+    )
+    pages = spec["exchanges"]
+    assert (
+        pages[0]["response"]["body"]["data"]["repository"]["pullRequest"]["reviews"]["nodes"][0][
+            "state"
+        ]
+        == "APPROVED"
+    )
+    assert _code(spec) == "unstable"
+
+
+# --- отказы страниц E3/E4 на поверхности read_open_review (ревью Task 4, №5) ------------------
+
+SPLIT_REVIEWS = [_tf("page_split", [i, *REVIEW_NODES], n=1) for i in (R2, R1)]
+R2_PAGE2 = 4  # R1a, R1b, T1, R2a, R2b, T2
+
+
+def test_later_page_graphql_errors_with_visible_approved(derive):
+    """`200` + частичные `data` (APPROVED виден) + `errors` на странице 2 прохода 2."""
+    split = derive(BASE, SPLIT_REVIEWS)
+    body = split["exchanges"][R2_PAGE2]["response"]["body"]
+    body["data"]["repository"]["pullRequest"]["reviews"]["nodes"][0]["state"] = "APPROVED"
+    partial = {"data": body["data"], "errors": [{"message": "Something went wrong"}]}
+    spec = derive(
+        BASE, [*SPLIT_REVIEWS, _tf("set_field", [R2_PAGE2, "response", "body"], value=partial)]
+    )
+    assert _code(spec) == "graphql_errors"
+
+
+@pytest.mark.parametrize("lost", [PULL, [*PULL, "reviews"]], ids=["pullRequest", "reviews"])
+def test_later_page_lost_path_is_pagination(derive, lost):
+    spec = derive(BASE, [*SPLIT_REVIEWS, _tf("set_field", [R2_PAGE2, *lost], value=None)])
+    assert _code(spec) == "pagination"
+
+
+def test_timeline_split_over_pages_read_whole(derive, dismissal_node):
+    alice = dismissal_node(ALICE_ID, LATER, "APPROVED", "andrei-shtanakov", "User")
+    whole = (
+        _dismiss_bob(dismissal_node)
+        + _reviews("set_field", [0, "state"], value="DISMISSED")
+        + _timeline("append_node", [], node=alice)
+    )
+    split = [_tf("page_split", [i, *TIMELINE_NODES], n=1) for i in (T2, T1)]
+    got, t = _read(derive(BASE, whole + split))
+    expected, _ = _read(derive(BASE, whole))
+    assert isinstance(got, ReviewFacts) and got == expected and len(got.dismissals) == 2
+    assert len(t.log) == 6 and t.unused() == [] and t.unexpected == []
+
+
+# --- _derive: set_field не вносит незапрошенного (ревью Task 4, №6) ------------------------------
+
+
+def test_derive_set_field_rejects_unrequested_nested_key(derive):
+    with pytest.raises(ValueError, match="query fields"):
+        derive(BASE, _reviews("set_field", [BOB, "author"], value={"login": "x", "email": "e"}))
+
+
+def test_derive_retime_rejects_unrequested_field(derive):
+    # живой снимок несёт только запрошенное, поэтому лишний ключ отвергает уже проверка пути;
+    # «не запрошено» ловится на значении — `test_derive_set_field_rejects_unrequested_nested_key`
+    with pytest.raises(ValueError, match="misses"):
+        derive(BASE, [_tf("retime", [R1, *PULL, "createdAt"], ts=LATER)])
+
+
+def test_derive_body_replacement_checks_data(derive):
+    body = {"data": {"repository": {"pullRequest": {"title": "x"}}}, "errors": []}
+    with pytest.raises(ValueError, match="query fields"):
+        derive(BASE, [_tf("set_field", [R1, "response", "body"], value=body)])
+
+
+def test_derive_non_string_typename_is_value_error(derive, dismissal_node):
+    node = dismissal_node(BOB_ID, LATER, "COMMENTED", "x", "User")
+    node["__typename"] = ["ReviewDismissedEvent"]
+    with pytest.raises(ValueError):
+        derive(BASE, [_tf("append_node", [T1, *TIMELINE_NODES], node=node)])

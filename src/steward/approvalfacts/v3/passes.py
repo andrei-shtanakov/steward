@@ -1,13 +1,15 @@
 """Проход по ревью и таймлайну, проекция на T, `read_open_review` (спека steward §3.4).
 
 Один проход — все страницы `StewardV3Reviews` (строка E3 §3.8), затем все страницы
-`StewardV3Timeline` (E4). Чтение только переводит записи в факты (`databaseId` → десятичная
-строка, метки → канон) и отвергает то, чего модель не держит (форма записи, тип актора
-отзыва); целостность фактов решает общая `validate_review_facts`.
+`StewardV3Timeline` (E4). Граница нормализации: каждое поле узла, ставшее полем модели,
+проходит типизированный доступ (`_str`, `_opt_str`, `_database_id`, `_stamp`, `_actor`) —
+в `Pass`/`Review`/`Dismissal` попадают только строки (и `None`, где модель его держит), не
+сырые значения JSON. Неверный тип — `malformed`; отсутствие, у которого есть свой код
+спеки (§3.4: автор/актор, коммит), — этот код. Целостность фактов (словари состояний,
+связи отзывов, шаг 0 §3.5) решает общая `validate_review_facts`.
 """
 
 from dataclasses import dataclass, fields
-from typing import Any
 
 from steward.approvalfacts.v3._github import _Fail, graphql_pages
 from steward.approvalfacts.v3.model import (
@@ -31,7 +33,11 @@ _MERGED_EVENT = "MergedEvent"
 
 @dataclass(frozen=True)
 class Pass:
-    """Один полный проход: поля PR, ревью, отзывы и коммиты `MergedEvent` таймлайна."""
+    """Один полный проход: поля PR, ревью, отзывы и коммиты `MergedEvent` таймлайна.
+
+    Типы полей проверены чтением; целостность фактов — нет, до `validate_review_facts`
+    (`read_open_review` и вызывающие `projection_at` проверяют сами).
+    """
 
     head_sha: str
     base_ref: str
@@ -88,16 +94,17 @@ def read_pass(t: Transport, owner: str, name: str, pr: int) -> Pass:
     )
     head_sha, base_ref, pr_state = _pr_fields(review_pages)
     items = _nodes(timeline_pages, _TIMELINE)
-    for item in items:
-        if item.get("__typename") not in (_DISMISSED_EVENT, _MERGED_EVENT):
-            raise _Fail("malformed", f"timeline item {item.get('__typename')!r}")
+    kinds = [_str(item, "__typename", "timeline item") for item in items]
+    if unknown := sorted(set(kinds) - {_DISMISSED_EVENT, _MERGED_EVENT}):
+        raise _Fail("malformed", f"timeline items {unknown!r}")
+    typed = list(zip(kinds, items, strict=True))
     return Pass(
         head_sha=head_sha,
         base_ref=base_ref,
         pr_state=pr_state,
         reviews=tuple(_review(node) for node in _nodes(review_pages, _REVIEWS)),
-        dismissals=tuple(_dismissal(i) for i in items if i["__typename"] == _DISMISSED_EVENT),
-        merged_commits=tuple(_merged_commit(i) for i in items if i["__typename"] == _MERGED_EVENT),
+        dismissals=tuple(_dismissal(i) for kind, i in typed if kind == _DISMISSED_EVENT),
+        merged_commits=tuple(_merged_commit(i) for kind, i in typed if kind == _MERGED_EVENT),
     )
 
 
@@ -158,23 +165,27 @@ def _pr_fields(pages: list[dict]) -> tuple[str, str, str]:
 
 
 def _pr_triple(pull: dict) -> tuple[str, str, str]:
-    triple = (pull.get("headRefOid"), pull.get("baseRefName"), pull.get("state"))
-    head, base, state = triple
-    if not (_text(head) and _text(base) and _text(state)):
-        raise _Fail("malformed", f"pull request fields {triple!r}")
-    return head, base, state
+    where = "pull request"
+    return (
+        _str(pull, "headRefOid", where, nonempty=True),
+        _str(pull, "baseRefName", where, nonempty=True),
+        _str(pull, "state", where, nonempty=True),
+    )
 
 
 def _review(node: dict) -> Review:
-    """Ревью как прочитано; целостность (актор, состояние, коммит) — `validate`."""
-    author, commit = node.get("author"), node.get("commit")
+    """Ревью с типизированными полями; словари и шаг 0 §3.5 — `validate`."""
+    review_id = _database_id(node.get("databaseId"), "review")
+    where = f"review {review_id}"
+    login, type_hint = _actor(node.get("author"), where)
+    submitted = node.get("submittedAt")
     return Review(
-        review_id=_database_id(node.get("databaseId"), "review"),
-        login=_get(author, "login"),
-        type_hint=_get(author, "__typename"),
-        state=node.get("state"),
-        commit_id=_get(commit, "oid"),
-        submitted_at=None if node.get("submittedAt") is None else _stamp(node["submittedAt"]),
+        review_id=review_id,
+        login=login,
+        type_hint=type_hint,
+        state=_str(node, "state", where),
+        commit_id=_commit_id(node.get("commit"), where),
+        submitted_at=None if submitted is None else _stamp(submitted),
     )
 
 
@@ -185,23 +196,39 @@ def _dismissal(node: dict) -> Dismissal:
     if not isinstance(review, dict):
         raise _Fail("malformed", "ReviewDismissedEvent without review")
     review_id = _database_id(review.get("databaseId"), "dismissal")
-    actor = node.get("actor")
-    login = _get(actor, "login")
-    if not actor_resolved(login, _get(actor, "__typename")):
-        raise _Fail("actor_unresolved", f"dismissal {review_id}")
+    where = f"dismissal {review_id}"
+    login, _ = _actor(node.get("actor"), where)
     return Dismissal(
         review_id=review_id,
         actor=login,
         created_at=_stamp(node.get("createdAt")),
-        previous_state=node.get("previousReviewState"),
+        previous_state=_opt_str(node, "previousReviewState", where),
     )
 
 
 def _merged_commit(node: dict) -> str:
-    oid = _get(node.get("commit"), "oid")
-    if not _text(oid):
-        raise _Fail("malformed", "MergedEvent without commit oid")
+    oid = _str(node.get("commit"), "oid", "MergedEvent commit", nonempty=True)
     _stamp(node.get("createdAt"))
+    return oid
+
+
+def _actor(obj: object, where: str) -> tuple[str, str]:
+    """`(login, __typename)` установленного актора (§3.4.1, общий `actor_resolved`);
+    иначе — `actor_unresolved`, в т. ч. для не-строк."""
+    login, kind = _get(obj, "login"), _get(obj, "__typename")
+    if not (isinstance(login, str) and isinstance(kind, str) and actor_resolved(login, kind)):
+        raise _Fail("actor_unresolved", where)
+    return login, kind
+
+
+def _commit_id(commit: object, where: str) -> str:
+    """`commit.oid`: commit null, нет `oid` или пустой — `missing_commit_id`; не строка —
+    `malformed`."""
+    oid = _get(commit, "oid")
+    if oid is None or oid == "":
+        raise _Fail("missing_commit_id", where)
+    if not isinstance(oid, str):
+        raise _Fail("malformed", f"{where}: commit.oid {oid!r} is not a string")
     return oid
 
 
@@ -219,10 +246,22 @@ def _stamp(raw: object) -> str:
         raise _Fail("bad_timestamp", str(exc)) from exc
 
 
-def _get(obj: object, key: str) -> Any:
+def _str(obj: object, key: str, where: str, *, nonempty: bool = False) -> str:
+    """Строковое поле объекта; нет, не строка (или пусто при `nonempty`) — `malformed`."""
+    value = _get(obj, key)
+    if not isinstance(value, str) or (nonempty and not value):
+        raise _Fail("malformed", f"{where}: {key} {value!r} is not a string")
+    return value
+
+
+def _opt_str(obj: object, key: str, where: str) -> str | None:
+    """Строка или JSON null; иное — `malformed`."""
+    value = _get(obj, key)
+    if value is not None and not isinstance(value, str):
+        raise _Fail("malformed", f"{where}: {key} {value!r} is not a string or null")
+    return value
+
+
+def _get(obj: object, key: str) -> object:
     """Поле объекта или `None`, если объекта нет (null, не объект)."""
     return obj.get(key) if isinstance(obj, dict) else None
-
-
-def _text(value: object) -> bool:
-    return isinstance(value, str) and bool(value)

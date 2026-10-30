@@ -69,6 +69,15 @@ ROWS = [
         ("state-previous", _bob_out(previous_state=v), "unknown_state")
         for v in ["CHANGES-REQUESTED", "DISMISSED", "PENDING", "approved"]
     ],
+    # не-строки из JSON (объект, массив): нехешируемы — отказ, а не `TypeError`
+    *[("state-review-type", _alice(state=v), "unknown_state") for v in [{}, ["APPROVED"]]],
+    *[("actor-review-type-json", _alice(type_hint=v), "actor_unresolved")
+      for v in [{"x": 1}, ["User"]]],
+    *[("actor-review-login-json", _alice(login=v), "actor_unresolved") for v in [{}, ["alice"]]],
+    *[("state-previous-type", _bob_out(previous_state=v), "unknown_state")
+      for v in [{"a": 1}, ["APPROVED"]]],
+    *[("actor-dismissal-json", _bob_out(actor=v), "actor_unresolved") for v in [{}, ["carol"]]],
+    ("commit-json", _alice(commit_id={}), "missing_commit_id"),
     ("commit", _alice(commit_id=""), "missing_commit_id"),
     ("dismissal-unique", _with(dismissals=(BOB_OUT, BOB_OUT)), "duplicate_dismissal"),
     ("dismissal-orphan", _with(dismissals=(BOB_OUT, replace(BOB_OUT, review_id="9"))),
