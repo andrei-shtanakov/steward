@@ -1,5 +1,6 @@
 """`approval-facts/v3`: факты акта approve (ревью, отзывы, доставка), история политики."""
 
+from steward.approvalfacts.v3.effective import effective_reviews
 from steward.approvalfacts.v3.model import (
     EFFECTIVE_STATES,
     HISTORY_VIOLATION_CODES,
@@ -19,10 +20,19 @@ from steward.approvalfacts.v3.model import (
     unavailable,
     violation,
 )
+from steward.approvalfacts.v3.validate import (
+    ACTOR_TYPES,
+    PREVIOUS_STATES,
+    actor_resolved,
+    login_resolved,
+    validate_review_facts,
+)
 
 __all__ = [
+    "ACTOR_TYPES",
     "EFFECTIVE_STATES",
     "HISTORY_VIOLATION_CODES",
+    "PREVIOUS_STATES",
     "REVIEW_STATES",
     "UNAVAILABLE_CODES",
     "Activation",
@@ -35,7 +45,11 @@ __all__ = [
     "Review",
     "ReviewFacts",
     "Unavailable",
+    "actor_resolved",
     "canon_ts",
+    "effective_reviews",
+    "login_resolved",
     "unavailable",
+    "validate_review_facts",
     "violation",
 ]
