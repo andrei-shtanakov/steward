@@ -5,6 +5,7 @@
 """
 
 from dataclasses import replace
+from operator import itemgetter
 
 from steward.approvalfacts.v3.model import (
     EFFECTIVE_STATES,
@@ -14,8 +15,8 @@ from steward.approvalfacts.v3.model import (
     ReviewFacts,
     Unavailable,
     canon_ts,
-    unavailable,
 )
+from steward.approvalfacts.v3.validate import validate_review_facts
 
 
 def effective_reviews(
@@ -25,32 +26,22 @@ def effective_reviews(
 
     Событие с меткой `== t` — до T тогда и только тогда, когда его ключ в `before`
     (`("review", id)`, `("dismissal", review_id)`). Нарушение целостности фактов —
-    `Unavailable` безусловно, до сравнения с T; `t` не в каноне — `ValueError`.
+    `Unavailable` безусловно, до сравнения с T (`validate_review_facts`); `t` не в каноне —
+    `ValueError`. Ключ результата — логин в GraphQL-форме (у бота без `[bot]`): пользователь
+    и бот с одним логином делят ключ, побеждает последнее ревью, `type_hint` сохраняется.
     """
     if canon_ts(t) != t:
         raise ValueError(f"t is not canonical: {t!r}")
-    broken = _integrity(facts)
+    broken = validate_review_facts(facts)
     if broken is not None:
         return broken
     dismissals = {d.review_id: d for d in facts.dismissals}
     latest: dict[str, Review] = {}
-    for review in sorted(_submitted_before(facts.reviews, t, before), key=_order):
+    for _, review in sorted(_submitted_before(facts.reviews, t, before), key=itemgetter(0)):
         state = _state_at(review, dismissals.get(review.review_id), t, before)
         if state in EFFECTIVE_STATES:
             latest[review.login] = replace(review, state=state)
     return latest
-
-
-def _integrity(facts: ReviewFacts) -> Unavailable | None:
-    """Шаг 0 §3.5: отказы, не зависящие от T и от исхода."""
-    if any(d.previous_state is None for d in facts.dismissals):
-        return unavailable("dismissal_without_previous_state")
-    if any(r.state != "PENDING" and r.submitted_at is None for r in facts.reviews):
-        return unavailable("missing_submitted_at")
-    dismissed_ids = {d.review_id for d in facts.dismissals}
-    if any(r.state == "DISMISSED" and r.review_id not in dismissed_ids for r in facts.reviews):
-        return unavailable("dismissed_without_event")
-    return None
 
 
 def _is_before(stamp: str, t: str, key: EventKey, before: frozenset[EventKey]) -> bool:
@@ -59,20 +50,15 @@ def _is_before(stamp: str, t: str, key: EventKey, before: frozenset[EventKey]) -
 
 def _submitted_before(
     reviews: tuple[Review, ...], t: str, before: frozenset[EventKey]
-) -> list[Review]:
-    """Отправленные ревью «до T»; PENDING без метки исключены."""
+) -> list[tuple[tuple[str, int], Review]]:
+    """Отправленные ревью «до T» (PENDING без метки исключены) с ключом порядка «последнего»:
+    `submitted_at`, при равенстве — `review_id` численно; id уникальны (`validate`)."""
     return [
-        r
+        ((r.submitted_at, int(r.review_id)), r)
         for r in reviews
         if r.submitted_at is not None
         and _is_before(r.submitted_at, t, ("review", r.review_id), before)
     ]
-
-
-def _order(review: Review) -> tuple[str, int]:
-    """Порядок «последнего»: `submitted_at`, при равенстве — `review_id` численно."""
-    assert review.submitted_at is not None
-    return review.submitted_at, int(review.review_id)
 
 
 def _state_at(

@@ -21,8 +21,9 @@ def _review(
     *,
     login: str = "alice",
     commit_id: str = OLD,
+    type_hint: str = "User",
 ) -> Review:
-    return Review(review_id, login, "User", state, commit_id, _at(clock))
+    return Review(review_id, login, type_hint, state, commit_id, _at(clock))
 
 
 def _dismissal(review_id: str, clock: str, previous_state: str | None) -> Dismissal:
@@ -193,12 +194,31 @@ def test_before_keys_are_typed():
     }
 
 
-def test_tie_breaks_numerically():
-    # CR id "99" и APPROVED id "100" в одну секунду: эффективное — "100" (APPROVED)
+def test_both_keys_in_before():
+    # ревью и его отзыв в секунду T, оба «до T» (полный набор свидетеля devtools `resolve`)
     facts = _facts(
-        (_review("99", "CHANGES_REQUESTED", "09:00:00"), _review("100", "APPROVED", "09:00:00"))
+        (_review("1", "DISMISSED", "10:00:00"),),
+        (_dismissal("1", "10:00:00", "APPROVED"),),
     )
+    both = frozenset({("review", "1"), ("dismissal", "1")})
+    assert states(effective_reviews(facts, T, before=both)) == {"alice": "DISMISSED"}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_tie_breaks_numerically(reverse):
+    # CR id "99" и APPROVED id "100" в одну секунду: эффективное — "100" (APPROVED).
+    # Оба порядка кортежа: исход не от порядка чтения и не от строкового сравнения id.
+    pair = (_review("99", "CHANGES_REQUESTED", "09:00:00"), _review("100", "APPROVED", "09:00:00"))
+    facts = _facts(pair[::-1] if reverse else pair)
     assert states(eff(facts)) == {"alice": "APPROVED"}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_tie_breaks_numerically_cr_wins(reverse):
+    # зеркально: больший id — CR; эффективное — CR при любом порядке кортежа
+    pair = (_review("99", "APPROVED", "09:00:00"), _review("100", "CHANGES_REQUESTED", "09:00:00"))
+    facts = _facts(pair[::-1] if reverse else pair)
+    assert states(eff(facts)) == {"alice": "CHANGES_REQUESTED"}
 
 
 def test_commented_only_login_absent():
@@ -210,6 +230,37 @@ def test_commented_only_login_absent():
         )
     )
     assert states(eff(facts)) == {"alice": "APPROVED"}
+
+
+def test_restored_cr_hides_earlier_approve():
+    # отзыв после T восстанавливает CR, и он, а не раннее APPROVED, эффективен на T
+    facts = _facts(
+        (_review("1", "APPROVED", "09:00:00"), _review("2", "DISMISSED", "09:10:00")),
+        (_dismissal("2", "10:05:00", "CHANGES_REQUESTED"),),
+    )
+    assert states(eff(facts)) == {"alice": "CHANGES_REQUESTED"}
+
+
+def test_bot_review_keeps_type_hint():
+    review = _review("1", "APPROVED", "09:00:00", login="copilot", type_hint="Bot")
+    result = eff(_facts((review,)))
+    assert isinstance(result, dict)
+    assert result == {"copilot": review}
+
+
+def test_user_and_bot_with_one_login_share_key():
+    # ключ — логин в GraphQL-форме; последнее ревью побеждает, `type_hint` сохраняется
+    facts = _facts(
+        (
+            _review("1", "APPROVED", "09:00:00", login="foo"),
+            _review("2", "CHANGES_REQUESTED", "09:10:00", login="foo", type_hint="Bot"),
+        )
+    )
+    result = eff(facts)
+    assert isinstance(result, dict)
+    assert {k: (v.state, v.type_hint) for k, v in result.items()} == {
+        "foo": ("CHANGES_REQUESTED", "Bot")
+    }
 
 
 def test_dismissed_commented_does_not_change_state():
