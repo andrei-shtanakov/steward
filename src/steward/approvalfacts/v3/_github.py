@@ -7,8 +7,8 @@
 """
 
 import re
-from string import Formatter
 from collections.abc import Mapping, Sequence
+from string import Formatter
 from urllib.parse import quote, urlsplit
 
 from steward.approvalfacts.v3.model import Unavailable, unavailable

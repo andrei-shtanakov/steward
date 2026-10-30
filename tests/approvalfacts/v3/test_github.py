@@ -5,8 +5,8 @@
 нет. Хелперы снимков — фикстуры `conftest.py`.
 """
 
+import ast
 import copy
-import re
 from collections.abc import Callable
 from typing import Any
 
@@ -572,28 +572,147 @@ def test_require_sha_accepts_hex40():
     )
 
 
-#: f-строка с `repos/` или конкатенация литерала `repos/…` — путь REST в обход `rest_path`.
-_RAW_REST_PATH = re.compile(r"""\bf["'][^"']*repos/|["']repos/[^"']*["']\s*\+""")
+#: Вызовы REST-слоя: имя → индекс позиционного аргумента пути.
+_REST_SINKS = {"rest_object": 1, "rest_array_pages": 1, "_rest": 1, "rest": 0, "_gh": 1}
+#: Функции, которым разрешено передавать путь дальше как есть: внутренности REST-слоя
+#: `_github.py` (путь уже собран вызывающим или пришёл через `_api_path`) и обёртки скрипта
+#: захвата; `prove_public` — константы allowlist под `_check_repo_path` (принято ревью).
+_PASS_THROUGH = {
+    ("_github.py", "rest_object"),
+    ("_github.py", "rest_array_pages"),
+    ("capture_approval_facts_v3_live.py", "rest"),
+    ("capture_approval_facts_v3_live.py", "graphql"),
+    ("capture_approval_facts_v3_live.py", "prove_public"),
+}
+#: Сборщики пути: `rest_path` (шаблон — строковая константа) и `_api` скрипта, который
+#: сам обязан вернуть `rest_path(...)` (`test_capture_api_builds_with_rest_path`).
+_BUILDERS = {"rest_path": 0, "_api": 1}
 
 
-def test_v3_rest_paths_go_through_rest_path(repo_root):
-    """Ни один модуль v3 не собирает путь REST f-строкой или конкатенацией."""
+def _const_str(node: ast.AST, assigns: dict[str, list[ast.AST]]) -> bool:
+    """Строковая константа, конкатенация констант или имя, связанное только с ними."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _const_str(node.left, assigns) and _const_str(node.right, assigns)
+    if isinstance(node, ast.Name) and node.id in assigns:
+        return all(_const_str(v, assigns) for v in assigns[node.id])
+    return False
+
+
+def _built_path(node: ast.AST, assigns: dict[str, list[ast.AST]]) -> bool:
+    """Путь — вызов сборщика с константным шаблоном или имя, связанное только с ними."""
+    if isinstance(node, ast.Name) and node.id in assigns:
+        return all(_built_path(v, assigns) for v in assigns[node.id])
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+        return False
+    index = _BUILDERS.get(node.func.id)
+    if index is None:
+        return False
+    if len(node.args) <= index:
+        return index == 1  # `_api(repo)` — шаблон по умолчанию
+    return _const_str(node.args[index], assigns)
+
+
+def _assignments(func: ast.AST) -> dict[str, list[ast.AST]]:
+    """Имя → все присвоенные ему в функции значения (с распаковкой кортежей)."""
+    out: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            pairs = [(target, node.value)]
+            if isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple):
+                pairs = list(zip(target.elts, node.value.elts, strict=False))
+            for name, value in pairs:
+                if isinstance(name, ast.Name):
+                    out.setdefault(name.id, []).append(value)
+                elif isinstance(name, ast.Tuple):  # распаковка не из кортежа литералов
+                    for elt in name.elts:
+                        if isinstance(elt, ast.Name):
+                            out.setdefault(elt.id, []).append(node.value)
+    return out
+
+
+def _raw_rest_paths(source: str, filename: str) -> list[str]:
+    """Вызовы REST-слоя, чей путь собран не сборщиком (f-строка, `+`, `%`, `.format`, …)."""
+    offenders = []
+    for func in ast.walk(ast.parse(source)):
+        if not isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if (filename, func.name) in _PASS_THROUGH:
+            continue
+        assigns = _assignments(func)
+        for call in ast.walk(func):
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+                continue
+            index = _REST_SINKS.get(call.func.id)
+            if index is None:
+                continue
+            path = call.args[index] if len(call.args) > index else None
+            path = path or next((k.value for k in call.keywords if k.arg == "path"), None)
+            if path is None or not _built_path(path, assigns):
+                offenders.append(f"{filename}:{call.lineno} {func.name}")
+    return offenders
+
+
+def _scanned(repo_root) -> list:
+    v3 = sorted((repo_root / "src/steward/approvalfacts/v3").glob("*.py"))
+    return [*v3, repo_root / "scripts/capture_approval_facts_v3_live.py"]
+
+
+def test_rest_paths_go_through_rest_path(repo_root):
+    """Ни модуль v3, ни скрипт захвата не передают REST-слою путь в обход `rest_path`."""
     offenders = [
-        f"{f.name}:{i}"
-        for f in sorted((repo_root / "src/steward/approvalfacts/v3").glob("*.py"))
-        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
-        if _RAW_REST_PATH.search(line)
+        o for f in _scanned(repo_root) for o in _raw_rest_paths(f.read_text("utf-8"), f.name)
     ]
     assert offenders == []
 
 
-@pytest.mark.parametrize(
-    "line,raw",
-    [
-        ('rest_object(t, f"repos/{owner}/{name}/pulls/{pr}")', True),
-        ('path = "repos/" + owner', True),
-        ('rest_path("repos/{owner}/{name}/pulls/{pr}", owner=owner)', False),
-    ],
-)
-def test_raw_rest_path_detector(line, raw):
-    assert bool(_RAW_REST_PATH.search(line)) is raw
+def test_rest_sinks_are_present_in_scanned_files(repo_root):
+    """Детектор не вакуумен: в сканируемых файлах есть вызовы REST-слоя."""
+    calls = [
+        node.func.id
+        for f in _scanned(repo_root)
+        for node in ast.walk(ast.parse(f.read_text("utf-8")))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert {"rest_object", "rest"} <= set(calls)
+
+
+def test_capture_api_builds_with_rest_path(repo_root):
+    """`_api` скрипта — сборщик, только если сам возвращает `rest_path(...)`."""
+    tree = ast.parse((repo_root / "scripts/capture_approval_facts_v3_live.py").read_text("utf-8"))
+    (api,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_api"]
+    (ret,) = [n for n in ast.walk(api) if isinstance(n, ast.Return)]
+    assert isinstance(ret.value, ast.Call) and isinstance(ret.value.func, ast.Name)
+    assert ret.value.func.id == "rest_path"
+
+
+_SNIPPETS_RAW = [
+    'def f(t, o):\n    rest_object(t, f"repos/{o}/x")',
+    'def f(t, o):\n    rest_object(t, "repos/" + o)',
+    'def f(t, b):\n    rest_object(t, rest_path("repos/{o}", o="x") + "/compare/" + b)',
+    'def f(t, b):\n    rest_object(t, "repos/o/r/compare/%s" % b)',
+    'def f(t, b):\n    rest_object(t, "repos/o/r/compare/{}".format(b))',
+    'def f(t, b):\n    p = f"x/{b}"\n    rest_object(t, p)',
+    'def f(t, b):\n    rest_object(t, rest_path(b, o="x"))',
+    'def f(t, b):\n    rest(_api("o/r", "/compare/" + b))',
+    "def f(t, b):\n    rest_array_pages(t, path=b)",
+]
+_SNIPPETS_BUILT = [
+    'def f(t, o):\n    rest_object(t, rest_path("repos/{o}/x", o=o))',
+    'def f(t, o):\n    p = rest_path("repos/{o}/x", o=o)\n    rest_object(t, p)',
+    'def f(t):\n    a, b = "/x/{s}", "/y"\n    rest(_api("o/r", a, s="1"))',
+    'def f(t):\n    rest(_api("o/r"))',
+]
+
+
+@pytest.mark.parametrize("snippet", _SNIPPETS_RAW)
+def test_raw_rest_path_detector_flags(snippet):
+    assert _raw_rest_paths(snippet, "x.py") != []
+
+
+@pytest.mark.parametrize("snippet", _SNIPPETS_BUILT)
+def test_raw_rest_path_detector_accepts_builders(snippet):
+    assert _raw_rest_paths(snippet, "x.py") == []
