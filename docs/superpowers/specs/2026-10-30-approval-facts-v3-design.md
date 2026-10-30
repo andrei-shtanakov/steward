@@ -202,6 +202,14 @@ GitHub REST pagination), лишний запрос пустой страницы
 `_MAX_PAGES` v2); превышение → `pagination`. Ответ `gh` без разбираемой строки статуса —
 `Response(status=None)` → `transport`.
 
+**Пути REST** (исправление по ревью безопасности Task 5). Путь REST строится одним
+помощником `_github.rest_path` из шаблона: постоянные части шаблона — буквально, **каждый**
+подставляемый сегмент (владелец, имя, номер PR, ветка, SHA) — `urllib.parse.quote(seg,
+safe="")`. Ветка с `?`, `#`, `%`, `/`, `..` или пробелом не меняет ни endpoint, ни запрос:
+она уходит одним закодированным сегментом. SHA, полученный от форджа (мерж-коммит, голова
+доставки), до любого использования обязан быть `^[0-9a-f]{40}$` (ASCII), иначе
+`malformed`. GraphQL-переменные экранирования не требуют — они уходят в теле запроса.
+
 ### 3.3. Чтение фактов акта
 
 #### `read_act_facts(transport, repo, pr, *, paths) -> tuple[Delivery, ReviewFacts | None] | Unavailable`
@@ -241,6 +249,13 @@ GitHub REST pagination), лишний запрос пустой страницы
 7. **Устойчивость проходов на срезе `T = merged_at`** (§3.4) → иначе `unstable`.
 
 Возвращаемый `ReviewFacts` — из второго прохода; `head_sha` = `head_at_merge`.
+**Решение контроллера (M0-F):** голова и база PR в **каждом** из двух проходов
+(`headRefOid`, `baseRefName` строки E3) обязаны совпасть с `head_at_merge` и базой доставки,
+иначе `delivery_mismatch`. Причина: без этой сверки подстановка `head_sha = head_at_merge`
+скрыла бы расхождение третьего источника — факты ревью, прочитанные о другой голове или
+базе, вернулись бы под головой доставки. Целостность фактов (`validate_review_facts`)
+проверяется тоже в **обоих** проходах, не только в возвращаемом: дефект первого прохода
+после T срез не видит.
 Вторая гарантия, на которую опирается срез: таймлайн обязан содержать **ровно одно**
 `MergedEvent`, и его `commit.oid` = `merge_commit` (иначе `delivery_mismatch`). **Нормативна
 только сверка SHA.** Время события (`createdAt`) с `merged_at` не сверяется: живые снимки #657 и
@@ -501,11 +516,11 @@ query StewardV3Blobs($owner:String!,$name:String!,$merge:GitObjectID!,$head:GitO
 | **G0** | любой GraphQL | объект `{data, errors?}`; `data` — объект | — | непустой `errors` при любом статусе → `graphql_errors`; `data` не объект → `malformed` | `neg_e2_delivery_absent_pr` (200 + `errors[NOT_FOUND]` + `pullRequest: null`) | любой E2–E7 |
 | **R0** | любой REST | форма — по строке endpoint | — | не-2xx → `http`; нет строки статуса → `transport` | `h5_tree_absent_422` (фактически **422**, не 404) | любой E1, H1–H6 |
 | **P1** | REST-список (H4) | заголовок `Link` отсутствует **или** `<url>; rel="x"` через `, ` | `rel="next"` → URL следующей страницы | нет `next` → конец; заголовок есть, грамматика не сошлась → `malformed`; > 50 страниц → `pagination` | `p1_rest_list_with_link_next` (`rel="next"`, `rel="last"`); H4 без `Link` | H4 одностраничный |
-| **E1** | `GET repos/{o}/{r}/pulls/{n}` | **объект**: `merged: bool`, `state: open\|closed`, `merge_commit_sha: str\|null`, `merged_at: str\|null`, `merged_by: {login, type}\|null`, `head.sha`, `base.ref` | `merged` первым; при `True`: `merged_at` → канон, `merged_by.login` `slug[bot]` → `slug` при `type = Bot` | §3.3 п. 1: `merged` ≠ E2 → `delivery_mismatch`; при `False` прочее **не читается**; при `True` — поля мержа ≠ E2 → `delivery_mismatch`, мержер → §3.4.1 | `pr657_act_sequence` (User), `pr636_act_sequence`, `closed606_act_sequence` (`merged: false`, **`merge_commit_sha` не null**, `merged_by: null`) | merge-commit и squash; несмёрженный → `waiting_delivery` |
-| **E2** | `StewardV3Delivery` | G0 + `pullRequest`: `state ∈ {OPEN, CLOSED, MERGED}`, `merged: bool`, `mergedAt: str\|null`, `mergeCommit: {oid}\|null`, `mergedBy: {login, __typename}\|null`, `headRefOid`, `baseRefName` | то же | §3.3 п. 1; `state` вне словаря → `unknown_state`; `merged: true` и `mergedAt`/`mergeCommit` null → `malformed` | `pr657_act_sequence`, `pr636_act_sequence`, `closed606_act_sequence` | те же |
-| **E3** | `StewardV3Reviews` | G0 + `pullRequest{state, headRefOid, baseRefName, reviews{nodes[], pageInfo}}`; узел: `databaseId: int`, `state`, `submittedAt: str\|null`, `commit: {oid}\|null`, `author: {login, __typename}\|null` | `databaseId` → десятичная строка; метки → канон | §3.4 таблица; §3.4.1 (автор) | `pr657_act_sequence` (`User` APPROVED, `Bot` `copilot-pull-request-reviewer` COMMENTED), `closed606_review_pass` (User APPROVED, Bot `copilot-pull-request-reviewer`), `pr603_review_pass` (**ревью на коммитах ≠ `headRefOid`**: CHANGES_REQUESTED и APPROVED на прежних пушах) | оба снимка; Bot-автор — установлен |
+| **E1** | `GET repos/{o}/{r}/pulls/{n}` | **объект**: `merged: bool`, `state: open\|closed`, `merge_commit_sha: str\|null`, `merged_at: str\|null`, `merged_by: {login, type}\|null`, `head.sha`, `base.ref` | `merged` первым; при `True`: `merged_at` → канон, `merged_by.login` `slug[bot]` → `slug` при `type = Bot` | §3.3 п. 1: `merged` ≠ E2 → `delivery_mismatch`; при `False` прочее **не читается**; при `True` — поля мержа ≠ E2 → `delivery_mismatch`, мержер → §3.4.1; `merge_commit_sha`/`head.sha` не `^[0-9a-f]{40}$` → `malformed` (§3.2 «Пути REST») | `pr657_act_sequence` (User), `pr636_act_sequence`, `closed606_act_sequence` (`merged: false`, **`merge_commit_sha` не null**, `merged_by: null`) | merge-commit и squash; несмёрженный → `waiting_delivery` |
+| **E2** | `StewardV3Delivery` | G0 + `pullRequest`: `state ∈ {OPEN, CLOSED, MERGED}`, `merged: bool`, `mergedAt: str\|null`, `mergeCommit: {oid}\|null`, `mergedBy: {login, __typename}\|null`, `headRefOid`, `baseRefName` | то же | §3.3 п. 1; `state` вне словаря → `unknown_state`; `merged: true` и `mergedAt`/`mergeCommit` null → `malformed`; `mergeCommit.oid`/`headRefOid` не `^[0-9a-f]{40}$` → `malformed` | `pr657_act_sequence`, `pr636_act_sequence`, `closed606_act_sequence` | те же |
+| **E3** | `StewardV3Reviews` | G0 + `pullRequest{state, headRefOid, baseRefName, reviews{nodes[], pageInfo}}`; узел: `databaseId: int`, `state`, `submittedAt: str\|null`, `commit: {oid}\|null`, `author: {login, __typename}\|null` | `databaseId` → десятичная строка; метки → канон | §3.4 таблица; §3.4.1 (автор); act: `headRefOid`/`baseRefName` любого прохода ≠ голове/базе доставки → `delivery_mismatch` (M0-F, §3.3) | `pr657_act_sequence` (`User` APPROVED, `Bot` `copilot-pull-request-reviewer` COMMENTED), `closed606_review_pass` (User APPROVED, Bot `copilot-pull-request-reviewer`), `pr603_review_pass` (**ревью на коммитах ≠ `headRefOid`**: CHANGES_REQUESTED и APPROVED на прежних пушах) | оба снимка; Bot-автор — установлен |
 | **E4** | `StewardV3Timeline` | G0 + `timelineItems{nodes[], pageInfo}`; узел `MergedEvent{createdAt, commit{oid}}` или `ReviewDismissedEvent{createdAt, actor{login, __typename}\|null, previousReviewState\|null, review{databaseId}\|null}` | метки → канон | §3.3 (ровно один `MergedEvent`, `commit.oid` = мерж-коммит); §3.4 таблица; §3.4.1 (актор отзыва) | `pr657_act_sequence` (один `MergedEvent`; наблюдение: `createdAt` = `mergedAt`, не проверка), `closed606_review_pass` (пусто). **`ReviewDismissedEvent` живьём не снят** — в разрешённых репо нет ни одного отзыва (полный обход devtools, 30.10) | merged-снимок; отзыв — производный от схемы вектор, помечен «не проверено» (Task 13) |
-| **E5** | `GET repos/{o}/{r}/compare/{base}...{merge}` | **объект**, `status ∈ {identical, behind, ahead, diverged}` | — | §3.3 п. 3; иной `status` → `malformed` | `pr657_act_sequence` (`identical`), `pr636_act_sequence` (**`behind`**) | оба → `in_base = True`; `ahead`/`diverged` живьём не сняты (Task 13) |
+| **E5** | `GET repos/{o}/{r}/compare/{base}...{merge}` | **объект**, `status ∈ {identical, behind, ahead, diverged}` | — | §3.3 п. 3; иной `status` → `malformed`; `base` и `merge` — закодированные сегменты пути (§3.2 «Пути REST») | `pr657_act_sequence` (`identical`), `pr636_act_sequence` (**`behind`**) | оба → `in_base = True`; `ahead`/`diverged` живьём не сняты (Task 13) |
 | **E6** | `StewardV3Blobs` | G0 + `mc`/`hc`: `{oid}\|null`; `m{i}`/`h{i}`: `null` \| `{__typename: "Blob", oid}` \| `{__typename: <иное>}` | — | §3.3 п. 4: `mc`/`hc` null → `object_missing`; `m{i}` null → `blob_at_merge = None`; `h{i}` null → `path_absent_at_head`; не `Blob` → `not_a_blob` | `pr657_act_sequence`, `pr636_act_sequence` (один путь, Blob в мерже и на голове); отрицательный `neg_e6_blobs_present_absent_tree` (Blob, `null`, `{__typename: "Tree"}` без `oid`) | однопутевые наборы без преобразований |
 | **E7** | `StewardV3CommitPulls` (release-продюсер) | G0 + `object`: `null` \| `{associatedPullRequests{nodes[{number, mergeCommit: {oid}\|null}], pageInfo}}` | — | §6 продюсер: PR с `mergeCommit.oid = sha` → E1/E2 | `e7_commit_pulls_graphql_merge` | merge-коммит → PR #657 |
 | **H1** | `GET repos/{o}/{r}` | **объект**, `default_branch: str` | — | §3.7 п. 1 → `branch_not_default` | `h1_repo_policy` (`main`) | `main` = закреплённая ветка |
@@ -587,7 +602,7 @@ files_sha256}, ...]}` | `{"violation": "<code>"}` | `{"unavailable": "<code>"}`;
 |---|---|
 | неполная пагинация | `hasNextPage` без `endCursor` (ревью); > 50 страниц таймлайна |
 | ошибка доступа | REST 403; GraphQL 401 |
-| смена головы во время чтения | open: `headRefOid` меняется между проходами → `unstable`; act: REST `head.sha` ≠ `headRefOid` → `delivery_mismatch`; act: повторное чтение доставки отличается → `unstable` |
+| смена головы во время чтения | open: `headRefOid` меняется между проходами → `unstable`; act: REST `head.sha` ≠ `headRefOid` → `delivery_mismatch`; act: `headRefOid`/`baseRefName` прохода ≠ доставке → `delivery_mismatch` (M0-F); act: повторное чтение доставки отличается → `unstable` |
 | отзыв + новое CHANGES_REQUESTED между страницами, голова неизменна | open → `unstable`; act (оба события до T) → `unstable` |
 | отзыв после второго прохода предпроверки, но до доставки | act: отзыв с `created_at < merged_at` → эффективное `DISMISSED` (решение по чтению после мержа) |
 | `200` + partial `data` + `errors` с видимым APPROVED | `graphql_errors` |
@@ -906,6 +921,8 @@ fail-closed при обеих, а факт входит в чек-лист жи�
 | `merged_by` REST `slug[bot]`/`Bot`, GraphQL `slug`/`Bot`; формы для App и User | **User снят** (E1/E2); **App-мержер не снят** — в разрешённых репо мержей App нет | несводимые → `bot_login_mismatch` | User — проверено; App — **не проверено** (spike 12.10, спека devtools §1; Task 13) |
 | Удалённый пользователь: `null` или логин-заглушка `ghost` | обе формы | любая → `actor_unresolved` (§3.4.1) | смоук, если найдётся |
 | `MergedEvent.commit.oid` = `mergeCommit.oid` (нормативная проверка) | **снято** (E4, #657, #636) | иное → `delivery_mismatch` | **проверено живьём**. Наблюдение, **не проверка**: `createdAt` = `mergedAt` на обоих снимках; время не сверяется (§3.3) |
+| `headRefOid`/`baseRefName` проходов (E3) = голове/базе доставки у смёрженного PR (M0-F) | **снято** (E3 = E2 на #657, #636) | расхождение → `delivery_mismatch` | **проверено живьём** (равенство на обоих снимках) |
+| `compare` с веткой, закодированной `quote(safe="")` (`/` → `%2F`), разрешает ту же ветку | нет: живые базы — `master`/`main`, кодирование их не меняет | GitHub не раскодирует — 404 → `http` (отказ, не допуск) | **не проверено**; Task 13 (база с `/` в имени) |
 | `compare` даёт `behind`/`identical` для достижимого merge-коммита | **снято** оба (E5: #657 `identical`, #636 `behind`) | иной статус → `malformed`; `ahead`/`diverged` → `in_base=false` (отказ) | **проверено живьём** |
 | `commits/{sha}/pulls` для коммита на ветке по умолчанию отдаёт смёрженный PR | **снято** (H4: merge-коммит, squash, боковой коммит; прямой коммит → `[]`) | пусто → `commit_without_pr` | **проверено живьём** |
 | `commits/{sha}/pulls` для промежуточного коммита rebase-merge | ближайший аналог снят: боковой коммит merge-коммит-мержа ассоциирован с PR, `merge_commit_sha` другой (H4) | любая из двух гипотез → `HistoryViolation` | rebase-merge как таковой — **не проверено**; стенд devtools (Task 18, №28) |

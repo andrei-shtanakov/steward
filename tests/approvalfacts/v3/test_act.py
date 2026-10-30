@@ -169,7 +169,9 @@ def test_rest_graphql_head_mismatch(derive):
 
 
 def test_merge_commit_mismatch(derive):
-    transforms = _graphql_delivery("set_field", ["mergeCommit", "oid"], value="c" * 40)
+    """Меняется REST-сторона: GraphQL-мерж-коммит, от которого зависят E5/E6 и сверка
+    `MergedEvent`, остаётся живым — нарушение одно."""
+    transforms = _rest_delivery("set_field", ["merge_commit_sha"], value="c" * 40)
     assert _code(derive, transforms) == "delivery_mismatch"
 
 
@@ -365,6 +367,20 @@ def test_pass_head_differs_from_delivery(derive):
     `head_sha` на `head_at_merge`."""
     transforms = [_tf("set_field", [i, *GQL_PULL, "headRefOid"], value="c" * 40) for i in (R1, R2)]
     assert _code(derive, transforms) == "delivery_mismatch"
+
+
+def test_pass_base_differs_from_delivery(derive):
+    """M0-F распространяется и на базу: `baseRefName` проходов ≠ базе доставки."""
+    transforms = [_tf("set_field", [i, *GQL_PULL, "baseRefName"], value="main") for i in (R1, R2)]
+    assert _code(derive, transforms) == "delivery_mismatch"
+
+
+def test_iterator_paths_reach_read_paths(live):
+    """`paths=iter([P])` не уходит в ветку «путей не запрошено» (§13)."""
+    paths: Any = iter([P])
+    got, _ = _read(live(SEQ), paths=paths)
+    assert not isinstance(got, Unavailable), got
+    assert got[0].paths == (PathBlob(P, BLOB, BLOB),)
 
 
 def test_review_changed_before_t_between_passes_unstable(derive):

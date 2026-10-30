@@ -6,6 +6,7 @@
 """
 
 import copy
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -18,8 +19,10 @@ from steward.approvalfacts.v3._github import (
     graphql,
     graphql_pages,
     parse_link,
+    require_sha,
     rest_array_pages,
     rest_object,
+    rest_path,
 )
 from steward.approvalfacts.v3.transport import ReplayTransport, replay_transport
 
@@ -511,3 +514,86 @@ def test_e7_positive_twin_single_page(e7_ex, pages):
     got = pages(t, e7_ex, connection=COMMIT_PULLS, null_ok_at="object")
     nodes = got[0]["repository"]["object"]["associatedPullRequests"]["nodes"]
     assert nodes[0]["number"] == 657 and t.unused() == []
+
+
+# --- пути REST и SHA (спека §3.2 «Пути REST») ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "seg,encoded",
+    [
+        ("a?b", "a%3Fb"),
+        ("a#b", "a%23b"),
+        ("a%2Fb", "a%252Fb"),
+        ("../x", "..%2Fx"),
+        ("a b", "a%20b"),
+        ("ветка", "%D0%B2%D0%B5%D1%82%D0%BA%D0%B0"),
+        ("-x", "-x"),
+    ],
+)
+def test_rest_path_encodes_every_segment(seg, encoded):
+    got = rest_path("repos/{owner}/{name}/compare/{base}...{merge}", owner="o", name="r",
+                    base=seg, merge="m")  # fmt: skip
+    assert got == f"repos/o/r/compare/{encoded}...m"
+
+
+def test_rest_path_keeps_template_literal_and_encodes_ints():
+    assert rest_path("repos/{o}/{r}/pulls/{n}?per_page=100", o="a b", r="x", n=7) == (
+        "repos/a%20b/x/pulls/7?per_page=100"
+    )
+
+
+@pytest.mark.parametrize("seg", ["", ".", ".."])
+def test_rest_path_refuses_dot_segments(seg):
+    with pytest.raises(_Fail) as failed:
+        rest_path("repos/{owner}/x", owner=seg)
+    assert failed.value.code == "malformed"
+
+
+@pytest.mark.parametrize("segments", [{}, {"owner": "o", "extra": "e"}])
+def test_rest_path_segment_names_must_match_template(segments):
+    with pytest.raises(ValueError):
+        rest_path("repos/{owner}/x", **segments)
+
+
+@pytest.mark.parametrize(
+    "value", ["A" * 40, "a" * 39, "a" * 41, "g" * 40, "٠" * 40, "a" * 39 + "\n", ""]
+)
+def test_require_sha_refuses_non_hex40(value):
+    with pytest.raises(_Fail) as failed:
+        require_sha(value, "where")
+    assert failed.value.code == "malformed"
+
+
+def test_require_sha_accepts_hex40():
+    assert (
+        require_sha("0123456789abcdef" * 2 + "01234567", "where")
+        == "0123456789abcdef" * 2 + "01234567"
+    )
+
+
+#: f-строка с `repos/` или конкатенация литерала `repos/…` — путь REST в обход `rest_path`.
+_RAW_REST_PATH = re.compile(r"""\bf["'][^"']*repos/|["']repos/[^"']*["']\s*\+""")
+
+
+def test_v3_rest_paths_go_through_rest_path(repo_root):
+    """Ни один модуль v3 не собирает путь REST f-строкой или конкатенацией."""
+    offenders = [
+        f"{f.name}:{i}"
+        for f in sorted((repo_root / "src/steward/approvalfacts/v3").glob("*.py"))
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
+        if _RAW_REST_PATH.search(line)
+    ]
+    assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "line,raw",
+    [
+        ('rest_object(t, f"repos/{owner}/{name}/pulls/{pr}")', True),
+        ('path = "repos/" + owner', True),
+        ('rest_path("repos/{owner}/{name}/pulls/{pr}", owner=owner)', False),
+    ],
+)
+def test_raw_rest_path_detector(line, raw):
+    assert bool(_RAW_REST_PATH.search(line)) is raw

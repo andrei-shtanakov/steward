@@ -99,6 +99,16 @@ def test_read_delivery_live_positive_twin(name, pr, expected, exchanges, key, ke
     assert t.unused() == [] and [key(r) for r in t.log] == [key_of(ex) for ex in seq]
 
 
+def test_unknown_state_of_unmerged_pr(derive):
+    """`state` E2 — не поле мержа: проверяется и у несмёрженного PR (closed606)."""
+    spec = derive(
+        ["closed606_act_sequence"], [_tf("set_field", [E2, *GQL_PULL, "state"], value="DRAFT")]
+    )
+    with pytest.raises(_Fail) as failed:
+        read_delivery(replay_transport(spec), OWNER, NAME, 606)
+    assert failed.value.code == "unknown_state"
+
+
 def test_read_delivery_not_merged_live(exchanges):
     """devtools #606: REST `merged=false` при ненулевом тестовом `merge_commit_sha` — поля
     мержа не сверяются, compare не запрашивается."""
@@ -111,14 +121,15 @@ def test_read_delivery_not_merged_live(exchanges):
 
 
 def test_bot_login_forms_agree_in_read_delivery(derive):
+    bot = {"login": "df-reviewer", "__typename": "Bot"}
     d, _ = _delivery(
         derive,
         [
-            _tf("set_field", [E2, *GQL_PULL, "mergedBy"], value={"login": "df-reviewer", "__typename": "Bot"}),
+            _tf("set_field", [E2, *GQL_PULL, "mergedBy"], value=bot),
             _tf("set_field", [E1, *REST_PULL, "merged_by", "login"], value="df-reviewer[bot]"),
             _tf("set_field", [E1, *REST_PULL, "merged_by", "type"], value="Bot"),
         ],
-    )  # fmt: skip
+    )
     assert (d.merged_by_login, d.merged_by_type_hint) == ("df-reviewer", "Bot")
 
 
@@ -171,6 +182,66 @@ def test_absent_pr_live_negative_is_graphql_errors(exchanges):
     with pytest.raises(_Fail) as failed:
         read_delivery(t, OWNER, NAME, number)
     assert failed.value.code == "graphql_errors"
+
+
+# --- SHA и пути REST (спека §3.2 «Пути REST») -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "side,path",
+    [
+        ("graphql", ["mergeCommit", "oid"]),
+        ("graphql", ["headRefOid"]),
+        ("rest", ["merge_commit_sha"]),
+        ("rest", ["head", "sha"]),
+    ],
+)
+@pytest.mark.parametrize(
+    "bad", [MERGE.upper(), MERGE[:39], MERGE + "0", "../" + MERGE[3:], "٠" * 40]
+)
+def test_non_hex_sha_is_malformed(derive, side, path, bad):
+    at = [E2, *GQL_PULL] if side == "graphql" else [E1, *REST_PULL]
+    assert _delivery_code(derive, [_tf("set_field", [*at, *path], value=bad)]) == "malformed"
+
+
+@pytest.mark.parametrize(
+    "base,encoded",
+    [
+        ("a?b", "a%3Fb"),
+        ("a#b", "a%23b"),
+        ("a%2Fb", "a%252Fb"),
+        ("../x", "..%2Fx"),
+        ("a b", "a%20b"),
+        ("feature/x", "feature%2Fx"),
+        ("ветка", "%D0%B2%D0%B5%D1%82%D0%BA%D0%B0"),
+    ],
+)
+def test_base_ref_is_one_encoded_path_segment(derive, base, encoded):
+    """Ветка от форджа уходит в E5 одним закодированным сегментом: ни endpoint, ни запрос
+    (`?`, `#`) не меняются; ожидаемый путь записан литералом, не библиотекой."""
+    expected = f"repos/{OWNER}/{NAME}/compare/{encoded}...{MERGE}"
+    d, t = _delivery(
+        derive,
+        [
+            _tf("set_field", [E2, *GQL_PULL, "baseRefName"], value=base),
+            _tf("set_field", [E1, *REST_PULL, "base", "ref"], value=base),
+            _tf("set_field", [E5, "request", "path"], value=expected),
+        ],
+    )
+    assert d.in_base is True and t.unused() == [] and t.unexpected == []
+    assert t.log[E5].path == expected
+
+
+@pytest.mark.parametrize("base", [".", ".."])
+def test_dot_base_ref_is_refused_before_request(derive, base):
+    transforms = [
+        _tf("set_field", [E2, *GQL_PULL, "baseRefName"], value=base),
+        _tf("set_field", [E1, *REST_PULL, "base", "ref"], value=base),
+    ]
+    t = _replay(derive([SEQ], transforms), slice(E2, E5 + 1))
+    with pytest.raises(_Fail) as failed:
+        read_delivery(t, OWNER, NAME, 657)
+    assert failed.value.code == "malformed" and len(t.log) == E5
 
 
 # --- E5: in_base ------------------------------------------------------------------------
@@ -273,6 +344,22 @@ def test_path_with_colon_goes_as_variable(derive):
     assert sent.variables is not None and sent.variables["m0"] == f"{MERGE}:{path}"
     assert sent.query == q_blobs(1) and path not in sent.query
     assert t.unused() == [] and t.unexpected == []
+
+
+@pytest.mark.parametrize("which", ["merge", "head"])
+def test_read_paths_refuses_non_hex_sha_before_request(which):
+    t = replay_transport({"exchanges": []})
+    merge, head = (MERGE[:39], HEAD) if which == "merge" else (MERGE, "HEAD")
+    with pytest.raises(_Fail) as failed:
+        read_paths(t, OWNER, NAME, merge, head, [P])
+    assert failed.value.code == "malformed" and t.log == []
+
+
+def test_iterator_paths_are_materialized_once(exchanges):
+    """Итератор путей не превращается в `paths=()` (§13): он читается один раз."""
+    t = replay_transport({"exchanges": [exchanges(SEQ)[E6]]})
+    paths: Any = iter([P])
+    assert read_paths(t, OWNER, NAME, MERGE, HEAD, paths) == (PathBlob(P, BLOB, BLOB),)
 
 
 def test_empty_paths_read_nothing():

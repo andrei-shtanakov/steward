@@ -3,14 +3,15 @@
 Одна реализация чтения доставки на оба потребителя: `read_act_facts` и release-продюсер
 (спека §6, «та же `_read_delivery`»). Отказ — `_Fail`; `Unavailable` из него делает
 публичная функция на своей границе. Каждое поле ответа, ставшее полем `Delivery`/`PathBlob`,
-проходит типизированный доступ `passes.py` (`_str`, `_stamp`, `_resolved`, `_get`) — сырые
-значения JSON в модель не попадают.
+проходит типизированный доступ `passes.py` (`_str`, `_stamp`, `_resolved`, `_get`) и
+`_github.require_sha` — сырые значения JSON в модель не попадают. REST-пути — только через
+`_github.rest_path` (каждый сегмент закодирован, спека §3.2 «Пути REST»).
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
 
-from steward.approvalfacts.v3._github import _Fail, graphql, rest_object
+from steward.approvalfacts.v3._github import _Fail, graphql, require_sha, rest_object, rest_path
 from steward.approvalfacts.v3.model import Delivery, PathBlob
 from steward.approvalfacts.v3.passes import _actor, _get, _resolved, _stamp, _str
 from steward.approvalfacts.v3.queries import Q_DELIVERY, q_blobs
@@ -89,7 +90,9 @@ def read_merge(t: Transport, owner: str, name: str, pr: int) -> Merge | None:
     gql = _get(_get(data, "repository"), "pullRequest")
     if not isinstance(gql, dict):
         raise _Fail("malformed", "StewardV3Delivery: repository.pullRequest is not an object")
-    rest = rest_object(t, f"repos/{owner}/{name}/pulls/{pr}")
+    rest = rest_object(
+        t, rest_path("repos/{owner}/{name}/pulls/{pr}", owner=owner, name=name, pr=pr)
+    )
     merged = _bool(gql, "merged", _GRAPHQL)
     if merged != _bool(rest, "merged", _REST):
         raise _Fail("delivery_mismatch", "merged differs between GraphQL and REST")
@@ -111,7 +114,13 @@ def read_merge(t: Transport, owner: str, name: str, pr: int) -> Merge | None:
 
 def read_in_base(t: Transport, owner: str, name: str, merge: Merge) -> bool:
     """§3.3 п. 3, строка E5: `compare/{base}...{merge}`; `status` вне словаря — `malformed`."""
-    path = f"repos/{owner}/{name}/compare/{merge.base_ref}...{merge.merge_commit}"
+    path = rest_path(
+        "repos/{owner}/{name}/compare/{base}...{merge}",
+        owner=owner,
+        name=name,
+        base=merge.base_ref,
+        merge=merge.merge_commit,
+    )
     status = _str(rest_object(t, path), "status", path)
     if status not in _IN_BASE:
         raise _Fail("malformed", f"{path}: compare status {status!r}")
@@ -132,6 +141,8 @@ def read_paths(
     checked = check_paths(paths)
     if not checked:
         return ()
+    require_sha(merge_commit, "StewardV3Blobs merge")
+    require_sha(head, "StewardV3Blobs head")
     variables: dict[str, object] = {
         "owner": owner,
         "name": name,
@@ -155,7 +166,8 @@ def check_paths(paths: Sequence[str]) -> tuple[str, ...]:
     вызывающего, не факт форджа). Строка вместо последовательности путей — тоже."""
     if isinstance(paths, str):
         raise ValueError(f"paths must be a sequence of paths, not a str: {paths!r}")
-    for path in paths:
+    checked = tuple(paths)  # итератор материализуется один раз и не теряет пути
+    for path in checked:
         if (
             not isinstance(path, str)
             or not path
@@ -164,17 +176,17 @@ def check_paths(paths: Sequence[str]) -> tuple[str, ...]:
             or ".." in path.split("/")
         ):
             raise ValueError(f"bad path: {path!r}")
-    return tuple(paths)
+    return checked
 
 
 def _graphql_merge(pull: dict) -> Merge:
     login, kind = _actor(pull.get("mergedBy"), f"{_GRAPHQL} mergedBy")
     return Merge(
-        merge_commit=_str(pull.get("mergeCommit"), "oid", f"{_GRAPHQL} mergeCommit", nonempty=True),
+        merge_commit=_sha(pull.get("mergeCommit"), "oid", f"{_GRAPHQL} mergeCommit"),
         merged_at=_merged_at(pull.get("mergedAt"), f"{_GRAPHQL} mergedAt"),
         merged_by_login=login,
         merged_by_type_hint=kind,
-        head=_str(pull, "headRefOid", _GRAPHQL, nonempty=True),
+        head=_sha(pull, "headRefOid", _GRAPHQL),
         base_ref=_str(pull, "baseRefName", _GRAPHQL, nonempty=True),
     )
 
@@ -187,13 +199,18 @@ def _rest_merge(pull: dict) -> Merge:
         login = login.removesuffix("[bot]")
     login, kind = _resolved(login, kind, f"{_REST} merged_by")
     return Merge(
-        merge_commit=_str(pull, "merge_commit_sha", _REST, nonempty=True),
+        merge_commit=_sha(pull, "merge_commit_sha", _REST),
         merged_at=_merged_at(pull.get("merged_at"), f"{_REST} merged_at"),
         merged_by_login=login,
         merged_by_type_hint=kind,
-        head=_str(pull.get("head"), "sha", f"{_REST} head", nonempty=True),
+        head=_sha(pull.get("head"), "sha", f"{_REST} head"),
         base_ref=_str(pull.get("base"), "ref", f"{_REST} base", nonempty=True),
     )
+
+
+def _sha(obj: object, key: str, where: str) -> str:
+    """SHA-поле доставки: строка `^[0-9a-f]{40}$`, иначе `malformed` (спека §3.2)."""
+    return require_sha(_str(obj, key, where, nonempty=True), f"{where} {key}")
 
 
 def _merged_at(raw: object, where: str) -> str:

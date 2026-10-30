@@ -7,8 +7,9 @@
 """
 
 import re
+from string import Formatter
 from collections.abc import Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from steward.approvalfacts.v3.model import Unavailable, unavailable
 from steward.approvalfacts.v3.transport import Request, Response, Transport
@@ -23,6 +24,7 @@ _API_HOST = "api.github.com"
 #: Остаток после префикса, который `gh api` прочёл бы не как относительный путь: флаг,
 #: абсолютный путь, вложенный URL, обратный слэш, пробельный символ.
 _UNSAFE_PATH = re.compile(r"\A[-/]|://|\\|\s")
+_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 
 
 class _Fail(Exception):
@@ -151,6 +153,29 @@ def _next_cursor(conn: dict, op: str) -> str | None:
     if not isinstance(cursor, str) or not cursor:
         raise _Fail("pagination", f"{op}: hasNextPage without endCursor")
     return cursor
+
+
+def rest_path(template: str, **segments: str | int) -> str:
+    """Путь REST из шаблона: постоянные части — буквально, каждый сегмент — `quote(safe="")`.
+
+    `rest_path("repos/{owner}/{name}/compare/{base}...{merge}", ...)`: ветка с `?`, `#`, `%`,
+    `/`, `..` или пробелом остаётся одним сегментом и не меняет endpoint (спека §3.2, «Пути
+    REST»). Сегмент пустой, `.` или `..` (`quote` их не меняет, а клиент URL нормализует) —
+    `malformed`. Имена сегментов не совпадают с шаблоном — `ValueError` (ошибка вызывающего).
+    """
+    names = {name for _, name, _, _ in Formatter().parse(template) if name is not None}
+    if names != set(segments):
+        raise ValueError(f"segments {sorted(segments)} do not match template {template!r}")
+    if bad := sorted(k for k, v in segments.items() if str(v) in {"", ".", ".."}):
+        raise _Fail("malformed", f"{template}: empty or dot path segment {bad}")
+    return template.format(**{k: quote(str(v), safe="") for k, v in segments.items()})
+
+
+def require_sha(value: str, where: str) -> str:
+    """SHA форджа до использования: ровно `^[0-9a-f]{40}$` (ASCII); иначе — `malformed`."""
+    if _SHA.fullmatch(value) is None:
+        raise _Fail("malformed", f"{where}: {value[:80]!r} is not a 40-hex SHA")
+    return value
 
 
 def _rest(t: Transport, path: str) -> Response:
