@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "repos/andrei-shtanakov/approval-policy/git/blobs/07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c"
+  },
+  "response": {
+    "body": {
+      "content": "IyBBbGxvd2xpc3Qg0YPRh9GR0YLQvtC6LCDRh9C10Lkg0LzQtdGA0LYgY2Fu\nZGlkYXRlLVBSINGB0L7Qt9C00LDRkdGCINC/0L7QtNC/0LjRgdGMINGD0LfQ\nu9CwIGdvdmVybmFuY2Ut0LHQsNC90LTQu9CwICjCp0kxMiBkZXZ0b29scyku\nCiMg0JzQtdC90Y/QtdGCINGC0L7Qu9GM0LrQviDQstC70LDQtNC10LvQtdGG\nINGA0LXQv9C+0LfQuNGC0L7RgNC40Y87IGRldnRvb2xzINGH0LjRgtCw0LXR\ngiDRhNCw0LnQuyDQv9C+IGNvbW1pdCBTSEEg0L/QvtGB0LvQtdC00L3QtdCz\n0L4KIyDQutC+0LzQvNC40YLQsCwg0YLRgNC+0L3Rg9Cy0YjQtdCz0L4g0Y3R\ngtC+0YIg0L/Rg9GC0YwgKNGB0L/QtdC60LAgMjAyNi0wOS0yMi1hcHByb3Zl\nci1wb2xpY3ktdHJ1c3RlZC1zb3VyY2UtZGVzaWduLm1kKS4KQVVUSE9SSVpF\nRF9BUFBST1ZFUl9BQ0NPVU5UUz1hbmRyZWktc2h0YW5ha292Cg==\n",
+      "encoding": "base64",
+      "node_id": "B_kwDOUlFsz9oAKDA3Yjk2ZGNjZDg4Y2JjM2UwNTgyYmMxYTVmNjNkY2Q4ZjYxZmU1NWM",
+      "sha": "07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c",
+      "size": 442,
+      "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/blobs/07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c"
+    },
+    "link": null,
+    "status": 200
+  }
+}

@@ -629,6 +629,19 @@ product decision record (и наоборот). Как approved proposal стан
 
 ---
 
+### 9b. `approval-facts/v3` (M0) — факты акта approve для devtools/discovery
+
+Запрос steward#211 (inbox, from `devtools`, slug `approval-facts-v3`): сквозная спека devtools
+«Акт утверждения через approve человека» (rev 17, подписана) делает steward владельцем общей
+реализации чтения GitHub — факты ревью, доставки и истории источника политики. Потребитель
+блокирует часть B своего плана на `todo://steward/approval-facts-v3`. Дизайн стороны steward —
+`docs/superpowers/specs/2026-10-30-approval-facts-v3-design.md`, план —
+`docs/superpowers/plans/2026-10-30-approval-facts-v3.md` (черновик, до подписи владельцем).
+
+- [ ] Выпустить M0: контракт `approval-facts/v3` + векторы §5.6, библиотека `steward.approvalfacts.v3` (`read_act_facts`, `effective_reviews`, `read_policy_history`, `read_open_review`, `read_activation`), запрет `human ∩ agent`, провайдер статуса узла `node_status`, миграция `gate-check --stage release` на запись `delivery`; релиз с тегом и ответом в steward#211 @owner:github:andrei-shtanakov @id:approval-facts-v3 @epic:eco.dark-factory — решения контроллера (бывш. Q3, Q5, Q6, Q9) подтверждаются подписью владельца, §11 спеки; признак «сделано» — тег и SHA в ответе #211, а не мерж
+
+---
+
 ### 10a. codex-review kit: дорожная карта качества (план владельца, 2026-08-23)
 
 План целиком: `docs/plans/2026-08-23-review-kit-quality-roadmap.md`. Контекст:

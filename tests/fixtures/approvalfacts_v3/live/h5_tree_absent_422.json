@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "repos/andrei-shtanakov/approval-policy/git/trees/0000000000000000000000000000000000000000?recursive=1"
+  },
+  "response": {
+    "body": {
+      "documentation_url": "https://docs.github.com/rest/git/trees#get-a-tree",
+      "message": "Invalid object requested. SHA must identify a commit or a tree.",
+      "status": "422"
+    },
+    "link": null,
+    "status": 422
+  }
+}

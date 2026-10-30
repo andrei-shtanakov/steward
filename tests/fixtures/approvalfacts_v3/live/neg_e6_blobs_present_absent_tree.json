@@ -1,0 +1,52 @@
+{
+  "request": {
+    "method": "POST",
+    "op": "StewardV3Blobs",
+    "path": "graphql",
+    "query": "query StewardV3Blobs($owner:String!,$name:String!,$merge:GitObjectID!,$head:GitObjectID!,$m0:String!,$h0:String!,$m1:String!,$h1:String!,$m2:String!,$h2:String!){repository(owner:$owner,name:$name){mc:object(oid:$merge){oid} hc:object(oid:$head){oid} m0:object(expression:$m0){__typename ... on Blob{oid}} h0:object(expression:$h0){__typename ... on Blob{oid}} m1:object(expression:$m1){__typename ... on Blob{oid}} h1:object(expression:$h1){__typename ... on Blob{oid}} m2:object(expression:$m2){__typename ... on Blob{oid}} h2:object(expression:$h2){__typename ... on Blob{oid}}}}",
+    "variables": {
+      "h0": "b3651bcb2907bd6d1b6d421b018701520fb64066:CLAUDE.md",
+      "h1": "b3651bcb2907bd6d1b6d421b018701520fb64066:no/such/path.md",
+      "h2": "b3651bcb2907bd6d1b6d421b018701520fb64066:docs",
+      "head": "b3651bcb2907bd6d1b6d421b018701520fb64066",
+      "m0": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e:CLAUDE.md",
+      "m1": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e:no/such/path.md",
+      "m2": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e:docs",
+      "merge": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e",
+      "name": "devtools",
+      "owner": "andrei-shtanakov"
+    }
+  },
+  "response": {
+    "body": {
+      "data": {
+        "repository": {
+          "h0": {
+            "__typename": "Blob",
+            "oid": "ea4d87b8f6834ca99874b6d16612c171981a0c79"
+          },
+          "h1": null,
+          "h2": {
+            "__typename": "Tree"
+          },
+          "hc": {
+            "oid": "b3651bcb2907bd6d1b6d421b018701520fb64066"
+          },
+          "m0": {
+            "__typename": "Blob",
+            "oid": "ea4d87b8f6834ca99874b6d16612c171981a0c79"
+          },
+          "m1": null,
+          "m2": {
+            "__typename": "Tree"
+          },
+          "mc": {
+            "oid": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
+          }
+        }
+      }
+    },
+    "link": null,
+    "status": 200
+  }
+}
