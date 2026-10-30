@@ -132,3 +132,11 @@ def test_empty_code_is_rejected():
         violation("", "x")
     with pytest.raises(ValueError):
         violation("commit_without_pr", "")
+
+
+@pytest.mark.parametrize("reason", ["commit_without_pr", "commit_without_pr: "])
+def test_history_violation_requires_detail_on_direct_construction(reason):
+    from steward.approvalfacts.v3.model import HistoryViolation
+
+    with pytest.raises(ValueError):
+        HistoryViolation(reason)

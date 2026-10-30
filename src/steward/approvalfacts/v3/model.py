@@ -54,10 +54,10 @@ def _code_of(reason: str) -> str:
     return reason.split(":", 1)[0]
 
 
-def _check_code(reason: str, vocabulary: frozenset[str]) -> None:
-    """Причина — `<code>` или `<code>: <detail>` с непустым detail, code из словаря."""
+def _check_code(reason: str, vocabulary: frozenset[str], *, detail_required: bool) -> None:
+    """Причина — `<code>: <detail>` (detail обязателен) или `<code>`; code из словаря."""
     code, sep, detail = reason.partition(": ")
-    if code not in vocabulary or (sep and not detail):
+    if code not in vocabulary or (sep and not detail) or (detail_required and not sep):
         raise ValueError(f"bad reason: {reason!r}")
 
 
@@ -126,7 +126,7 @@ class Unavailable:
     reason: str
 
     def __post_init__(self) -> None:
-        _check_code(self.reason, UNAVAILABLE_CODES)
+        _check_code(self.reason, UNAVAILABLE_CODES, detail_required=False)
 
     @property
     def code(self) -> str:
@@ -151,7 +151,7 @@ class HistoryViolation:
     reason: str
 
     def __post_init__(self) -> None:
-        _check_code(self.reason, HISTORY_VIOLATION_CODES)
+        _check_code(self.reason, HISTORY_VIOLATION_CODES, detail_required=True)
 
     @property
     def code(self) -> str:
