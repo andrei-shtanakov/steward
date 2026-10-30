@@ -7,6 +7,7 @@
 
 import json
 import os
+import re
 import subprocess
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -16,6 +17,9 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 _UNEXPECTED = "replay: unexpected request"
+#: Путь, который `gh api` прочёл бы не как относительный путь API: флаг, абсолютный путь,
+#: вложенный URL, обратный слэш, пробельный символ. Вторая линия к проверке `_github`.
+_UNSAFE_PATH = re.compile(r"\A[-/]|://|\\|\s")
 
 
 @dataclass(frozen=True, eq=False)
@@ -105,10 +109,12 @@ class GhTransport:
 def _argv(request: Request) -> tuple[list[str], str | None]:
     """`gh api` argv и stdin; транспорт read-only по построению.
 
-    Путь, начинающийся с `-`, `gh` прочёл бы как флаг — `ValueError`.
+    Путь — только относительный путь API: пустой, начинающийся с `/` или `-`, с `://`,
+    `\\` или пробельным символом — `ValueError` до процесса (`gh` прочёл бы флаг или
+    полный URL). POST — только на литерал `graphql`.
     """
-    if not request.path or request.path.startswith("-"):
-        raise ValueError(f"transport: path must not start with '-': {request.path!r}")
+    if not request.path or _UNSAFE_PATH.search(request.path):
+        raise ValueError(f"transport: not a relative API path: {request.path!r}")
     if request.method == "GET":
         return ["gh", "api", "--include", request.path], None
     if request.method != "POST" or request.path != "graphql":

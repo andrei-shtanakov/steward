@@ -246,6 +246,17 @@ def test_gh_transport_without_config_dir_keeps_environment(monkeypatch, live, re
         Request("GET", "--method=DELETE"),
         Request("GET", "-X"),
         Request("GET", ""),
+        Request("GET", "https://evil.example/x"),
+        Request("GET", "repos/https://evil.example/x"),
+        Request("GET", "https://x@api.github.com/repos/o/r"),
+        Request("GET", "https://api.github.com:443/repos/o/r"),
+        Request("GET", "//evil.example/x"),
+        Request("GET", "/repos/o/r"),
+        Request("GET", "repos\\o/r"),
+        Request("GET", "repos/o/r x"),
+        Request("POST", "/graphql", op="X", variables={}, query="query X{}"),
+        Request("POST", "graphql/", op="X", variables={}, query="query X{}"),
+        Request("POST", "https://api.github.com/graphql", op="X", variables={}, query="query X{}"),
     ],
 )
 def test_gh_transport_is_read_only(monkeypatch, req):

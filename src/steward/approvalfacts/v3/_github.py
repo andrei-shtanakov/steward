@@ -8,6 +8,7 @@
 
 import re
 from collections.abc import Mapping, Sequence
+from urllib.parse import urlsplit
 
 from steward.approvalfacts.v3.model import Unavailable, unavailable
 from steward.approvalfacts.v3.transport import Request, Response, Transport
@@ -18,6 +19,10 @@ MAX_PAGES = 50
 _LINK_PART = re.compile(r'<([^<>\s]+)>; rel="([^"\s]+)"')
 #: Единственный хост, на который разрешён переход по `rel="next"`; срезается до пути.
 _API_PREFIX = "https://api.github.com/"
+_API_HOST = "api.github.com"
+#: Остаток после префикса, который `gh api` прочёл бы не как относительный путь: флаг,
+#: абсолютный путь, вложенный URL, обратный слэш, пробельный символ.
+_UNSAFE_PATH = re.compile(r"\A[-/]|://|\\|\s")
 
 
 class _Fail(Exception):
@@ -194,9 +199,26 @@ def rest_array_pages(t: Transport, path: str) -> list[dict]:
 
 
 def _api_path(url: str) -> str:
-    """URL `rel="next"` → путь API для транспорта; чужой хост или путь-флаг — `malformed`."""
+    """URL `rel="next"` → относительный путь API для транспорта.
+
+    Схема — ровно `https`, хост — ровно `api.github.com` (без порта и userinfo); остаток —
+    относительный путь: не пустой, не начинается с `/` или `-`, без `://`, `\\` и
+    пробельных символов. Иначе `malformed` — `gh api` не должен получить ни чужой URL, ни
+    флаг.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        parts = None
     path = url.removeprefix(_API_PREFIX)
-    if path == url or not path or path.startswith("-"):
+    if (
+        parts is None
+        or parts.scheme != "https"
+        or parts.netloc != _API_HOST
+        or path == url
+        or not path
+        or _UNSAFE_PATH.search(path)
+    ):
         raise _Fail("malformed", f"Link next outside {_API_PREFIX}: {url[:200]!r}")
     return path
 

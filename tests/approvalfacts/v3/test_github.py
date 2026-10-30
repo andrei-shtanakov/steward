@@ -13,6 +13,7 @@ import pytest
 
 from steward.approvalfacts.v3._github import (
     MAX_PAGES,
+    _api_path,
     _Fail,
     graphql,
     graphql_pages,
@@ -320,23 +321,44 @@ def test_p1_failure_on_later_page_is_refusal_not_partial(live, status, body, cod
     assert _fail(rest_array_pages, _replay(*exs), p1["request"]["path"]).code == code
 
 
-@pytest.mark.parametrize(
-    "next_url",
-    [
-        "https://evil.example/repos/o/r/pulls?page=2",
-        "http://api.github.com/x",
-        API,
-        f"{API}-X",
-        "https://api.github.com",
-        "https://api.github.com.evil/repos/o/r/pulls?page=2",
-        "https://api.github.com.evil.example/repos/o/r/pulls?page=2",
-    ],
+#: `rel="next"` вне `https://api.github.com/<относительный путь>`: каждый — `malformed`.
+NEXT_OUTSIDE_API = (
+    "https://evil.example/repos/o/r/pulls?page=2",
+    "http://api.github.com/x",
+    API,
+    f"{API}-X",
+    "https://api.github.com",
+    "https://api.github.com.evil/repos/o/r/pulls?page=2",
+    "https://api.github.com.evil.example/repos/o/r/pulls?page=2",
+    "https://api.github.com/https://evil.example/x",  # вложенный URL
+    "https://api.github.com/repos/o/r/pulls?next=https://evil.example/x",
+    "https://x@api.github.com/repos/o/r/pulls?page=2",  # userinfo
+    "https://api.github.com:443/repos/o/r/pulls?page=2",  # порт
+    "https://api.github.com//evil.example/x",  # `//` после префикса
+    "https://api.github.com/repos\\o/r/pulls?page=2",  # обратный слэш
+    "https://api.github.com/repos/o/r/pulls?page=%202 x",
+    "HTTPS://api.github.com/repos/o/r/pulls?page=2",
+    "https://[api.github.com/repos/o/r/pulls?page=2",  # urlsplit: ValueError
 )
+
+
+@pytest.mark.parametrize("next_url", NEXT_OUTSIDE_API)
 def test_p1_next_outside_api_host_is_malformed(live, next_url):
     ex = _with_response(live("h4_commit_pulls_squash"), link=f'<{next_url}>; rel="next"')
     t = _replay(ex)
     assert _fail(rest_array_pages, t, ex["request"]["path"]).code == "malformed"
     assert len(t.log) == 1  # чужой URL не запрашивается
+
+
+@pytest.mark.parametrize("next_url", NEXT_OUTSIDE_API)
+def test_api_path_refuses_url_outside_api(next_url):
+    # Прямо, минуя грамматику P1 (пробел в URL она отвергла бы раньше).
+    assert _fail(_api_path, next_url).code == "malformed"
+
+
+def test_api_path_positive_twin(live):
+    url = parse_link(live("p1_rest_list_with_link_next")["response"]["link"])["next"]
+    assert _api_path(url) == url.removeprefix(API)
 
 
 def test_rest_page_limit_is_pagination(live):
