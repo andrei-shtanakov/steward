@@ -20,6 +20,7 @@ from steward.approvalfacts.v3.model import (
     unavailable,
     violation,
 )
+from steward.approvalfacts.v3.passes import read_open_review
 from steward.approvalfacts.v3.validate import (
     ACTOR_TYPES,
     PREVIOUS_STATES,
@@ -49,6 +50,7 @@ __all__ = [
     "canon_ts",
     "effective_reviews",
     "login_resolved",
+    "read_open_review",
     "unavailable",
     "validate_review_facts",
     "violation",

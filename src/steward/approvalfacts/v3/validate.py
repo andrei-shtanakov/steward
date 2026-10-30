@@ -43,7 +43,7 @@ def validate_review_facts(facts: ReviewFacts) -> Unavailable | None:
 
 def actor_resolved(login: object, type_hint: object) -> bool:
     """Актор установлен (§3.4.1): логин установлен и `type_hint` из {`User`, `Bot`}."""
-    return login_resolved(login) and type_hint in ACTOR_TYPES
+    return login_resolved(login) and _member(type_hint, ACTOR_TYPES)
 
 
 def login_resolved(login: object) -> bool:
@@ -68,7 +68,7 @@ def _violations(facts: ReviewFacts) -> Iterator[tuple[str, str]]:
             yield "bad_timestamp", f"review {review.review_id}: {review.submitted_at!r}"
         if not actor_resolved(review.login, review.type_hint):
             yield "actor_unresolved", f"review {review.review_id}"
-        if review.state not in REVIEW_STATES:
+        if not _member(review.state, REVIEW_STATES):
             yield "unknown_state", f"review {review.review_id}: {review.state!r}"
         if not (isinstance(review.commit_id, str) and review.commit_id):
             yield "missing_commit_id", f"review {review.review_id}"
@@ -79,7 +79,7 @@ def _violations(facts: ReviewFacts) -> Iterator[tuple[str, str]]:
         if not login_resolved(dismissal.actor):
             yield "actor_unresolved", f"dismissal {dismissal.review_id}"
         previous = dismissal.previous_state
-        if previous is not None and previous not in PREVIOUS_STATES:
+        if previous is not None and not _member(previous, PREVIOUS_STATES):
             yield "unknown_state", f"dismissal {dismissal.review_id}: {previous!r}"
     yield from (("duplicate_dismissal", i) for i in _duplicates([d.review_id for d in dismissals]))
     states = {r.review_id: r.state for r in reviews}
@@ -99,6 +99,11 @@ def _violations(facts: ReviewFacts) -> Iterator[tuple[str, str]]:
     for dismissal in dismissals:
         if states.get(dismissal.review_id, "DISMISSED") != "DISMISSED":
             yield "malformed", f"dismissal of non-DISMISSED review {dismissal.review_id}"
+
+
+def _member(value: object, vocabulary: frozenset[str]) -> bool:
+    """Строка из словаря; не-строка (объект, массив JSON) — не член, а не `TypeError`."""
+    return isinstance(value, str) and value in vocabulary
 
 
 def _duplicates(review_ids: list[str]) -> list[str]:
