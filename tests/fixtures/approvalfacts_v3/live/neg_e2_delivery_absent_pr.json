@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "POST",
+    "op": "StewardV3Delivery",
+    "path": "graphql",
+    "query": "query StewardV3Delivery($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number state merged mergedAt mergeCommit{oid} mergedBy{login __typename} headRefOid baseRefName}}}",
+    "variables": {
+      "name": "devtools",
+      "number": 999999,
+      "owner": "andrei-shtanakov"
+    }
+  },
+  "response": {
+    "body": {
+      "data": {
+        "repository": {
+          "pullRequest": null
+        }
+      },
+      "errors": [
+        {
+          "locations": [
+            {
+              "column": 104,
+              "line": 1
+            }
+          ],
+          "message": "Could not resolve to a PullRequest with the number of 999999.",
+          "path": [
+            "repository",
+            "pullRequest"
+          ],
+          "type": "NOT_FOUND"
+        }
+      ]
+    },
+    "link": null,
+    "status": 200
+  }
+}

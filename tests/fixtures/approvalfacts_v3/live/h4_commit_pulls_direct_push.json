@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/pulls?per_page=100"
+  },
+  "response": {
+    "body": [],
+    "link": null,
+    "status": 200
+  }
+}

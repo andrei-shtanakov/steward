@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "POST",
+    "op": "StewardV3CommitPulls",
+    "path": "graphql",
+    "query": "query StewardV3CommitPulls($owner:String!,$name:String!,$sha:GitObjectID!,$after:String){repository(owner:$owner,name:$name){object(oid:$sha){... on Commit{associatedPullRequests(first:100,after:$after){nodes{number mergeCommit{oid}} pageInfo{hasNextPage endCursor}}}}}}",
+    "variables": {
+      "after": null,
+      "name": "devtools",
+      "owner": "andrei-shtanakov",
+      "sha": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
+    }
+  },
+  "response": {
+    "body": {
+      "data": {
+        "repository": {
+          "object": {
+            "associatedPullRequests": {
+              "nodes": [
+                {
+                  "mergeCommit": {
+                    "oid": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
+                  },
+                  "number": 657
+                }
+              ],
+              "pageInfo": {
+                "endCursor": "MQ",
+                "hasNextPage": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "link": null,
+    "status": 200
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "captured_at": "2026-10-30T13:36:07Z",
+  "captures": [
+    "e7_commit_pulls_graphql_merge",
+    "h1_repo_policy",
+    "h2_branch_policy",
+    "h3_commit_merge_two_parents",
+    "h3_commit_root_no_parents",
+    "h3_commit_side_one_parent",
+    "h4_commit_pulls_direct_push",
+    "h4_commit_pulls_merge_commit",
+    "h4_commit_pulls_side_commit",
+    "h4_commit_pulls_squash",
+    "h5_tree_absent_422",
+    "h5_tree_recursive_policy",
+    "h6_blob_policy_approvers",
+    "neg_e2_delivery_absent_pr",
+    "neg_e6_blobs_present_absent_tree",
+    "p1_rest_list_with_link_next",
+    "pr636_act_sequence",
+    "pr657_act_sequence",
+    "probe1_act_sequence",
+    "probe1_review_pass"
+  ],
+  "repos": [
+    "andrei-shtanakov/approval-policy",
+    "andrei-shtanakov/devtools",
+    "andrei-shtanakov/df-roles-probe-private"
+  ]
+}

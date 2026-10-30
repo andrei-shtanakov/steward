@@ -1,0 +1,98 @@
+{
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "op": "StewardV3Reviews",
+        "path": "graphql",
+        "query": "query StewardV3Reviews($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid baseRefName reviews(first:100,after:$after){nodes{databaseId state submittedAt commit{oid} author{login __typename}} pageInfo{hasNextPage endCursor}}}}}",
+        "variables": {
+          "after": null,
+          "name": "df-roles-probe-private",
+          "number": 1,
+          "owner": "andrei-shtanakov"
+        }
+      },
+      "response": {
+        "body": {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "baseRefName": "master",
+                "headRefOid": "b928d922bf850959b3188a53f310dcaeff6bf2e2",
+                "reviews": {
+                  "nodes": [
+                    {
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "df-probe-reviewer-ashtanakov"
+                      },
+                      "commit": {
+                        "oid": "41606a8b6213339321417689116bef823d0c340c"
+                      },
+                      "databaseId": 5711572428,
+                      "state": "COMMENTED",
+                      "submittedAt": "2026-10-30T11:28:33Z"
+                    },
+                    {
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "df-probe-reviewer-ashtanakov"
+                      },
+                      "commit": {
+                        "oid": "db7f016de99c7ee6a5243bb01e8cc13cb26ed08d"
+                      },
+                      "databaseId": 5711575655,
+                      "state": "COMMENTED",
+                      "submittedAt": "2026-10-30T11:28:53Z"
+                    }
+                  ],
+                  "pageInfo": {
+                    "endCursor": "Y3Vyc29yOnYyOpO0MjAyNi0xMC0zMFQxMToyODo1M1q0MjAyNi0xMC0zMFQxMToyODo1M1rPAAAAAVRvumc=",
+                    "hasNextPage": false
+                  }
+                },
+                "state": "CLOSED"
+              }
+            }
+          }
+        },
+        "link": null,
+        "status": 200
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "op": "StewardV3Timeline",
+        "path": "graphql",
+        "query": "query StewardV3Timeline($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT,MERGED_EVENT],first:100,after:$after){nodes{__typename ... on ReviewDismissedEvent{createdAt actor{login __typename} previousReviewState review{databaseId}} ... on MergedEvent{createdAt commit{oid}}} pageInfo{hasNextPage endCursor}}}}}",
+        "variables": {
+          "after": null,
+          "name": "df-roles-probe-private",
+          "number": 1,
+          "owner": "andrei-shtanakov"
+        }
+      },
+      "response": {
+        "body": {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "timelineItems": {
+                  "nodes": [],
+                  "pageInfo": {
+                    "endCursor": null,
+                    "hasNextPage": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "link": null,
+        "status": 200
+      }
+    }
+  ]
+}

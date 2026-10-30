@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "repos/andrei-shtanakov/approval-policy/git/trees/11134f9a63befbba4706708a1a42036b00400136?recursive=1"
+  },
+  "response": {
+    "body": {
+      "sha": "11134f9a63befbba4706708a1a42036b00400136",
+      "tree": [
+        {
+          "mode": "100644",
+          "path": "README.md",
+          "sha": "4ed1a2384413a01a60eff6da99a302de5bdb3428",
+          "size": 1026,
+          "type": "blob",
+          "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/blobs/4ed1a2384413a01a60eff6da99a302de5bdb3428"
+        },
+        {
+          "mode": "040000",
+          "path": "policy",
+          "sha": "c2f45ba54536c9b1454e1876ed00ff7628052492",
+          "type": "tree",
+          "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/trees/c2f45ba54536c9b1454e1876ed00ff7628052492"
+        },
+        {
+          "mode": "100644",
+          "path": "policy/approvers.env",
+          "sha": "07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c",
+          "size": 442,
+          "type": "blob",
+          "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/blobs/07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c"
+        }
+      ],
+      "truncated": false,
+      "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/trees/11134f9a63befbba4706708a1a42036b00400136"
+    },
+    "link": null,
+    "status": 200
+  }
+}
