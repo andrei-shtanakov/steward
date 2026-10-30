@@ -2,7 +2,7 @@
 
 Положительные двойники — неизменённые живые последовательности (`pr657`/`pr636` — обмены
 проходов из снимка акта, `pr603`/`closed606` — снимок прохода дважды). Отрицательные —
-производные `_derive.py` (фикстура `derive`) от `closed606_review_pass` ×2: обмены 0, 1 —
+производные преобразований §5 (фикстура `derive`) от `closed606_review_pass` ×2: обмены 0, 1 —
 проход 1 (ревью, таймлайн), 2, 3 — проход 2. Узел отзыва — `dismissal_node` (форма E4 не
 снята живьём, `unverified_shape`).
 """
@@ -477,7 +477,7 @@ def test_split_repo():
     assert split_repo("o/r") == ("o", "r")
 
 
-# --- _derive: закрытый список преобразований ------------------------------------------------
+# --- derive: закрытый список преобразований ------------------------------------------------
 
 
 def test_derive_append_node_rejects_unrequested_field(derive):
@@ -646,7 +646,7 @@ def test_timeline_split_over_pages_read_whole(derive, dismissal_node):
     assert len(t.log) == 6 and t.unused() == [] and t.unexpected == []
 
 
-# --- _derive: set_field не вносит незапрошенного (ревью Task 4, №6) ------------------------------
+# --- derive: set_field не вносит незапрошенного (ревью Task 4, №6) ------------------------------
 
 
 def test_derive_set_field_rejects_unrequested_nested_key(derive):
