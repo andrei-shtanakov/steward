@@ -1,4 +1,7 @@
-"""`effective_reviews`: восстановление эффективного ревью на T (спека steward §3.5, devtools §5.3)."""
+"""`effective_reviews`: восстановление эффективного ревью на T.
+
+Спека steward §3.5, спека devtools §5.3.
+"""
 
 import pytest
 

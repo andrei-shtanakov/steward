@@ -2,12 +2,13 @@
 
 Один проход — все страницы `StewardV3Reviews` (строка E3 §3.8), затем все страницы
 `StewardV3Timeline` (E4). Граница нормализации: каждое поле узла, ставшее полем модели,
-проходит типизированный доступ (`_str`, `_opt_str`, `_database_id`, `_stamp`, `_actor`) —
-в `Pass`/`Review`/`Dismissal` попадают только строки (и `None`, где модель его держит), не
-сырые значения JSON. Поле, у которого в таблице §3.4 есть свой код (состояние, коммит,
-автор/актор), отвергается этим кодом — тем же, что дал бы валидатор на том же дефекте;
-`malformed` — только дефекты формы, которых таблица не называет. Целостность фактов
-(словари состояний, связи отзывов, шаг 0 §3.5) решает общая `validate_review_facts`.
+проходит типизированный доступ (`_str`, `_opt_str`, `_database_id`, `_stamp`, `_actor`,
+`_resolved`; их же использует чтение доставки `delivery.py`) — в `Pass`/`Review`/`Dismissal`
+попадают только строки (и `None`, где модель его держит), не сырые значения JSON. Поле, у
+которого в таблице §3.4 есть свой код (состояние, коммит, автор/актор), отвергается этим
+кодом — тем же, что дал бы валидатор на том же дефекте; `malformed` — только дефекты формы,
+которых таблица не называет. Целостность фактов (словари состояний, связи отзывов, шаг 0
+§3.5) решает общая `validate_review_facts`.
 """
 
 from dataclasses import dataclass, fields
@@ -214,9 +215,13 @@ def _merged_commit(node: dict) -> str:
 
 
 def _actor(obj: object, where: str) -> tuple[str, str]:
-    """`(login, __typename)` установленного актора (§3.4.1, общий `actor_resolved`);
-    иначе — `actor_unresolved`, в т. ч. для не-строк."""
-    login, kind = _get(obj, "login"), _get(obj, "__typename")
+    """`(login, __typename)` установленного актора GraphQL-объекта (§3.4.1)."""
+    return _resolved(_get(obj, "login"), _get(obj, "__typename"), where)
+
+
+def _resolved(login: object, kind: object, where: str) -> tuple[str, str]:
+    """`(login, kind)` установленного актора (§3.4.1, общий `actor_resolved`); иначе —
+    `actor_unresolved`, в т. ч. для не-строк."""
     if not (isinstance(login, str) and isinstance(kind, str) and actor_resolved(login, kind)):
         raise _Fail("actor_unresolved", where)
     return login, kind

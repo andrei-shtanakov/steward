@@ -1,5 +1,6 @@
 """`approval-facts/v3`: факты акта approve (ревью, отзывы, доставка), история политики."""
 
+from steward.approvalfacts.v3.act import read_act_facts
 from steward.approvalfacts.v3.effective import effective_reviews
 from steward.approvalfacts.v3.model import (
     EFFECTIVE_STATES,
@@ -50,6 +51,7 @@ __all__ = [
     "canon_ts",
     "effective_reviews",
     "login_resolved",
+    "read_act_facts",
     "read_open_review",
     "unavailable",
     "validate_review_facts",

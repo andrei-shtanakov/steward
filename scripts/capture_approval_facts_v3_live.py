@@ -52,6 +52,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from steward.approvalfacts.v3._github import _Fail, require_sha, rest_path
 from steward.approvalfacts.v3.queries import (
     Q_COMMIT_PULLS,
     Q_DELIVERY,
@@ -277,18 +278,31 @@ REVIEWS_OFF_HEAD = (DEV, 603)
 POL_ROOT_BRANCH = "main"
 
 
+def _api(repo: str, tail: str = "", **segments: str | int) -> str:
+    """REST path via the library's `rest_path`: every live or constant segment is encoded."""
+    return rest_path("repos/{owner}/{name}" + tail, **_repo(repo), **segments)
+
+
+def _sha(value: object, where: str) -> str:
+    """A forge SHA before it enters a path: 40 lowercase hex, else the capture aborts."""
+    if not isinstance(value, str):
+        raise CaptureError(f"{where}: no sha")
+    try:
+        return require_sha(value, where)
+    except _Fail as exc:
+        raise CaptureError(str(exc)) from exc
+
+
 def _full_sha(repo: str, ref: str) -> str:
-    sha = rest(f"repos/{repo}/commits/{ref}")["response"]["body"].get("sha")
-    if not isinstance(sha, str):
-        raise CaptureError(f"repos/{repo}/commits/{ref}: no sha")
-    return sha
+    body = rest(_api(repo, "/commits/{ref}", ref=ref))["response"]["body"]
+    return _sha(body.get("sha"), f"repos/{repo}/commits/{ref}")
 
 
 def _delivery_pair(repo: str, pr: int) -> list[dict[str, Any]]:
     """E2 then E1 — the library's delivery read (spec §3.3 п. 1)."""
     return [
         graphql("StewardV3Delivery", Q_DELIVERY, {**_repo(repo), "number": pr}),
-        rest(f"repos/{repo}/pulls/{pr}"),
+        rest(_api(repo, "/pulls/{pr}", pr=pr)),
     ]
 
 
@@ -310,8 +324,9 @@ def act_sequence(repo: str, pr: int, path: str) -> list[dict[str, Any]]:
     """
     seq = _delivery_pair(repo, pr)
     pull = seq[1]["response"]["body"]
-    merge, head, base = pull["merge_commit_sha"], pull["head"]["sha"], pull["base"]["ref"]
-    seq.append(rest(f"repos/{repo}/compare/{base}...{merge}"))
+    merge = _sha(pull["merge_commit_sha"], "merge_commit_sha")
+    head, base = _sha(pull["head"]["sha"], "head.sha"), pull["base"]["ref"]
+    seq.append(rest(_api(repo, "/compare/{base}...{merge}", base=base, merge=merge)))
     variables: dict[str, Any] = {
         **_repo(repo),
         "merge": merge,
@@ -359,7 +374,8 @@ def captures() -> dict[str, dict[str, Any]]:
         Expect(status=200, graphql_errors=True),
     )
     m657 = out["pr657_act_sequence"]["exchanges"][1]["response"]["body"]
-    merge_sha, merge_head = m657["merge_commit_sha"], m657["head"]["sha"]
+    merge_sha = _sha(m657["merge_commit_sha"], "merge_commit_sha")
+    merge_head = _sha(m657["head"]["sha"], "head.sha")
     paths = ["CLAUDE.md", "no/such/path.md", "docs"]
     variables: dict[str, Any] = {**dev, "merge": merge_sha, "head": merge_head}
     for i, p in enumerate(paths):
@@ -371,37 +387,36 @@ def captures() -> dict[str, dict[str, Any]]:
         "StewardV3CommitPulls", Q_COMMIT_PULLS, {**dev, "sha": merge_sha, "after": None}
     )
     # H1..H6 — history endpoints.
-    out["h1_repo_policy"] = rest(f"repos/{POL}")
-    out["h2_branch_policy"] = rest(f"repos/{POL}/branches/{POL_ROOT_BRANCH}")
+    out["h1_repo_policy"] = rest(_api(POL))
+    out["h2_branch_policy"] = rest(_api(POL, "/branches/{branch}", branch=POL_ROOT_BRANCH))
     root = _full_sha(POL, POL_ROOT_BRANCH)
-    out["h3_commit_root_no_parents"] = rest(f"repos/{POL}/commits/{root}")
-    out["h3_commit_merge_two_parents"] = rest(f"repos/{DEV}/commits/{merge_sha}")
-    out["h3_commit_side_one_parent"] = rest(f"repos/{DEV}/commits/{merge_head}")
-    out["h4_commit_pulls_direct_push"] = rest(f"repos/{POL}/commits/{root}/pulls?per_page=100")
-    out["h4_commit_pulls_merge_commit"] = rest(
-        f"repos/{DEV}/commits/{merge_sha}/pulls?per_page=100"
-    )
-    out["h4_commit_pulls_side_commit"] = rest(
-        f"repos/{DEV}/commits/{merge_head}/pulls?per_page=100"
-    )
+    commit, pulls = "/commits/{sha}", "/commits/{sha}/pulls?per_page=100"
+    out["h3_commit_root_no_parents"] = rest(_api(POL, commit, sha=root))
+    out["h3_commit_merge_two_parents"] = rest(_api(DEV, commit, sha=merge_sha))
+    out["h3_commit_side_one_parent"] = rest(_api(DEV, commit, sha=merge_head))
+    out["h4_commit_pulls_direct_push"] = rest(_api(POL, pulls, sha=root))
+    out["h4_commit_pulls_merge_commit"] = rest(_api(DEV, pulls, sha=merge_sha))
+    out["h4_commit_pulls_side_commit"] = rest(_api(DEV, pulls, sha=merge_head))
     m636 = out["pr636_act_sequence"]["exchanges"][1]["response"]["body"]
-    out["h4_commit_pulls_squash"] = rest(
-        f"repos/{DEV}/commits/{m636['merge_commit_sha']}/pulls?per_page=100"
-    )
-    tree = out["h3_commit_root_no_parents"]["response"]["body"]["commit"]["tree"]["sha"]
-    out["h5_tree_recursive_policy"] = rest(f"repos/{POL}/git/trees/{tree}?recursive=1")
+    squash = _sha(m636["merge_commit_sha"], "merge_commit_sha")
+    out["h4_commit_pulls_squash"] = rest(_api(DEV, pulls, sha=squash))
+    root_commit = out["h3_commit_root_no_parents"]["response"]["body"]
+    tree = _sha(root_commit["commit"]["tree"]["sha"], "commit.tree.sha")
+    out["h5_tree_recursive_policy"] = rest(_api(POL, "/git/trees/{sha}?recursive=1", sha=tree))
     blob = next(
         e["sha"]
         for e in out["h5_tree_recursive_policy"]["response"]["body"]["tree"]
         if e["path"] == "policy/approvers.env"
     )
-    out["h6_blob_policy_approvers"] = rest(f"repos/{POL}/git/blobs/{blob}")
+    out["h6_blob_policy_approvers"] = rest(
+        _api(POL, "/git/blobs/{sha}", sha=_sha(blob, "tree blob sha"))
+    )
     out["h5_tree_absent_422"] = rest(
-        f"repos/{POL}/git/trees/{'0' * 40}?recursive=1", Expect(status=422)
+        _api(POL, "/git/trees/{sha}?recursive=1", sha="0" * 40), Expect(status=422)
     )
     # P1 — REST Link header (pagination) on a list endpoint.
     out["p1_rest_list_with_link_next"] = rest(
-        f"repos/{DEV}/pulls?state=closed&per_page=2", Expect(next_page=True)
+        _api(DEV, "/pulls?state=closed&per_page=2"), Expect(next_page=True)
     )
     return out
 
