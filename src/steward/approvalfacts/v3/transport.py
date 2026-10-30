@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 
 _UNEXPECTED = "replay: unexpected request"
@@ -23,6 +24,8 @@ class Request:
 
     Равенство и хеш — по `(method, path, op, variables, query)`; переменные сравниваются
     как канонический JSON (порядок ключей не важен), текст запроса входит в ключ (R-M0-7).
+    `variables` копируется в неизменяемое отображение: правка исходного словаря после
+    постройки запроса не меняет его ключ.
     """
 
     method: str
@@ -30,6 +33,10 @@ class Request:
     op: str | None = None
     variables: Mapping[str, object] | None = None
     query: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.variables is not None:
+            object.__setattr__(self, "variables", MappingProxyType(dict(self.variables)))
 
     def _key(self) -> tuple[str, str, str | None, str | None, str | None]:
         variables = None
@@ -92,11 +99,16 @@ class GhTransport:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Response(None, error=f"gh did not run: {exc}")
-        return _parse_include(proc.stdout, proc.stderr)
+        return parse_include_output(proc.stdout, proc.stderr)
 
 
 def _argv(request: Request) -> tuple[list[str], str | None]:
-    """`gh api` argv и stdin; транспорт read-only по построению."""
+    """`gh api` argv и stdin; транспорт read-only по построению.
+
+    Путь, начинающийся с `-`, `gh` прочёл бы как флаг — `ValueError`.
+    """
+    if not request.path or request.path.startswith("-"):
+        raise ValueError(f"transport: path must not start with '-': {request.path!r}")
     if request.method == "GET":
         return ["gh", "api", "--include", request.path], None
     if request.method != "POST" or request.path != "graphql":
@@ -111,11 +123,13 @@ def _argv(request: Request) -> tuple[list[str], str | None]:
     return ["gh", "api", "--include", "graphql", "--input", "-"], json.dumps(payload)
 
 
-def _parse_include(stdout: str, stderr: str) -> Response:
+def parse_include_output(stdout: str, stderr: str = "") -> Response:
     """Статус, `Link` и тело из вывода `gh api --include`.
 
     Код выхода `gh` не решает: на не-2xx и на GraphQL `errors` он ненулевой, а тело есть.
-    Нет строки статуса — сбой транспорта; тело не JSON — `body=None` с ошибкой.
+    Нет строки статуса или разделителя заголовков и тела — сбой транспорта
+    (`status=None`); тело не JSON — `body=None` с ошибкой. Тот же разбор использует скрипт
+    живого захвата, поэтому формат вывода `gh` доказан живыми снимками для этой функции.
     """
     head, sep, body = stdout.replace("\r\n", "\n").partition("\n\n")
     lines = head.split("\n")

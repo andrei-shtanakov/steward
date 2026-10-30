@@ -16,6 +16,8 @@ from steward.approvalfacts.v3.transport import Request, Response, Transport
 MAX_PAGES = 50
 
 _LINK_PART = re.compile(r'<([^<>\s]+)>; rel="([^"\s]+)"')
+#: Единственный хост, на который разрешён переход по `rel="next"`; срезается до пути.
+_API_PREFIX = "https://api.github.com/"
 
 
 class _Fail(Exception):
@@ -47,13 +49,18 @@ def _ok(status: int) -> bool:
 def graphql(t: Transport, op: str, query: str, variables: Mapping[str, object]) -> dict:
     """Строка G0: один GraphQL-запрос; возвращает объект `data`.
 
-    Непустой `errors` при любом HTTP-статусе (в т.ч. `200` с частичными `data`) —
-    `graphql_errors`; иначе не-2xx — `http`; конверт или `data` не объект — `malformed`.
+    `errors` (по G0 — список) не список — `malformed`; непустой список при любом
+    HTTP-статусе (в т.ч. `200` с частичными `data`) — `graphql_errors`; иначе не-2xx —
+    `http`; конверт или `data` не объект — `malformed`.
     """
     status, response = _send(t, Request("POST", "graphql", op=op, variables=variables, query=query))
     body = response.body
-    if isinstance(body, dict) and body.get("errors"):
-        raise _Fail("graphql_errors", f"{op}: {_messages(body['errors'])}")
+    if isinstance(body, dict) and "errors" in body:
+        errors = body["errors"]
+        if not isinstance(errors, list):
+            raise _Fail("malformed", f"{op}: GraphQL errors is not a list")
+        if errors:
+            raise _Fail("graphql_errors", f"{op}: {_messages(errors)}")
     if not _ok(status):
         raise _Fail("http", f"{status} graphql")
     data = body.get("data") if isinstance(body, dict) else None
@@ -62,12 +69,9 @@ def graphql(t: Transport, op: str, query: str, variables: Mapping[str, object]) 
     return data
 
 
-def _messages(errors: object) -> str:
-    if not isinstance(errors, list):
-        return repr(errors)[:200]
-    return "; ".join(str(e.get("message")) if isinstance(e, dict) else repr(e) for e in errors)[
-        :200
-    ]
+def _messages(errors: list) -> str:
+    text = "; ".join(str(e.get("message")) if isinstance(e, dict) else repr(e) for e in errors)
+    return text[:200]
 
 
 def graphql_pages(
@@ -77,37 +81,57 @@ def graphql_pages(
     variables: Mapping[str, object],
     *,
     connection: Sequence[str],
+    null_path_ok: bool = False,
 ) -> list[dict]:
     """Все страницы GraphQL-соединения `connection` (путь ключей от `data`); объекты `data`.
 
     Первая страница — `after: null`, следующие — `endCursor` предыдущей. `hasNextPage` без
     строкового `endCursor` и больше `MAX_PAGES` страниц — `pagination`; соединение или
-    `pageInfo` не той формы — `malformed`. `null` на пути к соединению — допустимая форма
-    ряда строк §3.8 (E7 `object: null`): страница возвращается как есть, разбор — у
-    вызывающего по его строке.
+    `pageInfo` не той формы — `malformed`.
+
+    Путь к соединению на первой странице: отсутствующий ключ — `malformed`; `null` —
+    `malformed`, если вызывающий не передал `null_path_ok=True`. Тогда возвращается
+    `[data]` с этим `null` (отличим от пустого соединения `nodes: []`). `null_path_ok`
+    разрешён только строке §3.8, чья форма допускает `null` на пути: **E7**
+    (`object: null`). На любой следующей странице `null` или отсутствующий ключ на пути —
+    `pagination` (неполная пагинация, не конец).
     """
     pages: list[dict] = []
     cursor: str | None = None
     for _ in range(MAX_PAGES):
         data = graphql(t, op, query, {**variables, "after": cursor})
         pages.append(data)
-        cursor = _next_cursor(data, connection, op)
+        conn = _connection(data, connection, op, first=cursor is None)
+        if conn is None:
+            if not null_path_ok:
+                raise _Fail("malformed", f"{op}: null on the path to {'.'.join(connection)}")
+            return pages
+        cursor = _next_cursor(conn, op)
         if cursor is None:
             return pages
     raise _Fail("pagination", f"{op}: more than {MAX_PAGES} pages")
 
 
-def _next_cursor(data: dict, connection: Sequence[str], op: str) -> str | None:
+def _connection(data: dict, connection: Sequence[str], op: str, *, first: bool) -> dict | None:
+    """Объект соединения; `None` — `null` на пути первой страницы (решает вызывающий)."""
     node: object = data
+    where = "data"
     for step in connection:
-        if node is None:
-            return None
-        if not isinstance(node, dict):
-            raise _Fail("malformed", f"{op}: {step!r} is not under an object")
-        node = node.get(step)
-    if node is None:
-        return None
-    page = node.get("pageInfo") if isinstance(node, dict) else None
+        if not isinstance(node, dict) or step not in node or node[step] is None:
+            if not first:
+                raise _Fail("pagination", f"{op}: {where}.{step} lost on a later page")
+            if isinstance(node, dict) and step in node:
+                return None
+            raise _Fail("malformed", f"{op}: {where}.{step} is missing")
+        node = node[step]
+        where = f"{where}.{step}"
+    if not isinstance(node, dict):
+        raise _Fail("malformed", f"{op}: {where} is not an object")
+    return node
+
+
+def _next_cursor(conn: dict, op: str) -> str | None:
+    page = conn.get("pageInfo")
     if not isinstance(page, dict) or not isinstance(page.get("hasNextPage"), bool):
         raise _Fail("malformed", f"{op}: connection without pageInfo.hasNextPage")
     if not page["hasNextPage"]:
@@ -144,7 +168,9 @@ def rest_array_pages(t: Transport, path: str) -> list[dict]:
     """REST-список (строки H4, P1): все страницы по `Link: rel="next"`, элементы — объекты.
 
     Конец — отсутствие `Link` или `rel="next"` в разобранном заголовке; лишний запрос не
-    делается. Заголовок вне грамматики P1 — `malformed`; больше `MAX_PAGES` — `pagination`.
+    делается. Заголовок вне грамматики P1 или `next` не на `https://api.github.com/` —
+    `malformed`; больше `MAX_PAGES` — `pagination`. Сбой любой страницы — отказ целиком,
+    накопленное не возвращается.
     """
     items: list[dict] = []
     page_path = path
@@ -154,11 +180,19 @@ def rest_array_pages(t: Transport, path: str) -> list[dict]:
         if not isinstance(body, list) or not all(isinstance(e, dict) for e in body):
             raise _Fail("malformed", _shape_detail(page_path, response, "an array of objects"))
         items.extend(body)
-        next_path = None if response.link is None else parse_link(response.link).get("next")
-        if next_path is None:
+        next_url = None if response.link is None else parse_link(response.link).get("next")
+        if next_url is None:
             return items
-        page_path = next_path
+        page_path = _api_path(next_url)
     raise _Fail("pagination", f"{path}: more than {MAX_PAGES} pages")
+
+
+def _api_path(url: str) -> str:
+    """URL `rel="next"` → путь API для транспорта; чужой хост или путь-флаг — `malformed`."""
+    path = url.removeprefix(_API_PREFIX)
+    if path == url or not path or path.startswith("-"):
+        raise _Fail("malformed", f"Link next outside {_API_PREFIX}: {url[:200]!r}")
+    return path
 
 
 def parse_link(header: str) -> dict[str, str]:

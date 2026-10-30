@@ -1,7 +1,7 @@
 """Транспорт `approval-facts/v3` (спека §3.2): replay по живым снимкам и `GhTransport`.
 
-`GhTransport` проверяется подменой `subprocess.run` — сети в тестах нет. Вывод `gh api
---include` собирается из живого снимка (строка статуса, `Link`, тело), а не пишется руками.
+`GhTransport` проверяется подменой `subprocess.run` — сети в тестах нет. Хелперы снимков —
+фикстуры `conftest.py`.
 """
 
 import copy
@@ -15,16 +15,17 @@ import pytest
 from steward.approvalfacts.v3 import transport as transport_mod
 from steward.approvalfacts.v3.transport import (
     GhTransport,
-    ReplayTransport,
     Request,
     Response,
     Transport,
+    parse_include_output,
     replay_transport,
 )
-from ._live import exchanges, key, key_of, live, request_from  # pyrefly: ignore[missing-import]
+
+SCRIPT = "scripts/capture_approval_facts_v3_live.py"
 
 
-def test_replay_key_includes_query_text():
+def test_replay_key_includes_query_text(exchanges, request_from):
     ex = exchanges("pr636_act_sequence")[0]  # первый обмен: StewardV3Delivery
     assert ex["request"]["op"] == "StewardV3Delivery"
     t = replay_transport({"exchanges": [ex]})
@@ -35,7 +36,7 @@ def test_replay_key_includes_query_text():
     assert t.send(req).status == 200 and t.unused() == []
 
 
-def test_replay_key_includes_variables_order_free():
+def test_replay_key_includes_variables_order_free(exchanges, request_from):
     ex = exchanges("pr636_act_sequence")[0]
     t = replay_transport({"exchanges": [ex]})
     req = request_from(ex)
@@ -48,7 +49,18 @@ def test_replay_key_includes_variables_order_free():
     assert t.send(reordered).status == 200
 
 
-def test_replay_fifo_per_key():
+def test_request_variables_are_frozen_copy(exchanges, request_from):
+    # Правка словаря спецификации после постройки транспорта не теряет запись молча.
+    ex = copy.deepcopy(exchanges("pr636_act_sequence")[0])
+    req = request_from(ex)
+    t = replay_transport({"exchanges": [ex]})
+    ex["request"]["variables"]["number"] = 1
+    with pytest.raises(TypeError):
+        req.variables["number"] = 1  # type: ignore[index]
+    assert t.send(req).status == 200 and t.unused() == []
+
+
+def test_replay_fifo_per_key(exchanges, request_from):
     # Производный снимок: тот же обмен дважды, второй ответ — со статусом 502.
     ex = exchanges("pr657_act_sequence")[4]  # StewardV3Reviews, проход 1
     second = copy.deepcopy(ex)
@@ -60,7 +72,9 @@ def test_replay_fifo_per_key():
     assert t.send(req).status is None and t.unexpected == [req]
 
 
-def test_replay_of_live_act_sequence_consumes_it_exactly_in_order():
+def test_replay_of_live_act_sequence_consumes_it_exactly_in_order(
+    exchanges, request_from, key, key_of
+):
     seq = exchanges("pr657_act_sequence")
     t = replay_transport({"exchanges": seq})
     got = [t.send(request_from(ex)) for ex in seq]
@@ -72,7 +86,7 @@ def test_replay_of_live_act_sequence_consumes_it_exactly_in_order():
     assert [key(r) for r in t.log] == [key_of(ex) for ex in seq]
 
 
-def test_replay_unused_lists_unconsumed_requests():
+def test_replay_unused_lists_unconsumed_requests(exchanges, request_from):
     seq = exchanges("closed606_act_sequence")
     t = replay_transport({"exchanges": seq})
     t.send(request_from(seq[0]))
@@ -87,7 +101,7 @@ def test_replay_unexpected_request_is_transport_failure():
     assert t.unexpected == [req] and t.log == [req]
 
 
-def test_replay_response_carries_link_and_error_fields():
+def test_replay_response_carries_link_and_error_fields(live, request_from):
     ex = live("p1_rest_list_with_link_next")
     got = replay_transport({"exchanges": [ex]}).send(request_from(ex))
     assert got.link == ex["response"]["link"] and got.error is None
@@ -100,9 +114,9 @@ def test_replay_transport_rejects_malformed_spec(spec):
 
 
 def test_transports_satisfy_protocol():
-    assert isinstance(replay_transport({"exchanges": []}), ReplayTransport)
-    t: Transport = GhTransport()
-    assert isinstance(t, GhTransport)
+    # Содержание — в аннотации: pyrefly проверяет, что оба класса реализуют `Transport`.
+    transports: list[Transport] = [GhTransport(), replay_transport({"exchanges": []})]
+    assert len(transports) == 2
 
 
 # --- GhTransport: подмена subprocess.run --------------------------------------------------
@@ -123,7 +137,10 @@ class _Run:
 
 
 def _gh_output(response: dict, *, crlf: bool = False) -> str:
-    """Вывод `gh api --include`, собранный из живого ответа."""
+    """Вывод `gh api --include`: тело и `Link` — из живого ответа; обёртка (строка статуса,
+    заголовки, пустая строка) — в формате, который `parse_include_output` разбирает и при
+    живом захвате (скрипт захвата вызывает её же, `test_capture_script_uses_library_parser`).
+    """
     head = f"HTTP/2.0 {response['status']} X"
     if response.get("link"):
         head += f"\nLink: {response['link']}"
@@ -136,8 +153,14 @@ def _patch(monkeypatch, run: _Run) -> _Run:
     return run
 
 
+def test_capture_script_uses_library_parser(repo_root):
+    src = (repo_root / SCRIPT).read_text(encoding="utf-8")
+    assert "from steward.approvalfacts.v3.transport import parse_include_output" in src
+    assert "parse_include_output(raw)" in src and "json.loads(body)" not in src
+
+
 @pytest.mark.parametrize("crlf", [False, True])
-def test_gh_transport_parses_include_output(monkeypatch, crlf):
+def test_gh_transport_parses_include_output(monkeypatch, live, request_from, crlf):
     ex = live("p1_rest_list_with_link_next")
     run = _patch(monkeypatch, _Run(_gh_output(ex["response"], crlf=crlf)))
     got = GhTransport().send(request_from(ex))
@@ -147,7 +170,7 @@ def test_gh_transport_parses_include_output(monkeypatch, crlf):
     assert run.calls[0][0] == ["gh", "api", "--include", ex["request"]["path"]]
 
 
-def test_gh_transport_keeps_body_of_non_2xx_and_graphql_errors(monkeypatch):
+def test_gh_transport_keeps_body_of_non_2xx_and_graphql_errors(monkeypatch, live, request_from):
     # gh завершается с кодом 1 и на 422, и на GraphQL `errors`: тело всё равно читается.
     for name in ("h5_tree_absent_422", "neg_e2_delivery_absent_pr"):
         ex = live(name)
@@ -173,6 +196,11 @@ def test_gh_response_with_non_json_body_has_no_body(monkeypatch):
     assert got.status == 502 and got.body is None and got.error is not None
 
 
+def test_parse_include_output_is_the_transport_parse():
+    assert parse_include_output("HTTP/2.0 200 OK\n\n[]") == Response(200, body=[])
+    assert parse_include_output("garbage").status is None
+
+
 @pytest.mark.parametrize(
     "exc", [subprocess.TimeoutExpired(["gh"], 60), FileNotFoundError("gh"), OSError("boom")]
 )
@@ -182,7 +210,7 @@ def test_gh_transport_timeout_is_transport_error(monkeypatch, exc):
     assert got.status is None and got.error
 
 
-def test_gh_transport_builds_argv_and_env(monkeypatch, tmp_path: Path):
+def test_gh_transport_builds_argv_and_env(monkeypatch, tmp_path: Path, exchanges, request_from):
     ex = exchanges("pr657_act_sequence")[0]  # StewardV3Delivery
     run = _patch(monkeypatch, _Run(_gh_output(ex["response"])))
     monkeypatch.setenv("GH_CONFIG_DIR", "/elsewhere")
@@ -199,7 +227,7 @@ def test_gh_transport_builds_argv_and_env(monkeypatch, tmp_path: Path):
     assert kwargs["timeout"] == 7 and kwargs["check"] is False
 
 
-def test_gh_transport_without_config_dir_keeps_environment(monkeypatch):
+def test_gh_transport_without_config_dir_keeps_environment(monkeypatch, live, request_from):
     ex = live("h1_repo_policy")
     run = _patch(monkeypatch, _Run(_gh_output(ex["response"])))
     monkeypatch.setenv("GH_CONFIG_DIR", "/profile/of/caller")
@@ -211,7 +239,14 @@ def test_gh_transport_without_config_dir_keeps_environment(monkeypatch):
 
 @pytest.mark.parametrize(
     "req",
-    [Request("POST", "repos/o/r/pulls"), Request("DELETE", "repos/o/r"), Request("PUT", "x")],
+    [
+        Request("POST", "repos/o/r/pulls"),
+        Request("DELETE", "repos/o/r"),
+        Request("PUT", "x"),
+        Request("GET", "--method=DELETE"),
+        Request("GET", "-X"),
+        Request("GET", ""),
+    ],
 )
 def test_gh_transport_is_read_only(monkeypatch, req):
     run = _patch(monkeypatch, _Run())

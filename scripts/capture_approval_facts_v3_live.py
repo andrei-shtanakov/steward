@@ -59,6 +59,7 @@ from steward.approvalfacts.v3.queries import (
     Q_TIMELINE,
     q_blobs,
 )
+from steward.approvalfacts.v3.transport import parse_include_output
 
 DESCRIPTION = "Read-only, fail-closed capture of GitHub responses for approval-facts/v3."
 
@@ -116,24 +117,15 @@ def sanitize(value: Any) -> Any:
 def _split(raw: str, what: str) -> tuple[int, str | None, Any]:
     """Status line, ``Link`` header and JSON body of ``gh api --include`` output.
 
-    Raises :class:`CaptureError` when there is no header/body separator, no HTTP
-    status line, or the body is not JSON — never substitutes a placeholder.
+    The parse is the library's (``parse_include_output``), so the format proven by these
+    captures is the format the library reads. Raises :class:`CaptureError` when there is
+    no header/body separator, no HTTP status line, or the body is not JSON — never
+    substitutes a placeholder.
     """
-    head, sep, body = raw.replace("\r\n", "\n").partition("\n\n")
-    if not sep:
-        raise CaptureError(f"{what}: no header/body separator in gh output")
-    lines = head.split("\n")
-    parts = lines[0].split()
-    if len(parts) < 2 or not parts[0].startswith("HTTP/") or not parts[1].isdigit():
-        raise CaptureError(f"{what}: no HTTP status line: {lines[0][:80]!r}")
-    link = next(
-        (ln.split(":", 1)[1].strip() for ln in lines if ln.lower().startswith("link:")), None
-    )
-    try:
-        parsed = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise CaptureError(f"{what}: body is not JSON: {exc}") from exc
-    return int(parts[1]), link, parsed
+    response = parse_include_output(raw)
+    if response.status is None or response.error is not None:
+        raise CaptureError(f"{what}: {response.error}")
+    return response.status, response.link, response.body
 
 
 def _run_gh(argv: list[str], stdin: str | None) -> tuple[int, str, str]:

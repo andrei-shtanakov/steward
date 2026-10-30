@@ -2,8 +2,6 @@
 
 import re
 
-import pytest
-
 from steward.approvalfacts.v3.queries import (
     Q_COMMIT_PULLS,
     Q_DELIVERY,
@@ -11,10 +9,16 @@ from steward.approvalfacts.v3.queries import (
     Q_TIMELINE,
     q_blobs,
 )
-from ._live import LIVE_CAPTURES, ROOT, exchanges  # pyrefly: ignore[missing-import]
 
-SPEC = ROOT / "docs" / "superpowers" / "specs" / "2026-10-30-approval-facts-v3-design.md"
-SCRIPT = ROOT / "scripts" / "capture_approval_facts_v3_live.py"
+SPEC = "docs/superpowers/specs/2026-10-30-approval-facts-v3-design.md"
+SCRIPT = "scripts/capture_approval_facts_v3_live.py"
+OPS = {
+    "StewardV3Delivery",
+    "StewardV3Reviews",
+    "StewardV3Timeline",
+    "StewardV3CommitPulls",
+    "StewardV3Blobs",
+}
 
 
 def _blob_paths(req: dict) -> int:
@@ -31,38 +35,32 @@ def _expected(req: dict) -> str:
     }[req["op"]]
 
 
-@pytest.mark.parametrize("name", LIVE_CAPTURES)
-def test_library_query_text_equals_live_capture(name):
-    for ex in exchanges(name):
+def test_library_query_text_equals_live_capture(capture_name, exchanges):
+    for ex in exchanges(capture_name):
         req = ex["request"]
         if req["method"] != "POST":
             continue
-        assert req["query"] == _expected(req), (name, req["op"])
+        assert req["query"] == _expected(req), (capture_name, req["op"])
 
 
-def test_every_graphql_operation_is_captured_live():
+def test_every_graphql_operation_is_captured_live(live_captures, exchanges):
     ops = {
         ex["request"]["op"]
-        for name in LIVE_CAPTURES
+        for name in live_captures
         for ex in exchanges(name)
         if ex["request"]["method"] == "POST"
     }
-    assert ops == {
-        "StewardV3Delivery",
-        "StewardV3Reviews",
-        "StewardV3Timeline",
-        "StewardV3CommitPulls",
-        "StewardV3Blobs",
-    }
+    assert ops == OPS
 
 
-def _spec_queries() -> dict[str, str]:
-    block = SPEC.read_text(encoding="utf-8").split("```graphql\n", 1)[1].split("```", 1)[0]
+def _spec_queries(text: str) -> dict[str, str]:
+    block = text.split("```graphql\n", 1)[1].split("```", 1)[0]
     return {line.split("(", 1)[0].removeprefix("query "): line for line in block.splitlines()}
 
 
-def test_library_query_text_equals_spec_table():
-    spec = _spec_queries()
+def test_library_query_text_equals_spec_table(repo_root):
+    spec = _spec_queries((repo_root / SPEC).read_text(encoding="utf-8"))
+    assert set(spec) == OPS
     assert spec["StewardV3Delivery"] == Q_DELIVERY
     assert spec["StewardV3Reviews"] == Q_REVIEWS
     assert spec["StewardV3Timeline"] == Q_TIMELINE
@@ -85,7 +83,7 @@ def test_queries_are_read_only():
         assert text.startswith("query StewardV3") and "mutation" not in text
 
 
-def test_capture_script_imports_library_queries():
-    src = SCRIPT.read_text(encoding="utf-8")
+def test_capture_script_imports_library_queries(repo_root):
+    src = (repo_root / SCRIPT).read_text(encoding="utf-8")
     assert "from steward.approvalfacts.v3.queries import" in src
     assert "Q_DELIVERY = (" not in src and "def q_blobs" not in src
