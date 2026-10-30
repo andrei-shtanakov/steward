@@ -10,10 +10,13 @@ Rules, enforced by construction:
 - only ``GET`` REST requests and GraphQL **queries** (no mutation keyword is
   ever sent; the script refuses any query text containing ``mutation``);
 - only the **public** repositories in ``ALLOWED_REPOS`` (steward itself is
-  public: nothing from a private repository may land in its tree);
+  public: nothing from a private repository may land in its tree); publicity is
+  a property proven live (``prove_public``) before any other exchange for the
+  repository, not a name in a list;
 - **fail-closed**: every exchange must match its declared expectation — ``gh``
-  exit code, an HTTP status line, a parseable JSON body, and GraphQL ``errors``
-  present only where the capture declares them (``Expect``). Any mismatch aborts
+  exit code, an HTTP status line, a parseable JSON body, GraphQL ``errors``
+  present only where the capture declares them, and completeness (no next page,
+  no truncated tree) unless declared (``Expect``). Any mismatch aborts
   the run before a single file is written;
 - **atomic**: all files are written to a temporary sibling directory and swapped
   in only after every exchange succeeded; stale files of a previous capture do
@@ -122,6 +125,11 @@ class Expect:
 
     status: int = 200
     graphql_errors: bool = False
+    #: Completeness is part of the expectation: by default every connection is
+    #: single-page (``pageInfo.hasNextPage == false``), no REST ``Link`` has
+    #: ``rel="next"`` and no tree is ``truncated``. Only a capture of the Link
+    #: grammar itself (P1) declares a next page.
+    next_page: bool = False
 
     @property
     def gh_ok(self) -> bool:
@@ -187,17 +195,75 @@ def _gh(
         raise CaptureError(f"{what}: HTTP {status}, expected {expect.status}")
     if body is None:
         raise CaptureError(f"{what}: empty JSON body")
+    _check_complete(body, link, expect, what)
     return status, link, body
 
 
-def _check_repo_path(path: str) -> None:
+def _check_complete(body: Any, link: str | None, expect: Expect, what: str) -> None:
+    """A capture declared complete must be complete (spec §3.4 «все страницы», H5).
+
+    ``pageInfo.hasNextPage == true`` anywhere, a ``rel="next"`` link or a
+    ``truncated: true`` tree abort the run unless the capture declares a next page.
+    """
+    if not expect.next_page and link is not None and 'rel="next"' in link:
+        raise CaptureError(f"{what}: REST list has a next page, capture declared complete")
+    stack = [body]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        page = node.get("pageInfo")
+        if isinstance(page, dict) and page.get("hasNextPage") and not expect.next_page:
+            raise CaptureError(f"{what}: pageInfo.hasNextPage, capture declared single-page")
+        if node.get("truncated") is True:
+            raise CaptureError(f"{what}: truncated tree, capture declared complete")
+        stack.extend(node.values())
+
+
+#: Repositories whose publicity was proven live in this run (`prove_public`).
+_PROVEN_PUBLIC: set[str] = set()
+
+
+def _check_repo_path(path: str) -> str:
     parts = path.split("/")
     if len(parts) < 3 or parts[0] != "repos" or f"{parts[1]}/{parts[2]}" not in ALLOWED_REPOS:
         raise CaptureError(f"repository outside the read-only allowlist: {path}")
+    return f"{parts[1]}/{parts[2]}"
+
+
+def _require_public(repo: str, what: str) -> None:
+    if repo not in _PROVEN_PUBLIC:
+        raise CaptureError(f"{what}: publicity of {repo} not proven before this exchange")
+
+
+def prove_public(repo: str) -> dict[str, Any]:
+    """First exchange for ``repo``: a live REST proof that it is public.
+
+    steward is public, so nothing from a private repository may land in its tree.
+    The allowlist alone is a name, not a property: the run proves the property
+    (``"private": false`` and ``"visibility": "public"``) before any other
+    exchange for that repository is allowed.
+    """
+    _check_repo_path(f"repos/{repo}")
+    status, link, body = _gh([f"repos/{repo}"], f"repos/{repo}", Expect())
+    fields = body if isinstance(body, dict) else {}
+    if fields.get("private") is not False or fields.get("visibility") != "public":
+        raise CaptureError(
+            f"repos/{repo}: not proven public (private={fields.get('private')!r}, "
+            f"visibility={fields.get('visibility')!r})"
+        )
+    _PROVEN_PUBLIC.add(repo)
+    return {
+        "request": {"method": "GET", "path": f"repos/{repo}"},
+        "response": {"status": status, "link": link, "body": sanitize(body)},
+    }
 
 
 def rest(path: str, expect: Expect = Expect()) -> dict[str, Any]:
-    _check_repo_path(path)
+    _require_public(_check_repo_path(path), path)
     status, link, body = _gh([path], path, expect)
     return {
         "request": {"method": "GET", "path": path},
@@ -210,7 +276,9 @@ def graphql(
 ) -> dict[str, Any]:
     if "mutation" in query:
         raise CaptureError("refusing a GraphQL text containing 'mutation'")
-    _repo(f"{variables.get('owner')}/{variables.get('name')}")
+    repo = f"{variables.get('owner')}/{variables.get('name')}"
+    _repo(repo)
+    _require_public(repo, op)
     payload = json.dumps({"query": query, "variables": variables, "operationName": op})
     status, link, body = _gh(["graphql", "--input", "-"], op, expect, stdin=payload)
     if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
@@ -249,6 +317,8 @@ POSITIVE_SETS = (
 )
 #: Closed, never merged PR of a public repo: REST still carries a test merge_commit_sha.
 CLOSED_UNMERGED = (DEV, 606)
+#: Merged PR whose reviews were submitted on commits other than its final head.
+REVIEWS_OFF_HEAD = (DEV, 603)
 POL_ROOT_BRANCH = "main"
 
 
@@ -302,6 +372,9 @@ def act_sequence(repo: str, pr: int, path: str) -> list[dict[str, Any]]:
 def captures() -> dict[str, dict[str, Any]]:
     """Every endpoint and state the design uses (spec §3.8, column «снимки»)."""
     out: dict[str, dict[str, Any]] = {}
+    _PROVEN_PUBLIC.clear()
+    for repo in sorted(ALLOWED_REPOS):  # publicity proof precedes every other exchange
+        out[f"pub_{repo.split('/')[1].replace('-', '_')}"] = prove_public(repo)
     for label, repo, pr, path in POSITIVE_SETS:
         out[f"{label}_act_sequence"] = {
             "pr": pr,
@@ -318,6 +391,10 @@ def captures() -> dict[str, dict[str, Any]]:
         "exchanges": _delivery_pair(closed_repo, closed_pr),
     }
     out[f"closed{closed_pr}_review_pass"] = {"exchanges": _review_pass(closed_repo, closed_pr)}
+    # Reviews submitted on commits other than the PR head (CHANGES_REQUESTED and APPROVED on
+    # earlier pushes): the live shape of `commit_id != head_sha` (spec §3.5, Review Focus 3).
+    review_repo, review_pr = REVIEWS_OFF_HEAD
+    out[f"pr{review_pr}_review_pass"] = {"exchanges": _review_pass(review_repo, review_pr)}
     # Negative shapes, declared explicitly (Expect), kept separately.
     dev = _repo(DEV)
     out["neg_e2_delivery_absent_pr"] = graphql(
@@ -368,7 +445,9 @@ def captures() -> dict[str, dict[str, Any]]:
         f"repos/{POL}/git/trees/{'0' * 40}?recursive=1", Expect(status=422)
     )
     # P1 — REST Link header (pagination) on a list endpoint.
-    out["p1_rest_list_with_link_next"] = rest(f"repos/{DEV}/pulls?state=closed&per_page=2")
+    out["p1_rest_list_with_link_next"] = rest(
+        f"repos/{DEV}/pulls?state=closed&per_page=2", Expect(next_page=True)
+    )
     return out
 
 

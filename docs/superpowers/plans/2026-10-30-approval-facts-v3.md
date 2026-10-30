@@ -1244,7 +1244,7 @@ def test_import_has_no_io(monkeypatch):
 Уже **снято живьём** 30.10 (`tests/fixtures/approvalfacts_v3/live/`, спека §3.8) и в смоуке
 не повторяется: E1/E2 merge-коммит (User-мержер), squash, закрытый несмёрженный PR с тестовым
 `merge_commit_sha`; E3 User- и Bot-авторы ревью; E4 `MergedEvent` (`createdAt = mergedAt`);
-E5 `identical`; E6 Blob/`null`/Tree; E7; H1–H6 (корень без родителей, `commits/{sha}/pulls`
+E5 `identical`; E6 Blob/`null`/Tree; E7; ревью на коммите ≠ голова (`pr603_review_pass`); H1–H6 (корень без родителей, `commits/{sha}/pulls`
 для merge-коммита, squash, бокового коммита и прямого коммита, полное дерево, блоб); P1.
 
 **Не снято — смоук обязан проверить (каждая строка: `verified` / `not_verified` + причина /
