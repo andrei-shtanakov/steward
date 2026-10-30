@@ -18,6 +18,8 @@ import pytest
 
 from steward.approvalfacts.v3.transport import Request
 
+from . import _derive
+
 ROOT = Path(__file__).resolve().parents[3]
 LIVE = ROOT / "tests" / "fixtures" / "approvalfacts_v3" / "live"
 _MANIFEST = json.loads((LIVE / "MANIFEST.json").read_text(encoding="utf-8"))
@@ -100,3 +102,15 @@ def key() -> Callable[[Request], Key]:
 def key_of() -> Callable[[Record], Key]:
     """`key_of(ex)` — ключ записанного обмена, для сравнения с `ReplayTransport.log`."""
     return lambda ex: _key(_request_from(ex))
+
+
+@pytest.fixture
+def derive() -> Callable[[list[str], list[dict[str, Any]]], Record]:
+    """`derive(base, transforms)` — обмены снимков после преобразований спеки §5 (`_derive`)."""
+    return _derive.derive
+
+
+@pytest.fixture
+def dismissal_node() -> Callable[..., Record]:
+    """`dismissal_node(review_id, created, prev, actor_login, actor_type)` — узел E4."""
+    return _derive.dismissal_node
