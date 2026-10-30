@@ -2,6 +2,7 @@
 
 from steward.approvalfacts.v3.act import read_act_facts
 from steward.approvalfacts.v3.effective import effective_reviews
+from steward.approvalfacts.v3.history import POLICY_FILES, read_activation, read_policy_history
 from steward.approvalfacts.v3.model import (
     EFFECTIVE_STATES,
     HISTORY_VIOLATION_CODES,
@@ -34,6 +35,7 @@ __all__ = [
     "ACTOR_TYPES",
     "EFFECTIVE_STATES",
     "HISTORY_VIOLATION_CODES",
+    "POLICY_FILES",
     "PREVIOUS_STATES",
     "REVIEW_STATES",
     "UNAVAILABLE_CODES",
@@ -52,7 +54,9 @@ __all__ = [
     "effective_reviews",
     "login_resolved",
     "read_act_facts",
+    "read_activation",
     "read_open_review",
+    "read_policy_history",
     "unavailable",
     "validate_review_facts",
     "violation",
