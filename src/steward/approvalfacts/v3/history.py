@@ -92,6 +92,9 @@ def read_policy_history(
     не встречен до корня) — `HistoryViolation`; ветка не по умолчанию, недочитанный объект,
     предел цепочки — `Unavailable`. Пустой или недопустимый `files`, `anchor`/`until` не
     40-hex, `repo` не `owner/name` — `ValueError` до первого запроса.
+
+    `until` — из журнала эпох или голова ветки: принадлежность `until` ветке не проверяется,
+    и коммит вне ветки (например, из сети форков) дал бы `anchor_not_reached`.
     """
     owner, name = split_repo(repo)
     checked = _check_files(files)
@@ -263,13 +266,16 @@ def _read_tree(
 ) -> dict[str, str]:
     """Строка H5: набор `{path: blob oid}` файлов `files` из полного дерева.
 
-    Отсутствие пути установлено только полным (`truncated = false`) успешным ответом;
-    `truncated` — `tree_truncated`; запись пути не `blob` — `not_a_blob`.
+    Отсутствие пути установлено только полным (`truncated = false`) успешным ответом на
+    запрошенное дерево (`sha` ответа = `tree`); `truncated` — `tree_truncated`; не bool,
+    дубль записи пути — `malformed`; запись пути не `blob` — `not_a_blob`.
     """
     path = rest_path(
         "repos/{owner}/{name}/git/trees/{tree}?recursive=1", owner=owner, name=name, tree=tree
     )
     body = rest_object(t, path)
+    if require_sha(_str(body, "sha", path), f"{path} sha") != tree:
+        raise _Fail("malformed", f"{path}: answer is for another tree")
     truncated = body.get("truncated")
     if not isinstance(truncated, bool):
         raise _Fail("malformed", f"{path}: truncated {truncated!r} is not a boolean")
@@ -299,7 +305,10 @@ def _activation(
 
 
 def _blob_sha256(t: Transport, owner: str, name: str, oid: str) -> str:
-    """Строка H6: `sha256(b64decode(content))` hex; `encoding` не `base64` — `malformed`."""
+    """Строка H6: `sha256(b64decode(content))` hex.
+
+    `encoding` не `base64`, содержимое не base64 или его git-oid не `oid` — `malformed`.
+    """
     path = rest_path("repos/{owner}/{name}/git/blobs/{oid}", owner=owner, name=name, oid=oid)
     body = rest_object(t, path)
     encoding = _str(body, "encoding", path)
@@ -310,6 +319,9 @@ def _blob_sha256(t: Transport, owner: str, name: str, oid: str) -> str:
         raw = base64.b64decode(_str(body, "content", path).replace("\n", ""), validate=True)
     except (binascii.Error, ValueError) as exc:
         raise _Fail("malformed", f"{path}: content is not base64: {exc}") from exc
+    # Связь байтов с деревом: git-oid содержимого — тот блоб, что назван записью дерева.
+    if hashlib.sha1(b"blob %d\x00" % len(raw) + raw).hexdigest() != oid:
+        raise _Fail("malformed", f"{path}: content does not hash to the blob oid")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -318,6 +330,9 @@ def _check_files(files: Sequence[str]) -> tuple[str, ...]:
     checked = check_paths(files)
     if not checked:
         raise ValueError("files is empty: no policy files means no evidence, not no activations")
+    # Путь, который не совпадёт ни с одной записью дерева, читался бы как «файла нет».
+    if bad := [f for f in checked if {"", "."} & set(f.split("/"))]:
+        raise ValueError(f"files not in canonical form: {bad!r}")
     return checked
 
 

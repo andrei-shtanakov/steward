@@ -138,6 +138,8 @@ class _Builder:
             entry = copy.deepcopy(template[2])
             entry.update(path=path, type=kinds.get(path, "blob"), sha=_oid(data))
             entries.append(entry)
+        if (dup := opts.get("duplicate")) is not None:
+            entries.append(copy.deepcopy(next(e for e in entries if e["path"] == dup)))
         return self.raw(
             "h5_tree_recursive_policy",
             request__path=f"repos/{self.repo}/git/trees/{tree}?recursive=1",
@@ -282,6 +284,7 @@ def test_activation_live_merge_commit(builder, check):
     b.raw(
         "h5_tree_recursive_policy",
         request__path=f"repos/{DEVTOOLS}/git/trees/{TREE_657}?recursive=1",
+        response__body__sha=TREE_657,
     )
     b.raw(
         "h6_blob_policy_approvers",
@@ -302,6 +305,7 @@ def test_activation_live_squash(builder, check):
     b.raw(
         "h5_tree_recursive_policy",
         request__path=f"repos/{DEVTOOLS}/git/trees/{TREE_657}?recursive=1",
+        response__body__sha=TREE_657,
     )
     b.raw(
         "h6_blob_policy_approvers",
@@ -475,6 +479,26 @@ def test_pr_base_mismatch(builder, check):
     check(spec, t)
 
 
+def test_anchor_pr_base_mismatch(builder, check):
+    """Якорь — тоже PR-мерж в ветку (§3.7 п. 5): его PR в другую ветку — нарушение."""
+    links = [Link(A, R, 1, {}), Link(B, A, 2, {})]
+    spec, t = _chain_prefix(builder(), links).pulls(A, {"number": 1, "base": "dev"}).build()
+    got = _history(t)
+    assert isinstance(got, HistoryViolation) and got.code == "pr_base_mismatch"
+    check(spec, t)
+
+
+def test_other_merged_pr_into_other_branch_is_not_a_violation(builder, check):
+    """База сверяется только у PR, чей `merge_commit_sha` — это звено: ассоциированный
+    смёрженный PR в `release` с другим мерж-коммитом нарушением не является."""
+    other = {"number": 7, "merge": _sha("release-merge"), "base": "release"}
+    b = builder().repository().branch(A).commit(A, [R], _sha("tA"))
+    b.pulls(A, {"number": 1}, other).tree(_sha("tA"), {APPROVERS: V1}).blob(V1)
+    spec, t = b.build()
+    assert _history(t) == (Activation(1, A, "2026-10-01T10:00:00Z", {APPROVERS: _sha256(V1)}),)
+    check(spec, t)
+
+
 def test_anchor_itself_must_be_pr_merge(builder, check):
     links = [Link(A, R, None, {}), Link(B, A, 2, {})]
     spec, t = _chain_prefix(builder(), links).pulls(A).build()
@@ -614,6 +638,56 @@ def test_tree_truncated_is_unavailable(builder, check):
     check(spec, t)
 
 
+@pytest.mark.parametrize("truncated", [None, "false", 0])
+def test_tree_truncated_not_bool_is_malformed(builder, check, truncated):
+    """Полнота дерева не доказана — отсутствие файла не устанавливается (`malformed`)."""
+    b = builder().repository().branch(A).commit(A, [R], _sha("tA")).pulls(A, {"number": 1})
+    spec, t = b.tree(_sha("tA"), {APPROVERS: V1}, truncated=truncated).build()
+    got = _history(t)
+    assert isinstance(got, Unavailable) and got.code == "malformed"
+    check(spec, t)
+
+
+def test_tree_without_truncated_is_malformed(builder, check):
+    b = builder().repository().branch(A).commit(A, [R], _sha("tA")).pulls(A, {"number": 1})
+    b.tree(_sha("tA"), {APPROVERS: V1})
+    b.transforms.append({"op": "drop_field", "path": [4, "response", "body", "truncated"]})
+    spec, t = b.build()
+    got = _history(t)
+    assert isinstance(got, Unavailable) and got.code == "malformed"
+    check(spec, t)
+
+
+def test_tree_duplicate_policy_entry_is_malformed(builder, check):
+    b = builder().repository().branch(A).commit(A, [R], _sha("tA")).pulls(A, {"number": 1})
+    spec, t = b.tree(_sha("tA"), {APPROVERS: V1}, duplicate=APPROVERS).build()
+    got = _history(t)
+    assert isinstance(got, Unavailable) and got.code == "malformed"
+    check(spec, t)
+
+
+def test_tree_answer_for_other_tree_is_malformed(builder, check):
+    b = builder().repository().branch(A).commit(A, [R], _sha("tA")).pulls(A, {"number": 1})
+    b.tree(_sha("tA"), {APPROVERS: V1})
+    b.transforms.append(
+        {"op": "set_field", "path": [4, "response", "body", "sha"], "value": _sha("tX")}
+    )
+    spec, t = b.build()
+    got = _history(t)
+    assert isinstance(got, Unavailable) and got.code == "malformed"
+    check(spec, t)
+
+
+def test_blob_content_not_matching_oid_is_malformed(builder, check):
+    """Байты блоба обязаны давать oid, названный деревом."""
+    b = builder().repository().branch(A).commit(A, [R], _sha("tA")).pulls(A, {"number": 1})
+    content = base64.b64encode(V2).decode()
+    spec, t = b.tree(_sha("tA"), {APPROVERS: V1}).blob(V1, response__body__content=content).build()
+    got = _history(t)
+    assert isinstance(got, Unavailable) and got.code == "malformed"
+    check(spec, t)
+
+
 def test_policy_path_not_blob(builder, check):
     b = builder().repository().branch(A).commit(A, [R], _sha("tA")).pulls(A, {"number": 1})
     spec, t = b.tree(_sha("tA"), {ACTORS: b""}, kinds={ACTORS: "tree"}).build()
@@ -723,7 +797,19 @@ def test_activation_missing_commit_is_unavailable(builder, check):
 
 
 @pytest.mark.parametrize(
-    "files", [(), [], ("/abs",), ("../x",), ("",), ("policy/../x",), "policy/approvers.env"]
+    "files",
+    [
+        (),
+        [],
+        ("/abs",),
+        ("../x",),
+        ("",),
+        ("policy/../x",),
+        "policy/approvers.env",
+        ("policy//approvers.env",),
+        ("./policy/approvers.env",),
+        ("policy/",),
+    ],
 )
 def test_bad_files_raise(files):
     t = replay_transport({"exchanges": []})
