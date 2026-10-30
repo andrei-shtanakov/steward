@@ -23,7 +23,9 @@ HISTORY_VIOLATION_CODES = frozenset(
     {"commit_without_pr", "rebase_intermediate", "pr_base_mismatch", "anchor_not_reached"}
 )
 
-_TS_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(Z|\+00:00)")
+_TS_PATTERN = re.compile(
+    r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(Z|\+00:00)", re.ASCII
+)
 _TS_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -53,9 +55,10 @@ def _code_of(reason: str) -> str:
 
 
 def _check_code(reason: str, vocabulary: frozenset[str]) -> None:
-    code = _code_of(reason)
-    if code not in vocabulary:
-        raise ValueError(f"unknown reason code: {code!r}")
+    """Причина — `<code>` или `<code>: <detail>` с непустым detail, code из словаря."""
+    code, sep, detail = reason.partition(": ")
+    if code not in vocabulary or (sep and not detail):
+        raise ValueError(f"bad reason: {reason!r}")
 
 
 @dataclass(frozen=True)

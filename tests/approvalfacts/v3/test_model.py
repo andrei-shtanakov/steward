@@ -32,6 +32,12 @@ def test_canon_ts_accepts_z_and_offset():
         None,
         "",
         "2026-13-12T10:00:00Z",
+        "٢٠٢٦-10-12T10:00:00Z",
+        "2026-10-12T10:00:00Z ",
+        "2026-10-12T10:00:00Z\n",
+        " 2026-10-12T10:00:00Z",
+        "2026-10-12t10:00:00z",
+        "2026-10-12T10:00:00-00:00",
     ],
 )
 def test_canon_ts_rejects(raw):
@@ -105,3 +111,24 @@ def test_dataclasses_are_frozen():
     r = Review("1", "alice", "User", "APPROVED", "a" * 40, "2026-10-12T09:00:00Z")
     with pytest.raises(dataclasses.FrozenInstanceError):
         r.state = "DISMISSED"  # type: ignore[misc]
+
+
+def test_empty_detail_gives_bare_code():
+    assert unavailable("http", "").reason == "http"
+
+
+@pytest.mark.parametrize("reason", ["", "http:", "http: ", "http:x", "transport : x", "HTTP"])
+def test_malformed_reason_is_rejected(reason):
+    from steward.approvalfacts.v3.model import Unavailable
+
+    with pytest.raises(ValueError):
+        Unavailable(reason)
+
+
+def test_empty_code_is_rejected():
+    with pytest.raises(ValueError):
+        unavailable("")
+    with pytest.raises(ValueError):
+        violation("", "x")
+    with pytest.raises(ValueError):
+        violation("commit_without_pr", "")
