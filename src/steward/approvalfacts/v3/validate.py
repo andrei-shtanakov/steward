@@ -2,7 +2,7 @@
 
 Одна функция на оба пути: чтение (`read_*`) и `effective_reviews` над фактами, собранными
 вызывающим, — пути не расходятся. Проверка безусловна: не зависит от T и от того, влияет ли
-нарушение на исход. Порядок строк — порядок проверки; отказ — по первой нарушенной.
+нарушение на исход. Отказ — по первому нарушению в порядке `validate_review_facts`.
 """
 
 import re
@@ -23,7 +23,19 @@ _DECIMAL_ID = re.compile(r"0|[1-9][0-9]*", re.ASCII)
 
 
 def validate_review_facts(facts: ReviewFacts) -> Unavailable | None:
-    """Первое нарушенное правило фактов ревью — `Unavailable`; факты целы — `None`."""
+    """Первое нарушенное правило фактов ревью — `Unavailable`; факты целы — `None`.
+
+    Порядок проверки (при нескольких нарушениях код — первого):
+    1. `malformed` — `review_id` ревью или отзыва не десятичный; затем дубль id ревью;
+    2. по каждому ревью, в порядке кортежа: `bad_timestamp` (`submitted_at`),
+       `actor_unresolved`, `unknown_state`, `missing_commit_id`;
+    3. по каждому отзыву, в порядке кортежа: `bad_timestamp` (`created_at`),
+       `actor_unresolved`, `unknown_state` (`previous_state`);
+    4. `duplicate_dismissal`, затем `orphan_dismissal`;
+    5. шаг 0 §3.5 в его порядке: `dismissal_without_previous_state`,
+       `missing_submitted_at`, `dismissed_without_event`;
+    6. `malformed` — отзыв ревью не в `DISMISSED`.
+    """
     for code, detail in _violations(facts):
         return unavailable(code, detail)
     return None
@@ -35,8 +47,11 @@ def actor_resolved(login: object, type_hint: object) -> bool:
 
 
 def login_resolved(login: object) -> bool:
-    """Логин установлен: непустая строка, не `ghost` (без учёта регистра)."""
-    return isinstance(login, str) and bool(login) and login.lower() != "ghost"
+    """Логин установлен: непустая строка в GraphQL-форме (О9: без суффикса `[bot]`, без
+    префикса вида `github:` — `:` недопустим), не `ghost` (без учёта регистра)."""
+    if not isinstance(login, str) or not login:
+        return False
+    return login.lower() != "ghost" and not login.endswith("[bot]") and ":" not in login
 
 
 def _violations(facts: ReviewFacts) -> Iterator[tuple[str, str]]:
@@ -71,12 +86,12 @@ def _violations(facts: ReviewFacts) -> Iterator[tuple[str, str]]:
     for dismissal in dismissals:
         if dismissal.review_id not in states:
             yield "orphan_dismissal", dismissal.review_id
-    for review in reviews:
-        if review.state != "PENDING" and review.submitted_at is None:
-            yield "missing_submitted_at", f"review {review.review_id}"
     for dismissal in dismissals:
         if dismissal.previous_state is None:
             yield "dismissal_without_previous_state", dismissal.review_id
+    for review in reviews:
+        if review.state != "PENDING" and review.submitted_at is None:
+            yield "missing_submitted_at", f"review {review.review_id}"
     dismissed = {d.review_id for d in dismissals}
     for review in reviews:
         if review.state == "DISMISSED" and review.review_id not in dismissed:

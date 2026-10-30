@@ -35,7 +35,8 @@ def _bob_out(**changes: object) -> ReviewFacts:
     return _with(dismissals=(replace(BOB_OUT, **changes),))
 
 
-# (row, facts, code) — таблица инвариантов; порядок строк = порядок проверки.
+# (row, facts, code) — таблица инвариантов: в каждой строке ровно одно нарушение.
+# Порядок проверки при нескольких нарушениях — `test_precedence`.
 ROWS = [
     *[("id-decimal", _alice(review_id=v), "malformed") for v in ["x", "07", " 7", "1_0", "٧", ""]],
     ("id-decimal-dismissal", _bob_out(review_id="2a"), "malformed"),
@@ -48,12 +49,18 @@ ROWS = [
         ("ts-created", _bob_out(created_at=v), "bad_timestamp")
         for v in ["2026-10-12T09:30:00.5Z", "2026-10-12T12:30:00+03:00", ""]
     ],
-    *[("actor-review-login", _alice(login=v), "actor_unresolved") for v in ["ghost", "Ghost", ""]],
+    *[
+        ("actor-review-login", _alice(login=v), "actor_unresolved")
+        for v in ["ghost", "Ghost", "", "alice[bot]", "github:alice"]
+    ],
     *[
         ("actor-review-type", _alice(type_hint=v), "actor_unresolved")
         for v in ["Mannequin", "Organization", "EnterpriseUserAccount", ""]
     ],
-    *[("actor-dismissal", _bob_out(actor=v), "actor_unresolved") for v in ["ghost", ""]],
+    *[
+        ("actor-dismissal", _bob_out(actor=v), "actor_unresolved")
+        for v in ["ghost", "", "carol[bot]", "github:carol"]
+    ],
     *[
         ("state-review", _alice(state=v), "unknown_state")
         for v in ["changes_requested", "approved", "", "MERGED"]
@@ -106,8 +113,44 @@ def test_fractional_stamp_in_t_second_rejected():
     assert not isinstance(result, dict) and result.code == "bad_timestamp"
 
 
+@pytest.mark.parametrize(
+    "facts,code",
+    [
+        # шаг 0 §3.5 в его порядке: prev None → submitted_at → DISMISSED без события
+        (
+            _with(
+                reviews=(replace(ALICE, submitted_at=None), BOB, BOT, DRAFT),
+                dismissals=(replace(BOB_OUT, previous_state=None),),
+            ),
+            "dismissal_without_previous_state",
+        ),
+        (
+            _with(reviews=(replace(ALICE, submitted_at=None), BOB, BOT, DRAFT), dismissals=()),
+            "missing_submitted_at",
+        ),
+        # поле ревью раньше связей отзывов; ревью раньше отзывов; id раньше всего
+        (_with(reviews=(replace(ALICE, state="X"), BOB, BOT, DRAFT), dismissals=()),
+         "unknown_state"),
+        (_with(reviews=(replace(ALICE, login="ghost"), BOB, BOT, DRAFT),
+               dismissals=(replace(BOB_OUT, created_at="x"),)), "actor_unresolved"),
+        (_with(reviews=(replace(ALICE, login="ghost"), BOB, BOT, replace(DRAFT, review_id="x"))),
+         "malformed"),
+        (_with(dismissals=(BOB_OUT, BOB_OUT, replace(BOB_OUT, review_id="9"))),
+         "duplicate_dismissal"),
+        (_with(dismissals=(replace(BOB_OUT, review_id="9"), replace(BOB_OUT, review_id="1"))),
+         "orphan_dismissal"),
+    ],
+)  # fmt: skip
+def test_precedence(facts, code):
+    result = validate_review_facts(facts)
+    assert result is not None and result.code == code, result
+
+
 def test_bot_actor_resolved():
     assert actor_resolved("copilot", "Bot")
     assert actor_resolved("alice", "User")
     assert not actor_resolved("alice", None)
     assert not actor_resolved(None, "User")
+    assert not actor_resolved("copilot[bot]", "Bot")
+    assert not actor_resolved("github:alice", "User")
+    assert actor_resolved("alice_acme", "User")
