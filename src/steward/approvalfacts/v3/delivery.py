@@ -114,6 +114,8 @@ def read_merge(t: Transport, owner: str, name: str, pr: int) -> Merge | None:
 
 def read_in_base(t: Transport, owner: str, name: str, merge: Merge) -> bool:
     """§3.3 п. 3, строка E5: `compare/{base}...{merge}`; `status` вне словаря — `malformed`."""
+    # Ветка с `/` уходит как `%2F` — живьём не снято (спека §3.2 «Пути REST», §8; чек-лист
+    # плана Task 13, п. 8). Если GitHub её не раскодирует: 404 → `http`, т. е. отказ.
     path = rest_path(
         "repos/{owner}/{name}/compare/{base}...{merge}",
         owner=owner,

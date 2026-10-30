@@ -604,9 +604,9 @@ def _built_path(node: ast.AST, assigns: dict[str, list[ast.AST]]) -> bool:
     """Путь — вызов сборщика с константным шаблоном или имя, связанное только с ними."""
     if isinstance(node, ast.Name) and node.id in assigns:
         return all(_built_path(v, assigns) for v in assigns[node.id])
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+    if not isinstance(node, ast.Call):
         return False
-    index = _BUILDERS.get(node.func.id)
+    index = _BUILDERS.get(_call_name(node) or "")
     if index is None:
         return False
     if len(node.args) <= index:
@@ -634,25 +634,63 @@ def _assignments(func: ast.AST) -> dict[str, list[ast.AST]]:
     return out
 
 
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _call_name(call: ast.Call) -> str | None:
+    """Конечное имя вызываемого: `f(...)` → `f`, `mod.f(...)`/`self.f(...)` → `f`."""
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _scopes(tree: ast.Module) -> dict[ast.AST, ast.AST]:
+    """Узел → ближайшая объемлющая функция (или модуль) — контекст присваиваний."""
+    owner: dict[ast.AST, ast.AST] = {}
+
+    def visit(node: ast.AST, scope: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            owner[child] = scope
+            visit(child, child if isinstance(child, _FUNCS) else scope)
+
+    visit(tree, tree)
+    return owner
+
+
+def _scope_assignments(scope: ast.AST) -> dict[str, list[ast.AST]]:
+    """Присваивания своей области: у модуля — без тел функций и классов."""
+    if isinstance(scope, ast.Module):
+        top = [st for st in scope.body if not isinstance(st, (*_FUNCS, ast.ClassDef))]
+        return _assignments(ast.Module(body=top, type_ignores=[]))
+    return _assignments(scope)
+
+
 def _raw_rest_paths(source: str, filename: str) -> list[str]:
-    """Вызовы REST-слоя, чей путь собран не сборщиком (f-строка, `+`, `%`, `.format`, …)."""
+    """Вызовы REST-слоя, чей путь собран не сборщиком (f-строка, `+`, `%`, `.format`, …).
+
+    Осматривается **каждый** вызов модуля — на уровне модуля, в функции, в методе — по
+    конечному имени (`rest_object`, `_github.rest_object`, `self.rest`); исключены только
+    вызовы, чья ближайшая объемлющая функция — в `_PASS_THROUGH`.
+    """
+    tree = ast.parse(source)
+    scopes = _scopes(tree)
     offenders = []
-    for func in ast.walk(ast.parse(source)):
-        if not isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef):
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
             continue
-        if (filename, func.name) in _PASS_THROUGH:
+        index = _REST_SINKS.get(_call_name(call) or "")
+        if index is None:
             continue
-        assigns = _assignments(func)
-        for call in ast.walk(func):
-            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
-                continue
-            index = _REST_SINKS.get(call.func.id)
-            if index is None:
-                continue
-            path = call.args[index] if len(call.args) > index else None
-            path = path or next((k.value for k in call.keywords if k.arg == "path"), None)
-            if path is None or not _built_path(path, assigns):
-                offenders.append(f"{filename}:{call.lineno} {func.name}")
+        scope = scopes[call]
+        name = scope.name if isinstance(scope, _FUNCS) else "<module>"
+        if (filename, name) in _PASS_THROUGH:
+            continue
+        path = call.args[index] if len(call.args) > index else None
+        path = path or next((k.value for k in call.keywords if k.arg == "path"), None)
+        if path is None or not _built_path(path, _scope_assignments(scope)):
+            offenders.append(f"{filename}:{call.lineno} {name}")
     return offenders
 
 
@@ -699,12 +737,22 @@ _SNIPPETS_RAW = [
     'def f(t, b):\n    rest_object(t, rest_path(b, o="x"))',
     'def f(t, b):\n    rest(_api("o/r", "/compare/" + b))',
     "def f(t, b):\n    rest_array_pages(t, path=b)",
+    # уровень модуля, атрибут, метод, вложенная функция внутри разрешённой обёртки
+    'rest_object(t, f"repos/{o}/x")',
+    'P = f"repos/{o}/x"\nrest_object(t, P)',
+    'def f(t, o):\n    _github.rest_object(t, f"repos/{o}/x")',
+    'class C:\n    def m(self, o):\n        self.rest(f"repos/{o}/x")',
+    'def f(t, o):\n    _github.rest_object(t, _github.rest_path(f"repos/{o}"))',
 ]
 _SNIPPETS_BUILT = [
     'def f(t, o):\n    rest_object(t, rest_path("repos/{o}/x", o=o))',
     'def f(t, o):\n    p = rest_path("repos/{o}/x", o=o)\n    rest_object(t, p)',
     'def f(t):\n    a, b = "/x/{s}", "/y"\n    rest(_api("o/r", a, s="1"))',
     'def f(t):\n    rest(_api("o/r"))',
+    'rest_object(t, rest_path("repos/{o}/x", o=o))',
+    'P = "repos/{o}/x"\nrest_object(t, rest_path(P, o=o))',
+    'def f(t, o):\n    _github.rest_object(t, _github.rest_path("repos/{o}/x", o=o))',
+    'class C:\n    def m(self, o):\n        self.rest(_api("o/r", "/x"))',
 ]
 
 
@@ -716,3 +764,11 @@ def test_raw_rest_path_detector_flags(snippet):
 @pytest.mark.parametrize("snippet", _SNIPPETS_BUILT)
 def test_raw_rest_path_detector_accepts_builders(snippet):
     assert _raw_rest_paths(snippet, "x.py") == []
+
+
+def test_nested_function_in_pass_through_is_not_exempt():
+    """Исключение `_PASS_THROUGH` — по ближайшей функции: вложенная функция в обёртке
+    `rest` скрипта не наследует его, а сама обёртка остаётся исключённой."""
+    snippet = 'def rest(p):\n    def g(o):\n        _gh([], f"repos/{o}")\n    _gh([p], p)'
+    name = "capture_approval_facts_v3_live.py"
+    assert _raw_rest_paths(snippet, name) == [f"{name}:3 g"]
