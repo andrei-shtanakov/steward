@@ -20,9 +20,8 @@ from steward.approvalfacts.v3 import (
     Unavailable,
     read_act_facts,
     read_policy_history,
-    unavailable,
-    violation,
 )
+from steward.approvalfacts.v3.model import unavailable, violation
 from steward.approvalfacts.v3.records import (
     delivery_record,
     policy_history_record,

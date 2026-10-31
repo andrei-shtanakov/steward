@@ -163,6 +163,10 @@ INVENTORY: dict[str, tuple[str, frozenset[str] | None]] = {
         "migrated",
         _V2_WRITER | _str(_V2_NAME, _FILE),
     ),
+    # Task 12: пакет нужен только как объект для `monkeypatch.setattr(..., "v3", ...)`
+    "tests/approvalfacts/v3/test_api.py": ("migrated", _allow(PACKAGE, "*")),
+    # Task 12: инструкция потребителя v3 называет v2 замороженным (§12 п. 4)
+    "docs/approval-facts-v3.md": ("migrated", frozenset()),
     # --- оставлены v2 намеренно ---
     "src/steward/approvalfacts/__init__.py": ("kept-v2", None),
     "src/steward/approvalfacts/model.py": ("kept-v2", None),
