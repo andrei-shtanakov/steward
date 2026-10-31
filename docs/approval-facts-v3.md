@@ -302,7 +302,8 @@ policy_history_record(repo, branch, anchor, until, got) -> dict
    `run_vector(vector) -> VectorOutcome(problems, requests)` исключений не бросает: любое
    расхождение попадает строкой в `problems`. Функция проверяет сразу три вещи:
    - исход совпадает с `expect`, включая **точный** код `unavailable`, ветку
-     `waiting_delivery` до `effective`, `delivery` и `effective_commit`;
+     `waiting_delivery` до `effective`, `delivery` и `effective_commit`; у вектора акта
+     `t` обязан равняться `delivery.merged_at` (срез акта, спека §3.3 п. 7);
    - все обмены потреблены: `unexpected == []` и `unused() == []`;
    - общий порядок запросов равен порядку обменов.
 

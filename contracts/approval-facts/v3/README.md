@@ -30,7 +30,7 @@
 | `Delivery` | `merged`, `merge_commit`, `merged_at`, `merged_by_login`, `merged_by_type_hint`, `head_at_merge`, `in_base`, `paths[]` |
 | `PathBlob` | `path`, `blob_at_merge` (`null` — путь установленно отсутствует в merge-коммите), `blob_at_head` |
 | `Activation` | `pr`, `merge_commit`, `merged_at` (из PR, не из коммита), `files_sha256` (hex без префикса; отсутствующий файл — без ключа) |
-| `Unavailable` / `HistoryViolation` | `reason` = `<code>` или `<code>: <detail>`, `code` — из закрытого словаря |
+| `Unavailable` / `HistoryViolation` | `reason` = `<code>` или `<code>: <detail>` (у `HistoryViolation` — только `<code>: <detail>`, спека §3.1), `code` — из закрытого словаря |
 
 Записи `SCHEMA.json` — сериализация тех же фактов: `review_record` добавляет `observed_at`,
 `effective[]` (эффективные ревью по логину), `t` и `before` — момент и ключи равных меток, на
@@ -106,7 +106,8 @@
 }
 ```
 
-Входы по виду: `act` — `repo`, `pr`, `paths`, `t` (`null` у несмёрженного), `before`;
+Входы по виду: `act` — `repo`, `pr`, `paths`, `t` (`null` у несмёрженного, иначе равен
+`merged_at` доставки — срез акта, спека §3.3 п. 7), `before`;
 `open_review` — `repo`, `pr`, `t`, `before`; `history` — `repo`, `branch`, `anchor`,
 `until`, `files`; `activation` — `repo`, `merge_commit`, `files`.
 
@@ -130,7 +131,7 @@
 
 и с точным сравнением исхода: код `Unavailable` равен `expect.unavailable` (не только тип),
 `waiting_delivery` — ветка **до** `effective` (у несмёрженного PR фактов ревью нет, `t: null`),
-`delivery` и `effective_commit` сверяются. Отрицательный вектор несёт только обмены,
+`delivery` и `effective_commit` сверяются, у вектора акта `t` = `delivery.merged_at`. Отрицательный вектор несёт только обмены,
 потреблённые до отказа: библиотека, пропустившая дефект, дочитает запись до конца и получит
 `Unavailable: transport`, поэтому проверка «результат — какой-то отказ» проходит вакуумно
 (замер ревью Task 7: мутанты «51 страница», «`errors` при 200 игнорируются», «`ghost`
