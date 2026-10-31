@@ -269,5 +269,5 @@ def test_release_exit_2_on_policy_intersection(
         [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "release"],
     )
     assert result.exit_code == 2, result.output
-    assert "identities in both" in result.output
+    assert "approval-policy.yaml: identities in both" in result.output
     assert "github:x" in result.output
