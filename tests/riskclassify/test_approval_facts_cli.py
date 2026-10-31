@@ -1,6 +1,6 @@
 """CLI: ни один шаг preflight не должен разрушать прежнюю публикацию.
 
-Порядок в команде (§8.4 спеки approval-facts/v2, задача 7):
+Порядок в команде (§8.4 спеки approval-facts/v2, задача 7; в v3 сохранён — спека v3 §6):
 1. разбор и валидация ``--repo``;
 2. цель — bundle-target (git-root + сверка origin) либо явный ``--out``
    (сверка origin пропущена, но путь резолвится и валидируется);
@@ -19,18 +19,20 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from steward.approvalfacts import producer
+from steward.approvalfacts.v3.transport import ReplayTransport, replay_transport
+from steward.riskclassify import cli as cli_module
 from steward.riskclassify.cli import app
 
 runner = CliRunner()
 
-SHA = "221457933968be9e95acd51d548e080f739c794c"
+LIVE = Path(__file__).resolve().parents[1] / "fixtures" / "approvalfacts_v3" / "live"
+DEVTOOLS = "andrei-shtanakov/devtools"
+MERGE = "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
 GOOD_POLICY = (
     "version: 1\n"
     "human_identities:\n"
@@ -73,33 +75,20 @@ def _hermetic_root(tmp_path: Path) -> Path:
     return root
 
 
-def _fake_gh(responses: list[tuple[int, object]]):
-    """Подмена `_gh`, отдающая (code, stdout, stderr).
+def _pr657_transport(*, times: int = 1) -> ReplayTransport:
+    """E2, E1, E5 живого снимка `pr657_act_sequence` без преобразований (×`times`).
 
-    Соглашение фикстур: словарь — тело на stdout; строка — вывод при коде 0 и
-    диагностика при ненулевом, как у настоящего `gh`; кортеж `(stdout, stderr)`
-    задаёт оба потока явно.
-
-    Копия того же помощника живёт в `tests/approvalfacts/test_producer.py`;
-    они обязаны меняться вместе — сигнатура `_gh` менялась один раз, и второй
-    экземпляр нашёлся только по красному CI.
+    Ответы — только живые снимки (`tests/fixtures/approvalfacts_v3/live/`, правило M0-C);
+    PR #657 репозитория `andrei-shtanakov/devtools` смёржен человеком
+    `andrei-shtanakov` (`User`), merge-коммит — `MERGE`.
     """
-    it: Iterator[tuple[int, object]] = iter(responses)
+    capture = json.loads((LIVE / "pr657_act_sequence.json").read_text(encoding="utf-8"))
+    return replay_transport({"exchanges": capture["exchanges"][:3] * times})
 
-    def fake(args: list[str]) -> tuple[int, str, str]:
-        code, payload = next(it)
-        if isinstance(payload, str):
-            # Как настоящий `gh`: при успехе строка — это вывод, при отказе —
-            # диагностика. Ставить её всегда в stderr значило бы подменить
-            # смысл теста «stdout не JSON» на «stdout пуст», и подмена была бы
-            # незаметной: оба случая дают `MechanicalFailure`.
-            return (code, payload, "") if code == 0 else (code, "", payload)
-        if isinstance(payload, tuple):
-            body, err = payload
-            return code, body if isinstance(body, str) else json.dumps(body), err
-        return code, json.dumps(payload), ""
 
-    return fake
+def _use(monkeypatch: pytest.MonkeyPatch, transport: ReplayTransport) -> None:
+    """Подменить транспорт продюсера (`make_transport`) — сеть тесты не трогают."""
+    monkeypatch.setattr(cli_module, "make_transport", lambda: transport)
 
 
 # --- Step 1: --repo shape ---------------------------------------------------
@@ -320,27 +309,7 @@ def test_out_target_is_existing_directory_is_config_error(
     """
     policy = tmp_path / "approval-policy.yaml"
     policy.write_text(GOOD_POLICY, encoding="utf-8")
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {"login": "andrei-shtanakov", "__typename": "User"},
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
     target_dir = tmp_path / "facts.jsonl"
     target_dir.mkdir()
     result = runner.invoke(
@@ -348,11 +317,11 @@ def test_out_target_is_existing_directory_is_config_error(
         [
             "approval-facts",
             "--repo",
-            "o/n",
+            DEVTOOLS,
             "--repo-root",
             str(_hermetic_root(tmp_path)),
             "--prs",
-            "1",
+            "657",
             "--out",
             str(target_dir),
             "--policy",
@@ -377,7 +346,7 @@ def test_out_target_is_existing_directory_is_config_error(
 # guard fired. A valid policy removes that coincidence — if the guard is ever
 # deleted, execution now runs all the way through to `publish` and exits **0**,
 # an unambiguous, unspoofable signal no policy-file wording can accidentally match.
-# `producer._gh` is monkeypatched defensively so that scenario, reached only under
+# `make_transport` is replaced defensively so that scenario, reached only under
 # a deliberate guard-deletion mutation, never touches the network either.
 #
 # The other two step-3 tests below (`test_malformed_merge_sha_...`,
@@ -394,28 +363,19 @@ def test_duplicate_scope_is_config_error(tmp_path: Path, monkeypatch: pytest.Mon
     policy.write_text(GOOD_POLICY, encoding="utf-8")
     # Дублирующийся scope значит materialize(), если бы guard не остановил
     # выполнение, разрешал бы pr:1 дважды — по одному ответу на каждый вызов.
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (0, {"data": {"repository": {"pullRequest": {"mergeCommit": None}}}}),
-                (0, {"data": {"repository": {"pullRequest": {"mergeCommit": None}}}}),
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport(times=2))
     result = runner.invoke(
         app,
         [
             "approval-facts",
             "--repo",
-            "o/n",
+            DEVTOOLS,
             "--repo-root",
             str(_hermetic_root(tmp_path)),
             "--policy",
             str(policy),
             "--prs",
-            "1,1",
+            "657,657",
             "--out",
             str(previous),
         ],
@@ -589,44 +549,21 @@ def test_policy_defaults_to_repo_root_profiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--policy` не задан: политика читается из `<repo-root>/profiles/...`."""
-    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/steward-real.git")
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/devtools.git")
     (repo_root / "profiles").mkdir()
     (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
 
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {
-                                        "login": "andrei-shtanakov",
-                                        "__typename": "User",
-                                    },
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
     result = runner.invoke(
         app,
         [
             "approval-facts",
             "--repo",
-            "andrei-shtanakov/steward-real",
+            DEVTOOLS,
             "--repo-root",
             str(repo_root),
             "--prs",
-            "7",
+            "657",
         ],
     )
 
@@ -638,7 +575,7 @@ def test_policy_defaults_to_repo_root_profiles(
     assert header["kind"] == "header"
     record = json.loads(lines[1])
     assert record["state"] == "merged"
-    assert record["actor_class"] == "human"
+    assert record["delivery"]["merged_by"]["actor_class"] == "human"
 
 
 def test_policy_default_anchors_on_resolved_root_not_raw_repo_root(
@@ -656,46 +593,23 @@ def test_policy_default_anchors_on_resolved_root_not_raw_repo_root(
     Герметичный: свой чекаут в `tmp_path`, никакой зависимости от политики
     этого репозитория (см. `_hermetic_root`).
     """
-    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/steward-real.git")
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/devtools.git")
     (repo_root / "profiles").mkdir()
     (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
     subdir = repo_root / "spec"
     subdir.mkdir()
 
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {
-                                        "login": "andrei-shtanakov",
-                                        "__typename": "User",
-                                    },
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
     result = runner.invoke(
         app,
         [
             "approval-facts",
             "--repo",
-            "andrei-shtanakov/steward-real",
+            DEVTOOLS,
             "--repo-root",
             str(subdir),
             "--prs",
-            "7",
+            "657",
         ],
     )
 
@@ -706,7 +620,7 @@ def test_policy_default_anchors_on_resolved_root_not_raw_repo_root(
     assert not (subdir / ".steward").exists()
     record = json.loads(published.read_text(encoding="utf-8").splitlines()[1])
     assert record["state"] == "merged"
-    assert record["actor_class"] == "human"
+    assert record["delivery"]["merged_by"]["actor_class"] == "human"
 
 
 def test_out_inside_checkout_anchors_policy_default_on_resolved_root(
@@ -729,47 +643,24 @@ def test_out_inside_checkout_anchors_policy_default_on_resolved_root(
     real checkout, no `--policy` given, `--out` still finds the true root's
     policy.
     """
-    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/steward-real.git")
+    repo_root = _git_repo(tmp_path, origin="git@github.com:andrei-shtanakov/devtools.git")
     (repo_root / "profiles").mkdir()
     (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
     subdir = repo_root / "spec"
     subdir.mkdir()
     out = tmp_path / "facts.jsonl"
 
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {
-                                        "login": "andrei-shtanakov",
-                                        "__typename": "User",
-                                    },
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
     result = runner.invoke(
         app,
         [
             "approval-facts",
             "--repo",
-            "andrei-shtanakov/steward-real",
+            DEVTOOLS,
             "--repo-root",
             str(subdir),
             "--prs",
-            "7",
+            "657",
             "--out",
             str(out),
         ],
@@ -777,7 +668,7 @@ def test_out_inside_checkout_anchors_policy_default_on_resolved_root(
     assert result.exit_code == 0, result.output
     record = json.loads(out.read_text(encoding="utf-8").splitlines()[1])
     assert record["state"] == "merged"
-    assert record["actor_class"] == "human"
+    assert record["delivery"]["merged_by"]["actor_class"] == "human"
 
 
 def test_out_inside_checkout_with_mismatched_origin_is_still_config_error(
@@ -793,7 +684,7 @@ def test_out_inside_checkout_with_mismatched_origin_is_still_config_error(
     (repo_root / "profiles" / "approval-policy.yaml").write_text(GOOD_POLICY, encoding="utf-8")
     out = tmp_path / "facts.jsonl"
 
-    monkeypatch.setattr(producer, "_gh", _fake_gh([]))
+    _use(monkeypatch, replay_transport({"exchanges": []}))
 
     result = runner.invoke(
         app,
@@ -836,41 +727,18 @@ def test_out_with_explicit_policy_ignores_checkout_identity(
     policy.write_text(GOOD_POLICY, encoding="utf-8")
     out = tmp_path / "facts.jsonl"
 
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {
-                                        "login": "andrei-shtanakov",
-                                        "__typename": "User",
-                                    },
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
 
     result = runner.invoke(
         app,
         [
             "approval-facts",
             "--repo",
-            "andrei-shtanakov/steward-real",
+            DEVTOOLS,
             "--repo-root",
             str(repo_root),
             "--prs",
-            "7",
+            "657",
             "--out",
             str(out),
             "--policy",
@@ -880,7 +748,7 @@ def test_out_with_explicit_policy_ignores_checkout_identity(
     assert result.exit_code == 0, result.output
     record = json.loads(out.read_text(encoding="utf-8").splitlines()[1])
     assert record["state"] == "merged"
-    assert record["actor_class"] == "human"
+    assert record["delivery"]["merged_by"]["actor_class"] == "human"
 
 
 # --- Step 6: destructive phase, ordering after full preflight succeeds -----
@@ -894,41 +762,18 @@ def test_successful_run_removes_previous_and_publishes(
     out = tmp_path / "facts.jsonl"
     out.write_text("stale-prior", encoding="utf-8")
 
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {
-                                        "login": "merge-broker",
-                                        "__typename": "Bot",
-                                    },
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
 
     result = runner.invoke(
         app,
         [
             "approval-facts",
             "--repo",
-            "andrei-shtanakov/steward",
+            DEVTOOLS,
             "--repo-root",
             str(_hermetic_root(tmp_path)),
             "--prs",
-            "42",
+            "657",
             "--out",
             str(out),
             "--policy",
@@ -939,18 +784,69 @@ def test_successful_run_removes_previous_and_publishes(
     lines = out.read_text(encoding="utf-8").splitlines()
     assert "stale-prior" not in out.read_text(encoding="utf-8")
     header = json.loads(lines[0])
-    assert header["repository"] == "andrei-shtanakov/steward"
+    assert header["schema_version"] == "3"
+    assert header["repository"] == DEVTOOLS
     assert header["policy_version"] == 1
     record = json.loads(lines[1])
     assert record == {
         "kind": "result",
-        "request": {"kind": "pr", "value": 42},
+        "request": {"kind": "pr", "value": 657},
         "state": "merged",
-        "merge_sha": SHA,
-        "identity": "github:merge-broker",
-        "type_hint": "Bot",
-        "actor_class": "agent",
+        "delivery": {
+            "merged": True,
+            "merge_commit": MERGE,
+            "merged_at": "2026-10-30T12:09:17Z",
+            "merged_by": {
+                "identity": "github:andrei-shtanakov",
+                "type_hint": "User",
+                "actor_class": "human",
+            },
+            "head_at_merge": "b3651bcb2907bd6d1b6d421b018701520fb64066",
+            "in_base": True,
+            "paths": [],
+            "complete": True,
+        },
     }
+
+
+def test_merge_sha_scope_resolves_through_live_e7(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--merge-sha`: E7 (`associatedPullRequests`) находит PR #657, затем та же доставка
+    E2, E1, E5 — живые снимки без преобразований, потреблены ровно и по порядку."""
+    policy = tmp_path / "approval-policy.yaml"
+    policy.write_text(GOOD_POLICY, encoding="utf-8")
+    out = tmp_path / "facts.jsonl"
+    e7 = json.loads((LIVE / "e7_commit_pulls_graphql_merge.json").read_text(encoding="utf-8"))
+    seq = json.loads((LIVE / "pr657_act_sequence.json").read_text(encoding="utf-8"))
+    transport = replay_transport({"exchanges": [e7, *seq["exchanges"][:3]]})
+    _use(monkeypatch, transport)
+    result = runner.invoke(
+        app,
+        [
+            "approval-facts",
+            "--repo",
+            DEVTOOLS,
+            "--repo-root",
+            str(_hermetic_root(tmp_path)),
+            "--merge-sha",
+            MERGE,
+            "--out",
+            str(out),
+            "--policy",
+            str(policy),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert transport.unused() == [] and transport.unexpected == []
+    assert [r.op or r.path for r in transport.log][:2] == [
+        "StewardV3CommitPulls",
+        "StewardV3Delivery",
+    ]
+    record = json.loads(out.read_text(encoding="utf-8").splitlines()[1])
+    assert record["request"] == {"kind": "merge_sha", "value": MERGE}
+    assert record["delivery"]["merge_commit"] == MERGE
+    assert record["delivery"]["merged_by"]["actor_class"] == "human"
 
 
 def test_mechanical_materialize_failure_is_exit_3_and_previous_already_gone(
@@ -966,7 +862,7 @@ def test_mechanical_materialize_failure_is_exit_3_and_previous_already_gone(
     out = tmp_path / "facts.jsonl"
     out.write_text("stale-prior", encoding="utf-8")
 
-    monkeypatch.setattr(producer, "_gh", _fake_gh([(1, "gh: not authenticated")]))
+    _use(monkeypatch, replay_transport({"exchanges": []}))
 
     result = runner.invoke(
         app,
@@ -1010,30 +906,7 @@ def test_publish_write_failure_is_exit_3_not_a_traceback(
     out = tmp_path / "facts.jsonl"
     out.write_text("stale-prior", encoding="utf-8")
 
-    monkeypatch.setattr(
-        producer,
-        "_gh",
-        _fake_gh(
-            [
-                (
-                    0,
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {
-                                    "mergeCommit": {"oid": SHA},
-                                    "mergedBy": {
-                                        "login": "andrei-shtanakov",
-                                        "__typename": "User",
-                                    },
-                                }
-                            }
-                        }
-                    },
-                )
-            ]
-        ),
-    )
+    _use(monkeypatch, _pr657_transport())
 
     def _raise_enospc(*args: object, **kwargs: object) -> None:
         raise OSError(28, "No space left on device")
@@ -1059,11 +932,11 @@ def test_publish_write_failure_is_exit_3_not_a_traceback(
         [
             "approval-facts",
             "--repo",
-            "andrei-shtanakov/steward",
+            DEVTOOLS,
             "--repo-root",
             str(_hermetic_root(tmp_path)),
             "--prs",
-            "42",
+            "657",
             "--out",
             str(out),
             "--policy",

@@ -33,3 +33,16 @@ def test_import_gatecheck_approval_then_approvalfacts() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_import_v3_then_gatecheck_approval_and_back() -> None:
+    """Гейт читает файл release-гейта через `steward.approvalfacts.v3` (Task 11 M0): тот же
+    цикл не должен замкнуться и через v3 — оба порядка, свежий интерпретатор."""
+    for code in (
+        "import steward.approvalfacts.v3; import steward.gatecheck.approval",
+        "import steward.gatecheck.approval; import steward.approvalfacts.v3",
+    ):
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+        assert proc.returncode == 0, (code, proc.stderr)

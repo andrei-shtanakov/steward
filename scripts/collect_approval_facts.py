@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Регулярный сбор `approval-facts/v2` по явному охвату (Stage A0).
+"""Регулярный сбор файла release-гейта `approval-facts/v3` по явному охвату (Stage A0).
 
 Продюсер (`steward approval-facts`) умеет спросить GitHub про один репозиторий.
 Здесь — только маршрутизация: прочитать перечисленный охват, проверить, что
@@ -83,12 +83,13 @@ import yaml
 # поучительная: сперва тут была своя проверка «есть ли scope_sha256», потом
 # переиспользованный scope_digest, и всё равно рядом жил параллельный разбор
 # записей — который считал покрытием `state: "bogus"` и строковый `value`,
-# то есть зеленел на файле, который `load_facts` отверг бы fail-closed
+# то есть зеленел на файле, который читатель отверг бы fail-closed
 # (найдено первым зрячим прогоном codex-ревью). Вопрос «примет ли потребитель
 # этот бандл» имеет ровно один честный ответ: спросить код потребителя.
 from steward.approvalfacts.publish import ConfigError as OriginError
 from steward.approvalfacts.publish import parse_origin
-from steward.approvalfacts.reader import UnreadableFacts, load_facts
+from steward.approvalfacts.reader import UnreadableFacts
+from steward.approvalfacts.v3.release_reader import detect_legacy_v2, load_release_facts
 from steward.gatecheck.approval import PolicyError, load_approval_policy, policy_digest
 
 
@@ -632,14 +633,22 @@ def bundle_verdict(
     один дефект: параллельная реализация чтения, которая мягче настоящей.
 
     Поэтому лесенка повторяет `resolve_facts()` потребителя
-    (`gatecheck/approval.py`) ЕГО ЖЕ кодом: `load_facts` (форма, репозиторий,
-    `scope_sha256`, матрица `state`) → дайджест активной политики → точная
+    (`gatecheck/approval.py`) ЕГО ЖЕ кодом: `detect_legacy_v2` → `load_release_facts`
+    (форма, репозиторий, `scope_sha256`, матрица `state`/`delivery`) → дайджест
+    активной политики → точная
     длительность lease → срок. Плюс единственная проверка, которой у
     потребителя нет и которая принадлежит именно раннеру: покрывают ли записи
     настроенный охват.
     """
+    # v2 — до любого разбора, как у гейта: свежий v2 гейт больше не читает
+    # (`legacy_v2`), значит и раннер не смеет звать его пригодным.
+    if detect_legacy_v2(bundle):
+        return None, (
+            "legacy_v2: бандл — approval-facts/v2, release-гейт читает v3; "
+            "перевыпустите его командой `steward approval-facts`"
+        )
     try:
-        facts = load_facts(bundle, expected_repository=repo, now=now)
+        facts = load_release_facts(bundle, expected_repository=repo, now=now)
     except UnreadableFacts as exc:
         return None, f"бандл не примет читатель контракта: {exc}"
     if facts.header.policy_digest != active_digest:

@@ -200,7 +200,7 @@ def approval_facts_outcome(
     """Resolve the merge-evidence source for this run (§8.4).
 
     Two explicitly chosen input paths, one format: ``--approval-facts`` is an
-    operator override (and therefore accepts **only** v2 — an invalid file
+    operator override (and therefore accepts **only** v3 — an invalid file
     there is a call error, per §8.3.1), and without it the path is the bundle
     default ``<repo-root>/.steward/approval_facts.jsonl``, next to
     ``gate_verdicts.jsonl``.
@@ -222,7 +222,7 @@ def approval_facts_outcome(
     can't be identified, full stop.** It is not only that an *invalid* file
     at that path reads as ``FactsUnavailable("absent")`` instead of the
     §8.3.1-promised config error, exit 2 (Codex gate round 2 on PR #86 named
-    that half). A **perfectly valid** ``approval-facts/v2`` file passed via
+    that half). A **perfectly valid** ``approval-facts/v3`` file passed via
     ``--approval-facts`` on an unpacked bundle, in a non-git directory, or in
     a checkout with no ``origin`` is *never read at all* — §8.4 calls
     ``--approval-facts`` an override, and outside an identified checkout it
@@ -555,7 +555,7 @@ def main(
         None,
         "--approval-facts",
         help="Override the materialized merge-actor evidence path "
-        "(approval-facts/v2 only). Default: <repo-root>/.steward/"
+        "(approval-facts/v3 only). Default: <repo-root>/.steward/"
         "approval_facts.jsonl. Consulted at --stage release.",
     ),
     act_mode: str | None = typer.Option(
