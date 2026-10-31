@@ -136,8 +136,12 @@ NodeStatus = Callable[[str, Snapshot], str]
 
 
 def approvals_dir(spec_dir: Path) -> Path:
-    """``<spec_dir>/../approvals/`` — where envelopes and request manifests live."""
-    return spec_dir.parent / "approvals"
+    """``<spec_dir>/../approvals/`` — where envelopes and request manifests live.
+
+    Resolved first: ``Path(".").parent`` is ``.`` itself, so an unresolved
+    relative bundle path would put ``approvals/`` *inside* the bundle.
+    """
+    return spec_dir.resolve().parent / "approvals"
 
 
 def snapshot_digest(spec_dir: Path) -> str:
@@ -148,13 +152,17 @@ def snapshot_digest(spec_dir: Path) -> str:
     ``approvals/<rel>``, so the digest addresses content, not location: the
     same bytes give the same digest wherever the bundle sits. An unreadable
     file or directory raises :class:`SnapshotError`; skipping it would let a
-    provider's answer cover bytes nobody hashed.
+    provider's answer cover bytes nobody hashed. A non-regular file (a FIFO, a
+    dangling symlink) is the same error — reading it would block or fail.
     """
+    spec_dir = spec_dir.resolve()
     lines = []
     for label, root in (("bundle", spec_dir), ("approvals", approvals_dir(spec_dir))):
         if label == "approvals" and not root.exists():
             continue
         for path in _walk_files(root):
+            if not path.is_file():
+                raise SnapshotError(f"snapshot: {path} is not a regular file")
             try:
                 data = path.read_bytes()
             except OSError as err:
@@ -178,10 +186,12 @@ def snapshot_for(
 
     For ``candidate`` the root is the candidate directory, never the checkout
     of the base: an answer computed over the base would cover other bytes.
+    Path inputs are resolved here, at the boundary.
     """
+    spec_dir = spec_dir.resolve()
     digest = snapshot_digest(spec_dir)
     if run != "live":
-        return Snapshot(kind=run, root=spec_dir.resolve(), commit=None, digest=digest)
+        return Snapshot(kind=run, root=spec_dir, commit=None, digest=digest)
     if repo_root is None:
         raise ValueError("snapshot_for('live', ...) needs the repo root")
     proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
@@ -212,6 +222,7 @@ def collect_bundle(
     """
     if act_mode not in _ACT_MODES:
         raise ValueError(f"act_mode must be one of {_ACT_MODES}, got {act_mode!r}")
+    spec_dir = spec_dir.resolve()  # the boundary: `.`/`..` must not shift approvals/
     artifacts: list[Artifact] = []
     findings: list[Finding] = []
     claimed: dict[str, str] = {}

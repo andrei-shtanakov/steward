@@ -29,6 +29,7 @@ from steward.gatecheck.checks import (
     INVALID_ANSWER,
     NO_PROVIDER,
     PROVIDER_ERROR,
+    act_conflict,
     act_statuses,
     collect_bundle,
     run_checks,
@@ -177,6 +178,7 @@ class Row:
     exit: int
     not_evaluated: bool
     delegated: bool
+    call_error: str | None  # the exit-2 reason the row's cell names
 
 
 _LETTER = {"A": A, "B": B}
@@ -198,6 +200,18 @@ def _parse_findings(cell: str) -> tuple[frozenset[tuple[str, str]], str | None]:
         if hint:
             reason = f"{hint.group(1)}:"
     return frozenset(found), reason
+
+
+ACT_MODE_REQUIRED = "--act-mode is required: pass the admission result (legacy|review)"
+NODE_STATUS_NEEDS_REVIEW = "--node-status requires --act-mode review"
+
+
+def _call_error(cell: str) -> str | None:
+    if "`--node-status` без `--act-mode review`" in cell:
+        return NODE_STATUS_NEEDS_REVIEW
+    if "нет `--act-mode`" in cell:
+        return ACT_MODE_REQUIRED
+    return None
 
 
 def load_matrix_from_spec() -> list[Row]:
@@ -222,6 +236,7 @@ def load_matrix_from_spec() -> list[Row]:
                 exit=int(exit_code),
                 not_evaluated="NOT_EVALUATED" in declared,
                 delegated="delegated" in declared,
+                call_error=_call_error(findings),
             )
         )
     return rows
@@ -259,7 +274,10 @@ def test_combination(
     res = run_gate(spec, args, candidate=row.run == "candidate")
     assert res.exit_code == row.exit, res.output
     if row.exit == 2:
+        # Any config error exits 2; the row names which one it must be.
+        assert row.call_error is not None and row.call_error in res.output, res.output
         return
+    assert row.call_error is None
     assert error_codes(res) == row.findings
     reasons = messages(res, "GC-ACT-NOT-APPROVED")
     if row.reason is not None:
@@ -316,7 +334,11 @@ def test_d3_no_approvals_ever_but_mode_review(
     )
     res = run_gate(spec, ["--act-mode", "review", "--node-status", str(provider)], candidate=True)
     assert res.exit_code == 1
-    assert {("GC-ACT-NOT-APPROVED", A), ("GC-ACT-NOT-APPROVED", B)} <= error_codes(res)
+    assert error_codes(res) == {
+        ("GC-ACT-NOT-APPROVED", A),
+        ("GC-ACT-NOT-APPROVED", B),
+        ("GC-UPSTREAM", B),
+    }
     assert all("no_manifest" in m for m in messages(res, "GC-ACT-NOT-APPROVED"))
 
 
@@ -704,3 +726,157 @@ def test_ci_workflow_passes_act_mode() -> None:
     runs = [line for line in ci.splitlines() if "gate-check --" in line]
     assert runs
     assert all("--act-mode legacy" in line for line in runs)
+
+
+# --- fix round 1: review-mode checks that must not switch off / must skip ----------
+
+
+def test_status_git_still_runs_for_claimed_unestablished_node(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """§7.2.2: a provider's refusal switches no check off — GC-GIT-BRANCH still fires."""
+    spec = make_bundle(tmp_path, git=False)
+    facts = tmp_path / "facts.json"
+    facts.write_text(
+        json.dumps(
+            {
+                "default_branch_files": [A],
+                "approvals": {
+                    A: [{"identity": "github:alice"}],
+                    B: [{"identity": "github:bob"}],
+                },
+            }
+        )
+    )
+    provider = write_provider(
+        tmp_path / "p.json",
+        snapshot_digest(spec),
+        {"requirements": "approved", "design": "not_approved:x"},
+    )
+    res = run_gate(
+        spec, ["--act-mode", "review", "--node-status", str(provider), "--no-fs", str(facts)]
+    )
+    assert res.exit_code == 1, res.output
+    assert error_codes(res) == {("GC-ACT-NOT-APPROVED", B), ("GC-GIT-BRANCH", B)}
+
+
+def test_established_node_skips_the_stale_cascade(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """§7.2.3, the skip side of Д7: an established node's broken frontmatter pin is
+    the provider's concern — no GC-STALE*, and the delegation is declared."""
+    spec = make_bundle(tmp_path, b_pin="f" * 40, git=False)
+    provider = write_provider(tmp_path / "p.json", snapshot_digest(spec), ALL_APPROVED)
+    res = run_gate(spec, ["--act-mode", "review", "--node-status", str(provider)], candidate=True)
+    assert res.exit_code == 0, res.output
+    rules = {f["rule_id"] for f in json.loads(res.stdout)["findings"]}
+    assert not rules & set(DELEGATED_RULES), rules
+    assert delegation_line(B) in res.stderr
+
+
+# --- fix round 1: the conflict detector through the CLI -------------------------
+
+
+def test_cli_unparseable_approvals_yaml_is_conflict(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    spec = make_bundle(tmp_path, git=False)
+    (spec.parent / "approvals" / "requests").mkdir(parents=True)
+    (spec.parent / "approvals" / "requests" / "r-1.yaml").write_text("act: [unclosed\n")
+    res = run_gate(spec, ["--act-mode", "legacy"], candidate=True)
+    assert res.exit_code == 1, res.output
+    assert error_codes(res) == {("GC-ACT-MODE-CONFLICT", BUNDLE_ARTIFACT)}
+
+
+def test_cli_unreadable_approvals_dir_is_exit_2(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    """Two fail-closed rules cover this input; the stricter one wins at the CLI:
+    the snapshot cannot hash approvals/ (exit 2) before the detector runs."""
+    spec = make_bundle(tmp_path, git=False)
+    approvals = spec.parent / "approvals"
+    approvals.mkdir()
+    approvals.chmod(0)
+    try:
+        res = run_gate(spec, ["--act-mode", "legacy"], candidate=True)
+    finally:
+        approvals.chmod(0o755)
+    assert res.exit_code == 2, res.output
+    assert "config error: snapshot" in res.output
+
+
+def test_detector_ignores_other_subdirectories(tmp_path: Path) -> None:
+    """§7.2.1 names only envelopes <node>.yaml and requests/*.yaml."""
+    spec = make_bundle(tmp_path, git=False)
+    other = spec.parent / "approvals" / "other"
+    other.mkdir(parents=True)
+    (other / "x.yaml").write_text("act: review/v1\n")
+    assert _legacy_conflicts(spec) == []
+
+
+# --- fix round 1: relative bundle paths (I1) --------------------------------------
+
+
+def _relative_layout(tmp_path: Path) -> tuple[Path, Path]:
+    """``w/sub/bundle`` with a review tree in ``w/sub/approvals``; profile in tmp_path."""
+    (tmp_path / "test.yaml").write_text(_PROFILE)
+    base = tmp_path / "w"
+    spec = base / "sub" / "bundle"
+    (spec / "extra").mkdir(parents=True)
+    req = _req_body()
+    (spec / A).write_text(req)
+    (spec / B).write_text(_des_body(blob_hash_of(req.encode())))
+    return base, spec
+
+
+RELATIVE_CASES = [
+    ("sub/bundle", "."),
+    (".", "./sub/bundle"),
+    ("sub/bundle", "../bundle"),
+    ("sub/approvals", "../bundle"),
+    (".", "./sub/bundle/extra/.."),
+]
+
+
+@pytest.mark.parametrize(("cwd", "arg"), RELATIVE_CASES, ids=[a for _, a in RELATIVE_CASES])
+def test_relative_bundle_path_sees_the_real_approvals(
+    cwd: str,
+    arg: str,
+    tmp_path: Path,
+    write_roles: Path,
+    write_role_assignments: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base, spec = _relative_layout(tmp_path)
+    without_tree = snapshot_digest(spec)
+    write_review_tree(spec.parent / "approvals")
+    absolute = snapshot_digest(spec)
+    assert absolute != without_tree  # the envelopes are in the digest
+
+    monkeypatch.chdir(base / cwd)
+    rel = Path(arg)
+    assert snapshot_digest(rel) == absolute
+    assert snapshot_for("candidate", rel, None).root == spec.resolve()
+    assert [f.rule_id for f in act_conflict(rel)] == ["GC-ACT-MODE-CONFLICT"]
+
+    printed = runner.invoke(app, ["--print-snapshot-digest", "--candidate", arg])
+    assert printed.exit_code == 0, printed.output
+    assert printed.stdout.strip() == absolute
+
+    res = runner.invoke(
+        app,
+        [arg, "--profile", str(tmp_path / "test.yaml"), "--format", "json"]
+        + ["--candidate", "--act-mode", "legacy"],
+    )
+    assert res.exit_code == 1, res.output
+    assert error_codes(res) == {("GC-ACT-MODE-CONFLICT", BUNDLE_ARTIFACT)}
+    assert json.loads(res.stdout)["snapshot"]["digest"] == absolute
+
+
+def test_print_snapshot_digest_rejects_node_status(tmp_path: Path) -> None:
+    spec = make_bundle(tmp_path, git=False)
+    res = runner.invoke(
+        app, ["--print-snapshot-digest", "--candidate", str(spec), "--node-status", "p.json"]
+    )
+    assert res.exit_code == 2
+    assert "config error" in res.output

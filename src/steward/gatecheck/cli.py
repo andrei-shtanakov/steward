@@ -303,7 +303,7 @@ def _repo_root(spec_dir: Path) -> Path:
     if top is None:
         _fail_config("not inside a git repository (use --no-fs facts.json)")
         raise AssertionError  # unreachable; keeps type-checkers calm
-    return Path(top)
+    return Path(top).resolve()
 
 
 def _snapshot(mode: str, spec_dir: Path) -> Snapshot:
@@ -593,6 +593,10 @@ def main(
         _fail_config(f"unknown format {output!r} (expected text or json)")
     if not spec_dir.is_dir():
         _fail_config(f"bundle directory not found: {spec_dir}")
+    # Path inputs are resolved once, here: every `<spec_dir>/..` downstream
+    # (approvals/, the snapshot) is wrong for an unresolved `.` or `x/..`.
+    spec_dir = spec_dir.resolve()
+    node_status = node_status.resolve() if node_status is not None else None
 
     if emit_verdicts_flag and no_fs is not None:
         _fail_config(
@@ -648,6 +652,10 @@ def main(
             )
 
     if print_snapshot_digest:
+        if node_status is not None:
+            # The digest is what a provider answer must match; printing it while
+            # passing an answer would read as if that answer had been checked.
+            _fail_config("--print-snapshot-digest only prints; drop --node-status")
         run_mode = _MODE_CANDIDATE if candidate else _MODE_INJECTED if no_fs else _MODE_LIVE
         typer.echo(_snapshot(run_mode, spec_dir).digest)
         return
