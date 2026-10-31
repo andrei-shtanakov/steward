@@ -214,3 +214,51 @@ def test_dangling_symlink_in_bundle_is_error(tmp_path: Path) -> None:
         snapshot_digest(spec)
     res = runner.invoke(app, ["--print-snapshot-digest", "--candidate", str(spec)])
     assert res.exit_code == 2
+
+
+def test_ancestor_symlink_is_allowed(tmp_path: Path) -> None:
+    """A link among the ancestors moves the bundle and approvals/ together:
+    allowed, same sibling, same digest (macOS ``/tmp``, a symlinked clone dir)."""
+    real = _bundle(tmp_path / "realroot" / "w")
+    (tmp_path / "realroot" / "w" / "approvals").mkdir()
+    (tmp_path / "realroot" / "w" / "approvals" / "requirements.yaml").write_text("act: review/v1\n")
+    (tmp_path / "linkroot").symlink_to(tmp_path / "realroot", target_is_directory=True)
+    via_link = tmp_path / "linkroot" / "w" / "spec"
+    assert snapshot_digest(via_link) == snapshot_digest(real)
+    assert approvals_dir(via_link) == tmp_path / "realroot" / "w" / "approvals"
+    res = runner.invoke(app, ["--print-snapshot-digest", "--candidate", str(via_link)])
+    assert res.exit_code == 0, res.output
+    assert res.stdout.strip() == snapshot_digest(real)
+
+
+def test_symlinked_bundle_dir_gate_run_exit_2(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    (tmp_path / "test.yaml").write_text(_PROFILE)
+    real = _bundle(tmp_path / "real")
+    link = tmp_path / "spec-link"
+    link.symlink_to(real, target_is_directory=True)
+    res = runner.invoke(
+        app,
+        [
+            str(link),
+            "--profile",
+            str(tmp_path / "test.yaml"),
+            "--candidate",
+            "--act-mode",
+            "legacy",
+        ],
+    )
+    assert res.exit_code == 2
+    assert "config error" in res.output and "symlink" in res.output
+
+
+def test_live_snapshot_outside_repo_is_error(tmp_path: Path) -> None:
+    """Live containment: a bundle outside the repository is a declared error,
+    not a traceback from a later ``relative_to``."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    outside = _bundle(tmp_path / "outside")
+    with pytest.raises(SnapshotError, match="outside the repository"):
+        snapshot_for("live", outside, repo)

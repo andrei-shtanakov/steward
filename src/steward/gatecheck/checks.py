@@ -136,29 +136,37 @@ NodeStatus = Callable[[str, Snapshot], str]
 
 
 def bundle_dir(spec_dir: Path) -> Path:
-    """The bundle path at the boundary: lexically absolute, never through a link.
+    """The bundle path at the boundary, guarded so ``..`` is its repo-tree parent.
 
     ``os.path.abspath`` collapses ``.`` and ``x/..`` without following links, so
-    ``<spec_dir>/../approvals/`` is the sibling *as it sits in the tree*. A
-    symlinked bundle or ``approvals/`` directory is refused (:class:`SnapshotError`)
-    rather than located by guess: following it would read approvals from beside
-    the link's target, possibly outside the repository, and the digest would
-    cover other envelopes than the tree shows.
+    ``<spec_dir>/../approvals/`` is the sibling *as it sits in the tree* (git
+    stores a symlink as a link). A bundle or ``approvals/`` directory that is
+    itself a symlink is refused (:class:`SnapshotError`) rather than located by
+    guess: following it would read approvals from beside the link's target,
+    possibly outside the repository, and the digest would cover other envelopes
+    than the tree shows. Symlinks among the ancestors (``/tmp``, ``/var`` on
+    macOS, a symlinked clone directory) move the bundle and its sibling
+    together and are allowed. The guarded path is returned physically
+    resolved, so its ``.parent`` is the sibling's directory.
     """
-    path = Path(os.path.abspath(spec_dir))
-    for candidate in (path, path.parent / "approvals"):
+    lexical = Path(os.path.abspath(spec_dir))
+    for candidate in (lexical, lexical.parent / "approvals"):
         if candidate.is_symlink():
-            raise SnapshotError(f"snapshot: {candidate} is a symlink; pass the real directory")
-    return path
+            raise SnapshotError(
+                f"snapshot: {candidate} is a symlink; approvals/ would not be the "
+                "bundle's repo-tree sibling — pass the real directory"
+            )
+    return lexical.resolve()
 
 
 def approvals_dir(spec_dir: Path) -> Path:
     """``<spec_dir>/../approvals/`` — where envelopes and request manifests live.
 
-    Absolutised first: ``Path(".").parent`` is ``.`` itself, so a relative
-    bundle path would put ``approvals/`` *inside* the bundle.
+    Through :func:`bundle_dir`: ``Path(".").parent`` is ``.`` itself, so a
+    relative bundle path would put ``approvals/`` *inside* the bundle, and a
+    symlinked bundle would put it beside the link's target.
     """
-    return Path(os.path.abspath(spec_dir)).parent / "approvals"
+    return bundle_dir(spec_dir).parent / "approvals"
 
 
 def snapshot_digest(spec_dir: Path) -> str:
@@ -211,6 +219,8 @@ def snapshot_for(
         return Snapshot(kind=run, root=spec_dir, commit=None, digest=digest)
     if repo_root is None:
         raise ValueError("snapshot_for('live', ...) needs the repo root")
+    if not spec_dir.is_relative_to(repo_root.resolve()):
+        raise SnapshotError(f"snapshot: bundle {spec_dir} is outside the repository {repo_root}")
     proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
         ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         capture_output=True,
