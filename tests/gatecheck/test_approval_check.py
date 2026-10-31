@@ -40,10 +40,14 @@ from steward.gatecheck.approval import (
     resolve_facts,
 )
 from steward.gatecheck import cli as cli_module
-from steward.gatecheck.checks import Artifact
+from steward.gatecheck.checks import Artifact, act_statuses
 from steward.gatecheck.cli import app, approval_facts_outcome
 from steward.gatecheck.git_facts import MergeProvenance
 from steward.meta import parse_artifact
+
+# Mechanical migration (Task 9, R-M0-8): pre-existing tests describe the
+# legacy act, where frontmatter is authoritative — exactly today's behaviour.
+LEGACY_STATUSES = act_statuses([], act_mode="legacy", node_status=None, snapshot=None)
 
 REPO = "andrei-shtanakov/steward"
 SHA = "221457933968be9e95acd51d548e080f739c794c"
@@ -245,7 +249,9 @@ def _artifacts(status: str = "approved", node_id: str | None = "design") -> list
 
 
 def _check(facts: object, *, git: FakeGitFacts, policy: ApprovalPolicy = POLICY) -> list:
-    return check_approval_evidence(_artifacts(), git, policy, facts, stage="release")
+    return check_approval_evidence(
+        _artifacts(), git, policy, facts, stage="release", statuses=LEGACY_STATUSES
+    )
 
 
 # --------------------------------------------------------------------------
@@ -685,33 +691,53 @@ def test_lease_from_policy_file_is_what_row_four_compares(tmp_path: Path) -> Non
 def test_authoring_stage_does_not_run_at_all() -> None:
     """Сценарий 10: на `authoring` чек не запускается вовсе."""
     assert (
-        check_approval_evidence(_artifacts(), _git(sha=SHA), POLICY, None, stage="authoring") == []
+        check_approval_evidence(
+            _artifacts(), _git(sha=SHA), POLICY, None, stage="authoring", statuses=LEGACY_STATUSES
+        )
+        == []
     )
 
 
 def test_artifact_outside_default_branch_is_out_of_scope() -> None:
     """Сценарий 11."""
     git = _git(sha=SHA, on_default_branch=False)
-    assert check_approval_evidence(_artifacts(), git, POLICY, None, stage="release") == []
+    assert (
+        check_approval_evidence(
+            _artifacts(), git, POLICY, None, stage="release", statuses=LEGACY_STATUSES
+        )
+        == []
+    )
 
 
 def test_draft_artifact_is_out_of_scope() -> None:
     findings = check_approval_evidence(
-        _artifacts(status="draft"), _git(sha=SHA), POLICY, None, stage="release"
+        _artifacts(status="draft"),
+        _git(sha=SHA),
+        POLICY,
+        None,
+        stage="release",
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
 
 def test_unmanaged_artifact_is_out_of_scope_even_if_approved() -> None:
     findings = check_approval_evidence(
-        _artifacts(node_id=None), _git(sha=SHA), POLICY, None, stage="release"
+        _artifacts(node_id=None),
+        _git(sha=SHA),
+        POLICY,
+        None,
+        stage="release",
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
 
 def test_no_provenance_is_absent() -> None:
     """Сценарий 1: локальной merge-provenance нет."""
-    findings = check_approval_evidence(_artifacts(), _git(sha=None), POLICY, None, stage="release")
+    findings = check_approval_evidence(
+        _artifacts(), _git(sha=None), POLICY, None, stage="release", statuses=LEGACY_STATUSES
+    )
     assert len(findings) == 1
     assert findings[0].rule_id == "GC-APPROVAL-MISSING"
     assert findings[0].severity == "error"
@@ -1265,6 +1291,8 @@ def test_cli_typed_policy_failure_is_exit_2_not_a_traceback(
     result = CliRunner().invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(profile),

@@ -78,7 +78,16 @@ def _behaviour_bundle(tmp_path: Path) -> Path:
 
 def _candidate(spec: Path, *extra: str) -> object:
     return runner.invoke(
-        app, [str(spec), "--profile", str(spec.parent / "test.yaml"), "--candidate", *extra]
+        app,
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(spec.parent / "test.yaml"),
+            "--candidate",
+            *extra,
+        ],
     )
 
 
@@ -176,7 +185,9 @@ def test_candidate_runs_outside_any_git_repository(
     assert result.exit_code == 0, result.output
     assert "gate-check[candidate]" in result.output
 
-    live = runner.invoke(app, [str(spec), "--profile", str(tmp_path / "test.yaml")])
+    live = runner.invoke(
+        app, ["--act-mode", "legacy", str(spec), "--profile", str(tmp_path / "test.yaml")]
+    )
     assert live.exit_code == 2
     assert "not inside a git repository" in live.output
 
@@ -307,6 +318,8 @@ def test_no_ref_bound_finding_is_emitted(
     injected = runner.invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(tmp_path / "test.yaml"),
@@ -381,6 +394,8 @@ def test_ref_bound_runs_name_their_mode_without_claiming_completeness(
         runner.invoke(
             app,
             [
+                "--act-mode",
+                "legacy",
                 str(spec),
                 "--profile",
                 str(tmp_path / "test.yaml"),
@@ -452,7 +467,16 @@ def test_trace_matrix_works_prospectively(
     profile = tmp_path / "test.yaml"
 
     result = runner.invoke(
-        app, [str(spec), "--profile", str(profile), "--candidate", "--trace-matrix"]
+        app,
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--candidate",
+            "--trace-matrix",
+        ],
     )
     assert "| FR-01 | Must | BEH-01 |" in result.stdout
 
@@ -460,7 +484,17 @@ def test_trace_matrix_works_prospectively(
     # contract is the same in every mode, so a prospective run still reports
     # what it found (here: the scenario's check is only planned).
     findings = runner.invoke(
-        app, [str(spec), "--profile", str(profile), "--candidate", "--format", "json"]
+        app,
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--candidate",
+            "--format",
+            "json",
+        ],
     )
     assert {f["rule_id"] for f in json.loads(findings.stdout)["findings"]} == {"GC-CHECK-PLANNED"}
     assert result.exit_code == findings.exit_code == 1

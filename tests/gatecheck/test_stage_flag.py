@@ -142,8 +142,8 @@ def test_stage_flag_selects_release(
     profile, spec = _arch_bundle(tmp_path)
     facts = _facts(tmp_path, {})
     base_args = [str(spec), "--profile", str(profile), "--no-fs", str(facts)]
-    new_flag = runner.invoke(app, [*base_args, "--stage", "release"])
-    old_flag = runner.invoke(app, [*base_args, "--arch-stage", "release"])
+    new_flag = runner.invoke(app, ["--act-mode", "legacy", *base_args, "--stage", "release"])
+    old_flag = runner.invoke(app, ["--act-mode", "legacy", *base_args, "--arch-stage", "release"])
     assert new_flag.exit_code == old_flag.exit_code == 1, (new_flag.output, old_flag.output)
     assert new_flag.output == old_flag.output
     assert "GC-ARCH-CONFORMANCE" in new_flag.output
@@ -156,7 +156,17 @@ def test_arch_stage_alias_still_works(
     facts = _facts(tmp_path, {})
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--arch-stage", "release"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--arch-stage",
+            "release",
+        ],
     )
     assert result.exit_code == 1, result.output
     assert "GC-ARCH-CONFORMANCE" in result.output
@@ -178,6 +188,8 @@ def test_conflicting_stage_flags_exit_2(
     result = runner.invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(profile),
@@ -201,6 +213,8 @@ def test_equal_duplicate_flags_allowed(
     result = runner.invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(profile),
@@ -222,7 +236,17 @@ def test_invalid_stage_value_exit_2(
     facts = _facts(tmp_path, {})
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "shipping"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--stage",
+            "shipping",
+        ],
     )
     assert result.exit_code == 2, result.output
 
@@ -247,7 +271,17 @@ def test_release_no_fs_missing_merge_provenance_section_exit_2(
     )
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "release"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--stage",
+            "release",
+        ],
     )
     assert result.exit_code == 2, result.output
     assert "config error" in result.output

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from steward.gatecheck.checks import (
+    act_statuses,
     check_compile_block,
     check_completeness,
     check_stale_cascade,
@@ -20,6 +21,10 @@ from steward.gatecheck.git_facts import Approval, FactsError, InjectedGitFacts, 
 from steward.graph import load_profile_data
 from steward.roleassignments import Assignment, RoleAssignments
 from steward.roles import Role, RolesCatalog
+
+# Mechanical migration (Task 9, R-M0-8): pre-existing tests describe the
+# legacy act, where frontmatter is authoritative — exactly today's behaviour.
+LEGACY_STATUSES = act_statuses([], act_mode="legacy", node_status=None, snapshot=None)
 
 _PROFILE = {
     "profile": "team-test",
@@ -121,7 +126,7 @@ def _write(
 def test_unmanaged_passthrough_and_unknown_stage(tmp_path: Path) -> None:
     (tmp_path / "notes.md").write_text("just notes, no frontmatter\n")
     _write(tmp_path, "odd.md", "retrospective", "draft")
-    artifacts, findings = collect_bundle(_graph(), tmp_path)
+    artifacts, findings = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     assert [a.path for a in artifacts] == ["odd.md"]  # managed but unknown
     assert [f.rule_id for f in findings] == ["GC-STAGE"]
     assert findings[0].severity == "warn"
@@ -130,13 +135,13 @@ def test_unmanaged_passthrough_and_unknown_stage(tmp_path: Path) -> None:
 def test_duplicate_node_claim_is_error(tmp_path: Path) -> None:
     _write(tmp_path, "a.md", "requirements", "draft")
     _write(tmp_path, "b.md", "requirements", "draft")
-    _, findings = collect_bundle(_graph(), tmp_path)
+    _, findings = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     assert any(f.rule_id == "GC-DUP" and f.severity == "error" for f in findings)
 
 
 def test_completeness_missing_required_skips_delegated(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "draft")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_completeness(_graph(), artifacts)
     # design missing -> error; delegated 'task' missing -> NOT an error
     assert [f.artifact for f in findings if f.severity == "error"] == ["design"]
@@ -151,7 +156,7 @@ def test_traceability_resolution_and_dangling(tmp_path: Path) -> None:
         "draft",
         traces="[REQ-001, requirements, REQ-999]",
     )
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_traceability(_graph(), artifacts)
     dangling = [f for f in findings if f.rule_id == "GC-TRACE"]
     assert len(dangling) == 1 and "REQ-999" in dangling[0].message
@@ -160,7 +165,7 @@ def test_traceability_resolution_and_dangling(tmp_path: Path) -> None:
 def test_traceability_empty_downstream_warns(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "draft")
     _write(tmp_path, "des.md", "design", "draft")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_traceability(_graph(), artifacts)
     assert [f.rule_id for f in findings] == ["GC-TRACE-EMPTY"]
     assert findings[0].severity == "warn"
@@ -170,7 +175,7 @@ def test_token_matching_no_substring_false_positive(tmp_path: Path) -> None:
     # REQ-001 must NOT resolve via the token REQ-0011 in upstream text
     _write(tmp_path, "req.md", "requirements", "draft", body="only REQ-0011 here\n")
     _write(tmp_path, "des.md", "design", "draft", traces="[REQ-001]")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_traceability(_graph(), artifacts)
     assert [f.rule_id for f in findings] == ["GC-TRACE"]
 
@@ -178,17 +183,19 @@ def test_token_matching_no_substring_false_positive(tmp_path: Path) -> None:
 def test_upstream_approved_gate(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "draft")
     _write(tmp_path, "des.md", "design", "approved", traces="[requirements]")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
-    findings = check_upstream_approved(_graph(), artifacts)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
+    findings = check_upstream_approved(_graph(), artifacts, statuses=LEGACY_STATUSES)
     assert [f.rule_id for f in findings] == ["GC-UPSTREAM"]
     assert "draft" in findings[0].message
 
 
 def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
 
-    nothing = check_status_git(_graph(), artifacts, FakeGitFacts(), ASSIGNMENTS)
+    nothing = check_status_git(
+        _graph(), artifacts, FakeGitFacts(), ASSIGNMENTS, statuses=LEGACY_STATUSES
+    )
     assert {f.rule_id for f in nothing} == {"GC-GIT-BRANCH", "GC-GIT-ROLE"}
 
     wrong_role = check_status_git(
@@ -199,6 +206,7 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:quinn"),)},
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert {f.rule_id for f in wrong_role} == {"GC-GIT-ROLE"}
 
@@ -210,6 +218,7 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:alice"),)},
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert clean == []
 
@@ -220,7 +229,7 @@ def test_status_git_requires_branch_and_role(tmp_path: Path) -> None:
 def test_default_allowlist_owner_role_approves(tmp_path: Path) -> None:
     """Scenario 1: no allowed_approver_roles -> owner_role's identity approves clean."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _graph(),
         artifacts,
@@ -229,6 +238,7 @@ def test_default_allowlist_owner_role_approves(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:alice"),)},  # product == owner_role
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
@@ -236,7 +246,7 @@ def test_default_allowlist_owner_role_approves(tmp_path: Path) -> None:
 def test_default_allowlist_miss_names_needed_roles(tmp_path: Path) -> None:
     """Scenario 2: approval from a non-owner role -> error naming the needed role."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _graph(),
         artifacts,
@@ -245,6 +255,7 @@ def test_default_allowlist_miss_names_needed_roles(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:quinn"),)},  # qa, not product
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert [f.rule_id for f in findings] == ["GC-GIT-ROLE"]
     message = findings[0].message
@@ -256,7 +267,7 @@ def test_exact_replacement_excludes_owner(tmp_path: Path) -> None:
     """Scenario 3: an explicit allowed_approver_roles REPLACES the owner default —
     the owner role, even though it's the accountable owner, is excluded."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_restricted_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_restricted_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _restricted_graph(),
         artifacts,
@@ -265,6 +276,7 @@ def test_exact_replacement_excludes_owner(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:alice"),)},  # product, the owner
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert [f.rule_id for f in findings] == ["GC-GIT-ROLE"]
 
@@ -272,7 +284,7 @@ def test_exact_replacement_excludes_owner(tmp_path: Path) -> None:
 def test_exact_replacement_hit(tmp_path: Path) -> None:
     """Scenario 4: an approval from the explicit allowlist's role is clean."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_restricted_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_restricted_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _restricted_graph(),
         artifacts,
@@ -281,6 +293,7 @@ def test_exact_replacement_hit(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:quinn"),)},  # qa
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
@@ -288,7 +301,7 @@ def test_exact_replacement_hit(tmp_path: Path) -> None:
 def test_unknown_identity_has_no_roles_and_fails_closed(tmp_path: Path) -> None:
     """Scenario 5: an identity absent from role-assignments grants no roles."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _graph(),
         artifacts,
@@ -297,6 +310,7 @@ def test_unknown_identity_has_no_roles_and_fails_closed(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:mallory"),)},
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert [f.rule_id for f in findings] == ["GC-GIT-ROLE"]
     assert "no roles" in findings[0].message
@@ -309,7 +323,7 @@ def test_approver_union_one_allowed_identity_suffices(tmp_path: Path) -> None:
     approval by an unmapped identity must neither grant nor revoke anything.
     """
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _graph(),
         artifacts,
@@ -318,6 +332,7 @@ def test_approver_union_one_allowed_identity_suffices(tmp_path: Path) -> None:
             approvals={"req.md": (Approval("github:mallory"), Approval("github:alice"))},
         ),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
@@ -325,12 +340,13 @@ def test_approver_union_one_allowed_identity_suffices(tmp_path: Path) -> None:
 def test_unavailable_approvals_facts_skip(tmp_path: Path) -> None:
     """Scenario 6: approvals() -> None (unauthoritative) skips, unchanged contour."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_status_git(
         _graph(),
         artifacts,
         FakeGitFacts(on_default={"req.md"}, approvals_unavailable=True),
         ASSIGNMENTS,
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
@@ -339,8 +355,10 @@ def test_solo_profile_never_needs_assignments(tmp_path: Path) -> None:
     """Scenario 7: solo profile passes assignments=None without crashing."""
     solo = load_profile_data({**_PROFILE, "solo_auto_approve": True}, _CATALOG)
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(solo, tmp_path)
-    findings = check_status_git(solo, artifacts, FakeGitFacts(on_default={"req.md"}), None)
+    artifacts, _ = collect_bundle(solo, tmp_path, act_mode="legacy")
+    findings = check_status_git(
+        solo, artifacts, FakeGitFacts(on_default={"req.md"}), None, statuses=LEGACY_STATUSES
+    )
     assert findings == []
 
 
@@ -348,7 +366,7 @@ def test_non_solo_approvals_present_assignments_none_raises(tmp_path: Path) -> N
     """Scenario 8: fail-closed — missing assignments must never read as authorized
     or skipped; it must raise, not silently pass."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     with pytest.raises(FactsError):
         check_status_git(
             _graph(),
@@ -358,6 +376,7 @@ def test_non_solo_approvals_present_assignments_none_raises(tmp_path: Path) -> N
                 approvals={"req.md": (Approval("github:alice"),)},
             ),
             None,
+            statuses=LEGACY_STATUSES,
         )
 
 
@@ -378,8 +397,10 @@ def test_status_git_live_facts_unavailable_skips_role_check(tmp_path: Path) -> N
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "bundle")
 
-    artifacts, _ = collect_bundle(_graph(), repo)
-    findings = check_status_git(_graph(), artifacts, LiveGitFacts(repo, repo))
+    artifacts, _ = collect_bundle(_graph(), repo, act_mode="legacy")
+    findings = check_status_git(
+        _graph(), artifacts, LiveGitFacts(repo, repo), statuses=LEGACY_STATUSES
+    )
     assert findings == []
 
 
@@ -387,45 +408,50 @@ def test_status_git_injected_empty_approvals_still_finds(tmp_path: Path) -> None
     """Regression guard: InjectedGitFacts with a known-empty tuple is still an
     authoritative "no approvals" and must keep producing GC-GIT-ROLE."""
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     facts = InjectedGitFacts(
         default_branch_files=frozenset({"req.md"}), approvals={}, blob_hashes={}
     )
-    findings = check_status_git(_graph(), artifacts, facts, ASSIGNMENTS)
+    findings = check_status_git(_graph(), artifacts, facts, ASSIGNMENTS, statuses=LEGACY_STATUSES)
     assert {f.rule_id for f in findings} == {"GC-GIT-ROLE"}
 
 
 def test_status_git_injected_correct_role_is_clean(tmp_path: Path) -> None:
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     facts = InjectedGitFacts(
         default_branch_files=frozenset({"req.md"}),
         approvals={"req.md": (Approval("github:alice"),)},
         blob_hashes={},
     )
-    findings = check_status_git(_graph(), artifacts, facts, ASSIGNMENTS)
+    findings = check_status_git(_graph(), artifacts, facts, ASSIGNMENTS, statuses=LEGACY_STATUSES)
     assert findings == []
 
 
 def test_solo_auto_approve_skips_role_check(tmp_path: Path) -> None:
     solo = load_profile_data({**_PROFILE, "solo_auto_approve": True}, _CATALOG)
     _write(tmp_path, "req.md", "requirements", "approved")
-    artifacts, _ = collect_bundle(solo, tmp_path)
-    findings = check_status_git(solo, artifacts, FakeGitFacts(on_default={"req.md"}))
+    artifacts, _ = collect_bundle(solo, tmp_path, act_mode="legacy")
+    findings = check_status_git(
+        solo, artifacts, FakeGitFacts(on_default={"req.md"}), statuses=LEGACY_STATUSES
+    )
     assert findings == []  # branch confirmed; no role approval needed
 
 
 def _stale_bundle(tmp_path: Path, extra: str) -> list:
     _write(tmp_path, "req.md", "requirements", "approved")
     _write(tmp_path, "des.md", "design", "approved", traces="[requirements]", extra=extra)
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     return artifacts
 
 
 def test_stale_cascade_pinned_hash_mismatch_is_error(tmp_path: Path) -> None:
     artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: old123}\n")
     findings = check_stale_cascade(
-        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "new456"})
+        _graph(),
+        artifacts,
+        FakeGitFacts(blob_hashes={"req.md": "new456"}),
+        statuses=LEGACY_STATUSES,
     )
     assert [(f.severity, f.rule_id) for f in findings] == [("error", "GC-STALE")]
     assert "old123" in findings[0].message and "new456" in findings[0].message
@@ -434,26 +460,35 @@ def test_stale_cascade_pinned_hash_mismatch_is_error(tmp_path: Path) -> None:
 def test_stale_cascade_pinned_hash_match_is_clean(tmp_path: Path) -> None:
     artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: same789}\n")
     findings = check_stale_cascade(
-        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "same789"})
+        _graph(),
+        artifacts,
+        FakeGitFacts(blob_hashes={"req.md": "same789"}),
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []
 
 
 def test_stale_cascade_missing_pin_warns(tmp_path: Path) -> None:
     artifacts = _stale_bundle(tmp_path, "")
-    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "abc"}))
+    findings = check_stale_cascade(
+        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "abc"}), statuses=LEGACY_STATUSES
+    )
     assert [(f.severity, f.rule_id) for f in findings] == [("warn", "GC-STALE-UNPINNED")]
 
 
 def test_stale_cascade_unresolvable_current_hash_warns(tmp_path: Path) -> None:
     artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: old123}\n")
-    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts())  # no hashes known
+    findings = check_stale_cascade(
+        _graph(), artifacts, FakeGitFacts(), statuses=LEGACY_STATUSES
+    )  # no hashes known
     assert [(f.severity, f.rule_id) for f in findings] == [("warn", "GC-STALE-UNPINNED")]
 
 
 def test_stale_cascade_pin_for_non_upstream_warns(tmp_path: Path) -> None:
     artifacts = _stale_bundle(tmp_path, "upstream_hashes: {requirements: ok1, bogus: ok2}\n")
-    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "ok1"}))
+    findings = check_stale_cascade(
+        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "ok1"}), statuses=LEGACY_STATUSES
+    )
     assert [(f.severity, f.rule_id) for f in findings] == [("warn", "GC-STALE-KEY")]
     assert "bogus" in findings[0].message
 
@@ -469,8 +504,8 @@ def test_stale_cascade_missing_upstream_pin_is_not_a_stray_key(tmp_path: Path) -
         traces="[requirements]",
         extra="upstream_hashes: {requirements: old123}\n",
     )
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
-    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts())
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
+    findings = check_stale_cascade(_graph(), artifacts, FakeGitFacts(), statuses=LEGACY_STATUSES)
     assert findings == []
 
 
@@ -484,9 +519,12 @@ def test_stale_cascade_ignores_non_approved_downstream(tmp_path: Path) -> None:
         traces="[requirements]",
         extra="upstream_hashes: {requirements: old123}\n",
     )
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_stale_cascade(
-        _graph(), artifacts, FakeGitFacts(blob_hashes={"req.md": "new456"})
+        _graph(),
+        artifacts,
+        FakeGitFacts(blob_hashes={"req.md": "new456"}),
+        statuses=LEGACY_STATUSES,
     )
     assert findings == []  # already marked stale — correctly flagged, nothing to add
 
@@ -504,7 +542,7 @@ def test_compile_block_dangling_dep_is_error(tmp_path: Path) -> None:
     # The Maestro validate --no-fs blind spot (emitter-contract-check.md):
     # a dangling depends_on must die here, upstream of compilation.
     _write(tmp_path, "des.md", "design", "draft", body=_COMPILE_BLOCK % "does-not-exist")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     findings = check_compile_block(artifacts)
     assert [(f.severity, f.rule_id) for f in findings] == [("error", "GC-COMPILE")]
     assert "does-not-exist" in findings[0].message
@@ -512,11 +550,11 @@ def test_compile_block_dangling_dep_is_error(tmp_path: Path) -> None:
 
 def test_compile_block_valid_is_clean(tmp_path: Path) -> None:
     _write(tmp_path, "des.md", "design", "draft", body=_COMPILE_BLOCK % "")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     assert check_compile_block(artifacts) == []
 
 
 def test_artifacts_without_compile_block_are_out_of_scope(tmp_path: Path) -> None:
     _write(tmp_path, "des.md", "design", "draft", body="```yaml\nnot: normative\n```\n")
-    artifacts, _ = collect_bundle(_graph(), tmp_path)
+    artifacts, _ = collect_bundle(_graph(), tmp_path, act_mode="legacy")
     assert check_compile_block(artifacts) == []

@@ -196,6 +196,8 @@ def test_cli_trace_matrix_json(tmp_path: Path, write_roles: Path) -> None:
     result = runner.invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(profile),
@@ -224,7 +226,16 @@ def test_cli_trace_matrix_still_exits_1_on_findings(tmp_path: Path, write_roles:
     )
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--trace-matrix"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--trace-matrix",
+        ],
     )
     assert result.exit_code == 1  # matrix rendered, but the red bundle stays red
     assert "Trace matrix" in result.output
@@ -239,6 +250,16 @@ def test_cli_trace_matrix_without_behaviour_node_is_config_error(
         "  - {id: requirements, owner_role: product, upstream: []}\n"
     )
     result = runner.invoke(
-        app, [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--trace-matrix"]
+        app,
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--trace-matrix",
+        ],
     )
     assert result.exit_code == 2

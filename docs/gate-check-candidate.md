@@ -6,14 +6,45 @@
 devtools, behaviour-конвейер, шаг S4).
 
 ```sh
-uv run gate-check --profile team --candidate path/to/spec
-uv run gate-check --profile team --candidate path/to/spec --format json
-uv run gate-check --profile team --candidate path/to/spec --trace-matrix
+uv run gate-check --act-mode legacy --profile team --candidate path/to/spec
+uv run gate-check --act-mode legacy --profile team --candidate path/to/spec --format json
+uv run gate-check --act-mode legacy --profile team --candidate path/to/spec --trace-matrix
 ```
 
 Каталог **не обязан** лежать внутри чекаута: prospective-прогон не спрашивает у
 git ничего. Коды выхода прежние — `0` чисто, `1` есть error-находки, `2` ошибка
 конфигурации.
+
+## Режим акта: `--act-mode` обязателен
+
+С approval-facts v3 (спека `docs/superpowers/specs/2026-10-30-approval-facts-v3-design.md`
+§7.2) каждый прогон gate-check получает **результат admission вызывающего**:
+`--act-mode legacy|review`. steward режим не определяет ни по файлам, ни по
+истории; без флага — код 2 (`--act-mode is required: pass the admission result
+(legacy|review)`), умолчания нет.
+
+- `legacy` — одобрения бандла — прежний акт «мерж»: frontmatter `status`
+  авторитетен, поведение прежнее. Если в `<bundle>/../approvals/` есть конверт
+  `<node>.yaml` или манифест `requests/*.yaml` с `act: review/v1` либо каталог
+  или его YAML не читается — `GC-ACT-MODE-CONFLICT`.
+- `review` — одобрения устанавливает только провайдер статуса узла:
+  `--node-status <file.json>` с `{"snapshot_digest": "sha256:…", "nodes":
+  {node_id: status}}`, статус — `approved` | `not_approved:<причина>` |
+  `unavailable:<причина>`. Без провайдера — `GC-ACT-PROVIDER-MISSING`; узел,
+  заявленный во frontmatter, но не установленный, — `GC-ACT-NOT-APPROVED` с
+  причиной. Для установленных узлов `GC-STALE*` делегируется провайдеру —
+  объявляется на stderr и в JSON `delegated`.
+
+Ответ провайдера привязан к снимку: `snapshot_digest` обязан совпасть с
+дайджестом этого прогона (байты бандла и `../approvals/` на диске), иначе код 2.
+Дайджест печатает
+
+```sh
+uv run gate-check --print-snapshot-digest --candidate path/to/spec
+```
+
+— для этой команды `--act-mode` не нужен. JSON-вывод несёт `act_mode`,
+`delegated` и `snapshot` (`kind`, `root`, `digest`).
 
 ## Что проверяется и что нет
 
@@ -175,7 +206,7 @@ AC-грамматика и сироты), FR-покрытие того же ге
   запрет, когда появится.
 
 Флаг не привязан к `--candidate`, но штатный потребитель — prospective-прогон:
-`gate-check --candidate <bundle> --profile <p> --upto <node>`.
+`gate-check --act-mode <legacy|review> --candidate <bundle> --profile <p> --upto <node>`.
 
 ## Для потребителей, ушедших на internal API
 
