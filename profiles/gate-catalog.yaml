@@ -12,7 +12,7 @@
 # quality = correctness/completeness gate (gate-check concern); approval =
 # evidence/authorization gate (a separate governance concern from quality,
 # but implemented the same way — a gate-check finding). The active set
-# ('status: active') forms the v2 contract; no other status appears in
+# ('status: active') forms the v3 contract; no other status appears in
 # runtime use. GC-APPROVAL-MISSING (AP-5, 2026-08-08) was the first
 # approval-obligation gate: it enforces the release-stage merge-evidence
 # policy (steward.gatecheck.approval.check_approval_evidence) — presence of
