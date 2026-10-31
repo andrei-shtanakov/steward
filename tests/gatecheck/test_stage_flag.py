@@ -253,3 +253,21 @@ def test_release_no_fs_missing_merge_provenance_section_exit_2(
     assert "config error" in result.output
     assert "merge_provenance" in result.output
     assert "Traceback" not in result.output
+
+
+def test_release_exit_2_on_policy_intersection(
+    tmp_path: Path, write_roles: Path, write_role_assignments: Path
+) -> None:
+    profile, spec = _bundle(tmp_path)
+    (profile.parent / "approval-policy.yaml").write_text(
+        "version: 1\nhuman_identities: ['github:x']\n"
+        "agent_identities: ['github:x']\napproval_facts_lease_seconds: 86400\n"
+    )
+    facts = _facts(tmp_path, {})
+    result = runner.invoke(
+        app,
+        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "release"],
+    )
+    assert result.exit_code == 2, result.output
+    assert "approval-policy.yaml: identities in both" in result.output
+    assert "github:x" in result.output
