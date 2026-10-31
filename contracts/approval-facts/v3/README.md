@@ -5,7 +5,7 @@
 > этого каталога и сверяют её целостность по `MANIFEST.json`.
 
 Нормативная семантика — спека steward `docs/superpowers/specs/2026-10-30-approval-facts-v3-design.md`
-(§3–§5) поверх сквозной спеки devtools «Акт утверждения через approve человека» (§5, §6.1,
+(§3–§6) поверх сквозной спеки devtools «Акт утверждения через approve человека» (§5, §6.1,
 §8.2). Этот файл — справочник по форме; при расхождении права спека.
 
 ## Состав
@@ -179,6 +179,22 @@ E4, вектор помечен `"unverified_shape": "ReviewDismissedEvent"`, п
 ```bash
 uv run python scripts/gen_approval_facts_v3_vectors.py --out contracts/approval-facts/v3/vectors
 ```
+
+## Файл release-гейта (спека §6)
+
+`.steward/approval_facts.jsonl` с `schema_version: "3"`: `header` (поля v2) и по одной
+`result` на элемент scope; поля мержа v2 переехали в `result.delivery` (`delivery_record`).
+Читатель — `steward.approvalfacts.v3.release_reader.load_release_facts`; одиннадцать
+инвариантов v2-читателя (`../v2/README.md`) действуют, инвариант 7 — по матрице полей §6.
+
+**Известный пробел инварианта 9 унаследован из v2.** Алиасы сравниваются только по записям
+с доставкой (`merged`/`actor_unavailable`, ключ — `delivery.merge_commit`); запись с
+`delivery: null` (`not_found`, `no_matching_pr`, `not_merged`) в сравнение не входит. Файл
+`pr:42 → merged, merge_commit=X` вместе с `merge_sha:X → not_found` валиден, хотя
+утверждает о SHA `X` две несовместимые вещи; гейт разрешает его через индекс
+(`by_merge_sha()` → `merged`), а не через отрицательный алиас. Это решение читающего гейта,
+не форма файла; открытый хвост — `approval-facts-index-precedence-over-negative-alias` в
+`TODO.md` steward'а.
 
 ## Вендоринг потребителем
 

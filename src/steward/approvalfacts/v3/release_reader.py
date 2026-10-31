@@ -21,6 +21,11 @@
 матрица v2 его допускают, и читатель — тоже: ужесточать только здесь значило бы разойтись
 со схемой.
 
+Унаследованный пробел инварианта 9 (как в v2, `../v2/README.md`): алиасы сравниваются только
+по записям с доставкой, поэтому `pr:N → merged, merge_commit=X` вместе с
+`merge_sha:X → not_found` файл не отвергает; гейт разрешает такой файл через индекс
+`by_merge_sha()`. Хвост — `approval-facts-index-precedence-over-negative-alias` (`TODO.md`).
+
 Здесь же — модель файла (`ReleaseResult`, `ApprovalFactsV3`): гейт импортирует только этот
 модуль, а он не импортирует ни политику (`steward.gatecheck`), ни продюсеры — иначе
 `gatecheck.approval` → читатель → продюсер → `gatecheck.approval` замкнулся бы в цикл.
@@ -252,7 +257,8 @@ def _stamp(raw: object, where: str) -> str:
 
 def _check_aliases(results: list[ReleaseResult], path: Path) -> None:
     """Инвариант 9: алиасы одного мержа (`pr:N` и `merge_sha:<oid>`) — одно наблюдение;
-    сравнивается запись без `request`, ключ — `delivery.merge_commit`."""
+    сравнивается запись без `request`, ключ — `delivery.merge_commit`. Запись без доставки
+    (`delivery: null`) не сравнивается — известный пробел, унаследованный из v2 (см. модуль)."""
     by_sha: dict[str, ReleaseResult] = {}
     for result in results:
         if result.delivery is None or result.delivery.merge_commit is None:
