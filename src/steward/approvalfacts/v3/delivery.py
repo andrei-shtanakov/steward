@@ -8,8 +8,8 @@
 `_github.rest_path` (каждый сегмент закодирован, спека §3.2 «Пути REST»).
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass, fields
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, fields, replace
 
 from steward.approvalfacts.v3._github import _Fail, graphql, require_sha, rest_object, rest_path
 from steward.approvalfacts.v3.model import Delivery, PathBlob
@@ -40,23 +40,28 @@ NOT_MERGED = Delivery(
 class Merge:
     """Поля мержа смёрженного PR, согласованные между E2 и E1 (§3.3 п. 1).
 
-    Логин мержера — GraphQL-форма (у бота без `[bot]`); `merged_at` — канон.
+    Логин мержера — GraphQL-форма (у бота без `[bot]`); `merged_at` — канон. Мержер `None`
+    — только при `merger_required=False`: не установлен (§3.4.1) хотя бы на одной стороне.
     """
 
     merge_commit: str
     merged_at: str
-    merged_by_login: str
-    merged_by_type_hint: str
+    merged_by_login: str | None
+    merged_by_type_hint: str | None
     head: str
     base_ref: str
 
 
-def read_delivery(t: Transport, owner: str, name: str, pr: int) -> Delivery:
+def read_delivery(
+    t: Transport, owner: str, name: str, pr: int, *, merger_required: bool = True
+) -> Delivery:
     """Доставка PR без путей (§3.3 пп. 1–3): E2, E1, затем E5 — только у смёрженного.
 
-    Несмёрженный — `NOT_MERGED`; отказ — `_Fail`. Её же вызывает release-продюсер.
+    Несмёрженный — `NOT_MERGED`; отказ — `_Fail`. Её же вызывает release-продюсер с
+    `merger_required=False` (спека §6): неустановленный мержер — не `actor_unresolved`, а
+    доставка с `merged_by_login = None` (прочие поля мержа сверяются как обычно).
     """
-    merge = read_merge(t, owner, name, pr)
+    merge = read_merge(t, owner, name, pr, merger_required=merger_required)
     if merge is None:
         return NOT_MERGED
     return delivery_of(merge, read_in_base(t, owner, name, merge), ())
@@ -76,7 +81,9 @@ def delivery_of(merge: Merge, in_base: bool, paths: tuple[PathBlob, ...]) -> Del
     )
 
 
-def read_merge(t: Transport, owner: str, name: str, pr: int) -> Merge | None:
+def read_merge(
+    t: Transport, owner: str, name: str, pr: int, *, merger_required: bool = True
+) -> Merge | None:
     """§3.3 п. 1: GraphQL `StewardV3Delivery` (E2), затем REST `pulls/{n}` (E1).
 
     Сначала `merged`: расходится — `delivery_mismatch`; `state` E2 вне словаря —
@@ -84,7 +91,8 @@ def read_merge(t: Transport, owner: str, name: str, pr: int) -> Merge | None:
     PR REST несёт тестовый `merge_commit_sha`). Оба `True`: поле мержа отсутствует или
     `null` — `malformed`, мержер не установлен (§3.4.1) — `actor_unresolved`; мерж-коммит,
     `merged_at`, голова или база расходятся — `delivery_mismatch`; мержер после сведения
-    REST-формы бота — `bot_login_mismatch`.
+    REST-формы бота — `bot_login_mismatch`. При `merger_required=False` мержер, не
+    установленный хотя бы на одной стороне, — `None` у результата, а не отказ.
     """
     data = graphql(t, "StewardV3Delivery", Q_DELIVERY, {"owner": owner, "name": name, "number": pr})
     gql = _get(_get(data, "repository"), "pullRequest")
@@ -101,7 +109,10 @@ def read_merge(t: Transport, owner: str, name: str, pr: int) -> Merge | None:
         raise _Fail("unknown_state", f"{_GRAPHQL}: state {state!r}")
     if not merged:
         return None
-    graphql_side, rest_side = _graphql_merge(gql), _rest_merge(rest)
+    graphql_side = _graphql_merge(gql, merger_required)
+    rest_side = _rest_merge(rest, merger_required)
+    if None in (graphql_side.merged_by_login, rest_side.merged_by_login):
+        graphql_side, rest_side = _without_merger(graphql_side), _without_merger(rest_side)
     differ = [
         f.name for f in fields(Merge) if getattr(graphql_side, f.name) != getattr(rest_side, f.name)
     ]
@@ -181,8 +192,10 @@ def check_paths(paths: Sequence[str]) -> tuple[str, ...]:
     return checked
 
 
-def _graphql_merge(pull: dict) -> Merge:
-    login, kind = _actor(pull.get("mergedBy"), f"{_GRAPHQL} mergedBy")
+def _graphql_merge(pull: dict, merger_required: bool) -> Merge:
+    login, kind = _merger(
+        lambda: _actor(pull.get("mergedBy"), f"{_GRAPHQL} mergedBy"), merger_required
+    )
     return Merge(
         merge_commit=_sha(pull.get("mergeCommit"), "oid", f"{_GRAPHQL} mergeCommit"),
         merged_at=_merged_at(pull.get("mergedAt"), f"{_GRAPHQL} mergedAt"),
@@ -193,13 +206,9 @@ def _graphql_merge(pull: dict) -> Merge:
     )
 
 
-def _rest_merge(pull: dict) -> Merge:
+def _rest_merge(pull: dict, merger_required: bool) -> Merge:
     """Поля мержа E1; логин бота `slug[bot]` при `type = "Bot"` сводится к `slug`."""
-    merged_by = pull.get("merged_by")
-    login, kind = _get(merged_by, "login"), _get(merged_by, "type")
-    if kind == "Bot" and isinstance(login, str):
-        login = login.removesuffix("[bot]")
-    login, kind = _resolved(login, kind, f"{_REST} merged_by")
+    login, kind = _merger(lambda: _rest_merger(pull.get("merged_by")), merger_required)
     return Merge(
         merge_commit=_sha(pull, "merge_commit_sha", _REST),
         merged_at=_merged_at(pull.get("merged_at"), f"{_REST} merged_at"),
@@ -208,6 +217,32 @@ def _rest_merge(pull: dict) -> Merge:
         head=_sha(pull.get("head"), "sha", f"{_REST} head"),
         base_ref=_str(pull.get("base"), "ref", f"{_REST} base", nonempty=True),
     )
+
+
+def _rest_merger(merged_by: object) -> tuple[str, str]:
+    login, kind = _get(merged_by, "login"), _get(merged_by, "type")
+    if kind == "Bot" and isinstance(login, str):
+        login = login.removesuffix("[bot]")
+    return _resolved(login, kind, f"{_REST} merged_by")
+
+
+def _merger(
+    read: Callable[[], tuple[str, str]], required: bool
+) -> tuple[str, str] | tuple[None, None]:
+    """Мержер одной стороны; при `required=False` неустановленный (§3.4.1) — `(None, None)`.
+
+    Правило §3.4.1 проверяется на каждой стороне до сверки форм, как и при `required=True`.
+    """
+    try:
+        return read()
+    except _Fail as fail:
+        if required or fail.code != "actor_unresolved":
+            raise
+        return None, None
+
+
+def _without_merger(merge: Merge) -> Merge:
+    return replace(merge, merged_by_login=None, merged_by_type_hint=None)
 
 
 def _sha(obj: object, key: str, where: str) -> str:

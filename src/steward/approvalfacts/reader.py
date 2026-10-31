@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -120,7 +121,7 @@ def _parse_ts(raw: object, field: str) -> datetime:
     return value.replace(tzinfo=UTC)
 
 
-def _request(raw: object, where: str) -> RequestId:
+def parse_request(raw: object, where: str) -> RequestId:
     if not isinstance(raw, dict) or set(raw) != {"kind", "value"}:
         raise UnreadableFacts(f"{where}: request должен быть {{kind, value}}")
     kind, value = raw["kind"], raw["value"]
@@ -232,6 +233,65 @@ def _validate_result_fields(
 
 def load_facts(path: Path, *, expected_repository: str, now: datetime) -> ApprovalFactsV2:
     """Прочитать и полностью проверить файл фактов."""
+    records = read_records(path)
+    header = parse_header(
+        records,
+        path,
+        schema_version=SCHEMA_VERSION,
+        expected_repository=expected_repository,
+        now=now,
+    )
+    results: list[Result] = []
+    for number, raw in enumerate(records[1:], start=2):
+        if not _RESULT_BASE_KEYS <= set(raw):
+            raise UnreadableFacts(
+                f"{path}:{number}: в записи результата не хватает обязательных полей"
+            )
+        if not set(raw) <= _RESULT_ALLOWED_KEYS:
+            unknown = sorted(set(raw) - _RESULT_ALLOWED_KEYS)
+            raise UnreadableFacts(f"{path}:{number}: неизвестные поля результата: {unknown}")
+        if raw["kind"] != "result":
+            raise UnreadableFacts(f"{path}:{number}: неизвестный kind {raw['kind']!r}")
+        request = parse_request(raw["request"], f"{path}:{number}")
+        state = raw["state"]
+        if not isinstance(state, str) or state not in _STATE_FIELD_RULES:
+            raise UnreadableFacts(f"{path}:{number}: неизвестное состояние {state!r}")
+        check_state_for_kind(state, request, number, path)
+
+        merge_sha, identity, type_hint, actor_class = _validate_result_fields(
+            raw, state, number, path
+        )
+        results.append(
+            Result(
+                request=request,
+                state=state,  # type: ignore[arg-type]  # проверено выше
+                merge_sha=merge_sha,
+                identity=identity,
+                type_hint=type_hint,
+                actor_class=actor_class,  # type: ignore[arg-type]  # проверено выше
+            )
+        )
+
+    check_bijection(header.scope, [r.request for r in results], path)
+
+    # Инвариант 9 — алиасы одного мержа не противоречат друг другу.
+    by_sha: dict[str, Result] = {}
+    for result in results:
+        if result.merge_sha is None:
+            continue
+        twin = by_sha.get(result.merge_sha)
+        if twin is not None and twin.comparable != result.comparable:
+            raise UnreadableFacts(
+                f"{path}: алиасы одного мержа {result.merge_sha} дают разные наблюдения"
+            )
+        by_sha[result.merge_sha] = result
+
+    return ApprovalFactsV2(header=header, results=tuple(results))
+
+
+def read_records(path: Path) -> list[dict]:
+    """Строки файла фактов — JSON-объекты; v1, нечитаемый, пустой файл или не-объект —
+    `UnreadableFacts`. Общая часть читателей v2 и v3 (release-гейт)."""
     if detect_legacy_v1(path):
         raise UnreadableFacts(f"{path}: обнаружен устаревший approval-facts/v1 — не читается")
     try:
@@ -249,6 +309,22 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
             raise UnreadableFacts(f"{path}:{number}: не JSON: {exc}") from exc
         records.append(_parse_record(parsed, number, path))
 
+    return records
+
+
+def parse_header(
+    records: list[dict],
+    path: Path,
+    *,
+    schema_version: str,
+    expected_repository: str,
+    now: datetime,
+) -> Header:
+    """Header файла фактов: инварианты 1, 2, 8 (метки header), 10, 11 и `scope_sha256`.
+
+    Общая часть читателей v2 и v3: header v3 — поля v2 без изменения смысла, другая
+    только `schema_version` (спека v3 §6).
+    """
     # Инвариант 1 — header первой и только первой строкой. Count и position
     # проверяются раздельно (не как один составной тест на индекс 0), иначе
     # отключение любой из двух проверок маскируется другой: файл без header
@@ -270,10 +346,10 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
     # README требует от потребителя явно классифицировать именно версию.
     # `.get()`, а не `[...]`: набор ключей ещё не проверен закрытым, версии
     # может не быть вовсе.
-    if raw_header.get("schema_version") != SCHEMA_VERSION:
+    if raw_header.get("schema_version") != schema_version:
         raise UnreadableFacts(
             f"{path}: неверный schema_version {raw_header.get('schema_version')!r}, "
-            f"ожидался {SCHEMA_VERSION!r}"
+            f"ожидался {schema_version!r}"
         )
     _validate_header_shape(raw_header, path)
 
@@ -304,9 +380,8 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
     raw_scope = raw_header["scope"]
     if not isinstance(raw_scope, list) or not raw_scope:
         raise UnreadableFacts(f"{path}: заявленный набор запросов не может быть пустым")
-    scope = [_request(item, f"{path}: scope") for item in raw_scope]
-    scope_set = set(scope)
-    if len(scope_set) != len(scope):
+    scope = [parse_request(item, f"{path}: scope") for item in raw_scope]
+    if len(set(scope)) != len(scope):
         raise UnreadableFacts(f"{path}: заявленный набор запросов содержит дублирующиеся элементы")
 
     # Инвариант 10 — время.
@@ -329,69 +404,7 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
             f"{path}: контрольная сумма scope_sha256 не совпадает с вычисленной по scope"
         )
 
-    results: list[Result] = []
-    for number, raw in enumerate(records[1:], start=2):
-        if not _RESULT_BASE_KEYS <= set(raw):
-            raise UnreadableFacts(
-                f"{path}:{number}: в записи результата не хватает обязательных полей"
-            )
-        if not set(raw) <= _RESULT_ALLOWED_KEYS:
-            unknown = sorted(set(raw) - _RESULT_ALLOWED_KEYS)
-            raise UnreadableFacts(f"{path}:{number}: неизвестные поля результата: {unknown}")
-        if raw["kind"] != "result":
-            raise UnreadableFacts(f"{path}:{number}: неизвестный kind {raw['kind']!r}")
-        request = _request(raw["request"], f"{path}:{number}")
-        state = raw["state"]
-        if not isinstance(state, str) or state not in _STATE_FIELD_RULES:
-            raise UnreadableFacts(f"{path}:{number}: неизвестное состояние {state!r}")
-        only_for = STATE_ONLY_FOR.get(state)
-        if only_for is not None and request.kind != only_for:
-            raise UnreadableFacts(
-                f"{path}:{number}: состояние {state!r} допустимо только для "
-                f"request.kind {only_for!r}, получено {request.kind!r}"
-            )
-
-        merge_sha, identity, type_hint, actor_class = _validate_result_fields(
-            raw, state, number, path
-        )
-        results.append(
-            Result(
-                request=request,
-                state=state,  # type: ignore[arg-type]  # проверено выше
-                merge_sha=merge_sha,
-                identity=identity,
-                type_hint=type_hint,
-                actor_class=actor_class,  # type: ignore[arg-type]  # проверено выше
-            )
-        )
-
-    # Инварианты 3–6 — биекция scope ↔ results по идентичности (kind, value).
-    seen: dict[RequestId, Result] = {}
-    for result in results:
-        if result.request in seen:
-            raise UnreadableFacts(f"{path}: обнаружен повторный результат для {result.request}")
-        if result.request not in scope_set:
-            raise UnreadableFacts(
-                f"{path}: результат ссылается на незаявленный элемент {result.request}"
-            )
-        seen[result.request] = result
-    missing = [item for item in scope if item not in seen]
-    if missing:
-        raise UnreadableFacts(f"{path}: не хватает результата для заявленных элементов: {missing}")
-
-    # Инвариант 9 — алиасы одного мержа не противоречат друг другу.
-    by_sha: dict[str, Result] = {}
-    for result in results:
-        if result.merge_sha is None:
-            continue
-        twin = by_sha.get(result.merge_sha)
-        if twin is not None and twin.comparable != result.comparable:
-            raise UnreadableFacts(
-                f"{path}: алиасы одного мержа {result.merge_sha} дают разные наблюдения"
-            )
-        by_sha[result.merge_sha] = result
-
-    header = Header(
+    return Header(
         repository=repository,
         generated_at=generated_at,
         valid_until=valid_until,
@@ -400,4 +413,28 @@ def load_facts(path: Path, *, expected_repository: str, now: datetime) -> Approv
         scope=tuple(scope),
         scope_sha256=raw_header["scope_sha256"],
     )
-    return ApprovalFactsV2(header=header, results=tuple(results))
+
+
+def check_state_for_kind(state: str, request: RequestId, number: int, path: Path) -> None:
+    """Матрица допустимости `state` × `request.kind` (часть инварианта 7)."""
+    only_for = STATE_ONLY_FOR.get(state)
+    if only_for is not None and request.kind != only_for:
+        raise UnreadableFacts(
+            f"{path}:{number}: состояние {state!r} допустимо только для "
+            f"request.kind {only_for!r}, получено {request.kind!r}"
+        )
+
+
+def check_bijection(scope: Sequence[RequestId], requests: Sequence[RequestId], path: Path) -> None:
+    """Инварианты 3–6 — биекция scope ↔ results по идентичности (kind, value)."""
+    scope_set = set(scope)
+    seen: set[RequestId] = set()
+    for request in requests:
+        if request in seen:
+            raise UnreadableFacts(f"{path}: обнаружен повторный результат для {request}")
+        if request not in scope_set:
+            raise UnreadableFacts(f"{path}: результат ссылается на незаявленный элемент {request}")
+        seen.add(request)
+    missing = [item for item in scope if item not in seen]
+    if missing:
+        raise UnreadableFacts(f"{path}: не хватает результата для заявленных элементов: {missing}")
