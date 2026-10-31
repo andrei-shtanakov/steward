@@ -262,3 +262,19 @@ def test_live_snapshot_outside_repo_is_error(tmp_path: Path) -> None:
     outside = _bundle(tmp_path / "outside")
     with pytest.raises(SnapshotError, match="outside the repository"):
         snapshot_for("live", outside, repo)
+
+
+@pytest.mark.parametrize("where", ["approvals/requests", "spec/sub"])
+def test_symlinked_subdirectory_is_refused(tmp_path: Path, where: str) -> None:
+    """A symlinked directory below the bundle or approvals/ is refused: os.walk
+    would skip it, hiding its files from the digest and the conflict detector."""
+    spec = _bundle(tmp_path)
+    (tmp_path / "approvals").mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "r-1.yaml").write_text("act: review/v1\n")
+    (tmp_path / where).symlink_to(shared, target_is_directory=True)
+    with pytest.raises(SnapshotError, match="symlinked directory"):
+        snapshot_digest(spec)
+    res = runner.invoke(app, ["--print-snapshot-digest", "--candidate", str(spec)])
+    assert res.exit_code == 2

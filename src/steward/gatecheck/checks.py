@@ -198,10 +198,26 @@ def snapshot_digest(spec_dir: Path) -> str:
 
 
 def _walk_files(root: Path) -> list[Path]:
+    """Every file under ``root``; a symlinked directory anywhere below is refused.
+
+    ``os.walk`` neither follows nor reports such a directory, so its files would
+    be invisible to the digest and to the act-conflict detector alike — the
+    same redirection :func:`bundle_dir` refuses for the bundle and ``approvals/``.
+    """
+
     def fail(err: OSError) -> None:
         raise SnapshotError(f"snapshot: cannot list {err.filename}: {err}") from err
 
-    return [Path(top) / name for top, _dirs, files in os.walk(root, onerror=fail) for name in files]
+    files: list[Path] = []
+    for top, dirs, names in os.walk(root, onerror=fail):
+        for name in dirs:
+            if (Path(top) / name).is_symlink():
+                raise SnapshotError(
+                    f"snapshot: {Path(top) / name} is a symlinked directory; "
+                    "its files would be neither hashed nor checked"
+                )
+        files.extend(Path(top) / name for name in names)
+    return files
 
 
 def snapshot_for(
