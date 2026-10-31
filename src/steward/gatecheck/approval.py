@@ -347,9 +347,9 @@ def resolve_facts(
         if explicit:
             raise ConfigError(f"unsupported legacy approval-facts/v1: {path}")
         return FactsUnavailable("legacy_v1", detail)
-    # v2 — до любого разбора: файл v2 не читается ни v3-читателем, ни v2-читателем
-    # (тот падает `TypeError` на нестроковом `actor_class`), а «другая версия» —
-    # действие оператора «перевыпустить», не «починить файл» (approval-facts v3 §6).
+    # v2-читатель больше не вызывается; распознавание v2 — до любого разбора (перенос
+    # Task 10): «другая версия» — действие оператора «перевыпустить», не «починить
+    # файл» (approval-facts v3 §6).
     if detect_legacy_v2(path):
         if explicit:
             raise ConfigError(f"unsupported legacy approval-facts/v2: {path}")
