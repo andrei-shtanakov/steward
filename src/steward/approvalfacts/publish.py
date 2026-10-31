@@ -19,7 +19,7 @@ import os
 import re
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -130,10 +130,10 @@ def build_header(
     )
 
 
-def _header_record(header: Header) -> dict[str, object]:
+def _header_record(header: Header, schema_version: str) -> dict[str, object]:
     return {
         "kind": "header",
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "repository": header.repository,
         "generated_at": header.generated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "valid_until": header.valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -176,11 +176,23 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def publish(path: Path, header: Header, results: Sequence[Result]) -> None:
-    """Атомарно и долговечно опубликовать файл фактов."""
+def publish[R](
+    path: Path,
+    header: Header,
+    results: Sequence[R],
+    *,
+    schema_version: str = SCHEMA_VERSION,
+    result_record: Callable[[R], dict[str, object]] = _result_record,
+) -> None:
+    """Атомарно и долговечно опубликовать файл фактов.
+
+    По умолчанию — v2 (`Result`, побайтово прежний файл). Release-продюсер v3 передаёт
+    `schema_version="3"` и сериализатор своей записи (`release_record`): header и транзакция
+    публикации у версий общие (спека approval-facts/v3 §6).
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    records = [_header_record(header), *(_result_record(r) for r in results)]
+    records = [_header_record(header, schema_version), *(result_record(r) for r in results)]
     payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".approval_facts-", suffix=".tmp")
     replaced = False
