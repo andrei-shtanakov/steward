@@ -1,0 +1,135 @@
+{
+  "counts": {
+    "verified": 4,
+    "not_verified": 6,
+    "contradicts": 0
+  },
+  "rows": [
+    {
+      "item": "1-review-dismissed-event",
+      "outcome": "not_verified",
+      "detail": "запись на стенде не разрешена владельцем; в andrei-shtanakov/devtools отзывов нет (обход 547 PR)",
+      "targets": []
+    },
+    {
+      "item": "2-app-merger",
+      "outcome": "not_verified",
+      "detail": "мержей App в andrei-shtanakov/devtools нет (обход 547 PR)",
+      "targets": []
+    },
+    {
+      "item": "3-open-pr",
+      "outcome": "not_verified",
+      "detail": "открытых PR в andrei-shtanakov/devtools на момент прогона нет",
+      "targets": []
+    },
+    {
+      "item": "4a-compare-ahead",
+      "outcome": "verified",
+      "detail": "HTTP 200, status='ahead'",
+      "targets": [
+        "andrei-shtanakov/devtools repos/andrei-shtanakov/devtools/compare/9da14cff73a8e2558d1f7f1b19599d50b5456bd7...aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
+      ]
+    },
+    {
+      "item": "4b-compare-diverged",
+      "outcome": "verified",
+      "detail": "HTTP 200, status='diverged'",
+      "targets": [
+        "andrei-shtanakov/devtools#606 repos/andrei-shtanakov/devtools/compare/master...a038c2156ac098dad4e1d0cba3ba936cc57940c8"
+      ]
+    },
+    {
+      "item": "5-deleted-user",
+      "outcome": "not_verified",
+      "detail": "удалённых пользователей в andrei-shtanakov/devtools нет",
+      "targets": []
+    },
+    {
+      "item": "6-pending-visibility",
+      "outcome": "not_verified",
+      "detail": "чужих PENDING в обходе andrei-shtanakov/devtools нет (PENDING всего: 0); без второй учётки нельзя отличить «нет» от «не видно»",
+      "targets": []
+    },
+    {
+      "item": "7-anonymous-transport",
+      "outcome": "verified",
+      "detail": "{'H1': 200, 'H2': 200, 'H3': 200, 'H4': 200, 'H5': 200, 'H6': 200}; read_policy_history(anchor=head 12d198fb4db9) → commit_without_pr: 12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22 is not a merge of any merged PR; x-ratelimit-remaining 59→50 over 10 requests",
+      "targets": [
+        "andrei-shtanakov/approval-policy",
+        "12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22"
+      ]
+    },
+    {
+      "item": "8-compare-slash-base",
+      "outcome": "verified",
+      "detail": "gh: encoded HTTP 200 ('diverged', 756, 2, '069d154fbf40148caa978557937949a2ae7e40c4'); plain HTTP 200 ('diverged', 756, 2, '069d154fbf40148caa978557937949a2ae7e40c4'); anonymous: encoded HTTP 200 ('diverged', 756, 2, '069d154fbf40148caa978557937949a2ae7e40c4'); plain HTTP 200 ('diverged', 756, 2, '069d154fbf40148caa978557937949a2ae7e40c4')",
+      "targets": [
+        "andrei-shtanakov/devtools",
+        "feat/criteria-closure-v1-parity",
+        "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
+      ]
+    },
+    {
+      "item": "9-out-of-smoke",
+      "outcome": "not_verified",
+      "detail": "вне смоука: rebase-merge (промежуточный коммит, однокоммитный merge_commit_sha), ассоциации вне ветки по умолчанию — стенд devtools, Task 18 №28",
+      "targets": []
+    }
+  ],
+  "scan": {
+    "repo": "andrei-shtanakov/devtools",
+    "viewer": "ai-prosto",
+    "prs": 547
+  },
+  "anonymous_ratelimit_remaining": [
+    [
+      "repos/andrei-shtanakov/approval-policy",
+      "59"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/branches/main",
+      "58"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+      "57"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/pulls?per_page=100",
+      "56"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/git/trees/11134f9a63befbba4706708a1a42036b00400136?recursive=1",
+      "55"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/git/blobs/4ed1a2384413a01a60eff6da99a302de5bdb3428",
+      "54"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy",
+      "53"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/branches/main",
+      "52"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+      "51"
+    ],
+    [
+      "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/pulls?per_page=100",
+      "50"
+    ],
+    [
+      "repos/andrei-shtanakov/devtools/compare/feat%2Fcriteria-closure-v1-parity...aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e",
+      "49"
+    ],
+    [
+      "repos/andrei-shtanakov/devtools/compare/feat/criteria-closure-v1-parity...aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e",
+      "48"
+    ]
+  ]
+}
