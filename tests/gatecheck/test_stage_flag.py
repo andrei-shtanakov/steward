@@ -300,7 +300,17 @@ def test_release_exit_2_on_policy_intersection(
     facts = _facts(tmp_path, {})
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--stage", "release"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--stage",
+            "release",
+        ],
     )
     assert result.exit_code == 2, result.output
     assert "approval-policy.yaml: identities in both" in result.output
