@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from steward.approvalfacts.v3 import (
+    Delivery,
     Dismissal,
     ReplayTransport,
     Request,
@@ -196,7 +197,7 @@ def test_app_merger_documented_forms_are_verified() -> None:
     row = SMOKE.check_app_merger(transport, DEVTOOLS, _app_scan(), PR657_PATHS)
     _strict(transport)
     assert row.outcome == "verified", row.detail
-    assert "REST df-app[bot]/Bot → GraphQL df-app/Bot" in row.detail
+    assert "REST df-app[bot]/Bot" in row.detail and "GraphQL df-app/Bot" in row.detail
 
 
 @pytest.mark.parametrize(
@@ -238,8 +239,15 @@ def test_open_pr_is_verified() -> None:
     assert row.outcome == "verified", row.detail
 
 
-def test_open_pr_rest_state_mismatch_contradicts() -> None:
+def test_open_pr_rest_state_mismatch_is_not_verified() -> None:
+    """REST ``closed`` beside GraphQL ``OPEN`` may be a race between reads: not a refutation."""
     transport = replay_transport({"exchanges": _opened("closed")})
+    row = SMOKE.check_open_pr(transport, DEVTOOLS, _scan(_node(657, state="OPEN", merged=False)))
+    assert row.outcome == "not_verified"
+
+
+def test_open_pr_undocumented_rest_state_contradicts() -> None:
+    transport = replay_transport({"exchanges": _opened("draft")})
     row = SMOKE.check_open_pr(transport, DEVTOOLS, _scan(_node(657, state="OPEN", merged=False)))
     assert row.outcome == "contradicts"
 
@@ -258,7 +266,9 @@ def test_open_pr_rest_state_mismatch_contradicts() -> None:
     ],
 )
 def test_compare_status_row(status: int, body: object, outcome: str) -> None:
-    assert SMOKE.compare_status_row("4a", "ahead", status, body, "t").outcome == outcome
+    assert (
+        SMOKE.compare_status_row("4a-compare-ahead", "ahead", status, body, "t").outcome == outcome
+    )
 
 
 def test_compare_read_failure_is_a_row_not_a_crash() -> None:
@@ -279,7 +289,10 @@ def _cmp(status: str, base: str = "m" * 40) -> dict[str, Any]:
     [
         ((200, _cmp("diverged")), (200, _cmp("diverged")), "verified"),
         ((404, {"message": "Not Found"}), (200, _cmp("diverged")), "contradicts"),
-        ((200, _cmp("diverged", "x" * 40)), (200, _cmp("diverged")), "contradicts"),
+        ((200, _cmp("diverged", "x" * 40)), (200, _cmp("diverged")), "not_verified"),
+        ((403, {"message": "rate limit"}), (200, _cmp("diverged")), "not_verified"),
+        ((502, None), (200, _cmp("diverged")), "not_verified"),
+        ((None, None), (200, _cmp("diverged")), "not_verified"),
         ((200, _cmp("diverged")), (404, None), "not_verified"),
     ],
 )
@@ -318,10 +331,11 @@ def test_ghost_review_author_gives_actor_unresolved() -> None:
     assert row.outcome == "verified", row.detail
 
 
-def test_library_accepting_a_ghost_reviewer_contradicts() -> None:
+def test_facts_without_a_ghost_login_do_not_contradict() -> None:
+    """The scan saw a ghost, the library's facts carry none: nothing positively refuted."""
     transport = replay_transport({"exchanges": _passes(_pr657())})
     row = SMOKE.check_deleted_user(transport, DEVTOOLS, _scan(_node(657, reviews=_review(GHOST))))
-    assert row.outcome == "contradicts"
+    assert row.outcome == "not_verified"
 
 
 def test_ghost_merger_is_judged_by_read_act_facts() -> None:
@@ -519,3 +533,210 @@ def test_anonymous_transport_never_raises_on_non_get() -> None:
 def test_repository_outside_allowlist_is_refused() -> None:
     with pytest.raises(ValueError, match="not allowed"):
         SMOKE.scan_prs(replay_transport({"exchanges": []}), "someone/private")
+
+
+# --- the decision rule: one cell of the combination table per case ---------------------
+#
+# Fix round 2 (Task 13 report): a verdict is ``contradicts`` / ``verified`` only for kinds
+# listed in ``RULES``; every other outcome kind is ``not_verified``. Each cell that must be
+# neither has its negative twin here.
+
+AU_MERGER = Unavailable("actor_unresolved: GraphQL pull request mergedBy")
+AU_MERGER_REST = Unavailable("actor_unresolved: REST pull request merged_by")
+AU_REVIEW = Unavailable("actor_unresolved: review 5711633458")
+AU_DISMISSAL = Unavailable("actor_unresolved: dismissal 5711633458")
+HTTP_403 = Unavailable("http: 403 graphql")
+HTTP_404 = Unavailable("http: 404 repos/o/r/pulls/7")
+TRANSPORT = Unavailable("transport: gh did not run: timed out")
+MALFORMED = Unavailable("malformed: pull request: state 1 is not a string")
+NO_ANSWER = (HTTP_403, HTTP_404, TRANSPORT)
+
+
+def _delivery(login: str | None = "df-app", hint: str | None = "Bot") -> Any:
+    return Delivery(True, MERGE, "2026-10-30T12:09:17Z", login, hint, SHA, True, ())
+
+
+def _outcome(item: str, kind: str) -> str:
+    return SMOKE.decide(item, kind, "").outcome
+
+
+@pytest.mark.parametrize(
+    ("reason", "kind"),
+    [
+        (AU_MERGER, "actor_unresolved:merger"),
+        (AU_MERGER_REST, "actor_unresolved:merger"),
+        (AU_REVIEW, "actor_unresolved:review"),
+        (AU_DISMISSAL, "actor_unresolved:dismissal"),
+        (Unavailable("actor_unresolved: somewhere else"), "actor_unresolved:other"),
+        (HTTP_403, "refusal:http"),
+        (TRANSPORT, "refusal:transport"),
+        (MALFORMED, "refusal:malformed"),
+    ],
+)
+def test_kind_of_splits_by_library_where(reason: Unavailable, kind: str) -> None:
+    assert SMOKE.kind_of(reason) == kind
+
+
+def test_unlisted_kind_is_not_verified_for_every_item() -> None:
+    assert {_outcome(item, "anything:else") for item in SMOKE.RULES} == {"not_verified"}
+
+
+@pytest.mark.parametrize("got", [AU_MERGER, AU_REVIEW, AU_DISMISSAL, *NO_ANSWER, MALFORMED])
+def test_item1_cells_not_verified(got: Unavailable) -> None:
+    assert SMOKE.dismissal_row("o/r", {7: got}).outcome == "not_verified"
+
+
+@pytest.mark.parametrize(
+    ("got", "clean"),
+    [
+        (AU_MERGER, False),
+        (AU_MERGER_REST, False),
+        (AU_REVIEW, True),
+        (AU_DISMISSAL, True),
+        (MALFORMED, True),
+        *((g, True) for g in NO_ANSWER),
+    ],
+)
+def test_item2_cells_not_verified(got: Unavailable, clean: bool) -> None:
+    rest = {"login": "df-app[bot]", "type": "Bot"}
+    assert _outcome("2-app-merger", SMOKE.app_merger_kind(got, rest, clean)) == "not_verified"
+
+
+@pytest.mark.parametrize(
+    ("got", "rest_login", "outcome"),
+    [
+        (AU_MERGER, "df-app[bot]", "contradicts"),
+        (Unavailable("bot_login_mismatch: x"), "df-app[bot]", "contradicts"),
+        ((_delivery("df-app"), None), "df-app[bot]", "verified"),
+        ((_delivery("df-app"), None), "df-app", "contradicts"),
+    ],
+)
+def test_item2_cells_decided(got: object, rest_login: str, outcome: str) -> None:
+    kind = SMOKE.app_merger_kind(got, {"login": rest_login, "type": "Bot"}, True)
+    assert _outcome("2-app-merger", kind) == outcome
+
+
+def test_item2_ghost_reviewer_on_app_merged_pr_is_not_verified() -> None:
+    """R1: correct App forms, a reviewer later deleted — the merger is not refuted."""
+    exchanges = _app_merged("df-app", "df-app[bot]")
+    for ex in _op(exchanges, "StewardV3Reviews"):
+        _pull(ex)["reviews"]["nodes"][0]["author"] = None
+    transport = replay_transport({"exchanges": exchanges})
+    row = SMOKE.check_app_merger(transport, DEVTOOLS, _app_scan(), PR657_PATHS)
+    assert row.outcome == "not_verified", row.detail
+    assert "[actor_unresolved:review]" in row.detail
+
+
+@pytest.mark.parametrize("bad", ["facts", "act"])
+@pytest.mark.parametrize("got", [AU_REVIEW, AU_DISMISSAL, *NO_ANSWER, MALFORMED])
+def test_item3_cells_not_verified(bad: str, got: Unavailable) -> None:
+    facts = _facts((), "APPROVED") if bad == "act" else got
+    act = got if bad == "act" else (_delivery(), None)
+    assert _outcome("3-open-pr", SMOKE.open_pr_kind("open", facts, act)) == "not_verified"
+
+
+def test_item3_unknown_state_contradicts() -> None:
+    kind = SMOKE.open_pr_kind("open", Unavailable("unknown_state: x"), None)
+    assert _outcome("3-open-pr", kind) == "contradicts"
+
+
+@pytest.mark.parametrize(
+    ("status", "body"), [(403, None), (404, None), (None, None), (200, None), (200, [1])]
+)
+def test_item4_cells_not_verified(status: int | None, body: object) -> None:
+    row = SMOKE.compare_status_row("4b-compare-diverged", "diverged", status, body, "t")
+    assert row.outcome == "not_verified"
+
+
+@pytest.mark.parametrize("got", [AU_MERGER, *NO_ANSWER, MALFORMED])
+def test_item5_pass_cells_not_verified(got: Unavailable) -> None:
+    assert _outcome("5-deleted-user", SMOKE.pass_ghost_kind(got)) == "not_verified"
+
+
+@pytest.mark.parametrize(
+    ("got", "outcome"),
+    [
+        (AU_REVIEW, "verified"),
+        (AU_DISMISSAL, "verified"),
+        (
+            _facts((Dismissal("1", "ghost", "2026-10-30T12:00:00Z", "APPROVED"),), "DISMISSED"),
+            "contradicts",
+        ),
+        (_facts((), "APPROVED"), "not_verified"),
+    ],
+)
+def test_item5_pass_cells_decided(got: object, outcome: str) -> None:
+    assert _outcome("5-deleted-user", SMOKE.pass_ghost_kind(got)) == outcome
+
+
+@pytest.mark.parametrize(
+    ("got", "clean"),
+    [
+        (AU_REVIEW, True),
+        (AU_DISMISSAL, True),
+        (AU_MERGER, False),
+        (MALFORMED, True),
+        ((_delivery("alice", "User"), None), True),
+        *((g, True) for g in NO_ANSWER),
+    ],
+)
+def test_item5_merger_cells_not_verified(got: object, clean: bool) -> None:
+    """Incl. the R1 mirror: a review-side refusal never verifies the merger branch."""
+    kind = SMOKE.merger_ghost_kind(got, clean)
+    assert _outcome("5-deleted-user", kind) == "not_verified"
+
+
+@pytest.mark.parametrize(
+    ("got", "outcome"),
+    [(AU_MERGER, "verified"), ((_delivery("ghost", "User"), None), "contradicts")],
+)
+def test_item5_merger_cells_decided(got: object, outcome: str) -> None:
+    assert _outcome("5-deleted-user", SMOKE.merger_ghost_kind(got, True)) == outcome
+
+
+QUOTA = (["59", "58"], ["60"])
+
+
+@pytest.mark.parametrize(
+    ("history", "quota", "outcome"),
+    [
+        (HTTP_403, QUOTA, "not_verified"),
+        (HTTP_404, QUOTA, "not_verified"),
+        (TRANSPORT, QUOTA, "not_verified"),
+        (MALFORMED, QUOTA, "contradicts"),
+        (Unavailable("pagination: x"), QUOTA, "contradicts"),
+        ((), (["59", None], ["60"]), "not_verified"),
+        ((), (["59"], ["5000"]), "not_verified"),
+        ((), QUOTA, "verified"),
+    ],
+)
+def test_item7_cells(history: object, quota: Any, outcome: str) -> None:
+    assert _outcome(SMOKE.ITEM_ANON, SMOKE.anonymous_kind(history, *quota)) == outcome
+
+
+def test_item7_quota_running_out_mid_history_is_not_verified() -> None:
+    """R2: the six H-reads answer, the library's own H2 gets 403 — no refutation."""
+    anon = _anon()
+    h2 = Request("GET", "repos/andrei-shtanakov/approval-policy/branches/main")
+    queue = anon.replay.queues[h2]
+    assert len(queue) == 2  # the script's read, then the library's
+    queue[1] = Response(403, body={"message": "API rate limit exceeded"})
+    row = SMOKE.check_anonymous(POLICY, anon)
+    assert row.outcome == "not_verified", row.detail
+    assert "[refusal:http]" in row.detail
+
+
+def test_internal_exception_is_flagged_and_exits_2() -> None:
+    row = SMOKE.guarded("5-deleted-user", lambda: {}["missing"])
+    assert (row.outcome, row.internal) == ("not_verified", True)
+    report = SMOKE.summarize([row, SMOKE.Row("4a-compare-ahead", "contradicts", "x")])
+    assert report["internal_errors"] == ["5-deleted-user"]
+    assert SMOKE.exit_code(report) == 2
+
+
+def test_forge_non_200_is_not_internal_and_exits_0() -> None:
+    def skip() -> Any:
+        raise SMOKE._Skip("H1 HTTP 403")
+
+    report = SMOKE.summarize([SMOKE.guarded("4a-compare-ahead", skip)])
+    assert (report["internal_errors"], SMOKE.exit_code(report)) == ([], 0)

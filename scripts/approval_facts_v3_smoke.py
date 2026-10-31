@@ -9,8 +9,17 @@ Checklist — the rows of spec §8 marked «смоук» that were **not** captu
   answer (any non-200 or unexpected shape before the verdict), or the check needs a
   write the owner did not authorize; the reason is recorded;
 - ``contradicts`` — the hypothesis is wrong. This is a finding for the manifest and
-  steward#211, never a reason to change library expectations. Only a case the
-  library is specified to judge can contradict.
+  steward#211, never a reason to change library expectations.
+
+One mechanism decides every row: a check reduces what it saw to a **kind**
+(``kind_of`` for library results, plus item-specific facts folded in), and the table
+``RULES`` lists, per item, the kinds that verify and the kinds that contradict. Any
+other kind is ``not_verified``: a failure is never attributed to a hypothesis the failing
+call did not judge.
+
+Exit codes: 0 — no contradiction; 1 — a row ``contradicts``; 2 — a check raised
+(``report.internal_errors``), so the evidence is not trustworthy. A forge non-200 is
+``not_verified`` with exit 0.
 
 Rules, enforced by construction:
 
@@ -44,6 +53,7 @@ from urllib.parse import quote
 
 from steward.approvalfacts.v3 import (
     POLICY_FILES,
+    UNAVAILABLE_CODES,
     GhTransport,
     HistoryViolation,
     Request,
@@ -97,6 +107,9 @@ class Row:
     outcome: str
     detail: str
     targets: tuple[str, ...] = ()
+    #: The check raised (a script/library bug or a body of unexpected shape): the row is
+    #: ``not_verified`` and the run exits 2 (``report.internal_errors``).
+    internal: bool = False
 
     def __post_init__(self) -> None:
         if self.outcome not in OUTCOMES:
@@ -177,26 +190,133 @@ _ANON_HEADERS = {
 
 
 def summarize(rows: Sequence[Row]) -> dict[str, Any]:
-    """Report shape: per-outcome counts (every outcome present) and the rows."""
+    """Report shape: per-outcome counts (every outcome present), the rows, internal errors."""
     counts = Counter(row.outcome for row in rows)
     return {
         "counts": {outcome: counts.get(outcome, 0) for outcome in OUTCOMES},
         "rows": [asdict(row) for row in rows],
+        "internal_errors": [row.item for row in rows if row.internal],
     }
 
 
-def guarded(item: str, check: Callable[[], Row]) -> Row:
-    """Run one check; a read that did not answer becomes a ``not_verified`` row, not a crash.
+def exit_code(report: Mapping[str, Any]) -> int:
+    """2 — a check raised; 1 — a row contradicts; 0 — otherwise."""
+    if report["internal_errors"]:
+        return 2
+    return 1 if report["counts"]["contradicts"] else 0
 
-    ``_Skip`` carries the HTTP status (e.g. anonymous 403 once the quota runs out);
-    a shape error of a 200 body is recorded with its exception type.
+
+def guarded(item: str, check: Callable[[], Row]) -> Row:
+    """Run one check; it always yields a row.
+
+    ``_Skip`` (a pre-verdict read that did not answer, e.g. anonymous 403) — a plain
+    ``not_verified`` row with the status. Any other caught exception — ``not_verified``
+    marked ``internal``: it is a script/library bug or a 200 body of unexpected shape, and
+    the run exits 2. Neither path can produce ``verified`` or ``contradicts``.
     """
     try:
         return check()
     except _Skip as skip:
         return Row(item, "not_verified", f"чтение не ответило: {skip}")
-    except (KeyError, IndexError, TypeError, StopIteration) as exc:
-        return Row(item, "not_verified", f"неожиданная форма ответа: {type(exc).__name__} {exc}")
+    except (KeyError, IndexError, TypeError, AttributeError, StopIteration) as exc:
+        detail = f"внутренняя ошибка/форма: {type(exc).__name__} {exc}"
+        return Row(item, "not_verified", detail, internal=True)
+
+
+# --- the decision rule ----------------------------------------------------------------
+
+#: Typed refusals of ``read_policy_history`` that mean "answered, but not in the shape of
+#: §3.8" — a refutation of anonymous availability. ``http``/``transport`` are "did not
+#: answer" (quota, network) and never contradict.
+_ANON_REFUTING = frozenset(f"refusal:{code}" for code in UNAVAILABLE_CODES - {"http", "transport"})
+
+#: Per item: (kinds that verify, kinds that contradict). Every other kind — not_verified.
+#: Kinds are built by ``kind_of`` and the item checks; see the combination table in the
+#: Task 13 report (fix round 2).
+RULES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "1-review-dismissed-event": (
+        frozenset({"ok:events"}),
+        frozenset(
+            {
+                "ok:count_mismatch",
+                "refusal:dismissal_without_previous_state",
+                "refusal:dismissed_without_event",
+            }
+        ),
+    ),
+    "2-app-merger": (
+        frozenset({"ok:documented_forms"}),
+        frozenset(
+            {
+                "ok:undocumented_forms",
+                "actor_unresolved:merger:clean",
+                "refusal:bot_login_mismatch",
+            }
+        ),
+    ),
+    "3-open-pr": (
+        frozenset({"ok:open"}),
+        frozenset({"ok:undocumented_state", "refusal:unknown_state"}),
+    ),
+    "4a-compare-ahead": (
+        frozenset({"compare:want"}),
+        frozenset({"compare:undocumented_status"}),
+    ),
+    "4b-compare-diverged": (
+        frozenset({"compare:want"}),
+        frozenset({"compare:undocumented_status"}),
+    ),
+    "5-deleted-user": (
+        frozenset(
+            {
+                "pass:actor_unresolved:review",
+                "pass:actor_unresolved:dismissal",
+                "merger:actor_unresolved:merger:clean",
+            }
+        ),
+        frozenset({"pass:ok:unresolved_accepted", "merger:ok:unresolved_accepted"}),
+    ),
+    "6-pending-visibility": (frozenset({"pending:foreign_visible"}), frozenset()),
+    ITEM_ANON: (frozenset({"answered:anon_quota"}), _ANON_REFUTING),
+    "8-compare-slash-base": (frozenset({"slash:same"}), frozenset({"slash:encoded_404"})),
+}
+
+
+def decide(item: str, kind: str, detail: str, targets: tuple[str, ...] = ()) -> Row:
+    """The single verdict rule: ``RULES[item]`` decides; an unlisted kind is not_verified."""
+    verifying, contradicting = RULES[item]
+    if kind in contradicting:
+        outcome = "contradicts"
+    elif kind in verifying:
+        outcome = "verified"
+    else:
+        outcome = "not_verified"
+    return Row(item, outcome, f"[{kind}] {detail}", targets)
+
+
+def kind_of(got: object) -> str:
+    """Kind of a library result: ``ok``, ``violation``, ``refusal:<code>``, or
+    ``actor_unresolved:<merger|review|dismissal|other>`` by the library's own ``where``."""
+    if isinstance(got, HistoryViolation):
+        return "violation"
+    if not isinstance(got, Unavailable):
+        return "ok"
+    if got.code != "actor_unresolved":
+        return f"refusal:{got.code}"
+    where = got.reason.removeprefix("actor_unresolved").lstrip(": ")
+    if where.endswith(("mergedBy", "merged_by")):
+        return "actor_unresolved:merger"
+    for actor in ("review", "dismissal"):
+        if where.startswith(f"{actor} "):
+            return f"actor_unresolved:{actor}"
+    return "actor_unresolved:other"
+
+
+def _reason(got: object) -> str:
+    return got.reason if isinstance(got, Unavailable | HistoryViolation) else "facts"
+
+
+# --- reads ----------------------------------------------------------------------------
 
 
 def _split(repo: str) -> tuple[str, str]:
@@ -271,6 +391,10 @@ def unresolved(actor: object) -> bool:
     )
 
 
+def _ghost(login: object) -> bool:
+    return not isinstance(login, str) or not login or login.lower() == "ghost"
+
+
 def _numbers(
     prs: Sequence[Mapping[str, Any]], pred: Callable[[Mapping[str, Any]], bool]
 ) -> list[int]:
@@ -283,49 +407,63 @@ def _pass_actors(pr: Mapping[str, Any]) -> list[object]:
     return [*reviews, *(e.get("actor") for e in pr["timelineItems"]["nodes"])]
 
 
+def _clean(scan: Scan, number: int) -> bool:
+    """The PR's passes were fully scanned and hold no unresolved review/dismissal actor:
+    an ``actor_unresolved`` naming the merger can only be about the merger."""
+    pr = next(p for p in scan.prs if p["number"] == number)
+    return number not in scan.truncated and not any(unresolved(a) for a in _pass_actors(pr))
+
+
+# --- item checks ----------------------------------------------------------------------
+
+
+def dismissal_kind(got: ReviewFacts | Unavailable) -> str:
+    """Item 1 kind of one candidate: ``ok:events`` needs ≥1 event and count = DISMISSED."""
+    if not isinstance(got, ReviewFacts):
+        return kind_of(got)
+    dismissed = sum(r.state == "DISMISSED" for r in got.reviews)
+    if dismissed != len(got.dismissals):
+        return "ok:count_mismatch"
+    return "ok:events" if got.dismissals else "ok:no_events"
+
+
 def dismissal_row(repo: str, results: Mapping[int, ReviewFacts | Unavailable]) -> Row:
     """Item 1: dismissals read by the library — shape, ``previous_state``, count = DISMISSED.
 
-    ``verified`` needs at least one event actually read: zero events verify nothing.
+    The row's kind: a contradicting candidate wins, then a verifying one, else the first.
     No candidate — ``not_verified`` (dismissing on the stand needs a write the owner did
-    not authorize). The library refuses a ``null`` ``previousReviewState`` and a
-    DISMISSED review without its event, so those codes are the contradiction.
+    not authorize).
     """
     item = "1-review-dismissed-event"
     if not results:
         return Row(item, "not_verified", f"{NO_WRITE}; в {repo} отзывов нет")
-    targets = tuple(f"{repo}#{n}" for n in results)
-    lines, events = [], 0
-    for number, got in results.items():
-        if isinstance(got, Unavailable):
-            refuted = got.code in ("dismissal_without_previous_state", "dismissed_without_event")
-            outcome = "contradicts" if refuted else "not_verified"
-            return Row(item, outcome, f"#{number}: {got.reason}", targets)
-        dismissed = sum(r.state == "DISMISSED" for r in got.reviews)
-        if dismissed != len(got.dismissals):
-            detail = f"#{number}: DISMISSED={dismissed}, events={len(got.dismissals)}"
-            return Row(item, "contradicts", detail, targets)
-        events += len(got.dismissals)
-        states = sorted({str(d.previous_state) for d in got.dismissals})
-        lines.append(f"#{number}: events={len(got.dismissals)} previous={states}")
-    if not events:
-        return Row(item, "not_verified", f"ни одного события не прочитано: {lines}", targets)
-    return Row(item, "verified", "; ".join(lines), targets)
+    kinds = {n: dismissal_kind(got) for n, got in results.items()}
+    verifying, contradicting = RULES[item]
+    ordered = sorted(kinds.values(), key=lambda k: (k not in contradicting, k not in verifying))
+    detail = "; ".join(
+        f"#{n}: {kinds[n]} {_reason(got) if isinstance(got, Unavailable) else _events(got)}"
+        for n, got in results.items()
+    )
+    return decide(item, ordered[0], detail, tuple(f"{repo}#{n}" for n in results))
+
+
+def _events(facts: ReviewFacts) -> str:
+    states = sorted({str(d.previous_state) for d in facts.dismissals})
+    return f"events={len(facts.dismissals)} previous={states}"
 
 
 def compare_status_row(item: str, want: str, status: int | None, body: Any, target: str) -> Row:
-    """Items 4a/4b: a live ``compare`` whose topology must give the ``want`` status.
-
-    Non-200 — ``not_verified`` (no answer); 200 with a status outside §3.8 — contradicts.
-    """
-    if status != 200:
-        return Row(item, "not_verified", f"HTTP {status}", (target,))
+    """Items 4a/4b: a live ``compare`` whose topology must give the ``want`` status."""
     got = body.get("status") if isinstance(body, dict) else None
-    if got not in COMPARE_STATUSES:
-        return Row(item, "contradicts", f"HTTP 200, status={got!r}", (target,))
-    if got != want:
-        return Row(item, "not_verified", f"topology gave {got!r}, not {want!r}", (target,))
-    return Row(item, "verified", f"HTTP 200, status={got!r}", (target,))
+    if status != 200:
+        kind = f"compare:http_{status}"
+    elif not isinstance(got, str):
+        kind = "compare:no_status"
+    elif got not in COMPARE_STATUSES:
+        kind = "compare:undocumented_status"
+    else:
+        kind = "compare:want" if got == want else "compare:other_topology"
+    return decide(item, kind, f"HTTP {status}, status={got!r}, want {want!r}", (target,))
 
 
 def _compare_key(body: Any) -> tuple[object, ...] | None:
@@ -337,31 +475,30 @@ def _compare_key(body: Any) -> tuple[object, ...] | None:
     return (body.get("status"), body.get("ahead_by"), body.get("behind_by"), sha)
 
 
+def slash_kind(encoded: tuple[int | None, Any], plain: tuple[int | None, Any]) -> str:
+    """Item 8 kind of one transport: only an encoded 404 beside a valid plain answer
+    refutes «GitHub decodes ``%2F`` in a branch segment»."""
+    key_e, key_p = _compare_key(encoded[1]), _compare_key(plain[1])
+    if plain[0] != 200 or key_p is None or key_p[0] not in COMPARE_STATUSES:
+        return "slash:plain_failed"
+    if encoded[0] == 404:
+        return "slash:encoded_404"
+    if encoded[0] != 200:
+        return f"slash:encoded_http_{encoded[0]}"
+    return "slash:same" if key_e == key_p else "slash:different_answer"
+
+
 def slash_compare_row(
     encoded: tuple[int | None, Any], plain: tuple[int | None, Any], targets: tuple[str, ...]
 ) -> Row:
-    """Item 8: ``%2F``-encoded base must give 200 and the same answer as the plain name.
+    """Item 8 for one transport: ``%2F``-encoded base vs the plain name.
 
     The answer is compared as ``(status, ahead_by, behind_by, merge_base sha)``: the same
     status alone could come from a different branch.
     """
     keys = [_compare_key(body) for _, body in (encoded, plain)]
     detail = f"encoded HTTP {encoded[0]} {keys[0]}; plain HTTP {plain[0]} {keys[1]}"
-    item = "8-compare-slash-base"
-    if plain[0] != 200 or keys[1] is None or keys[1][0] not in COMPARE_STATUSES:
-        return Row(item, "not_verified", f"plain compare failed: {detail}", targets)
-    if encoded[0] != 200 or keys[0] != keys[1]:
-        return Row(item, "contradicts", detail, targets)
-    return Row(item, "verified", detail, targets)
-
-
-def actor_unresolved_row(item: str, forms: str, got: object, target: tuple[str, ...]) -> Row:
-    """Item 5 verdict for an actor the called function judges: must be ``actor_unresolved``."""
-    if isinstance(got, Unavailable):
-        if got.code == "actor_unresolved":
-            return Row(item, "verified", f"{forms} → actor_unresolved", target)
-        return Row(item, "not_verified", f"{forms} → {got.reason}", target)
-    return Row(item, "contradicts", f"{forms} → факты выданы", target)
+    return decide("8-compare-slash-base", slash_kind(encoded, plain), detail, targets)
 
 
 def check_dismissals(t: Transport, repo: str, scan: Scan) -> Row:
@@ -380,12 +517,29 @@ def check_dismissals(t: Transport, repo: str, scan: Scan) -> Row:
     return row
 
 
+def app_merger_kind(got: object, rest: Mapping[str, Any], clean: bool) -> str:
+    """Item 2 kind: a merger refusal counts only on a clean PR; ``ok`` splits by whether
+    both raw forms are the documented ``slug[bot]``/``Bot`` and ``slug``/``Bot``."""
+    kind = kind_of(got)
+    if kind == "actor_unresolved:merger":
+        return f"{kind}:{'clean' if clean else 'tainted'}"
+    if not isinstance(got, tuple):
+        return kind
+    login, hint = got[0].merged_by_login, got[0].merged_by_type_hint
+    documented = (
+        rest.get("type") == "Bot"
+        and isinstance(login, str)
+        and rest.get("login") == f"{login}[bot]"
+        and hint == "Bot"
+        and not login.endswith("[bot]")
+    )
+    return "ok:documented_forms" if documented else "ok:undocumented_forms"
+
+
 def check_app_merger(t: Transport, repo: str, scan: Scan, paths: Sequence[str] = ()) -> Row:
     """Item 2: REST ``slug[bot]``/``Bot`` and GraphQL ``slug``/``Bot`` of an App merge.
 
-    Both halves are judged: the REST form via a raw read, the GraphQL form via the
-    library's ``Delivery`` (GraphQL form, §3.3). ``actor_unresolved`` or
-    ``bot_login_mismatch`` on a known Bot merger refutes the documented forms.
+    The REST form via a raw read, the GraphQL form via the library's ``Delivery``.
     """
     numbers = _numbers(
         scan.prs, lambda pr: pr["merged"] and (pr["mergedBy"] or {}).get("__typename") == "Bot"
@@ -396,25 +550,26 @@ def check_app_merger(t: Transport, repo: str, scan: Scan, paths: Sequence[str] =
     number = numbers[0]
     owner, name = _split(repo)
     rest = _get(t, f"repos/{owner}/{name}/pulls/{number}", "E1").get("merged_by") or {}
-    rest_form = f"REST {rest.get('login')}/{rest.get('type')}"
     got = read_act_facts(t, repo, number, paths=paths)
-    target = (f"{repo}#{number}",)
-    if isinstance(got, Unavailable):
-        refuted = got.code in ("bot_login_mismatch", "actor_unresolved")
-        return Row(
-            item, "contradicts" if refuted else "not_verified", f"{rest_form}; {got.reason}", target
-        )
-    delivery = got[0]
-    login, hint = delivery.merged_by_login, delivery.merged_by_type_hint
-    detail = f"{rest_form} → GraphQL {login}/{hint}"
-    ok = (
-        rest.get("type") == "Bot"
-        and rest.get("login") == f"{login}[bot]"
-        and hint == "Bot"
-        and isinstance(login, str)
-        and not login.endswith("[bot]")
-    )
-    return Row(item, "verified" if ok else "contradicts", detail, target)
+    detail = f"REST {rest.get('login')}/{rest.get('type')}; {_reason(got)}"
+    if isinstance(got, tuple):
+        detail += f"; GraphQL {got[0].merged_by_login}/{got[0].merged_by_type_hint}"
+    kind = app_merger_kind(got, rest, _clean(scan, number))
+    return decide(item, kind, detail, (f"{repo}#{number}",))
+
+
+def open_pr_kind(rest_state: object, facts: object, act: object) -> str:
+    """Item 3 kind: both reads answered → ``ok:open`` / ``ok:undocumented_state`` (REST
+    state outside {open, closed}) / ``ok:state_mismatch`` (a race, not a refutation)."""
+    if not isinstance(facts, ReviewFacts):
+        return kind_of(facts)
+    if not isinstance(act, tuple):
+        return kind_of(act)
+    if rest_state not in ("open", "closed"):
+        return "ok:undocumented_state"
+    if rest_state == "open" and facts.pr_state == "OPEN" and not act[0].merged:
+        return "ok:open"
+    return "ok:state_mismatch"
 
 
 def check_open_pr(t: Transport, repo: str, scan: Scan) -> Row:
@@ -428,14 +583,11 @@ def check_open_pr(t: Transport, repo: str, scan: Scan) -> Row:
     rest_state = _get(t, f"repos/{owner}/{name}/pulls/{number}", "E1").get("state")
     facts = read_open_review(t, repo, number)
     act = read_act_facts(t, repo, number, paths=())
-    target = (f"{repo}#{number}",)
-    if isinstance(facts, Unavailable):
-        return Row(item, "not_verified", facts.reason, target)
-    if isinstance(act, Unavailable):
-        return Row(item, "not_verified", act.reason, target)
-    ok = rest_state == "open" and facts.pr_state == "OPEN" and not act[0].merged
-    detail = f"REST state={rest_state}, pr_state={facts.pr_state}, merged={act[0].merged}"
-    return Row(item, "verified" if ok else "contradicts", detail, target)
+    pr_state = facts.pr_state if isinstance(facts, ReviewFacts) else _reason(facts)
+    merged = act[0].merged if isinstance(act, tuple) else _reason(act)
+    detail = f"REST state={rest_state}, pr_state={pr_state}, merged={merged}"
+    kind = open_pr_kind(rest_state, facts, act)
+    return decide(item, kind, detail, (f"{repo}#{number}",))
 
 
 def check_compare_ahead(t: Transport, repo: str) -> Row:
@@ -460,12 +612,32 @@ def check_compare_diverged(t: Transport, repo: str, scan: Scan) -> Row:
     return compare_status_row("4b-compare-diverged", "diverged", *_body(t, path), target)
 
 
+def pass_ghost_kind(got: object) -> str:
+    """Item 5, pass branch: facts that still carry a ghost login are an accepted
+    unresolved actor; facts without one do not refute anything."""
+    if not isinstance(got, ReviewFacts):
+        return f"pass:{kind_of(got)}"
+    logins = [r.login for r in got.reviews] + [d.actor for d in got.dismissals]
+    return "pass:ok:unresolved_accepted" if any(map(_ghost, logins)) else "pass:ok"
+
+
+def merger_ghost_kind(got: object, clean: bool) -> str:
+    """Item 5, merger branch: a merger refusal verifies only on a clean PR; ``ok`` refutes
+    only when the delivered merger itself is unresolved."""
+    kind = kind_of(got)
+    if kind == "actor_unresolved:merger":
+        return f"merger:{kind}:{'clean' if clean else 'tainted'}"
+    if isinstance(got, tuple) and _ghost(got[0].merged_by_login):
+        return "merger:ok:unresolved_accepted"
+    return f"merger:{kind}"
+
+
 def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
     """Item 5: a deleted user (``null``/``ghost``) where the library judges actors.
 
     Review author or dismissal actor → ``read_open_review``; merger of a merged PR →
-    ``read_act_facts``; both must give ``actor_unresolved`` (§3.4.1). The PR author is
-    outside §3.4.1 — such a PR alone is ``not_verified``, never a contradiction.
+    ``read_act_facts``; both must give ``actor_unresolved`` (§3.4.1) naming that actor.
+    The PR author is outside §3.4.1 — such a PR alone is ``not_verified``.
     """
     item = "5-deleted-user"
     in_pass = _numbers(scan.prs, lambda pr: any(unresolved(a) for a in _pass_actors(pr)))
@@ -475,12 +647,14 @@ def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
         number = in_pass[0]
         forms = sorted({json.dumps(a) for a in _pass_actors(by_pr[number]) if unresolved(a)})
         got: object = read_open_review(t, repo, number)
-        return actor_unresolved_row(item, f"ревью/отзыв {forms}", got, (f"{repo}#{number}",))
+        detail = f"ревью/отзыв {forms} → {_reason(got)}"
+        return decide(item, pass_ghost_kind(got), detail, (f"{repo}#{number}",))
     if merger:
         number = merger[0]
         got = read_act_facts(t, repo, number, paths=())
-        forms = json.dumps(by_pr[number]["mergedBy"])
-        return actor_unresolved_row(item, f"мержер {forms}", got, (f"{repo}#{number}",))
+        detail = f"мержер {json.dumps(by_pr[number]['mergedBy'])} → {_reason(got)}"
+        kind = merger_ghost_kind(got, _clean(scan, number))
+        return decide(item, kind, detail, (f"{repo}#{number}",))
     authors = _numbers(scan.prs, lambda pr: unresolved(pr.get("author")))
     if authors:
         detail = f"удалённый только автор PR {authors[:MAX_CANDIDATES]} — вне §3.4.1"
@@ -500,20 +674,30 @@ def check_pending(scan: Scan, repo: str) -> Row:
     item = "6-pending-visibility"
     if foreign:
         targets = tuple(f"{repo}#{n}" for n in foreign)
-        return Row(item, "verified", f"чужие PENDING видны ({scan.viewer})", targets)
+        return decide(
+            item, "pending:foreign_visible", f"чужие PENDING видны ({scan.viewer})", targets
+        )
     detail = (
         f"чужих PENDING в обходе {repo} нет (PENDING всего: {total}; {scan.coverage()}); "
         "без второй учётки нельзя отличить «нет» от «не видно»"
     )
-    return Row(item, "not_verified", detail)
+    return decide(item, "pending:none_seen", detail)
+
+
+def anonymous_kind(history: object, remaining: Sequence[str | None], limits: Sequence[str]) -> str:
+    """Item 7 kind: answered (activations or a violation) with the anonymous quota in
+    every response — ``answered:anon_quota``; a typed refusal keeps its ``refusal:<code>``
+    (``RULES`` contradicts only codes other than http/transport)."""
+    kind = kind_of(history)
+    if kind not in ("ok", "violation"):
+        return kind
+    if remaining and None not in remaining and list(limits) == [ANON_LIMIT]:
+        return "answered:anon_quota"
+    return "answered:no_anon_quota"
 
 
 def check_anonymous(repo: str, anon: RecordingTransport) -> Row:
-    """Item 7: H1–H6 without a token; ``read_policy_history`` over the anonymous transport.
-
-    ``verified`` needs every H1–H6 read 200, a library result that is not
-    ``Unavailable``, and the rate-limit headers with the anonymous quota.
-    """
+    """Item 7: H1–H6 without a token; ``read_policy_history`` over the anonymous transport."""
     owner, name = _split(repo)
     start = len(anon.ratelimit)
     branch = _get(anon, f"repos/{owner}/{name}", "H1")["default_branch"]
@@ -527,49 +711,52 @@ def check_anonymous(repo: str, anon: RecordingTransport) -> Row:
     blob = next((blobs[p] for p in POLICY_FILES if p in blobs), None) or next(iter(blobs.values()))
     _get(anon, f"repos/{owner}/{name}/git/blobs/{blob}", "H6")
     history = read_policy_history(anon, repo, branch, anchor=head, until=None)
-    if isinstance(history, HistoryViolation | Unavailable):
-        lib = history.reason
-    else:
-        lib = f"{len(history)} activation(s)"
     seen = anon.ratelimit[start:]
     remaining = [r for _, r, _ in seen]
     limits = sorted({str(lim) for _, _, lim in seen})
+    lib = _reason(history) if not isinstance(history, tuple) else f"{len(history)} activation(s)"
     detail = (
         f"H1–H6 HTTP 200; read_policy_history(anchor=head {head[:12]}) → {lib}; "
         f"x-ratelimit-limit {limits}, remaining {remaining[0]}→{remaining[-1]} "
         f"over {len(seen)} requests"
     )
-    target = (repo, head)
-    if isinstance(history, Unavailable):
-        return Row(ITEM_ANON, "contradicts", detail, target)
-    if None in remaining or limits != [ANON_LIMIT]:
-        return Row(
-            ITEM_ANON, "not_verified", f"нет анонимного лимита в заголовках: {detail}", target
-        )
-    return Row(ITEM_ANON, "verified", detail, target)
+    return decide(ITEM_ANON, anonymous_kind(history, remaining, limits), detail, (repo, head))
 
 
 def check_slash_base(t: Transport, anon: Transport, repo: str) -> Row:
-    """Item 8: ``compare`` with a ``/`` branch as base — encoded vs plain, both transports."""
+    """Item 8: ``compare`` with a ``/`` branch as base — encoded vs plain, both transports.
+
+    The row's kind: a refuting transport wins, ``slash:same`` needs both transports.
+    """
     owner, name = _split(repo)
     branches = _get(t, f"repos/{owner}/{name}/branches?per_page=100", "branches")
     slashed = [b["name"] for b in branches if "/" in b["name"]]
+    item = "8-compare-slash-base"
     if not slashed:
-        return Row("8-compare-slash-base", "not_verified", f"веток с «/» в {repo} нет")
+        return Row(item, "not_verified", f"веток с «/» в {repo} нет")
     default = _get(t, f"repos/{owner}/{name}", "H1")["default_branch"]
     sha = _get(t, f"repos/{owner}/{name}/commits/{quote(default, safe='')}", "H3")["sha"]
     base = slashed[0]
     encoded = compare_path(owner, name, base, sha)
     plain = f"repos/{owner}/{name}/compare/{base}...{sha}"
     targets = (repo, base, sha)
-    gh_row = slash_compare_row(_body(t, encoded), _body(t, plain), targets)
-    anon_row = slash_compare_row(_body(anon, encoded), _body(anon, plain), targets)
-    detail = f"gh: {gh_row.detail}; anonymous: {anon_row.detail}"
-    outcome = next(
-        (o for o in ("contradicts", "not_verified") if o in (gh_row.outcome, anon_row.outcome)),
-        "verified",
+    answers = {
+        label: (_body(tr, encoded), _body(tr, plain))
+        for label, tr in (("gh", t), ("anonymous", anon))
+    }
+    kinds = {label: slash_kind(*pair) for label, pair in answers.items()}
+    if "slash:encoded_404" in kinds.values():
+        kind = "slash:encoded_404"
+    elif all(k == "slash:same" for k in kinds.values()):
+        kind = "slash:same"
+    else:
+        kind = next(k for k in kinds.values() if k != "slash:same")
+    detail = "; ".join(
+        f"{label}: {kinds[label]} encoded HTTP {e[0]} {_compare_key(e[1])}, "
+        f"plain HTTP {p[0]} {_compare_key(p[1])}"
+        for label, (e, p) in answers.items()
     )
-    return Row("8-compare-slash-base", outcome, detail, targets)
+    return decide(item, kind, detail, targets)
 
 
 OUT_OF_SMOKE = Row(
@@ -632,14 +819,14 @@ def run(profile: Path) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI: print the JSON report; exit 1 if any row ``contradicts``."""
+    """CLI: print the JSON report; exit code — ``exit_code``."""
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--profile", type=Path, required=True, help="GH_CONFIG_DIR (read-only)")
     args = parser.parse_args(argv)
     report = run(args.profile.expanduser())
     json.dump(report, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
-    return 1 if report["counts"]["contradicts"] else 0
+    return exit_code(report)
 
 
 if __name__ == "__main__":
