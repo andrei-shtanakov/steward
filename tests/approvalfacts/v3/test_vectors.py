@@ -351,6 +351,29 @@ def test_run_vector_malformed_vector_is_a_problem(edit):
     assert _problems(_mutated("clean_approve_app_merge.json", edit))
 
 
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda s: s["expect"]["delivery"].update(no_such_field=1),
+        lambda s: s["expect"].update(delivery=[]),
+        lambda s: s["expect"].update(effective_commit=[]),
+    ],
+    ids=["unknown-delivery-field", "delivery-list", "effective-commit-list"],
+)
+def test_run_vector_malformed_expect_never_raises(edit):
+    """Контракт «исключений не бросает»: любая форма `expect` — строка `problems` с типом
+    исключения, не `AttributeError` из прогона (итоговое ревью M0, M1)."""
+    problems = _problems(_mutated("live_pr657.json", edit))
+    assert "call: AttributeError" in problems
+
+
+def test_run_vector_binds_act_t_to_merged_at():
+    """`t` вектора акта = `merged_at` доставки: иной срез — проблема, даже если эффективные
+    ревью совпали (итоговое ревью M0, M1б)."""
+    spec = _mutated("live_pr657.json", lambda s: s.update(t="2026-12-31T00:00:00Z"))
+    assert "t: expected merged_at '2026-10-30T12:09:17Z'" in _problems(spec)
+
+
 #: Мутанты библиотеки из ревью Task 7, выживавшие при проверке «какой-то `Unavailable`»: на
 #: каждый — вектор, который через `run_vector` его убивает.
 def _mutant_max_pages(monkeypatch: pytest.MonkeyPatch) -> None:  # M13
