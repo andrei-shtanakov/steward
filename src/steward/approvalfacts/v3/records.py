@@ -31,9 +31,10 @@ def review_record(
 ) -> dict:
     """Запись `review` (спека devtools §5.2): ревью, отзывы и эффективные ревью на `t`.
 
-    `effective` — `effective_reviews(facts, t, before=before)`, по логину в порядке логинов.
-    `observed_at` или `t` не в каноне меток, факты с отказом `effective_reviews` —
-    `ValueError`.
+    `effective` — `effective_reviews(facts, t, before=before)`, по логину в порядке логинов;
+    `t` и `before` (ключи по возрастанию) входят в запись (решение M0-I): `effective` — на T
+    вызывающего, а не на `observed_at`. `observed_at` или `t` не в каноне меток, факты с
+    отказом `effective_reviews` — `ValueError`.
     """
     _require_canon(observed_at, "observed_at")
     effective = effective_reviews(facts, t, before=before)
@@ -48,6 +49,8 @@ def review_record(
         "pr_state": facts.pr_state,
         "reviews": [asdict(r) for r in facts.reviews],
         "dismissals": [asdict(d) for d in facts.dismissals],
+        "t": t,
+        "before": [list(k) for k in sorted(before)],
         "effective": [asdict(effective[login]) for login in sorted(effective)],
         "complete": True,
     }

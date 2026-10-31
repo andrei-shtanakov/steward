@@ -16,7 +16,7 @@
   "pr": 603,
   "repo": "andrei-shtanakov/devtools",
   "t": "2026-10-12T15:07:43Z",
-  "title": "Ревью на коммитах ≠ headRefOid (живой #603): эффективное APPROVED со своим commit_id",
+  "title": "Ревью на коммитах ≠ headRefOid (один живой проход #603, повторённый вторым): эффективное APPROVED со своим commit_id",
   "transforms": [],
   "transport": {
     "exchanges": [

@@ -8,27 +8,20 @@
 `vectors/` вендорит devtools; `MANIFEST.json` контракта несёт sha256 каждого файла.
 """
 
+import copy
 import hashlib
 import json
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from steward.approvalfacts.v3 import (
-    HistoryViolation,
-    ReviewFacts,
-    Unavailable,
-    effective_reviews,
-    read_act_facts,
-    read_activation,
-    read_open_review,
-    read_policy_history,
-)
+from steward.approvalfacts import v3
+from steward.approvalfacts.v3 import Unavailable, _github, passes, read_act_facts, run_vector
 from steward.approvalfacts.v3.queries import (
     Q_COMMIT_PULLS,
     Q_DELIVERY,
@@ -36,7 +29,7 @@ from steward.approvalfacts.v3.queries import (
     Q_TIMELINE,
     q_blobs,
 )
-from steward.approvalfacts.v3.transport import ReplayTransport, replay_transport
+from steward.approvalfacts.v3.transport import replay_transport
 
 Record = dict[str, Any]
 
@@ -96,6 +89,12 @@ ACT = [
     "paths_not_a_blob",
     "dismissal_normal_twin",
     "dismissal_actor_no_typename",
+    "bot_login_type_mismatch",
+    "merger_bot_suffix_with_user_type",
+    "merged_disagreement",
+    "merged_event_commit_mismatch",
+    "in_base_diverged",
+    "dismissal_previous_state_changed_between_passes",
 ]
 OPEN_REVIEW = [
     "clean",
@@ -103,6 +102,7 @@ OPEN_REVIEW = [
     "race_between_pages",
     "actor_unresolved_ghost",
     "review_on_non_head_commit",
+    "head_changed_between_pages",
 ]
 HISTORY = [
     "merge_squash_neutral",
@@ -263,94 +263,140 @@ def test_vector_shape(case: Path):
 
 @pytest.mark.parametrize("case", _all(), ids=_name)
 def test_vector(case: Path, key, key_of):
+    """Строгий прогон библиотекой (`run_vector`, решение M0-J) плюс независимая сверка
+    порядка запросов ключом, написанным без кода библиотеки."""
     spec = json.loads(case.read_text(encoding="utf-8"))
-    transport = replay_transport(spec["transport"])
-    run_vector(spec, transport)
-    assert transport.unexpected == [] and transport.unused() == []
-    assert [key(r) for r in transport.log] == [key_of(ex) for ex in _exchanges(spec)]
+    outcome = run_vector(spec)
+    assert outcome.ok, outcome.problems
+    assert [key(r) for r in outcome.requests] == [key_of(ex) for ex in _exchanges(spec)]
 
 
-def run_vector(spec: Record, t: ReplayTransport) -> None:
-    """Вызов библиотеки по виду вектора и сверка с `expect` (спека §5)."""
-    runners: dict[str, Callable[[Record, ReplayTransport], None]] = {
-        "act": _run_act,
-        "open_review": _run_open_review,
-        "history": _run_history,
-        "activation": _run_activation,
-    }
-    runners[spec["kind"]](spec, t)
+# --- run_vector: строгие проверки — код библиотеки (M0-J) --------------------------------------
 
 
-def _refused(got: object, expect: Record) -> bool:
-    if "unavailable" not in expect:
-        return False
-    assert isinstance(got, Unavailable), got
-    assert got.code == expect["unavailable"], got
-    return True
+def _mutated(name: str, edit: Callable[[Record], None]) -> Record:
+    spec = copy.deepcopy(_load(name))
+    edit(spec)
+    return spec
 
 
-def _run_act(spec: Record, t: ReplayTransport) -> None:
-    got = read_act_facts(t, spec["repo"], spec["pr"], paths=spec["paths"])
-    expect = spec["expect"]
-    if _refused(got, expect):
-        return
-    assert not isinstance(got, Unavailable), got
-    delivery, facts = got
-    if expect.get("waiting_delivery"):
-        assert facts is None and delivery.merged is False and delivery.merge_commit is None
-        return
-    assert facts is not None
-    _check_effective(facts, spec)
-    for field, want in expect.get("delivery", {}).items():
-        actual = getattr(delivery, field)
-        if field == "paths":
-            actual = [asdict(p) for p in actual]
-        assert actual == want, field
+def _problems(spec: Record) -> str:
+    outcome = run_vector(spec)
+    assert not outcome.ok
+    return "; ".join(outcome.problems)
 
 
-def _run_open_review(spec: Record, t: ReplayTransport) -> None:
-    got = read_open_review(t, spec["repo"], spec["pr"])
-    if _refused(got, spec["expect"]):
-        return
-    assert isinstance(got, ReviewFacts), got
-    _check_effective(got, spec)
+def test_run_vector_is_public():
+    assert v3.run_vector is run_vector and "run_vector" in v3.__all__
+    assert "VectorOutcome" in v3.__all__
 
 
-def _check_effective(facts: ReviewFacts, spec: Record) -> None:
-    before = frozenset((k[0], k[1]) for k in spec["before"])
-    effective = effective_reviews(facts, spec["t"], before=before)
-    assert not isinstance(effective, Unavailable), effective
-    expect = spec["expect"]
-    assert {login: r.state for login, r in effective.items()} == expect["effective"]
-    for login, commit in expect.get("effective_commit", {}).items():
-        assert effective[login].commit_id == commit
+def test_run_vector_requires_exact_code():
+    spec = _mutated("unknown_state.json", lambda s: s["expect"].update(unavailable="malformed"))
+    assert "expected unavailable 'malformed'" in _problems(spec)
 
 
-def _run_history(spec: Record, t: ReplayTransport) -> None:
-    got = read_policy_history(
-        t,
-        spec["repo"],
-        spec["branch"],
-        anchor=spec["anchor"],
-        until=spec["until"],
-        files=tuple(spec["files"]),
+def test_run_vector_requires_full_consumption():
+    extra = _live("pr657_act_sequence")["exchanges"][6]
+    spec = _mutated("missing_commit_id.json", lambda s: _exchanges(s).append(extra))
+    assert "unused exchanges: 1" in _problems(spec)
+
+
+def test_run_vector_reports_unrecorded_request():
+    spec = _mutated("missing_commit_id.json", lambda s: _exchanges(s).pop())
+    problems = _problems(spec)
+    assert "unexpected requests: 1" in problems and "request order" in problems
+
+
+def test_run_vector_requires_request_order():
+    """FIFO на ключ перестановку E5/E6 не ловит; общий порядок — ловит."""
+
+    def swap(s: Record) -> None:
+        ex = _exchanges(s)
+        ex[2], ex[3] = ex[3], ex[2]
+
+    problems = _problems(_mutated("live_pr657.json", swap))
+    assert "request order differs from exchanges at #2" in problems
+    assert "unused" not in problems and "unexpected" not in problems
+
+
+def test_run_vector_checks_delivery_and_effective_commit():
+    spec = _mutated("live_pr657.json", lambda s: s["expect"]["delivery"].update(in_base=False))
+    assert "delivery.in_base" in _problems(spec)
+    spec = _mutated(
+        "login_approved_old_then_new.json",
+        lambda s: s["expect"]["effective_commit"].update(alice="0" * 40),
     )
-    expect = spec["expect"]
-    if _refused(got, expect):
-        return
-    if "violation" in expect:
-        assert isinstance(got, HistoryViolation) and got.code == expect["violation"], got
-        return
-    assert isinstance(got, tuple), got
-    assert [asdict(a) for a in got] == expect["activations"]
+    assert "effective_commit.alice" in _problems(spec)
 
 
-def _run_activation(spec: Record, t: ReplayTransport) -> None:
-    got = read_activation(t, spec["repo"], spec["merge_commit"], files=tuple(spec["files"]))
-    if _refused(got, spec["expect"]):
-        return
-    assert not isinstance(got, Unavailable), got
-    assert asdict(got) == spec["expect"]["activation"]
+def test_run_vector_waiting_delivery_needs_no_t():
+    assert _load("not_merged.json")["t"] is None
+    assert run_vector(_load("not_merged.json")).ok
+    spec = _mutated("live_pr657.json", lambda s: s.update(expect={"waiting_delivery": True}))
+    assert "expected waiting_delivery" in _problems(spec)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda s: s.update(kind="nope"),
+        lambda s: s["expect"].update(waiting_delivery=True),
+        lambda s: s.pop("transport"),
+        lambda s: s.pop("repo"),
+    ],
+    ids=["kind", "two-primary", "no-transport", "no-repo"],
+)
+def test_run_vector_malformed_vector_is_a_problem(edit):
+    assert _problems(_mutated("clean_approve_app_merge.json", edit))
+
+
+#: Мутанты библиотеки из ревью Task 7, выживавшие при проверке «какой-то `Unavailable`»: на
+#: каждый — вектор, который через `run_vector` его убивает.
+def _mutant_max_pages(monkeypatch: pytest.MonkeyPatch) -> None:  # M13
+    monkeypatch.setattr(_github, "MAX_PAGES", 51)
+
+
+def _mutant_errors_at_200(monkeypatch: pytest.MonkeyPatch) -> None:  # M14
+    real = _github.graphql
+
+    def graphql(t, op, query, variables):
+        class _Strip:
+            def send(self, request):
+                response = t.send(request)
+                if response.status == 200 and isinstance(response.body, dict):
+                    body = {k: v for k, v in response.body.items() if k != "errors"}
+                    return replace(response, body=body)
+                return response
+
+        return real(_Strip(), op, query, variables)
+
+    monkeypatch.setattr(_github, "graphql", graphql)
+
+
+def _mutant_ghost_resolved(monkeypatch: pytest.MonkeyPatch) -> None:  # M20
+    monkeypatch.setattr(passes, "actor_resolved", lambda login, kind: kind in ("User", "Bot"))
+
+
+@pytest.mark.parametrize(
+    "mutant,vector",
+    [
+        (_mutant_max_pages, "pagination_timeline_over_limit.json"),
+        (_mutant_errors_at_200, "graphql_200_partial_errors_approved.json"),
+        (_mutant_ghost_resolved, "actor_unresolved_other_reviewer_ghost.json"),
+        (_mutant_ghost_resolved, "open_review/actor_unresolved_ghost.json"),
+    ],
+    ids=["M13", "M14", "M20-act", "M20-open"],
+)
+def test_run_vector_kills_consumer_mutants(monkeypatch, mutant, vector):
+    """Под мутантом библиотека всё равно отказывает (`transport` на обрезанной записи) —
+    вакуумная проверка типа прошла бы; `run_vector` вектор валит."""
+    spec = _load(vector)
+    assert run_vector(spec).ok
+    mutant(monkeypatch)
+    outcome = run_vector(spec)
+    assert not outcome.ok, "mutant survived run_vector"
+    assert any("expected unavailable" in p for p in outcome.problems), outcome.problems
 
 
 # --- происхождение: только из живых снимков ---------------------------------------------------
@@ -481,6 +527,38 @@ def test_generator_is_reproducible(tmp_path: Path):
     assert generated.keys() == committed.keys()
     assert [n for n in committed if generated[n] != committed[n]] == []
     assert manifest.read_bytes() == MANIFEST.read_bytes()
+
+
+def _generate(out: Path, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 — свой скрипт, фиксированный argv
+        [sys.executable, str(GENERATOR), "--out", str(out), "--manifest", str(tmp_path / "M")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_generator_refuses_out_not_named_vectors(tmp_path: Path):
+    """`--out contracts/approval-facts/v3` не стирает SCHEMA.json и README.md."""
+    out = tmp_path / "v3"
+    out.mkdir()
+    (out / "SCHEMA.json").write_text("{}", encoding="utf-8")
+    proc = _generate(out, tmp_path)
+    assert proc.returncode == 2 and "named 'vectors'" in proc.stderr
+    assert (out / "SCHEMA.json").read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize("foreign", ["README.md", "notes/x.json", "history/x.txt"])
+def test_generator_refuses_foreign_entries(tmp_path: Path, foreign: str):
+    out = tmp_path / "vectors"
+    target = out / foreign
+    target.parent.mkdir(parents=True)
+    target.write_text("keep", encoding="utf-8")
+    proc = _generate(out, tmp_path)
+    assert proc.returncode == 2 and "foreign entry" in proc.stderr
+    assert target.read_text(encoding="utf-8") == "keep"
 
 
 # --- derive: `select` (порядок и потреблённый префикс) ------------------------------------------

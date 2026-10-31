@@ -9,3 +9,5 @@
 # Итог: generated = объявлено и в базе, и в ревьюируемом дереве.
 # Не объявлено — ревьюируется построчно.
 uv.lock linguist-generated=true
+contracts/approval-facts/v3/vectors/** linguist-generated=true
+contracts/approval-facts/v3/MANIFEST.json linguist-generated=true

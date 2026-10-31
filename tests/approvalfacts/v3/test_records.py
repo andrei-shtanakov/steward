@@ -119,6 +119,7 @@ def test_review_record_validates(clean):
     assert [(e["login"], e["state"]) for e in record["effective"]] == [("alice", "APPROVED")]
     assert {r["login"] for r in record["reviews"]} == {"alice", "bob"}
     assert record["head_sha"] == facts.head_sha and record["dismissals"] == []
+    assert record["t"] == spec["t"] and record["before"] == []
 
 
 def test_review_record_extra_key_rejected(clean):
@@ -149,6 +150,47 @@ def test_review_record_honours_before():
     without = review_record(facts, observed_at=OBSERVED, t=spec["t"], before=frozenset())
     assert [e["login"] for e in with_key["effective"]] == ["alice"]
     assert without["effective"] == []
+    # M0-I: записи различимы сами по себе — по ключам равных меток, на которых вычислены
+    assert with_key["before"] == [["review", spec["before"][0][1]]] and without["before"] == []
+    assert with_key["t"] == without["t"] == spec["t"]
+    for record in (with_key, without):
+        _validator("review_record").validate(record)
+
+
+def test_review_record_effective_at_t_not_observed_at():
+    """Отзыв после T: `reviews[].state` — DISMISSED, `effective` — APPROVED на `t`; `t` в
+    записи не даёт прочесть `effective` как состояние на `observed_at`."""
+    spec, _, facts = _act("restore_approved_dismissed_after_t.json")
+    assert facts is not None
+    record = review_record(facts, observed_at=OBSERVED, t=spec["t"], before=frozenset())
+    assert record["t"] == spec["t"] != record["observed_at"]
+    assert {r["login"]: r["state"] for r in record["reviews"]}["alice"] == "DISMISSED"
+    assert [(e["login"], e["state"]) for e in record["effective"]] == [("alice", "APPROVED")]
+
+
+def test_review_record_before_is_sorted():
+    spec, _, facts = _act("restore_approved_dismissed_after_t.json")
+    assert facts is not None
+    before = frozenset({("review", "2"), ("dismissal", "10"), ("review", "1")})
+    record = review_record(facts, observed_at=OBSERVED, t=spec["t"], before=before)
+    assert record["before"] == [["dismissal", "10"], ["review", "1"], ["review", "2"]]
+
+
+@pytest.mark.parametrize(
+    "drop_or_bad",
+    [("t", None), ("before", None), ("before", [["merge", "1"]]), ("before", [["review"]]),
+     ("before", [["review", "x"]]), ("t", "2026-10-30T12:09:17+00:00")],
+)  # fmt: skip
+def test_review_record_t_before_required_and_shaped(clean, drop_or_bad):
+    spec, _, facts = clean
+    record = review_record(facts, observed_at=OBSERVED, t=spec["t"], before=frozenset())
+    key, value = drop_or_bad
+    if value is None:
+        del record[key]
+    else:
+        record[key] = value
+    with pytest.raises(ValidationError):
+        _validator("review_record").validate(record)
 
 
 @pytest.mark.parametrize("observed", ["2026-10-31T09:00:00.5Z", "2026-10-31 09:00:00", ""])

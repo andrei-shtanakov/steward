@@ -43,7 +43,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["repository", "pr", "observed_at", "head_sha", "base_ref", "pr_state",
-                   "reviews", "dismissals", "effective", "complete"],
+                   "reviews", "dismissals", "t", "before", "effective", "complete"],
       "properties": {
         "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
         "pr": {"type": "integer", "minimum": 1},
@@ -53,6 +53,16 @@
         "pr_state": {"enum": ["OPEN", "CLOSED", "MERGED"]},
         "reviews": {"type": "array", "items": {"$ref": "#/$defs/review"}},
         "dismissals": {"type": "array", "items": {"$ref": "#/$defs/dismissal"}},
+        "t": {"$ref": "#/$defs/timestamp",
+              "description": "Момент, на который вычислен effective[] (M0-I), не observed_at."},
+        "before": {
+          "description": "Ключи событий с меткой == t, считанных до T (M0-I).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "array", "prefixItems": [{"enum": ["review", "dismissal"]},
+                                                     {"$ref": "#/$defs/review_id"}],
+                    "minItems": 2, "maxItems": 2}
+        },
         "effective": {"type": "array", "items": {"$ref": "#/$defs/effective_review"}},
         "complete": {"const": true}
       }

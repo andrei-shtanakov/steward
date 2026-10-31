@@ -426,6 +426,39 @@ def _act_delivery() -> dict[str, Record]:
             _no("bot_login_mismatch"),
             keep=E1 + 1,
         ),
+        "bot_login_type_mismatch": _act(
+            "Мержер: тот же логин df-reviewer, но REST type User против GraphQL Bot — тип "
+            "сверяется, bot_login_mismatch",
+            _merger("df-reviewer", "Bot", "df-reviewer", "User", reads=(0,)),
+            _no("bot_login_mismatch"),
+            keep=E1 + 1,
+        ),
+        "merger_bot_suffix_with_user_type": _act(
+            "Мержер: REST df-reviewer[bot] с type User — суффикс [bot] сводится только при "
+            "type Bot, несведённый логин не установлен (§3.4.1) — actor_unresolved",
+            _merger("df-reviewer", "User", "df-reviewer[bot]", "User", reads=(0,)),
+            _no("actor_unresolved"),
+            keep=E1 + 1,
+        ),
+        "merged_disagreement": _act(
+            "GraphQL merged=false при REST merged=true — delivery_mismatch",
+            _delivery("set_field", ["merged"], None, (0,), value=False),
+            _no("delivery_mismatch"),
+            keep=E1 + 1,
+        ),
+        "merged_event_commit_mismatch": _act(
+            "MergedEvent таймлайна указывает не на мерж-коммит доставки — delivery_mismatch",
+            _timeline("set_field", [0, "commit", "oid"], value=OTHER),
+            _no("delivery_mismatch"),
+            keep=FULL,
+        ),
+        "in_base_diverged": _act(
+            "compare базы с мерж-коммитом diverged (производное значение живой формы E5) ⇒ "
+            "in_base = false",
+            [_tf("set_field", [E5, "response", "body", "status"], value="diverged")],
+            {"effective": {"alice": "APPROVED"}, "delivery": {"merged": True, "in_base": False}},
+            persona=True,
+        ),
     }
 
 
@@ -442,6 +475,16 @@ def _act_reviews() -> dict[str, Record]:
                 passes=(R2,),
                 node=_review(5711700002, "bob", "CHANGES_REQUESTED", "2026-10-30T12:00:00Z"),
             ),
+            _no("unstable"),
+            persona=True,
+            keep=FULL,
+        ),
+        "dismissal_previous_state_changed_between_passes": _act(
+            "Отзыв Alice до T в обоих проходах, но previous_state различается (APPROVED / "
+            "CHANGES_REQUESTED) — unstable",
+            _reviews("set_field", [ALICE, "state"], value="DISMISSED")
+            + _dismiss(ALICE_ID, "2026-10-30T12:00:00Z", "APPROVED", passes=(T1,))
+            + _dismiss(ALICE_ID, "2026-10-30T12:00:00Z", "CHANGES_REQUESTED", passes=(T2,)),
             _no("unstable"),
             persona=True,
             keep=FULL,
@@ -741,7 +784,8 @@ def _open_vectors() -> dict[str, Record]:
     ghost = {"login": "ghost", "__typename": "User"}
     return {
         "open_review/clean": _open(
-            "Предпроверка: два неизменённых живых прохода #606 (User APPROVED, Bot COMMENTED)",
+            "Предпроверка: один живой проход #606 (User APPROVED, Bot COMMENTED), повторённый "
+            "вторым проходом",
             PASS606,
             [],
             _eff(**{"ai-prosto": "APPROVED"}),
@@ -754,9 +798,21 @@ def _open_vectors() -> dict[str, Record]:
         ),
         "open_review/race_between_pages": _open(
             "Предпроверка: отзыв APPROVED и новое CHANGES_REQUESTED между страницами прохода "
-            "1 при неизменной голове — unstable",
+            "1 при неизменной голове — unstable. Нарушений больше одного по природе сценария: "
+            "разорванный проход 1 нецелен и сам по себе; вектор с одним нарушением — "
+            "dismiss_and_cr_between_passes",
             PASS606,
             race,
+            _no("unstable"),
+        ),
+        "open_review/head_changed_between_pages": _open(
+            "Предпроверка: headRefOid меняется между страницами ревью прохода 1 — unstable",
+            PASS606,
+            [
+                _tf("page_split", [O_R1, *REVIEW_NODES], n=1),
+                _tf("set_field", [O_R1 + 1, *GQL_PULL, "headRefOid"], value=HEAD),
+                *_keep(O_T1 + 2),
+            ],
             _no("unstable"),
         ),
         "open_review/actor_unresolved_ghost": _open(
@@ -767,7 +823,8 @@ def _open_vectors() -> dict[str, Record]:
             _no("actor_unresolved"),
         ),
         "open_review/review_on_non_head_commit": _open(
-            "Ревью на коммитах ≠ headRefOid (живой #603): эффективное APPROVED со своим commit_id",
+            "Ревью на коммитах ≠ headRefOid (один живой проход #603, повторённый вторым): "
+            "эффективное APPROVED со своим commit_id",
             PASS603,
             [],
             {
@@ -1262,8 +1319,31 @@ def _dump(record: Record) -> bytes:
     return (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
 
 
+SUBDIRS = frozenset({".", "open_review", "history", "activation"})
+
+
+def check_out(out: Path) -> None:
+    """`out` подменяется целиком: только каталог `vectors`, в котором нет ничего, кроме
+    `*.json` в известных подкаталогах; иначе `ValueError` (не удалить чужие файлы)."""
+    if out.name != "vectors":
+        raise ValueError(f"--out must be a directory named 'vectors': {out}")
+    if not out.exists():
+        return
+    if not out.is_dir():
+        raise ValueError(f"--out is not a directory: {out}")
+    for path in out.rglob("*"):
+        rel = path.relative_to(out)
+        if path.is_dir():
+            ok = rel.as_posix() in SUBDIRS
+        else:
+            ok = path.suffix == ".json" and rel.parent.as_posix() in SUBDIRS
+        if not ok:
+            raise ValueError(f"--out holds a foreign entry, refusing to replace it: {path}")
+
+
 def write(out: Path, manifest: Path) -> None:
     """Атомарно подменить каталог `out` векторами и записать манифест sha256."""
+    check_out(out)
     files = build()
     tmp = out.with_name(f".{out.name}.tmp")
     if tmp.exists():
@@ -1287,7 +1367,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     out = args.out.resolve()
     manifest = args.manifest or out.parent / "MANIFEST.json"
-    write(out, manifest.resolve())
+    try:
+        write(out, manifest.resolve())
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

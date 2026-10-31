@@ -11,7 +11,7 @@
   "pr": 606,
   "repo": "andrei-shtanakov/devtools",
   "t": "2026-10-12T18:00:00Z",
-  "title": "Предпроверка: отзыв APPROVED и новое CHANGES_REQUESTED между страницами прохода 1 при неизменной голове — unstable",
+  "title": "Предпроверка: отзыв APPROVED и новое CHANGES_REQUESTED между страницами прохода 1 при неизменной голове — unstable. Нарушений больше одного по природе сценария: разорванный проход 1 нецелен и сам по себе; вектор с одним нарушением — dismiss_and_cr_between_passes",
   "transforms": [
     {
       "op": "set_field",
