@@ -92,6 +92,21 @@ class ApprovalPolicy:
     #: in-process without going through the loader keep working.
     approval_facts_lease_seconds: int = 86400
 
+    def __post_init__(self) -> None:
+        """Reject an identity in both lists (§7.1): ``classify_actor`` would
+        otherwise let ``human`` win silently by check order."""
+        both = _intersection_message(self.human_identities, self.agent_identities)
+        if both:
+            raise PolicyError(both)
+
+
+def _intersection_message(human: frozenset[str], agent: frozenset[str]) -> str | None:
+    """Sorted, deterministic error text for ``human & agent``, or ``None``."""
+    both = sorted(human & agent)
+    if not both:
+        return None
+    return f"identities in both human_identities and agent_identities: {both}"
+
 
 def classify_actor(identity: str | None, hint: str | None, policy: ApprovalPolicy) -> ActorType:
     """Classify a merge actor against the closed policy.
@@ -214,6 +229,10 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
 
     human_identities = _check_identity_list(data["human_identities"], "human_identities", path)
     agent_identities = _check_identity_list(data["agent_identities"], "agent_identities", path)
+
+    both = _intersection_message(human_identities, agent_identities)
+    if both:
+        raise PolicyError(f"{path}: {both}")
 
     agent_merge_allowed = data.get("agent_merge_allowed", False)
     if not isinstance(agent_merge_allowed, bool):

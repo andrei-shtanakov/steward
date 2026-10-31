@@ -268,3 +268,41 @@ def test_policy_digest_is_over_raw_bytes(tmp_path: Path) -> None:
     b.write_text("# пояснение\n" + body, encoding="utf-8")
     assert policy_digest(a) != policy_digest(b)
     assert policy_digest(a).startswith("sha256:")
+
+
+def _write_policy(tmp_path: Path, human: list[str], agent: list[str]) -> Path:
+    path = tmp_path / "approval-policy.yaml"
+    path.write_text(
+        f"version: 1\nhuman_identities: {human}\nagent_identities: {agent}\n"
+        "approval_facts_lease_seconds: 86400\n"
+    )
+    return path
+
+
+def test_policy_intersection_rejected_in_constructor() -> None:
+    with pytest.raises(PolicyError, match="github:x"):
+        ApprovalPolicy(1, frozenset({"github:x"}), frozenset({"github:x"}))
+
+
+def test_policy_intersection_error_is_sorted_and_deterministic() -> None:
+    both = frozenset({"github:b", "github:a"})
+    with pytest.raises(PolicyError) as exc:
+        ApprovalPolicy(1, both | {"github:h"}, both | {"github:g"})
+    assert (
+        "identities in both human_identities and agent_identities: "
+        "['github:a', 'github:b']" in str(exc.value)
+    )
+
+
+def test_policy_intersection_rejected_by_loader(tmp_path: Path) -> None:
+    path = _write_policy(tmp_path, ["github:x"], ["github:x", "github:y"])
+    with pytest.raises(PolicyError, match=r"approval-policy\.yaml.*github:x"):
+        load_approval_policy(path)
+
+
+def test_policy_disjoint_lists_accepted(tmp_path: Path) -> None:
+    load_approval_policy(_write_policy(tmp_path, ["github:x"], ["github:y"]))
+
+
+def test_repo_policy_has_no_intersection() -> None:
+    load_approval_policy(CANONICAL)
