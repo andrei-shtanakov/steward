@@ -1,6 +1,8 @@
 """Публичный API `steward.approvalfacts.v3` (спека steward §3.1, §3.2; решения M0-J, M0-K)."""
 
+import builtins
 import importlib
+import io
 import inspect
 import os
 import socket
@@ -105,6 +107,11 @@ def test_import_has_no_io(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(subprocess, "Popen", refuse)
     monkeypatch.setattr(socket, "socket", refuse)
     monkeypatch.setattr(os, "system", refuse)
+    # Module source comes through `_io.open_code`/`FileIO`, not these: a file read
+    # at module level would hit one of them.
+    monkeypatch.setattr(builtins, "open", refuse)
+    monkeypatch.setattr(io, "open", refuse)
+    monkeypatch.setattr(os, "open", refuse)
     monkeypatch.setattr(steward.approvalfacts, "v3", v3)
     for mod in [m for m in sys.modules if m.startswith("steward.approvalfacts.v3")]:
         monkeypatch.delitem(sys.modules, mod)

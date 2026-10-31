@@ -21,10 +21,12 @@ v3.__all__ == [
 ]
 ```
 
-Остальные имена в API не входят, хотя и доступны из своих подмодулей:
-`model.canon_ts`, `validate.validate_review_facts`, словари состояний. Их форма может
-меняться без смены версии контракта. Сериализация в записи живёт в подмодуле
-`steward.approvalfacts.v3.records` (см. раздел «Записи»).
+Вне `__all__` нормативны ещё две точки входа, которые называет контракт
+(`contracts/approval-facts/v3/README.md`): сериализация в записи —
+`steward.approvalfacts.v3.records` (см. раздел «Записи»), читатель файла release-гейта —
+`steward.approvalfacts.v3.release_reader.load_release_facts`. Вспомогательные имена
+подмодулей (`model.canon_ts`, `validate.validate_review_facts`, словари состояний) в API
+не входят: их форма может меняться без смены версии контракта.
 
 Импорт пакета не выполняет ввода-вывода: ни процессов, ни сокетов, ни чтения файлов. Это
 проверяет тест `tests/approvalfacts/v3/test_api.py::test_import_has_no_io`, так что
