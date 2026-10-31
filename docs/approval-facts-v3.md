@@ -260,7 +260,7 @@ from steward.approvalfacts.v3.records import (
 )
 
 review_record(facts, *, observed_at, t, before) -> dict
-delivery_record(delivery, *, actor_class) -> dict
+delivery_record(d, *, actor_class) -> dict
 policy_history_record(repo, branch, anchor, until, got) -> dict
 ```
 
@@ -302,7 +302,8 @@ policy_history_record(repo, branch, anchor, until, got) -> dict
    `run_vector(vector) -> VectorOutcome(problems, requests)` исключений не бросает: любое
    расхождение попадает строкой в `problems`. Функция проверяет сразу три вещи:
    - исход совпадает с `expect`, включая **точный** код `unavailable`, ветку
-     `waiting_delivery` до `effective`, `delivery` и `effective_commit`;
+     `waiting_delivery` до `effective`, `delivery` и `effective_commit`; у вектора акта
+     `t` обязан равняться `delivery.merged_at` (срез акта, спека §3.3 п. 7);
    - все обмены потреблены: `unexpected == []` и `unused() == []`;
    - общий порядок запросов равен порядку обменов.
 
@@ -352,6 +353,11 @@ policy_history_record(repo, branch, anchor, until, got) -> dict
      Task 14);
    - dispatcher добавляет `--act-mode legacy` в интеграционный тест при следующем
      `producer_commit`.
+   - Вместе с пином v0.2.0 приходит **gate-catalog v3**: `profiles/gate-catalog.yaml`
+     `version: 3`, три новых кода `GC-ACT-*`. Кто вендорит каталог, обязан
+     перевендорить его вместе с подъёмом пина: старая копия на любой находке `GC-ACT-*`
+     даёт `gate-check --emit-verdicts` код 2. У dispatcher версия каталога 2 зашита в
+     коде (`SUPPORTED_CATALOG_VERSION`), там нужна правка кода, а не копия байтов.
 3. **Провайдер отвечает за снимок, который читает steward** (R-M0-3). Для candidate это
    candidate-байты и пины конверта, а не база. Файл `--node-status` обязан нести
    `snapshot_digest` прогона (`gate-check --print-snapshot-digest`). Отрицательный двойник

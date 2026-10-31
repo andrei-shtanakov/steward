@@ -61,16 +61,18 @@ def run_vector(vector: Mapping[str, Any]) -> VectorOutcome:
     Каждое расхождение — строка в `problems`: исход не тот (в т. ч. код `unavailable`),
     непотреблённые или незаписанные обмены, порядок запросов ≠ порядку обменов, форма
     вектора не по спеке §5. Исключение не бросается: неверный вектор — тоже `problems`.
+    Граница ловит любое исключение (форма `expect` проверяется лишь до ключей), но строка
+    называет его тип: дефект библиотеки виден в `problems`, а не проглочен.
     """
     try:
         kind, expect = _shape(vector)
         expected = [_exchange(ex)[0] for ex in vector["transport"]["exchanges"]]
         transport = replay_transport(vector["transport"])
-    except (KeyError, TypeError, ValueError) as exc:
-        return VectorOutcome((f"vector: {exc}",), ())
+    except Exception as exc:  # noqa: BLE001 — граница контракта «исключений не бросает»
+        return VectorOutcome((f"vector: {type(exc).__name__}: {exc}",), ())
     try:
         problems = _RUNNERS[kind](vector, expect, transport)
-    except (KeyError, TypeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — то же; тип исключения в строке
         problems = [f"call: {type(exc).__name__}: {exc}"]
     problems += _consumption(transport, expected)
     return VectorOutcome(tuple(problems), tuple(transport.log))
@@ -126,6 +128,9 @@ def _run_act(v: Mapping[str, Any], expect: Mapping[str, Any], t: ReplayTransport
     if facts is None:
         return ["expected facts of a merged pull request, got none"]
     problems = _effective(facts, v, expect)
+    # срез акта — `T = merged_at` (спека §3.3 п. 7); иной `t` проверял бы не тот срез
+    if v["t"] != delivery.merged_at:
+        problems.append(f"t: expected merged_at {delivery.merged_at!r}, got {v['t']!r}")
     for name, want in expect.get("delivery", {}).items():
         actual = getattr(delivery, name)
         if name == "paths":
