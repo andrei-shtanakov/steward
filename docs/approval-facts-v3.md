@@ -66,10 +66,16 @@ transport = v3.GhTransport(Path.home() / ".config/review", timeout=60)
 - Транспорт только читает, и это заложено в построение. Не-`GET` запрос, `POST` не на
   `graphql`, GraphQL-текст с `mutation` и путь, который `gh` прочёл бы как флаг или полный
   URL, дают `ValueError` до запуска процесса.
-- Историю политики (`read_policy_history`, `read_activation`) спека devtools §6.2 требует
-  читать **анонимно**. Для неё передавайте `GhTransport` с профилем без токена или
-  собственный анонимный транспорт с тем же протоколом. Подробнее — в заметке 1 раздела
-  «Заметки §12».
+- **Каждое чтение требует аутентифицированного профиля `gh`.** Без токена `gh api` не
+  выполняет запрос и печатает приглашение `gh auth login`. GraphQL GitHub без токена не
+  отвечает даже для публичных репо.
+- Оба репо источника доверия публичны (спека devtools §6.2). Для них, в том числе для
+  истории политики (`read_policy_history`, `read_activation`), хватает **любой** учётки с
+  read-only токеном. Прав на сам репо не нужно. Публичность репо не делает транспорт
+  анонимным.
+- Если профиль не аутентифицирован, **каждый** вызов возвращает
+  `Unavailable: transport`: вывод `gh` не содержит строки HTTP-статуса, и транспорт
+  отдаёт `Response(status=None)`.
 
 ### Тесты: `ReplayTransport` и `replay_transport`
 
@@ -181,7 +187,7 @@ read_activation(transport, repo, merge_commit, *, files=POLICY_FILES)
 - `Activation.files_sha256` содержит hex без префикса. Файл, установленно отсутствующий в
   полном дереве, в словарь не входит (О3).
 - Противоречие `merged_at` порядку first-parent библиотека не проверяет: это шаг решения
-  devtools (Task 12 п. 2).
+  devtools (devtools Task 12 п. 2).
 - `read_activation` даёт факт одной активации, обычно якоря эпохи. Ветку она не
   проверяет, принадлежность ветке доказывает `read_policy_history`. Коммит без
   смёрженного PR даёт `no_pr_for_commit`.
@@ -198,6 +204,12 @@ bad_timestamp`.
   `"<code>"` или `"<code>: <detail>"`. Свойство `.code` возвращает код из закрытого
   словаря `UNAVAILABLE_CODES` (§3.6, О5). Конструктор с кодом вне словаря даёт
   `ValueError`. Решения принимайте по `.code`, текст `detail` не разбирайте.
+  `UNAVAILABLE_CODES` = {`transport`, `http`, `graphql_errors`, `malformed`, `pagination`,
+  `bad_timestamp`, `unknown_state`, `missing_commit_id`, `missing_submitted_at`,
+  `dismissal_without_previous_state`, `dismissed_without_event`, `duplicate_dismissal`,
+  `orphan_dismissal`, `delivery_mismatch`, `bot_login_mismatch`, `unstable`,
+  `object_missing`, `path_absent_at_head`, `not_a_blob`, `chain_limit`,
+  `branch_not_default`, `no_pr_for_commit`, `tree_truncated`, `actor_unresolved`}.
 - **`HistoryViolation(reason)`** — установленное нарушение формы истории. Потребитель
   регистрирует его как событие периметра. Код берётся из `HISTORY_VIOLATION_CODES` =
   {`commit_without_pr`, `rebase_intermediate`, `pr_base_mismatch`, `anchor_not_reached`}.
@@ -290,17 +302,20 @@ policy_history_record(repo, branch, anchor, until, got) -> dict
 | О14 | гейты steward без нового параметра работают как прежде | `act_mode` обязателен: API даёт `TypeError`, CLI выходит кодом 2 (ломающее изменение) |
 | О15 | неустановленный актор не оговорён | `actor_unresolved` на чтении для всего PR: любой автор ревью, актор отзыва, мержер (§3.4.1) |
 
-Причины каждого отступления — в §10 спеки.
+Причины каждого отступления — в §10 спеки. О4, О14 и заметка 2 ниже относятся не к
+библиотеке, а к гейтам `gate-check` (`act_mode`, `--act-mode`, `--node-status`,
+`--print-snapshot-digest`). Эти гейты приходят в той же поставке M0, что и библиотека.
 
 ## Заметки §12
 
-1. **Credentials и лимит.** Анонимное чтение источников доверия обязательно (спека
-   devtools §6.2). Библиотека не кэширует.
+1. **Credentials и лимит.** Источники доверия публичны (спека devtools §6.2). Хватает
+   любой аутентифицированной учётки с read-only токеном, прав на репо не нужно
+   (раздел «Транспорт»). Библиотека не кэширует.
    - Кэшировать у себя по ключу SHA можно неизменяемые объекты: коммит по SHA, связь
      коммит → PR по `merge_commit_sha`, блоб по oid, дерево по SHA.
    - Свежими обязаны быть голова ветки `df-trust`/источника и журнал эпох.
-   - Анонимный REST ограничен 60 запросами в час на IP. Обход истории стоит примерно 3
-     запроса на звено плюс блобы активаций.
+   - Обход истории стоит примерно 3 запроса на звено плюс блобы активаций. Лимит REST
+     аутентифицированной учётки GitHub — 5000 запросов в час.
 2. **`--act-mode` обязателен (R-M0-5, О14).** Без него `gate-check` выходит кодом 2, а API
    бросает `TypeError`. Мигрировать нужно **при подъёме пина**:
    - devtools S4/S8 передают `--act-mode` по результату admission: `legacy` для доставок

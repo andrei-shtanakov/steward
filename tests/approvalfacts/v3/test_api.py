@@ -2,6 +2,7 @@
 
 import importlib
 import inspect
+import os
 import socket
 import subprocess
 import sys
@@ -103,6 +104,7 @@ def test_import_has_no_io(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(subprocess, "run", refuse)
     monkeypatch.setattr(subprocess, "Popen", refuse)
     monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(os, "system", refuse)
     monkeypatch.setattr(steward.approvalfacts, "v3", v3)
     for mod in [m for m in sys.modules if m.startswith("steward.approvalfacts.v3")]:
         monkeypatch.delitem(sys.modules, mod)
