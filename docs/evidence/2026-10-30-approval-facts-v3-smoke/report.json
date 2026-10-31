@@ -42,19 +42,19 @@
     {
       "item": "5-deleted-user",
       "outcome": "not_verified",
-      "detail": "удалённых пользователей в andrei-shtanakov/devtools нет",
+      "detail": "удалённых пользователей в andrei-shtanakov/devtools нет (обход 547 PR)",
       "targets": []
     },
     {
       "item": "6-pending-visibility",
       "outcome": "not_verified",
-      "detail": "чужих PENDING в обходе andrei-shtanakov/devtools нет (PENDING всего: 0); без второй учётки нельзя отличить «нет» от «не видно»",
+      "detail": "чужих PENDING в обходе andrei-shtanakov/devtools нет (PENDING всего: 0; обход 547 PR); без второй учётки нельзя отличить «нет» от «не видно»",
       "targets": []
     },
     {
       "item": "7-anonymous-transport",
       "outcome": "verified",
-      "detail": "{'H1': 200, 'H2': 200, 'H3': 200, 'H4': 200, 'H5': 200, 'H6': 200}; read_policy_history(anchor=head 12d198fb4db9) → commit_without_pr: 12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22 is not a merge of any merged PR; x-ratelimit-remaining 59→50 over 10 requests",
+      "detail": "H1–H6 HTTP 200; read_policy_history(anchor=head 12d198fb4db9) → commit_without_pr: 12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22 is not a merge of any merged PR; x-ratelimit-limit ['60'], remaining 59→50 over 10 requests",
       "targets": [
         "andrei-shtanakov/approval-policy",
         "12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22"
@@ -80,56 +80,69 @@
   "scan": {
     "repo": "andrei-shtanakov/devtools",
     "viewer": "ai-prosto",
-    "prs": 547
+    "prs": 547,
+    "truncated": []
   },
-  "anonymous_ratelimit_remaining": [
+  "anonymous_ratelimit": [
     [
       "repos/andrei-shtanakov/approval-policy",
-      "59"
+      "59",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/branches/main",
-      "58"
+      "58",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
-      "57"
+      "57",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/pulls?per_page=100",
-      "56"
+      "56",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/git/trees/11134f9a63befbba4706708a1a42036b00400136?recursive=1",
-      "55"
+      "55",
+      "60"
     ],
     [
-      "repos/andrei-shtanakov/approval-policy/git/blobs/4ed1a2384413a01a60eff6da99a302de5bdb3428",
-      "54"
+      "repos/andrei-shtanakov/approval-policy/git/blobs/07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c",
+      "54",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy",
-      "53"
+      "53",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/branches/main",
-      "52"
+      "52",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
-      "51"
+      "51",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/pulls?per_page=100",
-      "50"
+      "50",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/devtools/compare/feat%2Fcriteria-closure-v1-parity...aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e",
-      "49"
+      "49",
+      "60"
     ],
     [
       "repos/andrei-shtanakov/devtools/compare/feat/criteria-closure-v1-parity...aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e",
-      "48"
+      "48",
+      "60"
     ]
   ]
 }

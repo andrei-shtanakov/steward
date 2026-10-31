@@ -9,15 +9,16 @@
 ## Пины и окружение
 
 - steward: ветка `feat/approval-facts-v3-t13` от master `0c2748b6b4c6857dd444b8fb3479cfcf519e9fd2`
-  (M0 Tasks 1–12 влиты). Прогон шёл по этому SHA плюс ещё не закоммиченный скрипт; его
-  байты совпадают с закоммиченными, sha256 `scripts/approval_facts_v3_smoke.py` —
-  `0b64064a543628de08a35f4287bd3a7955f2f99225a3b61f5f604f3531da0833`.
+  (M0 Tasks 1–12 влиты). Отчёт снят после правок ревью: HEAD `2a1ae08` плюс ещё не
+  закоммиченный исправленный скрипт. Его байты совпадают с закоммиченными, sha256
+  `scripts/approval_facts_v3_smoke.py` —
+  `11c5204e9196c9315f5ee5de27b901a683a0b006257e0f48e6cb2406b235febc`.
 - Аутентифицированное чтение — `GhTransport(~/.config/review)`, учётка `ai-prosto`
   (сверено: `viewer.login` в отчёте). `gh` 2.101.0, Python 3.12.13.
 - Анонимное чтение — `AnonTransport` скрипта: прямой HTTPS `GET` на `api.github.com`
   без каких-либо credentials. Это реализация протокола из `docs/approval-facts-v3.md`,
   раздел «собственный анонимный REST-транспорт».
-- Время прогона: 2026-10-31T12:35:47Z.
+- Время прогона: 2026-10-31T12:47:52Z.
 
 ## Команды
 
@@ -28,13 +29,15 @@ perl -e 'alarm 590; exec @ARGV' -- \
 ```
 
 Отчёт целиком — `report.json` рядом. Он содержит вердикты, номера PR, SHA, HTTP-статусы и
-остатки лимита, без тел ответов. Оба репо публичные.
+заголовки лимита анонимных запросов (`x-ratelimit-remaining`, `x-ratelimit-limit`), без тел
+ответов. Оба репо публичные. Любое чтение до вердикта, ответившее не 200, даёт строку
+`not_verified` со статусом, а не обрыв прогона.
 
 ## Цели
 
 | Репо | Что читалось |
 |---|---|
-| `andrei-shtanakov/devtools` (публичный) | обход всех PR (547 узлов, GraphQL `StewardV3SmokeScan`): отзывы, мержеры, состояния, авторы, PENDING; `compare` для пп. 4 и 8; ветка `feat/criteria-closure-v1-parity`; закрытый несмёрженный #606 |
+| `andrei-shtanakov/devtools` (публичный) | обход всех PR (547 узлов, GraphQL `StewardV3SmokeScan`): отзывы и их акторы, мержеры, состояния, авторы, PENDING. Ревью и события отзыва каждого PR уместились в одну страницу (`truncated: []` в отчёте), так что отрицательные утверждения покрывают все ревью; `compare` для пп. 4 и 8; ветка `feat/criteria-closure-v1-parity`; закрытый несмёрженный #606 |
 | `andrei-shtanakov/approval-policy` (публичный) | H1–H6 анонимно, `read_policy_history` через анонимный транспорт |
 
 Приватные стенды не читались (п. 1: запись не разрешена владельцем).
@@ -48,9 +51,9 @@ perl -e 'alarm 590; exec @ARGV' -- \
 | 3 | Открытый PR (`open`/`OPEN`, `read_open_review`) | **not_verified** | открытых PR в devtools на момент прогона нет (в approval-policy PR нет вовсе) |
 | 4a | `compare` → `ahead` | **verified** | `compare/9da14cf…...aa4e7e3…` (родитель → голова `master`): HTTP 200, `status: "ahead"` |
 | 4b | `compare` → `diverged` | **verified** | `compare/master...a038c21…` (голова несмёрженного #606): HTTP 200, `status: "diverged"` |
-| 5 | Удалённый пользователь (`null`/`ghost`) | **not_verified** | среди авторов PR, авторов ревью и мержеров 547 PR нет ни `null`, ни `ghost`, ни типа вне `User`/`Bot` |
+| 5 | Удалённый пользователь (`null`/`ghost`) | **not_verified** | среди авторов ревью и мержеров 547 PR нет ни `null`, ни `ghost`, ни типа вне `User`/`Bot`. Это акторы, которые библиотека судит по §3.4.1: ревью через `read_open_review`, мержера через `read_act_facts`. Отдельно проверены авторы PR (они вне §3.4.1, такой случай дал бы только `not_verified`): удалённых тоже нет |
 | 6 | Видимость чужого PENDING-ревью | **not_verified** | в обходе 0 PENDING-ревью. Без второй учётки нельзя отличить «чужих PENDING нет» от «чужие PENDING не видны» |
-| 7 | Анонимный транспорт на `approval-policy`: H1–H6 без токена, остаток лимита | **verified** | H1–H6 — все HTTP 200 без токена. `read_policy_history(main, anchor=head 12d198f…)` → `HistoryViolation: commit_without_pr`, это не `Unavailable`. `x-ratelimit-remaining` 59 → 50 за 10 запросов |
+| 7 | Анонимный транспорт на `approval-policy`: H1–H6 без токена, остаток лимита | **verified** | H1–H6 — все HTTP 200 без токена. `read_policy_history(main, anchor=head 12d198f…)` → `HistoryViolation: commit_without_pr`, это не `Unavailable`. `x-ratelimit-limit` 60 у каждого ответа: это анонимная квота, credentials не ушли. `x-ratelimit-remaining` 59 → 50 за 10 запросов |
 | 8 | `compare` с `/` в имени базы (`%2F`) | **verified** | база `feat/criteria-closure-v1-parity`, голова `aa4e7e3…`. Закодированная (`feat%2Fcriteria-closure-v1-parity`) и незакодированная формы дают одинаковый ответ: HTTP 200, `("diverged", ahead_by 756, behind_by 2, merge_base 069d154…)`. Так через `gh`, и так через анонимный `urllib`, который шлёт `%2F` на провод как есть |
 | 9 | Ассоциации промежуточного коммита rebase-merge, `merge_commit_sha` однокоммитного rebase-merge, ассоциации вне ветки по умолчанию | **not_verified** | вне смоука: стенд devtools, Task 18 №28 |
 
@@ -85,10 +88,16 @@ perl -e 'alarm 590; exec @ARGV' -- \
   merge-коммит лежит вне базы. Сведение статуса к `in_base` покрыто векторами.
 - **П. 7**: approval-policy по-прежнему состоит из одного корневого прямого коммита без PR
   (как в наблюдении §3.8). Поэтому `read_policy_history` останавливается на H4 с
-  `commit_without_pr`, а H5 и H6 прочитаны отдельными анонимными запросами. Первый
-  прогон того же дня (до финальной правки п. 8) дал те же исходы; лимит в нём упал
-  59 → 48 за 12 запросов. Окно анонимного лимита — по IP, так что цифры между прогонами
-  не складываются.
+  `commit_without_pr`, а H5 и H6 прочитаны отдельными анонимными запросами. H6 читает
+  блоб `policy/approvers.env`. Всего анонимных запросов за прогон 12 (10 — п. 7, 2 — п. 8),
+  остаток 59 → 48. Два прогона того же дня до правок ревью (последний в 12:35:47Z) дали те же
+  исходы. Каждый прогон начинался с остатка 59, то есть расход между прогонами не
+  накапливался. Как именно GitHub ведёт окно анонимного лимита, по этим цифрам не
+  установить: перед финальным прогоном `GET rate_limit` без токена показал 60 из 60.
+- **П. 8**: закодированный путь строит `compare_path` скрипта. Офлайн-тест
+  `tests/approvalfacts/test_smoke_script.py::test_compare_path_is_the_library_path` сверяет
+  его с путём E5, который `read_act_facts` сам отправляет для базы `feat/x`. Значит,
+  проверенная живьём форма — та, что шлёт библиотека.
 
 ## Находки
 
