@@ -50,7 +50,7 @@ from steward.approvalfacts.model import (
 )
 from steward.approvalfacts.publish import ConfigError
 from steward.approvalfacts.reader import UnreadableFacts, detect_legacy_v1, load_facts
-from steward.gatecheck.checks import Artifact, Finding
+from steward.gatecheck.checks import ActStatuses, Artifact, Finding
 from steward.gatecheck.git_facts import GitFacts
 
 __all__ = [
@@ -249,9 +249,6 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
         agent_merge_allowed=agent_merge_allowed,
         approval_facts_lease_seconds=approval_facts_lease_seconds,
     )
-
-
-_APPROVED = "approved"
 
 
 @dataclass(frozen=True)
@@ -483,6 +480,7 @@ def check_approval_evidence(
     facts: FactsOutcome | None,
     *,
     stage: str,
+    statuses: ActStatuses,
 ) -> list[Finding]:
     """GC-APPROVAL-MISSING: release-гейт merge-evidence как комбинатор (§8.1).
 
@@ -510,6 +508,10 @@ def check_approval_evidence(
 
     Комбинатор никогда не читает ``MergeProvenance.actor``/``actor_source`` —
     это путь прямой инъекции для фикстур, а не авторитетный источник.
+
+    Артефакт берётся при ``statuses.in_scope`` (approval-facts v3 §7.2.2): при
+    ``legacy`` это ровно прежнее ``status == approved``, при ``review``
+    заявленный, но не установленный провайдером узел проверку не выключает.
     """
     if stage != "release":
         return []
@@ -521,7 +523,7 @@ def check_approval_evidence(
 
     findings: list[Finding] = []
     for artifact in artifacts:
-        if artifact.node_id is None or artifact.meta.status != _APPROVED:
+        if artifact.node_id is None or not statuses.in_scope(artifact):
             continue
         if not git.on_default_branch(artifact.path):
             continue

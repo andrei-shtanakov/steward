@@ -639,6 +639,7 @@ product decision record (и наоборот). Как approved proposal стан
 `docs/superpowers/plans/2026-10-30-approval-facts-v3.md` (черновик, до подписи владельцем).
 
 - [ ] Выпустить M0: контракт `approval-facts/v3` + векторы §5.6, библиотека `steward.approvalfacts.v3` (`read_act_facts`, `effective_reviews`, `read_policy_history`, `read_open_review`, `read_activation`), запрет `human ∩ agent`, провайдер статуса узла `node_status`, миграция `gate-check --stage release` на запись `delivery`; релиз с тегом и ответом в steward#211 @owner:github:andrei-shtanakov @id:approval-facts-v3 @epic:eco.dark-factory — решения контроллера (бывш. Q3, Q5, Q6, Q9) подтверждаются подписью владельца, §11 спеки; признак «сделано» — тег и SHA в ответе #211, а не мерж
+- [ ] Handoff в Maestro, dispatcher и spec-runner на ре-вендоринг `profiles/gate-catalog.yaml` v3 (три кода `GC-ACT-*`) @owner:github:andrei-shtanakov @trigger:"M0 выпущен: тег v0.2.0 и ответ в steward#211" @id:gate-catalog-v3-revendor-handoff @epic:eco.dark-factory — M0 Task 9 добавил `GC-ACT-MODE-CONFLICT`, `GC-ACT-PROVIDER-MISSING`, `GC-ACT-NOT-APPROVED` (approval, authoring+release) и по правилу каталога поднял `version` 2 → 3; у потребителей неизвестный GC-id — fail-closed, поэтому их копия должна догнать до того, как вердикты с этими кодами до них дойдут. Признак «сделано» — inbox-issue в каждом из трёх репо со `slug:` и пином
 
 ---
 

@@ -244,7 +244,16 @@ def _write_bundle(tmp_path: Path, charter: str) -> Path:
 
 def _run(spec: Path, *extra: str):
     return runner.invoke(
-        app, [str(spec), "--profile", str(spec.parent / "test.yaml"), "--candidate", *extra]
+        app,
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(spec.parent / "test.yaml"),
+            "--candidate",
+            *extra,
+        ],
     )
 
 

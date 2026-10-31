@@ -54,7 +54,15 @@ def _bundle(tmp_path: Path, *nodes: str, d_traces: bool = True) -> Path:
 def _run(spec: Path, *extra: str) -> object:
     return runner.invoke(
         app,
-        [str(spec), "--profile", str(spec.parent / "waves.yaml"), "--candidate", *extra],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(spec.parent / "waves.yaml"),
+            "--candidate",
+            *extra,
+        ],
     )
 
 
@@ -149,6 +157,8 @@ def test_upto_with_stage_release_is_config_error(
     result = runner.invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(tmp_path / "waves.yaml"),
@@ -168,7 +178,16 @@ def test_upto_with_emit_verdicts_is_config_error(
     spec = _bundle(tmp_path, "a")
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(tmp_path / "waves.yaml"), "--upto", "a", "--emit-verdicts"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(tmp_path / "waves.yaml"),
+            "--upto",
+            "a",
+            "--emit-verdicts",
+        ],
     )
     assert result.exit_code == 2
     assert "--upto judges an incomplete bundle" in result.stderr
@@ -210,6 +229,8 @@ def test_upto_with_approval_facts_is_config_error(
     result = runner.invoke(
         app,
         [
+            "--act-mode",
+            "legacy",
             str(spec),
             "--profile",
             str(tmp_path / "waves.yaml"),

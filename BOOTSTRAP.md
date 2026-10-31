@@ -121,7 +121,7 @@ jobs:
         with: { fetch-depth: 0 }   # нужен для status↔git/stale
       - uses: astral-sh/setup-uv@v3
       - run: uv sync
-      - run: uv run gate-check --profile team spec/ --no-fs facts.json
+      - run: uv run gate-check --act-mode legacy --profile team spec/ --no-fs facts.json
 ```
 
 ### CLAUDE.md  (конвенция экосистемы — продублировать правило)

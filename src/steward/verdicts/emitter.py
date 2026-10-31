@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from steward.gatecatalog import GateCatalog
-from steward.gatecheck.checks import Artifact, Finding
+from steward.gatecheck.checks import ActStatuses, Artifact, Finding
 from steward.graph import SpecGraph
 from steward.meta import parse_owner_roles
 from steward.verdicts.chain import serialize_chained
@@ -61,6 +61,8 @@ def emit_verdicts(
     findings: list[Finding],
     spec_dir: Path,
     catalog: GateCatalog,
+    *,
+    statuses: ActStatuses,
 ) -> Path:
     """Write the run's verdicts file; return its path.
 
@@ -76,6 +78,11 @@ def emit_verdicts(
     the whole run with :class:`EmitError` before anything is written. An
     active finding's record carries the catalog's ``obligation`` alongside
     its ``gate_id``.
+
+    ``statuses`` is the run's act result (approval-facts v3 §7.2.2): under
+    ``review`` an artifact is written ``approved`` only when the act
+    established it, and a frontmatter claim the act did not establish is
+    ``unknown``.
     """
     _check_catalog_coverage(findings, catalog)
     repo_root = _git(spec_dir, "rev-parse", "--show-toplevel")
@@ -114,7 +121,7 @@ def emit_verdicts(
                 "kind": "artifact",
                 "path": artifact.path,
                 "node_id": artifact.node_id,
-                "status": _status(artifact),
+                "status": _status(artifact, statuses),
                 "owner_roles": _role_slugs(graph, artifact),
             }
         )
@@ -168,7 +175,12 @@ def _check_catalog_coverage(findings: list[Finding], catalog: GateCatalog) -> No
     raise EmitError(f"cannot emit verdicts: {'; '.join(parts)}")
 
 
-def _status(artifact: Artifact) -> str:
+def _status(artifact: Artifact, statuses: ActStatuses) -> str:
+    if statuses.act_mode == "review":
+        if statuses.established(artifact):
+            return "approved"
+        if statuses.claimed(artifact):
+            return "unknown"
     status = artifact.meta.status
     return status if status in ("draft", "approved", "stale", "in_review") else "unknown"
 
