@@ -4,6 +4,14 @@ Each check is ``(graph, artifacts[, git]) -> list[Finding]`` — no I/O, no
 ordering dependencies, independently unit-testable. The aggregator
 (:func:`run_checks`) concatenates findings; the CLI maps them to exit codes.
 
+The act layer (approval-facts v3 §7.2) also lives here, because every check
+that reads approval depends on it: :func:`collect_bundle` takes the caller's
+mandatory ``act_mode``; :func:`act_statuses` resolves the node status
+provider's answers once, against a :class:`Snapshot` of the bytes on disk, and
+the checks receive the resulting :class:`ActStatuses`. Order: collect →
+statuses → checks. Like ``collect_bundle``, the snapshot and the
+``GC-ACT-MODE-CONFLICT`` detector read the filesystem; the checks stay pure.
+
 Deferred by design (documented, not forgotten):
 
 - REQ-209 OSS bridge (repolinter / codeowners-validator) is P2 and follows
@@ -12,25 +20,75 @@ Deferred by design (documented, not forgotten):
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
-from collections.abc import Iterable
+import subprocess
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+import yaml
 
 from steward.compile.decomposition import (
     CompileError,
     extract_compile_block,
     parse_decomposition,
 )
+from steward.gatecheck.candidate import blob_hash_of
 from steward.gatecheck.git_facts import FactsError, GitFacts
 from steward.graph import SpecGraph
 from steward.meta import ArtifactMeta, MetaError, parse_artifact
 from steward.roleassignments import RoleAssignments
 
-__all__ = ["Artifact", "Finding", "collect_bundle", "relaxable", "run_checks"]
+__all__ = [
+    "ABSENT_FROM_PROVIDER",
+    "BUNDLE_ARTIFACT",
+    "DELEGATED_RULES",
+    "INVALID_ANSWER",
+    "NO_PROVIDER",
+    "PROVIDER_ERROR",
+    "ActMode",
+    "ActStatuses",
+    "Artifact",
+    "Finding",
+    "NodeStatus",
+    "Snapshot",
+    "SnapshotError",
+    "act_conflict",
+    "act_statuses",
+    "check_act_status",
+    "collect_bundle",
+    "delegated",
+    "relaxable",
+    "run_checks",
+    "snapshot_digest",
+    "snapshot_for",
+]
 
 _APPROVED = "approved"
+
+#: The caller's admission result (approval-facts v3 §7.2.1, R-M0-1/R-M0-5):
+#: steward never infers it — not from files, not from history.
+ActMode = Literal["legacy", "review"]
+_ACT_MODES: tuple[str, ...] = ("legacy", "review")
+_REVIEW_ACT = "review/v1"
+
+#: Provider answers steward substitutes itself (§7.2.2). Each is a valid answer
+#: form, so a substituted reason travels exactly like a provider's own.
+INVALID_ANSWER = "not_approved:invalid_provider_answer"
+PROVIDER_ERROR = "unavailable:provider_error"
+ABSENT_FROM_PROVIDER = "unavailable:absent_from_provider"
+NO_PROVIDER = "unavailable:no_status_provider"
+
+#: Codes ``check_stale_cascade`` hands over to the provider for an established
+#: node in ``review`` (§7.2.3): the provider answers for this snapshot's bytes
+#: and the envelope's pins, so the frontmatter pin cascade is redundant there.
+DELEGATED_RULES: tuple[str, ...] = ("GC-STALE", "GC-STALE-UNPINNED", "GC-STALE-KEY")
+
+#: ``Finding.artifact`` of a finding about the bundle as a whole.
+BUNDLE_ARTIFACT = "<bundle>"
 
 
 @dataclass(frozen=True)
@@ -53,13 +111,163 @@ class Artifact:
     text: str
 
 
-def collect_bundle(graph: SpecGraph, spec_dir: Path) -> tuple[list[Artifact], list[Finding]]:
+class SnapshotError(RuntimeError):
+    """The snapshot's bytes cannot be read (config-level, exit 2 — never a skip)."""
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """The bytes a run judges, which a node status provider must answer for (§7.2.3).
+
+    ``root`` is the repo root for ``live``, the candidate directory for
+    ``candidate`` and the bundle for ``injected``; ``commit`` is HEAD for
+    ``live`` and ``None`` otherwise. Build it only through :func:`snapshot_for`.
+    """
+
+    kind: Literal["live", "candidate", "injected"]
+    root: Path
+    commit: str | None
+    digest: str
+
+
+#: A node status provider: ``(node_id, snapshot) -> answer``, where the answer
+#: is ``approved`` | ``not_approved:<reason>`` | ``unavailable:<reason>``.
+NodeStatus = Callable[[str, Snapshot], str]
+
+
+def bundle_dir(spec_dir: Path) -> Path:
+    """The bundle path at the boundary, guarded so ``..`` is its repo-tree parent.
+
+    ``os.path.abspath`` collapses ``.`` and ``x/..`` without following links, so
+    ``<spec_dir>/../approvals/`` is the sibling *as it sits in the tree* (git
+    stores a symlink as a link). A bundle or ``approvals/`` directory that is
+    itself a symlink is refused (:class:`SnapshotError`) rather than located by
+    guess: following it would read approvals from beside the link's target,
+    possibly outside the repository, and the digest would cover other envelopes
+    than the tree shows. Symlinks among the ancestors (``/tmp``, ``/var`` on
+    macOS, a symlinked clone directory) move the bundle and its sibling
+    together and are allowed. The guarded path is returned physically
+    resolved, so its ``.parent`` is the sibling's directory.
+    """
+    lexical = Path(os.path.abspath(spec_dir))
+    for candidate in (lexical, lexical.parent / "approvals"):
+        if candidate.is_symlink():
+            raise SnapshotError(
+                f"snapshot: {candidate} is a symlink; approvals/ would not be the "
+                "bundle's repo-tree sibling — pass the real directory"
+            )
+    return lexical.resolve()
+
+
+def approvals_dir(spec_dir: Path) -> Path:
+    """``<spec_dir>/../approvals/`` — where envelopes and request manifests live.
+
+    Through :func:`bundle_dir`: ``Path(".").parent`` is ``.`` itself, so a
+    relative bundle path would put ``approvals/`` *inside* the bundle, and a
+    symlinked bundle would put it beside the link's target.
+    """
+    return bundle_dir(spec_dir).parent / "approvals"
+
+
+def snapshot_digest(spec_dir: Path) -> str:
+    """``sha256:`` over sorted ``"<git blob id> <path>\\n"`` lines of the snapshot's files.
+
+    Every file on disk under ``spec_dir`` and ``<spec_dir>/../approvals/`` —
+    the bytes ``collect_bundle`` reads. Paths are ``bundle/<rel>`` and
+    ``approvals/<rel>``, so the digest addresses content, not location: the
+    same bytes give the same digest wherever the bundle sits. An unreadable
+    file or directory raises :class:`SnapshotError`; skipping it would let a
+    provider's answer cover bytes nobody hashed. A non-regular file (a FIFO, a
+    dangling symlink) is the same error — reading it would block or fail.
+    """
+    spec_dir = bundle_dir(spec_dir)
+    lines = []
+    for label, root in (("bundle", spec_dir), ("approvals", approvals_dir(spec_dir))):
+        if label == "approvals" and not root.exists():
+            continue
+        for path in _walk_files(root):
+            if not path.is_file():
+                raise SnapshotError(f"snapshot: {path} is not a regular file")
+            try:
+                data = path.read_bytes()
+            except OSError as err:
+                raise SnapshotError(f"snapshot: cannot read {path}: {err}") from err
+            lines.append(f"{blob_hash_of(data)} {label}/{path.relative_to(root).as_posix()}\n")
+    payload = "".join(sorted(lines)).encode()
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _walk_files(root: Path) -> list[Path]:
+    """Every file under ``root``; a symlinked directory anywhere below is refused.
+
+    ``os.walk`` neither follows nor reports such a directory, so its files would
+    be invisible to the digest and to the act-conflict detector alike — the
+    same redirection :func:`bundle_dir` refuses for the bundle and ``approvals/``.
+    """
+
+    def fail(err: OSError) -> None:
+        raise SnapshotError(f"snapshot: cannot list {err.filename}: {err}") from err
+
+    files: list[Path] = []
+    for top, dirs, names in os.walk(root, onerror=fail):
+        for name in dirs:
+            if (Path(top) / name).is_symlink():
+                raise SnapshotError(
+                    f"snapshot: {Path(top) / name} is a symlinked directory; "
+                    "its files would be neither hashed nor checked"
+                )
+        files.extend(Path(top) / name for name in names)
+    return files
+
+
+def snapshot_for(
+    run: Literal["live", "candidate", "injected"], spec_dir: Path, repo_root: Path | None
+) -> Snapshot:
+    """The one place a :class:`Snapshot` is built — from the run's own inputs.
+
+    For ``candidate`` the root is the candidate directory, never the checkout
+    of the base: an answer computed over the base would cover other bytes.
+    Path inputs are resolved here, at the boundary.
+    """
+    spec_dir = bundle_dir(spec_dir)
+    digest = snapshot_digest(spec_dir)
+    if run != "live":
+        return Snapshot(kind=run, root=spec_dir, commit=None, digest=digest)
+    if repo_root is None:
+        raise ValueError("snapshot_for('live', ...) needs the repo root")
+    if not spec_dir.is_relative_to(repo_root.resolve()):
+        raise SnapshotError(f"snapshot: bundle {spec_dir} is outside the repository {repo_root}")
+    proc = subprocess.run(  # noqa: S603 S607 — fixed argv, no user input
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(f"snapshot: cannot resolve HEAD of {repo_root}")
+    return Snapshot(
+        kind="live", root=repo_root.resolve(), commit=proc.stdout.strip(), digest=digest
+    )
+
+
+def collect_bundle(
+    graph: SpecGraph, spec_dir: Path, *, act_mode: ActMode
+) -> tuple[list[Artifact], list[Finding]]:
     """Scan a bundle dir: parse managed artifacts, match them to profile nodes.
 
     Unmanaged files (no frontmatter / no spec_stage) pass through untouched
     (REQ-208). A managed stage the profile does not know is a warning; two
     artifacts claiming the same node is an error.
+
+    ``act_mode`` is the caller's admission result and has no default (R-M0-5).
+    Under ``legacy`` the obvious-contradiction detector runs
+    (:func:`act_conflict`, ``GC-ACT-MODE-CONFLICT``). The path goes through
+    :func:`bundle_dir`, so a symlinked bundle or ``approvals/`` directory raises
+    :class:`SnapshotError`.
     """
+    if act_mode not in _ACT_MODES:
+        raise ValueError(f"act_mode must be one of {_ACT_MODES}, got {act_mode!r}")
+    spec_dir = bundle_dir(spec_dir)  # the boundary: `.`/`..` must not shift approvals/
     artifacts: list[Artifact] = []
     findings: list[Finding] = []
     claimed: dict[str, str] = {}
@@ -98,7 +306,180 @@ def collect_bundle(graph: SpecGraph, spec_dir: Path) -> tuple[list[Artifact], li
         else:
             claimed[node_id] = rel
         artifacts.append(Artifact(path=rel, node_id=node_id, meta=meta, text=text))
+    if act_mode == "legacy":
+        findings.extend(act_conflict(spec_dir))
     return artifacts, findings
+
+
+def act_conflict(spec_dir: Path) -> list[Finding]:
+    """``GC-ACT-MODE-CONFLICT``: ``legacy`` contradicted by the approvals tree (§7.2.1).
+
+    A fail-closed finding, not authority: an envelope ``<node>.yaml`` or a
+    request manifest ``requests/*.yaml`` claiming ``act: review/v1``, or a
+    directory / any YAML in it that cannot be read, contradicts the caller's
+    ``legacy``. A missing directory proves nothing and permits nothing.
+    """
+    root = approvals_dir(spec_dir)
+    if not root.exists():
+        return []
+    try:
+        files = _walk_files(root)
+    except SnapshotError as err:
+        return [_conflict(f"approvals directory is unreadable: {err}")]
+    claimed: list[str] = []
+    for path in sorted(files):
+        if path.suffix not in (".yaml", ".yml"):
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as err:
+            return [_conflict(f"approvals/{rel} is unreadable: {err}")]
+        envelope_or_manifest = path.parent == root or path.parent == root / "requests"
+        if envelope_or_manifest and isinstance(data, dict) and data.get("act") == _REVIEW_ACT:
+            claimed.append(f"approvals/{rel}")
+    if not claimed:
+        return []
+    return [_conflict(f"act: {_REVIEW_ACT} is claimed by {', '.join(claimed)}")]
+
+
+def _conflict(detail: str) -> Finding:
+    return Finding(
+        "error",
+        "GC-ACT-MODE-CONFLICT",
+        BUNDLE_ARTIFACT,
+        f"--act-mode legacy contradicts the approvals tree: {detail}",
+    )
+
+
+@dataclass(frozen=True)
+class ActStatuses:
+    """Admission result + provider answers: the one input that decides approval (§7.2.2).
+
+    ``meta.status`` is never rewritten. ``claimed`` is what frontmatter says;
+    ``established`` is what the act establishes — frontmatter under ``legacy``,
+    only the provider's ``approved`` under ``review``; ``in_scope`` (either) is
+    what every approval-reading check takes, so a provider's refusal never
+    switches a check off. Build it with :func:`act_statuses`.
+    """
+
+    act_mode: ActMode
+    provider_given: bool
+    answers: Mapping[str, str]
+    snapshot: Snapshot | None
+
+    def claimed(self, a: Artifact) -> bool:
+        """Frontmatter says ``status: approved``."""
+        return a.meta.status == _APPROVED
+
+    def established(self, a: Artifact) -> bool:
+        """The act establishes the approval."""
+        if self.act_mode == "legacy":
+            return self.claimed(a)
+        return a.node_id is not None and self.answers.get(a.node_id) == _APPROVED
+
+    def in_scope(self, a: Artifact) -> bool:
+        """Claimed or established: the artifact is taken into the approval checks."""
+        return self.claimed(a) or self.established(a)
+
+    def reason(self, a: Artifact) -> str:
+        """Why ``a`` is not established under ``review`` (the provider's answer)."""
+        if not self.provider_given:
+            return NO_PROVIDER
+        return self.answers.get(a.node_id or "", ABSENT_FROM_PROVIDER)
+
+
+def act_statuses(
+    artifacts: list[Artifact],
+    *,
+    act_mode: ActMode,
+    node_status: NodeStatus | None,
+    snapshot: Snapshot | None,
+) -> ActStatuses:
+    """Resolve approval statuses once, before the checks — the only provider call site.
+
+    A provider under ``legacy`` or without a ``snapshot`` is a call error
+    (``ValueError``): ``legacy`` has no provider by definition, and an answer
+    not bound to a snapshot is bound to nothing. A provider exception becomes
+    :data:`PROVIDER_ERROR`; an answer outside the three forms becomes
+    :data:`INVALID_ANSWER` — neither stops the gate.
+    """
+    if act_mode not in _ACT_MODES:
+        raise ValueError(f"act_mode must be one of {_ACT_MODES}, got {act_mode!r}")
+    if node_status is not None and act_mode == "legacy":
+        raise ValueError("node_status is meaningless under act_mode='legacy'")
+    if node_status is None:
+        return ActStatuses(act_mode, provider_given=False, answers={}, snapshot=snapshot)
+    if snapshot is None:
+        raise ValueError("node_status needs the snapshot it answers for")
+    answers: dict[str, str] = {}
+    for artifact in artifacts:
+        node_id = artifact.node_id
+        if node_id is None or node_id in answers:
+            continue
+        try:
+            answer = node_status(node_id, snapshot)
+        except Exception:  # noqa: BLE001 — any provider failure is an unavailable answer
+            answers[node_id] = PROVIDER_ERROR
+            continue
+        answers[node_id] = answer if _valid_answer(answer) else INVALID_ANSWER
+    return ActStatuses(act_mode, provider_given=True, answers=answers, snapshot=snapshot)
+
+
+def _valid_answer(answer: object) -> bool:
+    if not isinstance(answer, str):
+        return False
+    if answer == _APPROVED:
+        return True
+    kind, sep, reason = answer.partition(":")
+    return bool(sep) and kind in ("not_approved", "unavailable") and bool(reason)
+
+
+def delegated(artifact: Artifact, statuses: ActStatuses) -> bool:
+    """``artifact``'s :data:`DELEGATED_RULES` are the provider's, not the cascade's."""
+    return (
+        statuses.act_mode == "review"
+        and artifact.node_id is not None
+        and statuses.established(artifact)
+    )
+
+
+def check_act_status(artifacts: list[Artifact], statuses: ActStatuses) -> list[Finding]:
+    """``GC-ACT-PROVIDER-MISSING`` / ``GC-ACT-NOT-APPROVED`` (``review`` only, §7.2.2).
+
+    A bundle left without any established approval does not pass silently, and
+    every node artifact taken into scope but not established is a finding that
+    carries the provider's reason.
+    """
+    if statuses.act_mode != "review":
+        return []
+    findings = []
+    if not statuses.provider_given:
+        findings.append(
+            Finding(
+                "error",
+                "GC-ACT-PROVIDER-MISSING",
+                BUNDLE_ARTIFACT,
+                "--act-mode review without a node status provider: no approval in "
+                "this bundle can be established",
+            )
+        )
+    for artifact in artifacts:
+        if artifact.node_id is None or not statuses.in_scope(artifact):
+            continue
+        if statuses.established(artifact):
+            continue
+        findings.append(
+            Finding(
+                "error",
+                "GC-ACT-NOT-APPROVED",
+                artifact.path,
+                f"node {artifact.node_id!r} is not approved by the act "
+                f"({statuses.reason(artifact)}); frontmatter status is not authoritative "
+                "under --act-mode review",
+            )
+        )
+    return findings
 
 
 def run_checks(
@@ -107,10 +488,15 @@ def run_checks(
     git: GitFacts,
     assignments: RoleAssignments | None = None,
     *,
+    statuses: ActStatuses,
     prospective: bool = False,
     not_required: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """Run every check and concatenate their findings.
+
+    ``statuses`` (:func:`act_statuses`) is mandatory: the act mode and the
+    provider's answers reach the checks only through it, so the checks cannot
+    run without the caller's admission result (approval-facts v3 §7.2.2).
 
     ``prospective`` marks a **candidate revision** — bundle content that is not
     a git ref yet (``gate-check --candidate``, :mod:`steward.gatecheck.candidate`).
@@ -136,12 +522,13 @@ def run_checks(
     from steward.gatecheck.behaviour import check_behaviour_spec
 
     findings: list[Finding] = []
+    findings.extend(check_act_status(artifacts, statuses))
     findings.extend(check_completeness(graph, artifacts, not_required))
     findings.extend(check_traceability(graph, artifacts))
-    findings.extend(check_upstream_approved(graph, artifacts))
+    findings.extend(check_upstream_approved(graph, artifacts, statuses=statuses))
     if not prospective:
-        findings.extend(check_status_git(graph, artifacts, git, assignments))
-    findings.extend(check_stale_cascade(graph, artifacts, git))
+        findings.extend(check_status_git(graph, artifacts, git, assignments, statuses=statuses))
+    findings.extend(check_stale_cascade(graph, artifacts, git, statuses=statuses))
     findings.extend(check_compile_block(artifacts))
     findings.extend(check_behaviour_spec(graph, artifacts))
     findings.extend(check_acceptance(graph, artifacts))
@@ -248,17 +635,23 @@ def check_traceability(graph: SpecGraph, artifacts: list[Artifact]) -> list[Find
     return findings
 
 
-def check_upstream_approved(graph: SpecGraph, artifacts: list[Artifact]) -> list[Finding]:
-    """REQ-204: downstream cannot be approved before every upstream is."""
+def check_upstream_approved(
+    graph: SpecGraph, artifacts: list[Artifact], *, statuses: ActStatuses
+) -> list[Finding]:
+    """REQ-204: downstream cannot be approved before every upstream is.
+
+    The downstream is taken when ``in_scope``; the upstream must be
+    ``established`` — under ``review`` frontmatter alone approves nothing.
+    """
     present = _by_node(artifacts)
     findings = []
     for artifact in artifacts:
-        if artifact.node_id is None or artifact.meta.status != _APPROVED:
+        if artifact.node_id is None or not statuses.in_scope(artifact):
             continue
         for up in graph.nodes[artifact.node_id].upstream:
             upstream = present.get(up)
-            if upstream is None or upstream.meta.status != _APPROVED:
-                state = "missing" if upstream is None else upstream.meta.status
+            if upstream is None or not statuses.established(upstream):
+                state = _upstream_state(upstream, statuses)
                 findings.append(
                     Finding(
                         "error",
@@ -268,6 +661,14 @@ def check_upstream_approved(graph: SpecGraph, artifacts: list[Artifact]) -> list
                     )
                 )
     return findings
+
+
+def _upstream_state(upstream: Artifact | None, statuses: ActStatuses) -> str:
+    if upstream is None:
+        return "missing"
+    if statuses.act_mode == "legacy" or not statuses.claimed(upstream):
+        return f"{upstream.meta.status}"
+    return f"not established ({statuses.reason(upstream)})"
 
 
 def check_compile_block(artifacts: list[Artifact]) -> list[Finding]:
@@ -291,7 +692,7 @@ def check_compile_block(artifacts: list[Artifact]) -> list[Finding]:
 
 
 def check_stale_cascade(
-    graph: SpecGraph, artifacts: list[Artifact], git: GitFacts
+    graph: SpecGraph, artifacts: list[Artifact], git: GitFacts, *, statuses: ActStatuses
 ) -> list[Finding]:
     """REQ-206 / DESIGN-207: an approved downstream pins its upstream blob hashes.
 
@@ -301,11 +702,19 @@ def check_stale_cascade(
     re-approved (error). A downstream approved without a pin, or whose upstream
     hash cannot be resolved, only warns: pins arrive with C2-era approvals, so
     older approved artifacts must not start failing CI retroactively.
+
+    Under ``review`` an ``established`` artifact is skipped: its cascade is
+    delegated to the provider, which answers for this snapshot's bytes and the
+    envelope's pins (:data:`DELEGATED_RULES`, §7.2.3). Claimed but not
+    established keeps the frontmatter cascade — an extra finding is
+    acceptable, a skipped one is not.
     """
     present = _by_node(artifacts)
     findings = []
     for artifact in artifacts:
-        if artifact.node_id is None or artifact.meta.status != _APPROVED:
+        if artifact.node_id is None or not statuses.in_scope(artifact):
+            continue
+        if delegated(artifact, statuses):
             continue
         node = graph.nodes[artifact.node_id]
         pinned = dict(artifact.meta.upstream_hashes)
@@ -364,6 +773,8 @@ def check_status_git(
     artifacts: list[Artifact],
     git: GitFacts,
     assignments: RoleAssignments | None = None,
+    *,
+    statuses: ActStatuses,
 ) -> list[Finding]:
     """REQ-205: ``status: approved`` must be mirrored by git facts.
 
@@ -374,7 +785,7 @@ def check_status_git(
     """
     findings = []
     for artifact in artifacts:
-        if artifact.node_id is None or artifact.meta.status != _APPROVED:
+        if artifact.node_id is None or not statuses.in_scope(artifact):
             continue
         if not git.on_default_branch(artifact.path):
             findings.append(

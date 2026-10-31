@@ -12,10 +12,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from steward.gatecheck.checks import collect_bundle, run_checks
+from steward.gatecheck.checks import act_statuses, collect_bundle, run_checks
 from steward.gatecheck.git_facts import LiveGitFacts
 from steward.graph import load_profile_data
 from steward.roles import Role, RolesCatalog
+
+# Mechanical migration (Task 9, R-M0-8): pre-existing tests describe the
+# legacy act, where frontmatter is authoritative — exactly today's behaviour.
+LEGACY_STATUSES = act_statuses([], act_mode="legacy", node_status=None, snapshot=None)
 
 _PROFILE = {
     "profile": "team-exp-live",
@@ -72,8 +76,10 @@ def _init_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 def _run(repo: Path, spec: Path) -> list:
     graph = load_profile_data(_PROFILE, _CATALOG)
-    artifacts, findings = collect_bundle(graph, spec)
-    findings.extend(run_checks(graph, artifacts, LiveGitFacts(repo, spec)))
+    artifacts, findings = collect_bundle(graph, spec, act_mode="legacy")
+    findings.extend(
+        run_checks(graph, artifacts, LiveGitFacts(repo, spec), statuses=LEGACY_STATUSES)
+    )
     return findings
 
 

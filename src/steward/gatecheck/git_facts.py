@@ -61,23 +61,24 @@ direct-injection path — useful for deterministic ``--no-fs`` test fixtures
 that want to assert a specific actor without a separate evidence file — and
 this module makes no claim about how they get populated in a real run.
 The *authoritative* production path is a wholly separate typed file,
-schema ``approval-facts/v2`` (:mod:`steward.approvalfacts`), keyed by
-request identity (``{kind: "pr"|"merge_sha", value: ...}``) — deliberately
-*not* by merge commit SHA (invariant 6: ``merge_sha`` is an observed field
-on a result, never the record's key, so that a ``pr`` and a ``merge_sha``
+schema ``approval-facts/v3`` (:mod:`steward.approvalfacts.v3.release_reader`; v2 is
+frozen and rejected as ``legacy_v2``), keyed by request identity
+(``{kind: "pr"|"merge_sha", value: ...}``) — deliberately
+*not* by merge commit SHA (invariant 6: ``delivery.merge_commit`` is an observed
+field on a result, never the record's key, so that a ``pr`` and a ``merge_sha``
 request for the same merge can coexist as aliases) — and materialized
 independently via GitHub's ``mergedBy`` (the ``steward approval-facts``
 CLI). ``approval-facts/v1`` is legacy: it is detected explicitly and
-rejected rather than interpreted (:func:`steward.approvalfacts.reader.detect_legacy_v1`).
-v2 is decoupled from facts.json on purpose: merge-actor evidence comes
+rejected rather than interpreted (``detect_legacy_v1`` in the v2 reader module).
+v3 is decoupled from facts.json on purpose: merge-actor evidence comes
 from a different authority (forge API, not git) than everything else in
 this file, is fetched per request rather than per artifact path, and
 needs to be cacheable/reusable across runs without recomputing every
 other fact. The gate resolves it by merge SHA at read time
-(:func:`ApprovalFactsV2.by_merge_sha`), which is why this dataclass's
+(:func:`ApprovalFactsV3.by_merge_sha`), which is why this dataclass's
 ``sha`` is what a live merge commit gets looked up by, even though the
 file itself keys on request identity. Combining a live
-:class:`MergeProvenance`'s ``sha`` with an ``approval-facts/v2`` mapping —
+:class:`MergeProvenance`'s ``sha`` with an ``approval-facts/v3`` mapping —
 and turning "sha not present" / "identity present but unclassifiable" into
 the ``unknown`` vs ``unavailable`` distinction — is the consuming check's
 job (:mod:`steward.gatecheck.approval`), not this module's.
@@ -136,8 +137,8 @@ class MergeProvenance:
     current_blob_sha: str
     merge_method: str  # v1: "merge_commit"
     # test-fixture injection only (--no-fs facts.json), never the
-    # authoritative source: that is approval-facts/v2
-    # (steward.approvalfacts), whose results the gate looks up by the `sha`
+    # authoritative source: that is approval-facts/v3
+    # (steward.approvalfacts.v3.release_reader), whose results the gate looks up by the `sha`
     # above. The combinator takes that evidence as its own argument
     # (check_approval_evidence's `facts`) — never off this field.
     actor: str | None

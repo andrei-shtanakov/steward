@@ -23,10 +23,12 @@ would drift. Permission has to arrive as an explicit ``true``; it never appears
 on its own. Consuming the value belongs to ``check_approval_evidence``, not to
 ``classify_actor``.
 
-The module also owns the gate's half of the ``approval-facts/v2`` migration:
-``resolve_facts`` turns a path into either :class:`ApprovalFactsV2` or a typed
-:class:`FactsUnavailable`, and ``check_approval_evidence`` combines that with
-git provenance, scope membership, the terminal result and the current policy.
+The module also owns the gate's half of the release-gate contract — the
+``approval-facts/v3`` file (approval-facts v3 §6; v2 is frozen and recognised only
+to be rejected as ``legacy_v2``): ``resolve_facts`` turns a path into either
+:class:`ApprovalFactsV3` or a typed :class:`FactsUnavailable`, and
+``check_approval_evidence`` combines that with git provenance, scope membership,
+the terminal result with its ``delivery`` record and the current policy.
 Classification itself is NOT redone there — it arrives in the file, produced
 under exactly the policy bytes whose digest ``resolve_facts`` verifies. Two
 policy engines able to diverge is the defect this contract exists to prevent.
@@ -41,16 +43,16 @@ from pathlib import Path
 
 import yaml
 
-from steward.approvalfacts.model import (
-    MAX_LEASE_SECONDS,
-    ActorType,
-    ApprovalFactsV2,
-    RequestId,
-    Result,
-)
+from steward.approvalfacts.model import MAX_LEASE_SECONDS, ActorType, RequestId
 from steward.approvalfacts.publish import ConfigError
-from steward.approvalfacts.reader import UnreadableFacts, detect_legacy_v1, load_facts
-from steward.gatecheck.checks import Artifact, Finding
+from steward.approvalfacts.reader import UnreadableFacts, detect_legacy_v1
+from steward.approvalfacts.v3.release_reader import (
+    ApprovalFactsV3,
+    ReleaseResult,
+    detect_legacy_v2,
+    load_release_facts,
+)
+from steward.gatecheck.checks import ActStatuses, Artifact, Finding
 from steward.gatecheck.git_facts import GitFacts
 
 __all__ = [
@@ -85,12 +87,27 @@ class ApprovalPolicy:
     human_identities: frozenset[str]
     agent_identities: frozenset[str]
     agent_merge_allowed: bool = False
-    #: Lease (§6.4) on an `approval-facts/v2` observation: `valid_until =
+    #: Lease (§6.4) on an `approval-facts` observation: `valid_until =
     #: generated_at + approval_facts_lease_seconds`. `load_approval_policy`
     #: requires the key in the policy *file* (no silent default there); this
     #: dataclass default exists only so tests/callers that build a policy
     #: in-process without going through the loader keep working.
     approval_facts_lease_seconds: int = 86400
+
+    def __post_init__(self) -> None:
+        """Reject an identity in both lists (§7.1): ``classify_actor`` would
+        otherwise let ``human`` win silently by check order."""
+        both = _intersection_message(self.human_identities, self.agent_identities)
+        if both:
+            raise PolicyError(both)
+
+
+def _intersection_message(human: frozenset[str], agent: frozenset[str]) -> str | None:
+    """Sorted, deterministic error text for ``human & agent``, or ``None``."""
+    both = sorted(human & agent)
+    if not both:
+        return None
+    return f"identities in both human_identities and agent_identities: {both}"
 
 
 def classify_actor(identity: str | None, hint: str | None, policy: ApprovalPolicy) -> ActorType:
@@ -215,6 +232,10 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
     human_identities = _check_identity_list(data["human_identities"], "human_identities", path)
     agent_identities = _check_identity_list(data["agent_identities"], "agent_identities", path)
 
+    both = _intersection_message(human_identities, agent_identities)
+    if both:
+        raise PolicyError(f"{path}: {both}")
+
     agent_merge_allowed = data.get("agent_merge_allowed", False)
     if not isinstance(agent_merge_allowed, bool):
         raise PolicyError(f"{path}: 'agent_merge_allowed' must be a bool")
@@ -232,15 +253,12 @@ def load_approval_policy(path: Path) -> ApprovalPolicy:
     )
 
 
-_APPROVED = "approved"
-
-
 @dataclass(frozen=True)
 class FactsUnavailable:
     """Исход чтения источника фактов как ТИПИЗИРОВАННОЕ значение.
 
     Гейт не переоткрывает файл и не переразбирает ошибки чтения: он получает
-    либо :class:`ApprovalFactsV2`, либо этот объект. ``code`` — закрытый
+    либо :class:`ApprovalFactsV3`, либо этот объект. ``code`` — закрытый
     словарь причин (:data:`FACTS_UNAVAILABLE_CODES`), и различает строки 1-5
     таблицы §8.3 именно он; ``detail`` несёт диагностику читателя (путь,
     нарушенный инвариант) и в различении не участвует — два разных ``code``
@@ -252,7 +270,7 @@ class FactsUnavailable:
 
 
 #: Исход разрешения источника: факты либо типизированная причина их отсутствия.
-FactsOutcome = ApprovalFactsV2 | FactsUnavailable
+FactsOutcome = ApprovalFactsV3 | FactsUnavailable
 
 
 #: Сообщение на каждую причину недоступности. Ключи этого словаря —
@@ -267,7 +285,11 @@ _UNAVAILABLE_MESSAGES: dict[str, str] = {
         "facts source is an unsupported legacy approval-facts/v1; "
         "reissue it with the `steward approval-facts` command"
     ),
-    "unreadable": ("facts source is not a valid approval-facts/v2 and cannot be read in full"),
+    "legacy_v2": (
+        "facts source is an unsupported approval-facts/v2; "
+        "reissue it with the `steward approval-facts` command"
+    ),
+    "unreadable": ("facts source is not a valid approval-facts/v3 and cannot be read in full"),
     "policy_digest_mismatch": (
         "observation was produced under a DIFFERENT classification policy: policy_digest "
         "does not match the current approval-policy.yaml bytes"
@@ -278,7 +300,8 @@ _UNAVAILABLE_MESSAGES: dict[str, str] = {
     "stale": "observation is stale: lease has expired",
 }
 
-#: Закрытый набор причин недоступности (§8.3, строки 1-5 плюс правило §8.3.1).
+#: Закрытый набор причин недоступности (§8.3, строки 1-5 плюс правило §8.3.1;
+#: `legacy_v2` — approval-facts v3 §6).
 FACTS_UNAVAILABLE_CODES = frozenset(_UNAVAILABLE_MESSAGES)
 
 
@@ -324,8 +347,15 @@ def resolve_facts(
         if explicit:
             raise ConfigError(f"unsupported legacy approval-facts/v1: {path}")
         return FactsUnavailable("legacy_v1", detail)
+    # v2-читатель больше не вызывается; распознавание v2 — до любого разбора (перенос
+    # Task 10): «другая версия» — действие оператора «перевыпустить», не «починить
+    # файл» (approval-facts v3 §6).
+    if detect_legacy_v2(path):
+        if explicit:
+            raise ConfigError(f"unsupported legacy approval-facts/v2: {path}")
+        return FactsUnavailable("legacy_v2", f"{path}: detected approval-facts/v2")
     try:
-        facts = load_facts(path, expected_repository=expected_repository, now=now)
+        facts = load_release_facts(path, expected_repository=expected_repository, now=now)
     except UnreadableFacts as exc:
         if explicit:
             raise ConfigError(str(exc)) from exc
@@ -377,6 +407,11 @@ _SOURCE_CONFLICT: dict[str, str] = {
     ),
 }
 
+#: Строка между 8 и 9 (approval-facts v3 §6): мерж наблюдён, но форж не подтверждает,
+#: что merge-коммит достижим из базы PR. Ветки базы в файле гейта нет
+#: (`delivery_record` её не несёт), поэтому сообщение называет базу PR, а не ветку.
+_NOT_IN_BASE = "merge {sha} is not reachable from base of its PR (in_base: false)"
+
 _ACTOR_UNAVAILABLE = (
     "merge {sha} was observed, but the actor cannot be resolved (actor_unavailable)"
 )
@@ -404,7 +439,7 @@ def _unavailable_message(sha: str, outcome: FactsUnavailable) -> str:
     return f"{message} [{outcome.detail}]" if outcome.detail else message
 
 
-def _result_for_requested_sha(facts: ApprovalFactsV2, sha: str) -> Result | None:
+def _result_for_requested_sha(facts: ApprovalFactsV3, sha: str) -> ReleaseResult | None:
     """Второй lookup (§8.2): членство в scope по идентичности ЗАПРОСА.
 
     Это не то же самое, что индекс разрешённых SHA, и путать их нельзя:
@@ -439,22 +474,32 @@ def _evaluate(sha: str, facts: FactsOutcome, policy: ApprovalPolicy) -> str | No
             )
         return template.format(sha=sha)  # строки 7-8
 
+    delivery = result.delivery
+    if delivery is not None and not delivery.in_base:
+        return _NOT_IN_BASE.format(sha=sha)  # между строками 8 и 9 (v3 §6)
     if result.state == "actor_unavailable":
         return _ACTOR_UNAVAILABLE.format(sha=sha)  # строка 9
+    identity = _identity(result)
     if result.actor_class == "unknown":
-        return _ACTOR_UNKNOWN.format(sha=sha, identity=result.identity)  # строка 10
+        return _ACTOR_UNKNOWN.format(sha=sha, identity=identity)  # строка 10
     if result.actor_class == "agent":
         if policy.agent_merge_allowed:
             return None  # строка 12
-        return _AGENT_DENIED.format(sha=sha, identity=result.identity)  # строка 11
+        return _AGENT_DENIED.format(sha=sha, identity=identity)  # строка 11
     if result.actor_class == "human":
         return None  # строка 13
     # Классификации, которой нет в таблице, соответствует ОТКАЗ, а не тишина.
     # Через читателя сюда не попасть (`merged` обязан нести один из трёх
-    # классов), но эта функция публична и принимает любой `ApprovalFactsV2`;
+    # классов), но эта функция публична и принимает любой `ApprovalFactsV3`;
     # «политика удовлетворена по умолчанию» — ровно тот fail-open, который
     # закрытая классификация и запрещает.
     return _ACTOR_UNCLASSIFIED.format(sha=sha, actor_class=result.actor_class)
+
+
+def _identity(result: ReleaseResult) -> str | None:
+    """`github:<login>` мержера из `delivery.merged_by`; `None` — мержера нет."""
+    login = None if result.delivery is None else result.delivery.merged_by_login
+    return None if login is None else f"github:{login}"
 
 
 def check_approval_evidence(
@@ -464,6 +509,7 @@ def check_approval_evidence(
     facts: FactsOutcome | None,
     *,
     stage: str,
+    statuses: ActStatuses,
 ) -> list[Finding]:
     """GC-APPROVAL-MISSING: release-гейт merge-evidence как комбинатор (§8.1).
 
@@ -481,7 +527,7 @@ def check_approval_evidence(
     ``None`` эквивалентен ``FactsUnavailable("absent")`` — у «фактов нет» не
     бывает второго, молчаливого представления.
 
-    Классификация актора берётся ИЗ ФАЙЛА (``Result.actor_class``) и здесь не
+    Классификация актора берётся ИЗ ФАЙЛА (``ReleaseResult.actor_class``) и здесь не
     пересчитывается: владелец классификации один, а два policy engine способны
     разойтись (§1). Право применять её даёт строка 3 таблицы — совпадение
     ``policy_digest`` доказывает, что наблюдение выпущено под ровно теми
@@ -491,6 +537,10 @@ def check_approval_evidence(
 
     Комбинатор никогда не читает ``MergeProvenance.actor``/``actor_source`` —
     это путь прямой инъекции для фикстур, а не авторитетный источник.
+
+    Артефакт берётся при ``statuses.in_scope`` (approval-facts v3 §7.2.2): при
+    ``legacy`` это ровно прежнее ``status == approved``, при ``review``
+    заявленный, но не установленный провайдером узел проверку не выключает.
     """
     if stage != "release":
         return []
@@ -502,7 +552,7 @@ def check_approval_evidence(
 
     findings: list[Finding] = []
     for artifact in artifacts:
-        if artifact.node_id is None or artifact.meta.status != _APPROVED:
+        if artifact.node_id is None or not statuses.in_scope(artifact):
             continue
         if not git.on_default_branch(artifact.path):
             continue

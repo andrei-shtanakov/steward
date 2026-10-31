@@ -20,7 +20,9 @@ from typing import Any
 
 import pytest
 
-from steward.approvalfacts.model import RequestId, scope_digest
+from steward.approvalfacts.model import RequestId, Result, scope_digest
+from steward.approvalfacts.publish import build_header, publish
+from steward.approvalfacts.v3.release_reader import SCHEMA_VERSION_V3
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "collect_approval_facts.py"
@@ -239,29 +241,36 @@ def test_all_published_is_zero() -> None:
 
 
 def _result(n: int, state: str = "merged") -> dict[str, Any]:
-    """Запись результата, которую примет читатель контракта.
+    """Запись результата v3, которую примет читатель контракта (спека v3 §6).
 
-    `merged` по матрице полей требует 40-hex `merge_sha` и все три поля актора;
-    отрицательные состояния — наоборот, `merge_sha: null` и НИ ОДНОГО поля
-    актора. Упрощённая запись (одно `state`) не проходит `load_facts`, и это не
-    строгость ради строгости: раннер теперь спрашивает читателя, значит и
-    фикстуры обязаны писать то, что пишет настоящий продюсер.
+    `merged` по матрице полей несёт `delivery` — `delivery_record` смёржденного PR с
+    мержером и классом, `paths: []`; отрицательные состояния — `delivery: null`.
+    Упрощённая запись (одно `state`) читатель не примет, и это не строгость ради
+    строгости: раннер спрашивает читателя, значит и фикстуры обязаны писать то, что
+    пишет настоящий продюсер.
     """
-    record: dict[str, Any] = {
+    delivery = None
+    if state == "merged":
+        delivery = {
+            "merged": True,
+            "merge_commit": f"{n:040x}",
+            "merged_at": "2026-10-30T12:09:17Z",
+            "merged_by": {
+                "identity": "github:andrei-shtanakov",
+                "type_hint": "User",
+                "actor_class": "human",
+            },
+            "head_at_merge": f"{n + 1:040x}",
+            "in_base": True,
+            "paths": [],
+            "complete": True,
+        }
+    return {
         "kind": "result",
         "request": {"kind": "pr", "value": n},
         "state": state,
+        "delivery": delivery,
     }
-    if state == "merged":
-        record.update(
-            merge_sha=f"{n:040x}",
-            identity="github:andrei-shtanakov",
-            type_hint="User",
-            actor_class="human",
-        )
-    else:
-        record["merge_sha"] = None
-    return record
 
 
 def _bundle(
@@ -286,7 +295,7 @@ def _bundle(
     (path / ".steward").mkdir(parents=True, exist_ok=True)
     header: dict[str, Any] = {
         "kind": "header",
-        "schema_version": "2",
+        "schema_version": SCHEMA_VERSION_V3,
         "repository": REPO,
         "generated_at": generated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -338,6 +347,37 @@ def test_unreadable_header_is_failed(tmp_path: Path) -> None:
     (path / ".steward" / "approval_facts.jsonl").write_text("not json\n", encoding="utf-8")
 
     assert RUNNER.freshness([_entry()], tmp_path, _policy(tmp_path))[0].status == "failed"
+
+
+@pytest.mark.parametrize("actor_class", ["human", ["human"]], ids=["valid_v2", "non_str_class"])
+def test_collector_rejects_fresh_v2_bundle(tmp_path: Path, actor_class: object) -> None:
+    """Свежий, под активной политикой и полный v2-бандл больше не «пригоден»: гейт его не
+    читает (`legacy_v2`, спека v3 §6). Распознавание v2 — до любого разбора: с нестроковым
+    `actor_class` (на нём v2-читатель падает `TypeError`) исход тот же, а не трассировка.
+    Единственная v2-фикстура этого файла — написана v2-публикатором, байты не выдуманы."""
+    path = _checkout(tmp_path, "steward")
+    scope = [RequestId("pr", 1)]
+    header = build_header(
+        repository=REPO,
+        scope=scope,
+        policy_version=1,
+        policy_digest_value=POLICY_DIGEST,
+        lease_seconds=LEASE_SECONDS,
+        now=datetime.now(UTC),
+    )
+    bundle = path / ".steward" / "approval_facts.jsonl"
+    v2 = Result(scope[0], "merged", "1" * 40, "github:andrei-shtanakov", "User", "human")
+    publish(bundle, header, [v2])
+    if actor_class != "human":
+        first, row = bundle.read_text(encoding="utf-8").splitlines()
+        record = json.loads(row)
+        record["actor_class"] = actor_class
+        bundle.write_text(f"{first}\n{json.dumps(record)}\n", encoding="utf-8")
+
+    (outcome,) = RUNNER.freshness([_entry(prs=[1])], tmp_path, _policy(tmp_path))
+
+    assert outcome.status == "failed"
+    assert outcome.detail.startswith("legacy_v2:"), outcome.detail
 
 
 def test_workspace_root_has_no_default() -> None:
@@ -1344,7 +1384,7 @@ def test_result_without_state_is_not_coverage(tmp_path: Path) -> None:
     outcomes = RUNNER.freshness([_entry(prs=[95])], tmp_path, _policy(tmp_path))
 
     assert outcomes[0].status == "failed"
-    assert "не хватает обязательных полей" in outcomes[0].detail
+    assert "не хватает ['delivery', 'state']" in outcomes[0].detail
 
 
 def test_unwritable_lock_is_not_reported_as_concurrency(tmp_path: Path) -> None:
@@ -1610,7 +1650,7 @@ def test_bundle_with_non_pr_scope_is_not_the_configured_collection(tmp_path: Pat
                 "kind": "result",
                 "request": {"kind": "merge_sha", "value": sha},
                 "state": "no_matching_pr",
-                "merge_sha": None,
+                "delivery": None,
             },
         ],
         header_overrides={"scope": scope, "scope_sha256": digest},

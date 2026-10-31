@@ -11,12 +11,16 @@ import pytest
 from typer.testing import CliRunner
 
 from steward.gatecatalog import load_catalog_files
-from steward.gatecheck.checks import Finding, collect_bundle, run_checks
+from steward.gatecheck.checks import Finding, act_statuses, collect_bundle, run_checks
 from steward.gatecheck.cli import app
 from steward.gatecheck.git_facts import LiveGitFacts
 from steward.graph import load_profile_data
 from steward.roles import load_roles_catalog
 from steward.verdicts import EmitError, ProvenanceError, emit_verdicts
+
+# Mechanical migration (Task 9, R-M0-8): pre-existing tests describe the
+# legacy act, where frontmatter is authoritative — exactly today's behaviour.
+LEGACY_STATUSES = act_statuses([], act_mode="legacy", node_status=None, snapshot=None)
 
 runner = CliRunner()
 
@@ -81,9 +85,11 @@ def _repo(tmp_path: Path) -> tuple[Path, Path]:
 
 def _emit(repo: Path, spec: Path) -> list[dict]:
     graph = load_profile_data(_PROFILE, ROLES)
-    artifacts, findings = collect_bundle(graph, spec)
-    findings.extend(run_checks(graph, artifacts, LiveGitFacts(repo, spec)))
-    out = emit_verdicts(graph, artifacts, findings, spec, CATALOG)
+    artifacts, findings = collect_bundle(graph, spec, act_mode="legacy")
+    findings.extend(
+        run_checks(graph, artifacts, LiveGitFacts(repo, spec), statuses=LEGACY_STATUSES)
+    )
+    out = emit_verdicts(graph, artifacts, findings, spec, CATALOG, statuses=LEGACY_STATUSES)
     assert out == repo / ".steward" / "gate_verdicts.jsonl"
     return [json.loads(line) for line in out.read_text().splitlines()]
 
@@ -157,10 +163,10 @@ def test_active_finding_record_carries_obligation_from_catalog(tmp_path: Path) -
 def test_unknown_rule_id_raises_emit_error_and_writes_nothing(tmp_path: Path) -> None:
     repo, spec = _repo(tmp_path)
     graph = load_profile_data(_PROFILE, ROLES)
-    artifacts, findings = collect_bundle(graph, spec)
+    artifacts, findings = collect_bundle(graph, spec, act_mode="legacy")
     findings.append(Finding(severity="error", rule_id="GC-GHOST", artifact="x", message="m"))
     with pytest.raises(EmitError, match="GC-GHOST"):
-        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG, statuses=LEGACY_STATUSES)
     assert not (repo / ".steward" / "gate_verdicts.jsonl").exists()
 
 
@@ -189,10 +195,10 @@ def test_declared_rule_id_is_refused_like_unknown(tmp_path: Path) -> None:
     )
 
     graph = load_profile_data(_PROFILE, ROLES)
-    artifacts, findings = collect_bundle(graph, spec)
+    artifacts, findings = collect_bundle(graph, spec, act_mode="legacy")
     findings.append(Finding(severity="error", rule_id="GC-FUTURE", artifact="x", message="m"))
     with pytest.raises(EmitError, match="declared") as exc_info:
-        emit_verdicts(graph, artifacts, findings, spec, declared_catalog)
+        emit_verdicts(graph, artifacts, findings, spec, declared_catalog, statuses=LEGACY_STATUSES)
     assert "GC-FUTURE" in str(exc_info.value)
     assert not (repo / ".steward" / "gate_verdicts.jsonl").exists()
 
@@ -211,9 +217,9 @@ def test_no_git_means_no_file(tmp_path: Path) -> None:
     spec.mkdir()
     (spec / "10-requirements.md").write_text(_REQUIREMENTS)
     graph = load_profile_data(_PROFILE, ROLES)
-    artifacts, findings = collect_bundle(graph, spec)
+    artifacts, findings = collect_bundle(graph, spec, act_mode="legacy")
     with pytest.raises(ProvenanceError):
-        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG, statuses=LEGACY_STATUSES)
     assert not (tmp_path / ".steward").exists()  # fail-closed: no provenance, no file
 
 
@@ -223,9 +229,9 @@ def test_unwritable_target_is_a_config_error_not_a_crash(tmp_path: Path) -> None
     repo, spec = _repo(tmp_path)
     (repo / ".steward").write_text("a file where the directory must go")
     graph = load_profile_data(_PROFILE, ROLES)
-    artifacts, findings = collect_bundle(graph, spec)
+    artifacts, findings = collect_bundle(graph, spec, act_mode="legacy")
     with pytest.raises(EmitError, match="cannot write verdicts file"):
-        emit_verdicts(graph, artifacts, findings, spec, CATALOG)
+        emit_verdicts(graph, artifacts, findings, spec, CATALOG, statuses=LEGACY_STATUSES)
 
 
 def test_cli_emit_writes_file_and_keeps_exit_semantics(tmp_path: Path) -> None:
@@ -243,7 +249,9 @@ def test_cli_emit_writes_file_and_keeps_exit_semantics(tmp_path: Path) -> None:
         (_REPO_ROOT / "profiles" / "gate-catalog.yaml").read_bytes()
     )
     (repo / "roles.yaml").write_bytes((_REPO_ROOT / "profiles" / "roles.yaml").read_bytes())
-    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
+    result = runner.invoke(
+        app, ["--act-mode", "legacy", str(spec), "--profile", str(profile), "--emit-verdicts"]
+    )
     assert result.exit_code == 0, result.output
     assert (repo / ".steward" / "gate_verdicts.jsonl").exists()
 
@@ -258,7 +266,9 @@ def test_cli_emit_with_missing_catalog_exits_two_not_traceback(tmp_path: Path) -
         "  - {id: requirements, owner_role: product, upstream: []}\n"
         "  - {id: behaviour-spec, owner_role: qa, upstream: [requirements]}\n"
     )
-    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
+    result = runner.invoke(
+        app, ["--act-mode", "legacy", str(spec), "--profile", str(profile), "--emit-verdicts"]
+    )
     assert result.exit_code == 2, result.output
     assert "config error" in result.output
 
@@ -274,7 +284,9 @@ def test_cli_emit_with_malformed_catalog_exits_two_not_traceback(tmp_path: Path)
     )
     (repo / "gate-catalog.yaml").write_text(":\n  not: [valid, yaml")
     (repo / "roles.yaml").write_bytes((_REPO_ROOT / "profiles" / "roles.yaml").read_bytes())
-    result = runner.invoke(app, [str(spec), "--profile", str(profile), "--emit-verdicts"])
+    result = runner.invoke(
+        app, ["--act-mode", "legacy", str(spec), "--profile", str(profile), "--emit-verdicts"]
+    )
     assert result.exit_code == 2, result.output
     assert "config error" in result.output
 
@@ -289,7 +301,16 @@ def test_cli_emit_refuses_no_fs(tmp_path: Path) -> None:
     )
     result = runner.invoke(
         app,
-        [str(spec), "--profile", str(profile), "--no-fs", str(facts), "--emit-verdicts"],
+        [
+            "--act-mode",
+            "legacy",
+            str(spec),
+            "--profile",
+            str(profile),
+            "--no-fs",
+            str(facts),
+            "--emit-verdicts",
+        ],
     )
     assert result.exit_code == 2  # provenance-free verdicts are forbidden, config error
 

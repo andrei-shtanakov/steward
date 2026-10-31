@@ -116,7 +116,7 @@ NOT_EVALUATED: tuple[NotEvaluated, ...] = (
     NotEvaluated(
         "GC-APPROVAL-MISSING",
         "",
-        "merge-evidence приезжает из approval-facts/v2 по merge SHA; кандидат "
+        "merge-evidence приезжает из approval-facts/v3 по merge SHA; кандидат "
         "не смержен и SHA не имеет (стадия release в этом режиме запрещена)",
     ),
 )

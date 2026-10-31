@@ -39,14 +39,22 @@ EXPECTED_ACTIVE_QUALITY = {
     "GC-UPSTREAM",
 }
 
-EXPECTED_ACTIVE = EXPECTED_ACTIVE_QUALITY | {"GC-APPROVAL-MISSING"}
+EXPECTED_ACTIVE_APPROVAL = {
+    "GC-APPROVAL-MISSING",
+    # approval-facts v3 §7.2 (M0 Task 9): act mode and node status provider.
+    "GC-ACT-MODE-CONFLICT",
+    "GC-ACT-NOT-APPROVED",
+    "GC-ACT-PROVIDER-MISSING",
+}
+
+EXPECTED_ACTIVE = EXPECTED_ACTIVE_QUALITY | EXPECTED_ACTIVE_APPROVAL
 
 
 def _catalog():
     return load_catalog_files(PROFILES / "gate-catalog.yaml", PROFILES / "roles.yaml")
 
 
-def test_v2_composition_20_active_19_quality_plus_1_approval():
+def test_v3_composition_23_active_19_quality_plus_4_approval():
     cat = _catalog()
     assert cat.active_ids() == frozenset(EXPECTED_ACTIVE)
     for gate_id in EXPECTED_ACTIVE_QUALITY:
@@ -62,6 +70,20 @@ def test_v2_composition_20_active_19_quality_plus_1_approval():
     assert approval.applicable_roles is None
     # GC-APPROVAL-ROLE не резервировать до отдельного boundary-решения
     assert cat.entry("GC-APPROVAL-ROLE") is None
+
+
+def test_act_gates_are_approval_obligations_on_both_stages():
+    # approval-facts v3 §7.2.2: «не одобрен» — находка, а не подмена статуса;
+    # три кода — записи каталога (obligation approval, authoring и release).
+    # Новые записи меняют состав, поэтому версия каталога поднята до 3.
+    cat = _catalog()
+    assert cat.version == 3
+    for gate_id in ("GC-ACT-MODE-CONFLICT", "GC-ACT-PROVIDER-MISSING", "GC-ACT-NOT-APPROVED"):
+        entry = cat.entry(gate_id)
+        assert entry is not None, gate_id
+        assert (entry.obligation, entry.status) == ("approval", "active")
+        assert set(entry.stages) == {"authoring", "release"}
+        assert entry.applicable_roles is None
 
 
 def test_obligation_vocabulary_is_exactly_quality_approval():

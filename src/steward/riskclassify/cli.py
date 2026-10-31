@@ -23,11 +23,15 @@ import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from steward.riskclassify.classify import Classification, classify_declared, classify_diff
 from steward.riskclassify.model import RiskModelError, load_risk_model
+
+if TYPE_CHECKING:
+    from steward.approvalfacts.v3.transport import Transport
 
 app = typer.Typer(
     add_completion=False,
@@ -131,10 +135,16 @@ def waivers_check(
     typer.echo(f"ok: {len(waivers)} waiver(s) valid for {head[:12]}")
 
 
-#: Форма `--merge-sha`, та же, что и везде в контракте v2 (см.
-#: `steward.approvalfacts.reader._MERGE_SHA_RE`): 40-символьный hex в
-#: нижнем регистре.
+#: Форма `--merge-sha`, та же, что и везде в контракте (см.
+#: `steward.approvalfacts.v3.release_reader`): 40-символьный hex в нижнем регистре.
 _MERGE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def make_transport() -> Transport:
+    """Транспорт продюсера `approval-facts` — точка подмены для тестов."""
+    from steward.approvalfacts.v3.transport import GhTransport
+
+    return GhTransport()
 
 
 @app.command("approval-facts")
@@ -150,11 +160,13 @@ def approval_facts(
     merge_sha: list[str] = typer.Option([], "--merge-sha", help="Merge SHA (повторяемо)."),
     prs: str | None = typer.Option(None, "--prs", help="Номера PR через запятую."),
 ) -> None:
-    """Материализовать `approval-facts/v2` и опубликовать его.
+    """Материализовать файл release-гейта `approval-facts/v3` и опубликовать его.
 
-    Порядок здесь — не деталь реализации, а требование §8.4 спеки
-    approval-facts/v2: полный config preflight (шаги 1-5) обязан пройти
-    целиком ДО первого разрушающего действия (шаг 6, `remove_previous`).
+    Каждый элемент scope — запись `delivery` (спека approval-facts/v3 §6): `merge_sha` →
+    PR через `associatedPullRequests`, затем та же `read_delivery`, что у `read_act_facts`;
+    транспорт — `make_transport()`. Порядок здесь — не деталь реализации, а требование
+    §8.4 спеки approval-facts/v2 (сохранено в v3): полный config preflight (шаги 1-5)
+    обязан пройти целиком ДО первого разрушающего действия (шаг 6, `remove_previous`).
     Ошибка на любом из шагов 1-5 — config error, прежняя публикация не
     тронута; ошибка после шага 6 (механический сбой материализации)
     оставляет источник отсутствующим, а не тихо стухшим.
@@ -165,7 +177,6 @@ def approval_facts(
     так что типизированный отказ обязан покрывать и её).
     """
     from steward.approvalfacts.model import RequestId
-    from steward.approvalfacts.producer import MechanicalFailure, classify_results, materialize
     from steward.approvalfacts.publish import (
         FACTS_RELPATH,
         ConfigError,
@@ -174,6 +185,13 @@ def approval_facts(
         publish,
         remove_previous,
         resolve_repo_root,
+    )
+    from steward.approvalfacts.v3.release import (
+        SCHEMA_VERSION_V3,
+        MechanicalFailure,
+        classify_release,
+        materialize_release,
+        release_record,
     )
     from steward.gatecheck.approval import PolicyError, load_approval_policy
     from steward.gatecheck.approval import policy_digest as compute_policy_digest
@@ -315,12 +333,12 @@ def approval_facts(
         typer.echo(f"approval-facts remove_previous failed: {exc}", err=True)
         raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
     try:
-        results = materialize(repo, scope)
+        results = materialize_release(make_transport(), repo, scope)
     except MechanicalFailure as exc:
         typer.echo(f"approval-facts materialize failed: {exc}", err=True)
         raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc
 
-    results = classify_results(results, approval_policy)
+    results = classify_release(results, approval_policy)
     header = build_header(
         repository=repo,
         scope=scope,
@@ -335,7 +353,9 @@ def approval_facts(
     # сырую трассировку в месте, где мы обещали ровно два кода ошибки —
     # Codex gate round 3 на PR #86.
     try:
-        publish(target, header, results)
+        publish(
+            target, header, results, schema_version=SCHEMA_VERSION_V3, result_record=release_record
+        )
     except OSError as exc:
         typer.echo(f"approval-facts publish failed: {exc}", err=True)
         raise typer.Exit(_EXIT_MATERIALIZE_FAILED) from exc

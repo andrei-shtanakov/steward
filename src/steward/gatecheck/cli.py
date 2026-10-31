@@ -1,7 +1,8 @@
 """gate-check CLI: aggregate findings, map to CI exit codes (WS-002, REQ-207).
 
 Exit codes: ``0`` clean (warnings allowed) · ``1`` error findings · ``2``
-config error (bad profile, bad facts file, missing bundle dir).
+config error (bad profile, bad facts file, missing bundle dir, missing
+``--act-mode``).
 """
 
 from __future__ import annotations
@@ -37,7 +38,23 @@ from steward.gatecheck.architecture import (
     load_arch_policy,
 )
 from steward.gatecheck.candidate import NOT_EVALUATED, CandidateGitFacts
-from steward.gatecheck.checks import Artifact, Finding, collect_bundle, relaxable, run_checks
+from steward.gatecheck.checks import (
+    ABSENT_FROM_PROVIDER,
+    DELEGATED_RULES,
+    ActMode,
+    Artifact,
+    Finding,
+    NodeStatus,
+    Snapshot,
+    SnapshotError,
+    act_statuses,
+    bundle_dir,
+    collect_bundle,
+    delegated,
+    relaxable,
+    run_checks,
+    snapshot_for,
+)
 from steward.gatecheck.git_facts import (
     FactsError,
     GitFacts,
@@ -73,6 +90,10 @@ _MODE_CANDIDATE = "candidate"
 # clause set — strict AC grammar and orphans (steward#190).
 _ACCEPTANCE_GATE = "GC-BEH-COVERAGE"
 _ACCEPTANCE_SCOPE = "acceptance"
+
+_ACT_MODE_REQUIRED = "--act-mode is required: pass the admission result (legacy|review)"
+# Top-level keys of a `--node-status` file — a closed set (§7.2.3).
+_PROVIDER_KEYS = frozenset({"snapshot_digest", "nodes"})
 
 
 def _fail_config(message: str) -> None:
@@ -179,7 +200,7 @@ def approval_facts_outcome(
     """Resolve the merge-evidence source for this run (§8.4).
 
     Two explicitly chosen input paths, one format: ``--approval-facts`` is an
-    operator override (and therefore accepts **only** v2 — an invalid file
+    operator override (and therefore accepts **only** v3 — an invalid file
     there is a call error, per §8.3.1), and without it the path is the bundle
     default ``<repo-root>/.steward/approval_facts.jsonl``, next to
     ``gate_verdicts.jsonl``.
@@ -201,7 +222,7 @@ def approval_facts_outcome(
     can't be identified, full stop.** It is not only that an *invalid* file
     at that path reads as ``FactsUnavailable("absent")`` instead of the
     §8.3.1-promised config error, exit 2 (Codex gate round 2 on PR #86 named
-    that half). A **perfectly valid** ``approval-facts/v2`` file passed via
+    that half). A **perfectly valid** ``approval-facts/v3`` file passed via
     ``--approval-facts`` on an unpacked bundle, in a non-git directory, or in
     a checkout with no ``origin`` is *never read at all* — §8.4 calls
     ``--approval-facts`` an override, and outside an identified checkout it
@@ -259,6 +280,97 @@ def _git_facts(no_fs: Path | None, spec_dir: Path) -> GitFacts:
     if proc.returncode != 0:
         _fail_config("not inside a git repository (use --no-fs facts.json)")
     return LiveGitFacts(Path(proc.stdout.strip()), spec_dir)
+
+
+def _resolve_act_mode(act_mode: str | None) -> ActMode:
+    """The caller's admission result (approval-facts v3 §7.2.1, R-M0-5).
+
+    Checked here, after parsing, rather than as a required typer option, so that
+    ``--print-snapshot-digest`` alone can run without it. No value is never
+    ``legacy``: a missing admission result does not become a permission.
+    """
+    if act_mode is None:
+        _fail_config(_ACT_MODE_REQUIRED)
+    if act_mode == "legacy":
+        return "legacy"
+    if act_mode == "review":
+        return "review"
+    _fail_config(f"unknown --act-mode {act_mode!r} (expected legacy or review)")
+    raise AssertionError  # unreachable; keeps type-checkers calm
+
+
+def _repo_root(spec_dir: Path) -> Path:
+    top = _git_out(spec_dir, "rev-parse", "--show-toplevel")
+    if top is None:
+        _fail_config("not inside a git repository (use --no-fs facts.json)")
+        raise AssertionError  # unreachable; keeps type-checkers calm
+    return Path(top).resolve()
+
+
+def _snapshot(mode: str, spec_dir: Path) -> Snapshot:
+    """This run's snapshot, built only through ``snapshot_for`` from the run's inputs."""
+    try:
+        if mode == _MODE_LIVE:
+            return snapshot_for("live", spec_dir, _repo_root(spec_dir))
+        if mode == _MODE_CANDIDATE:
+            return snapshot_for("candidate", spec_dir, None)
+        return snapshot_for("injected", spec_dir, None)
+    except SnapshotError as err:
+        _fail_config(str(err))
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
+
+
+def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _ in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate JSON keys: {', '.join(duplicates)}")
+    return dict(pairs)
+
+
+def _load_node_status(path: Path, snapshot: Snapshot) -> NodeStatus:
+    """``--node-status <file.json>``: the provider for callers running gate-check as a subprocess.
+
+    ``{"snapshot_digest": "sha256:…", "nodes": {node_id: status}}``. Duplicate
+    keys, extra top-level keys, non-string values, and a digest of any other
+    snapshot are call errors (exit 2): such an answer is about other bytes, or
+    about nothing in particular. A node missing from ``nodes`` is
+    ``absent_from_provider``.
+    """
+    where = f"--node-status {path}"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicates)
+    except (OSError, ValueError) as err:
+        _fail_config(f"{where}: {err}")
+        raise AssertionError from None  # unreachable; keeps type-checkers calm
+    if not isinstance(data, dict) or set(data) != _PROVIDER_KEYS:
+        _fail_config(f"{where}: expected an object with exactly the keys {sorted(_PROVIDER_KEYS)}")
+        raise AssertionError  # unreachable; keeps type-checkers calm
+    digest, nodes = data["snapshot_digest"], data["nodes"]
+    if not isinstance(digest, str):
+        _fail_config(f"{where}: snapshot_digest must be a string")
+    if not isinstance(nodes, dict) or not all(isinstance(v, str) for v in nodes.values()):
+        _fail_config(f"{where}: nodes must map node ids to status strings")
+        raise AssertionError  # unreachable; keeps type-checkers calm
+    if digest != snapshot.digest:
+        _fail_config(
+            f"{where}: snapshot_digest {digest} is not this run's snapshot {snapshot.digest} "
+            "— the answer is about other bytes"
+        )
+    answers: dict[str, str] = dict(nodes)
+
+    def node_status(node_id: str, _snapshot: Snapshot) -> str:
+        return answers.get(node_id, ABSENT_FROM_PROVIDER)
+
+    return node_status
+
+
+def _echo_delegated(paths: list[str]) -> None:
+    """Declare the stale cascade handed to the provider (§7.2.3), on stderr like the rest."""
+    for path in paths:
+        typer.echo(
+            f"делегировано провайдеру статуса узла: {path}: {', '.join(DELEGATED_RULES)}", err=True
+        )
 
 
 def _render_text(findings: list[Finding], mode: str) -> None:
@@ -344,14 +456,34 @@ def _echo_skipped(reason: str) -> None:
     typer.echo(f"не проверено: {_ACCEPTANCE_GATE} [{_ACCEPTANCE_SCOPE}]: {reason}", err=True)
 
 
+@dataclass(frozen=True)
+class ActReport:
+    """What the JSON payload says about the act: mode, delegation, snapshot (§7.2.2)."""
+
+    act_mode: ActMode
+    delegated: tuple[str, ...]
+    snapshot: Snapshot
+
+
 def _render_json(
-    findings: list[Finding], mode: str, upto: UptoScope | None, skip_reason: str | None
+    findings: list[Finding],
+    mode: str,
+    upto: UptoScope | None,
+    skip_reason: str | None,
+    act: ActReport,
 ) -> None:
     payload: dict[str, object] = {
         "mode": mode,
         "findings": [vars(f) for f in findings],
         "errors": sum(1 for f in findings if f.severity == "error"),
         "warnings": sum(1 for f in findings if f.severity == "warn"),
+        "act_mode": act.act_mode,
+        "delegated": list(act.delegated),
+        "snapshot": {
+            "kind": act.snapshot.kind,
+            "root": str(act.snapshot.root),
+            "digest": act.snapshot.digest,
+        },
     }
     if skip_reason is not None:
         payload["skipped"] = [
@@ -423,8 +555,29 @@ def main(
         None,
         "--approval-facts",
         help="Override the materialized merge-actor evidence path "
-        "(approval-facts/v2 only). Default: <repo-root>/.steward/"
+        "(approval-facts/v3 only). Default: <repo-root>/.steward/"
         "approval_facts.jsonl. Consulted at --stage release.",
+    ),
+    act_mode: str | None = typer.Option(
+        None,
+        "--act-mode",
+        help="Mandatory admission result of the caller: legacy | review. legacy — "
+        "frontmatter status is authoritative (the merge act); review — approvals are "
+        "established only by the node status provider (--node-status). No default: "
+        "a missing value is exit 2.",
+    ),
+    node_status: Path | None = typer.Option(
+        None,
+        "--node-status",
+        help="Node status provider file (--act-mode review only): "
+        '{"snapshot_digest": "sha256:…", "nodes": {node_id: status}}; the digest '
+        "must equal this run's snapshot (see --print-snapshot-digest).",
+    ),
+    print_snapshot_digest: bool = typer.Option(
+        False,
+        "--print-snapshot-digest",
+        help="Print the snapshot digest this run would bind a provider answer to "
+        "(bundle + ../approvals/ bytes on disk) and exit 0. Needs no --act-mode.",
     ),
     upto: str | None = typer.Option(
         None,
@@ -441,6 +594,13 @@ def main(
         _fail_config(f"unknown format {output!r} (expected text or json)")
     if not spec_dir.is_dir():
         _fail_config(f"bundle directory not found: {spec_dir}")
+    # Path inputs are resolved once, here: every `<spec_dir>/..` downstream
+    # (approvals/, the snapshot) is wrong for an unresolved `.` or `x/..`.
+    try:
+        spec_dir = bundle_dir(spec_dir)
+    except SnapshotError as err:
+        _fail_config(str(err))
+    node_status = node_status.resolve() if node_status is not None else None
 
     if emit_verdicts_flag and no_fs is not None:
         _fail_config(
@@ -495,6 +655,19 @@ def main(
                 "complete behaviour layer — drop --trace-matrix"
             )
 
+    if print_snapshot_digest:
+        if node_status is not None:
+            # The digest is what a provider answer must match; printing it while
+            # passing an answer would read as if that answer had been checked.
+            _fail_config("--print-snapshot-digest only prints; drop --node-status")
+        run_mode = _MODE_CANDIDATE if candidate else _MODE_INJECTED if no_fs else _MODE_LIVE
+        typer.echo(_snapshot(run_mode, spec_dir).digest)
+        return
+
+    resolved_act_mode = _resolve_act_mode(act_mode)
+    if node_status is not None and resolved_act_mode != "review":
+        _fail_config("--node-status requires --act-mode review: legacy has no provider")
+
     profile_path = _resolve_profile_path(profile)
     roles_catalog = _load_roles(profile_path)
     try:
@@ -520,7 +693,19 @@ def main(
         git = _git_facts(no_fs, spec_dir)
         mode = _MODE_INJECTED if no_fs is not None else _MODE_LIVE
 
-    artifacts, findings = collect_bundle(graph, spec_dir)
+    snapshot = _snapshot(mode, spec_dir)
+    provider = _load_node_status(node_status, snapshot) if node_status is not None else None
+
+    artifacts, findings = collect_bundle(graph, spec_dir, act_mode=resolved_act_mode)
+    statuses = act_statuses(
+        artifacts, act_mode=resolved_act_mode, node_status=provider, snapshot=snapshot
+    )
+    delegated_paths = sorted(a.path for a in artifacts if delegated(a, statuses))
+    act_report = ActReport(
+        act_mode=resolved_act_mode,
+        delegated=DELEGATED_RULES if delegated_paths else (),
+        snapshot=snapshot,
+    )
     upto_scope = _upto_scope(graph, upto, artifacts) if upto is not None else None
 
     role_problems = unresolved_role_refs(artifacts, roles_catalog)
@@ -535,6 +720,7 @@ def main(
                 artifacts,
                 git,
                 assignments,
+                statuses=statuses,
                 prospective=candidate,
                 not_required=frozenset(upto_scope.not_required) if upto_scope else frozenset(),
             )
@@ -564,7 +750,7 @@ def main(
         try:
             findings.extend(
                 check_approval_evidence(
-                    artifacts, git, approval_policy, facts, stage=resolved_stage
+                    artifacts, git, approval_policy, facts, stage=resolved_stage, statuses=statuses
                 )
             )
         except FactsError as err:
@@ -592,7 +778,9 @@ def main(
     if emit_verdicts_flag:
         catalog = _load_catalog(profile_path, roles_catalog)
         try:
-            out_path = emit_verdicts(graph, artifacts, findings, spec_dir, catalog)
+            out_path = emit_verdicts(
+                graph, artifacts, findings, spec_dir, catalog, statuses=statuses
+            )
         except EmitError as err:
             _fail_config(str(err))
         else:
@@ -609,12 +797,13 @@ def main(
         renderer = render_matrix_json if output == "json" else render_matrix_text
         typer.echo(renderer(matrix))
     elif output == "json":
-        _render_json(findings, mode, upto_scope, skip_reason)
+        _render_json(findings, mode, upto_scope, skip_reason, act_report)
     else:
         _render_text(findings, mode)
 
     if mode == _MODE_CANDIDATE:
         _echo_not_evaluated()
+    _echo_delegated(delegated_paths)
     if skip_reason is not None:
         _echo_skipped(skip_reason)
     if upto_scope is not None:

@@ -1,7 +1,5 @@
-"""Release-продюсер `approval-facts/v3` (спека steward §6). Пока неактивен.
-
-`steward approval-facts` и `gate-check --stage release` переключаются на v3 одним
-изменением (Task 11); до него CLI выпускает v2, а гейт читает v2.
+"""Release-продюсер `approval-facts/v3` (спека steward §6): его вызывает
+`steward approval-facts`; файл читает `gate-check --stage release` (`release_reader`).
 
 Разрешение элемента scope: `merge_sha` → PR — `associatedPullRequests` (строка E7, как в
 v2, но через `Transport`), затем **та же** `read_delivery` библиотеки (§3.3 пп. 1, 3), что
@@ -32,6 +30,7 @@ from steward.gatecheck.approval import ApprovalPolicy, classify_actor
 
 __all__ = [
     "SCHEMA_VERSION_V3",
+    "MechanicalFailure",
     "ReleaseResult",
     "classify_release",
     "materialize_release",
