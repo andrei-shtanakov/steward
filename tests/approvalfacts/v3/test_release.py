@@ -286,6 +286,20 @@ def test_actor_unavailable_via_merge_sha(derive: Derive) -> None:
             ],
             "malformed",
         ),
+        *(
+            (
+                [
+                    _tf("set_field", GQL_MERGER, value=None),
+                    _tf("set_field", [1, "response", "body", *path], value=value),
+                ],
+                "delivery_mismatch",
+            )
+            for path, value in (
+                (["merge_commit_sha"], OTHER),
+                (["head", "sha"], OTHER),
+                (["base", "ref"], "main"),
+            )
+        ),
     ],
     ids=[
         "merged_differs",
@@ -294,6 +308,9 @@ def test_actor_unavailable_via_merge_sha(derive: Derive) -> None:
         "http",
         "no_merger_still_checks_merged_at",
         "no_merger_still_checks_sha_shape",
+        "no_merger_still_checks_merge_commit",
+        "no_merger_still_checks_head",
+        "no_merger_still_checks_base",
     ],
 )
 def test_other_delivery_unavailable_is_mechanical_failure(

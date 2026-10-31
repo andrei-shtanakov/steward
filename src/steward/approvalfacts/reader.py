@@ -217,6 +217,8 @@ def _validate_result_fields(
         identity, type_hint, actor_class = raw["identity"], raw["type_hint"], raw["actor_class"]
         if not isinstance(identity, str) or not isinstance(type_hint, str):
             raise UnreadableFacts(f"{path}:{number}: identity и type_hint обязаны быть строками")
+        # TODO: нехешируемый actor_class ([], {}) даёт TypeError, а не UnreadableFacts;
+        # в v3 исправлено (release_reader._merged_by), v2-читатель не меняется до удаления.
         if actor_class not in _ACTOR_CLASSES:
             raise UnreadableFacts(
                 f"{path}:{number}: недопустимое значение actor_class {actor_class!r}"

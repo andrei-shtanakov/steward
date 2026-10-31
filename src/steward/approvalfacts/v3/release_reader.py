@@ -13,6 +13,14 @@
 | `actor_unavailable` | объект, `merged: true`, `merged_by: null` |
 | `not_merged`, `not_found`, `no_matching_pr` | `null` |
 
+Читатель строже `SCHEMA.json` в двух местах (как и v2-читатель, он «не менее строг», чем
+схема): у `merge_sha`-запроса `delivery.merge_commit` обязан быть запрошенным SHA —
+иначе `by_merge_sha()` проиндексировал бы чужой SHA; `merged_by.identity` — установленный
+по §3.4.1 актор (без `ghost`, `[bot]`, `:`). Оба свойства гарантирует продюсер. `not_found`
+у `pr`-запроса продюсер v3 больше не выпускает (§3.2: отсутствующий PR — сбой), но схема и
+матрица v2 его допускают, и читатель — тоже: ужесточать только здесь значило бы разойтись
+со схемой.
+
 Здесь же — модель файла (`ReleaseResult`, `ApprovalFactsV3`): гейт импортирует только этот
 модуль, а он не импортирует ни политику (`steward.gatecheck`), ни продюсеры — иначе
 `gatecheck.approval` → читатель → продюсер → `gatecheck.approval` замкнулся бы в цикл.
@@ -220,7 +228,7 @@ def _merged_by(
         raise UnreadableFacts(f"{where}: merged_by.identity {identity!r} — актор не установлен")
     if not actor_resolved(login, type_hint):
         raise UnreadableFacts(f"{where}: merged_by.type_hint {type_hint!r} вне словаря")
-    if actor_class not in _ACTOR_CLASSES:
+    if not isinstance(actor_class, str) or actor_class not in _ACTOR_CLASSES:
         raise UnreadableFacts(f"{where}: merged_by.actor_class {actor_class!r} вне словаря")
     return login, type_hint, actor_class
 

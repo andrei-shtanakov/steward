@@ -8,6 +8,7 @@
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -177,6 +178,8 @@ def _drop(line: int, *path: str) -> Callable[[list[Record]], None]:
         (_set(1, "delivery", "merged_by", "type_hint", "Mannequin"), "type_hint"),
         (_set(1, "delivery", "merged_by", "actor_class", None), "actor_class"),
         (_set(1, "delivery", "merged_by", "actor_class", "robot"), "actor_class"),
+        (_set(1, "delivery", "merged_by", "actor_class", []), "actor_class"),
+        (_set(1, "delivery", "merged_by", "actor_class", {}), "actor_class"),
         (_set(2, "delivery", "merge_commit", OTHER), "merge_commit"),
         (_set(3, "request", {"kind": "merge_sha", "value": OTHER[:-1] + "3"}), "not_merged"),
         (_set(5, "request", {"kind": "pr", "value": 5}), "no_matching_pr"),
@@ -206,6 +209,8 @@ def _drop(line: int, *path: str) -> Callable[[list[Record]], None]:
         "type_hint_outside_vocabulary",
         "merged_actor_class_null",
         "actor_class_outside_vocabulary",
+        "actor_class_unhashable_list",
+        "actor_class_unhashable_object",
         "merge_sha_request_other_merge_commit",
         "not_merged_for_merge_sha",
         "no_matching_pr_for_pr",
@@ -292,12 +297,20 @@ def test_reader_rejects_repository_mismatch(tmp_path: Path) -> None:
         _load(_publish(tmp_path / "facts.jsonl"), repo="andrei-shtanakov/steward")
 
 
-def test_reader_rejects_contradicting_aliases(tmp_path: Path) -> None:
-    """Инвариант 9: алиасы одного мержа сравниваются записью без `request`."""
-    results = (
-        ReleaseResult(PR657, "merged", MERGED, "agent"),
+@pytest.mark.parametrize(
+    "twin",
+    [
         ReleaseResult(SHA657, "actor_unavailable", NO_MERGER, None),
-    )
+        ReleaseResult(SHA657, "merged", MERGED, "human"),
+        ReleaseResult(SHA657, "merged", replace(MERGED, in_base=False), "agent"),
+        ReleaseResult(SHA657, "merged", replace(MERGED, head_at_merge=OTHER), "agent"),
+    ],
+    ids=["state", "actor_class", "in_base", "head_at_merge"],
+)
+def test_reader_rejects_contradicting_aliases(tmp_path: Path, twin: ReleaseResult) -> None:
+    """Инвариант 9: алиасы одного мержа сравниваются записью без `request` — состоянием,
+    доставкой и `actor_class`; `by_merge_sha()` иначе выбрал бы одного из них молча."""
+    results = (ReleaseResult(PR657, "merged", MERGED, "agent"), twin)
     with pytest.raises(UnreadableFacts, match="алиасы"):
         _load(_publish(tmp_path / "facts.jsonl", results))
 
@@ -345,7 +358,7 @@ def test_detect_legacy_v2(tmp_path: Path) -> None:
     garbage.write_text("{not json\n", encoding="utf-8")
     assert detect_legacy_v2(garbage) is False
     assert detect_legacy_v2(tmp_path / "absent.jsonl") is False
-    with pytest.raises(UnreadableFacts, match="v2"):
+    with pytest.raises(UnreadableFacts, match="перевыпустите"):
         _load(v2)
 
 
