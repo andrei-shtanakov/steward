@@ -11,6 +11,7 @@ import re
 from dataclasses import asdict
 
 from steward.approvalfacts.v3.effective import effective_reviews
+from steward.approvalfacts.v3.validate import actor_resolved
 from steward.approvalfacts.v3.model import (
     Activation,
     Delivery,
@@ -61,12 +62,19 @@ def delivery_record(d: Delivery, *, actor_class: str | None) -> dict:
 
     `identity` — `github:<login>` (форма политики акторов steward). `actor_class` —
     классификация вызывающего по пину политики или `None`; вне словаря, или задан у
-    несмёрженного PR — `ValueError`.
+    несмёрженного PR либо без мержера — `ValueError`. Мержер, неустановленный по §3.4.1
+    (`actor_resolved`), — тоже `ValueError`.
     """
     if actor_class is not None and actor_class not in ACTOR_CLASSES:
         raise ValueError(f"actor_class {actor_class!r} is not one of {sorted(ACTOR_CLASSES)}")
     if not d.merged and actor_class is not None:
         raise ValueError("actor_class is given for a pull request that is not merged")
+    if d.merged_by_login is None and actor_class is not None:
+        raise ValueError("actor_class is given without a merger")
+    if d.merged_by_login is not None and not actor_resolved(
+        d.merged_by_login, d.merged_by_type_hint
+    ):
+        raise ValueError(f"merger {d.merged_by_login!r} is unresolved (spec §3.4.1)")
     merged_by = None
     if d.merged and d.merged_by_login is not None:
         merged_by = {

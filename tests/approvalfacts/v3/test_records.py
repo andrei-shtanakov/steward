@@ -321,3 +321,23 @@ def test_policy_history_record_extra_key_rejected(got):
 def test_policy_history_record_anchor_must_be_hex(anchor):
     with pytest.raises(ValueError):
         policy_history_record("o/r", "main", anchor, None, ())
+
+
+@pytest.mark.parametrize(
+    ("login", "type_hint"),
+    [("ghost", "User"), ("df-reviewer[bot]", "Bot"), ("github:alice", "User")],
+)
+def test_delivery_record_unresolved_merger_rejected(clean, login, type_hint):
+    """Мержер, неустановленный по §3.4.1, записью `complete` не становится."""
+    _, delivery, _ = clean
+    d = replace(delivery, merged_by_login=login, merged_by_type_hint=type_hint)
+    with pytest.raises(ValueError):
+        delivery_record(d, actor_class=None)
+
+
+def test_delivery_record_actor_class_without_merger_rejected(clean):
+    """Классификация без мержера противоречива так же, как без мержа."""
+    _, delivery, _ = clean
+    d = replace(delivery, merged_by_login=None, merged_by_type_hint=None)
+    with pytest.raises(ValueError):
+        delivery_record(d, actor_class="agent")
