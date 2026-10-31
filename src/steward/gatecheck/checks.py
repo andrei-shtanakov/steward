@@ -261,7 +261,9 @@ def collect_bundle(
 
     ``act_mode`` is the caller's admission result and has no default (R-M0-5).
     Under ``legacy`` the obvious-contradiction detector runs
-    (:func:`act_conflict`, ``GC-ACT-MODE-CONFLICT``).
+    (:func:`act_conflict`, ``GC-ACT-MODE-CONFLICT``). The path goes through
+    :func:`bundle_dir`, so a symlinked bundle or ``approvals/`` directory raises
+    :class:`SnapshotError`.
     """
     if act_mode not in _ACT_MODES:
         raise ValueError(f"act_mode must be one of {_ACT_MODES}, got {act_mode!r}")
