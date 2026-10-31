@@ -136,6 +136,16 @@ def test_guarded_turns_a_failed_read_into_not_verified() -> None:
     assert SMOKE.guarded("7", lambda: {}["x"]).outcome == "not_verified"
 
 
+def test_guarded_turns_a_value_error_into_an_internal_row() -> None:
+    """Paid review #228: a library ValueError (bad anchor) must not abort the run."""
+
+    def bad_anchor() -> Any:
+        raise ValueError("anchor is not a 40-hex sha")
+
+    row = SMOKE.guarded("7", bad_anchor)
+    assert (row.outcome, row.internal) == ("not_verified", True)
+
+
 # --- item 1 ---------------------------------------------------------------------------
 
 
@@ -804,6 +814,22 @@ def test_r6_mannequin_reviewer_is_not_an_item5_candidate() -> None:
     )
     assert (row.outcome, transport.log) == ("not_verified", [])
     assert "не удалённые" in row.detail
+
+
+def test_mannequin_beside_ghost_is_not_an_item5_pass_candidate() -> None:
+    """Paid review #228: the library refuses the first unresolved actor, so a PR with a
+    Mannequin and a ghost reviewer cannot confirm the ghost case."""
+    mannequin = {"login": "m", "__typename": "Mannequin"}
+    reviews = {
+        "totalCount": 2,
+        "nodes": [
+            {"state": "APPROVED", "author": mannequin},
+            {"state": "APPROVED", "author": GHOST},
+        ],
+    }
+    transport = replay_transport({"exchanges": []})
+    row = SMOKE.check_deleted_user(transport, DEVTOOLS, _scan(_node(657, reviews=reviews)))
+    assert (row.outcome, transport.log) == ("not_verified", [])
 
 
 def test_item2_ghost_reviewer_on_app_merged_pr_is_not_verified() -> None:

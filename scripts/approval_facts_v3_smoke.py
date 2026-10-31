@@ -218,7 +218,7 @@ def guarded(item: str, check: Callable[[], Row]) -> Row:
         return check()
     except _Skip as skip:
         return Row(item, "not_verified", f"чтение не ответило: {skip}")
-    except (KeyError, IndexError, TypeError, AttributeError, StopIteration) as exc:
+    except (KeyError, IndexError, TypeError, AttributeError, StopIteration, ValueError) as exc:
         detail = f"внутренняя ошибка/форма: {type(exc).__name__} {exc}"
         return Row(item, "not_verified", detail, internal=True)
 
@@ -724,6 +724,18 @@ def merger_ghost_kind(got: object, clean: bool) -> str:
     return kind
 
 
+def _only_deleted_unresolved(scan: Scan, pr: Mapping[str, Any]) -> bool:
+    """A pass candidate for item 5: fully scanned, with a deleted actor, and every
+    unresolved actor of its passes deleted — the library refuses the first unresolved
+    actor it reads, so a Mannequin beside a ghost would answer for the ghost."""
+    actors = _pass_actors(pr)
+    return (
+        pr["number"] not in scan.truncated
+        and any(deleted(a) for a in actors)
+        and all(deleted(a) for a in actors if unresolved(a))
+    )
+
+
 def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
     """Item 5: a deleted user (``null``/``ghost``) where the library judges actors.
 
@@ -734,7 +746,7 @@ def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
     a PR alone is ``not_verified``.
     """
     item = "5-deleted-user"
-    in_pass = _numbers(scan.prs, lambda pr: any(deleted(a) for a in _pass_actors(pr)))
+    in_pass = _numbers(scan.prs, lambda pr: _only_deleted_unresolved(scan, pr))
     merger = _numbers(scan.prs, lambda pr: bool(pr["merged"]) and deleted(pr["mergedBy"]))
     by_pr = {pr["number"]: pr for pr in scan.prs}
     if in_pass:

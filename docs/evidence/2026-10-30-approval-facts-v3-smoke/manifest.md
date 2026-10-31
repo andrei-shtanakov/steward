@@ -9,16 +9,17 @@
 ## Пины и окружение
 
 - steward: ветка `feat/approval-facts-v3-t13` от master `0c2748b6b4c6857dd444b8fb3479cfcf519e9fd2`
-  (M0 Tasks 1–12 влиты). Отчёт снят после третьего круга правок ревью: HEAD `ea12c45` плюс ещё
-  не закоммиченный исправленный скрипт. Его байты совпадают с закоммиченными, sha256
+  (M0 Tasks 1–12 влиты). Отчёт снят после правок по платному ревью PR #228 (кандидат п. 5 —
+  только PR, где все неустановленные акторы проходов удалены; `ValueError` — строка
+  `internal`). Байты скрипта совпадают с закоммиченными, sha256
   `scripts/approval_facts_v3_smoke.py` —
-  `f12d57d829e7ea073bb5b3528a45aaf430c0c4adb51815d36b5f7eb7be88e5da`.
+  `191f011cb9cea7e903074531d6e07cda070f380b75ea1c44cb20b941b16cd551`.
 - Аутентифицированное чтение — `GhTransport(~/.config/review)`, учётка `ai-prosto`
   (сверено: `viewer.login` в отчёте). `gh` 2.101.0, Python 3.12.13.
 - Анонимное чтение — `AnonTransport` скрипта: прямой HTTPS `GET` на `api.github.com`
   без каких-либо credentials. Это реализация протокола из `docs/approval-facts-v3.md`,
   раздел «собственный анонимный REST-транспорт».
-- Время прогона: 2026-10-31T13:08:05Z.
+- Время прогона: 2026-10-31T13:29:06Z.
 
 ## Команды
 
@@ -63,7 +64,7 @@ perl -e 'alarm 590; exec @ARGV' -- \
 | 4b | `compare` → `diverged` | **verified** | `compare/master...a038c21…` (голова несмёрженного #606): HTTP 200, `status: "diverged"` |
 | 5 | Удалённый пользователь (`null`/`ghost`) | **not_verified** | среди авторов ревью и мержеров 547 PR нет ни `null`, ни `ghost`, ни типа вне `User`/`Bot`. Это акторы, которые библиотека судит по §3.4.1: ревью через `read_open_review`, мержера через `read_act_facts`. Отдельно проверены авторы PR (они вне §3.4.1, такой случай дал бы только `not_verified`): удалённых тоже нет |
 | 6 | Видимость чужого PENDING-ревью | **not_verified** | в обходе 0 PENDING-ревью. Без второй учётки нельзя отличить «чужих PENDING нет» от «чужие PENDING не видны» |
-| 7 | Анонимный транспорт на `approval-policy`: H1–H6 без токена, остаток лимита | **verified** | H1–H6 — все HTTP 200 без токена. `read_policy_history(main, anchor=head 12d198f…)` → `HistoryViolation: commit_without_pr`, это не `Unavailable`. `x-ratelimit-limit` 60 у каждого ответа: это анонимная квота, credentials не ушли. `x-ratelimit-remaining` 47 → 38 за 10 запросов |
+| 7 | Анонимный транспорт на `approval-policy`: H1–H6 без токена, остаток лимита | **verified** | H1–H6 — все HTTP 200 без токена. `read_policy_history(main, anchor=head 12d198f…)` → `HistoryViolation: commit_without_pr`, это не `Unavailable`. `x-ratelimit-limit` 60 у каждого ответа: это анонимная квота, credentials не ушли. `x-ratelimit-remaining` 58 → 49 за 10 запросов |
 | 8 | `compare` с `/` в имени базы (`%2F`) | **verified** | база `feat/criteria-closure-v1-parity`, голова `aa4e7e3…`. Закодированная (`feat%2Fcriteria-closure-v1-parity`) и незакодированная формы дают одинаковый ответ: HTTP 200, `("diverged", ahead_by 756, behind_by 2, merge_base 069d154…)`. Так через `gh`, и так через анонимный `urllib`, который шлёт `%2F` на провод как есть |
 | 9 | Ассоциации промежуточного коммита rebase-merge, `merge_commit_sha` однокоммитного rebase-merge, ассоциации вне ветки по умолчанию | **not_verified** | вне смоука: стенд devtools, Task 18 №28 |
 
@@ -100,10 +101,10 @@ perl -e 'alarm 590; exec @ARGV' -- \
   (как в наблюдении §3.8). Поэтому `read_policy_history` останавливается на H4 с
   `commit_without_pr`, а H5 и H6 прочитаны отдельными анонимными запросами. H6 читает
   блоб `policy/approvers.env`. Всего анонимных запросов за прогон 12 (10 — п. 7, 2 — п. 8),
-  остаток 47 → 36, ровно по единице на запрос. Перед прогоном `GET rate_limit` без токена
-  (в квоту не входит) показал 40 из 60, а первый ответ прогона — 47. Как именно GitHub ведёт
-  окно анонимного лимита, по этим цифрам не установить. Четыре прогона того же дня до этого
-  (последний в 12:57:55Z) дали те же исходы.
+  остаток 58 → 47, ровно по единице на запрос. Перед прогоном `GET rate_limit` без токена
+  (в квоту не входит) показал 36 из 60, а первый ответ прогона — 58 (прошлый прогон: 40 и 47). Как именно GitHub ведёт
+  окно анонимного лимита, по этим цифрам не установить. Пять прогонов того же дня до этого
+  (последний в 13:08:05Z) дали те же исходы.
 - **П. 8**: закодированный путь строит `compare_path` скрипта. Офлайн-тест
   `tests/approvalfacts/test_smoke_script.py::test_compare_path_is_the_library_path` сверяет
   его с путём E5, который `read_act_facts` сам отправляет для базы `feat/x`. Значит,
