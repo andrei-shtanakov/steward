@@ -1,5 +1,9 @@
 """Гейт как комбинатор пяти осей (§8) и двадцать четыре сценария приёмки §9.1.
 
+Источник фактов — файл release-гейта `approval-facts/v3` (спека approval-facts v3 §6):
+поля мержа живут в `result.delivery`; v2-файл — `legacy_v2`. Таблица §8.3 v2 сохранена
+построчно, плюс строка `in_base = false` между 8 и 9.
+
 Проверяется не только вердикт, но и РАЗЛИЧИМОСТЬ: сведение двух разных
 причин к одному тексту прячет поломку прибора под видом свойства актора.
 
@@ -21,16 +25,19 @@ import pytest
 from typer.testing import CliRunner
 
 from steward.approvalfacts.model import (
-    ApprovalFactsV2,
     Header,
     ObservationState,
     RequestId,
-    Result,
     scope_digest,
 )
+from steward.approvalfacts.model import Result as V2Result
 from steward.approvalfacts.publish import ConfigError, publish
+from steward.approvalfacts.v3.model import Delivery
+from steward.approvalfacts.v3.release import SCHEMA_VERSION_V3, release_record
+from steward.approvalfacts.v3.release_reader import ApprovalFactsV3, ReleaseResult
 from steward.gatecheck.approval import (
     FACTS_UNAVAILABLE_CODES,
+    ActorType,
     ApprovalPolicy,
     FactsUnavailable,
     PolicyError,
@@ -65,6 +72,7 @@ CODES = {
     "absent",
     "unreadable",
     "legacy_v1",
+    "legacy_v2",
     "policy_digest_mismatch",
     "lease_mismatch",
     "stale",
@@ -84,10 +92,33 @@ POLICY_ALLOWING = ApprovalPolicy(
     agent_merge_allowed=True,
 )
 
-HUMAN = Result(
+HEAD = "c" * 40
+MERGED_AT = "2026-08-21T08:00:00Z"
+
+
+def _result(
+    request: RequestId,
+    state: ObservationState,
+    merge_sha: str | None = None,
+    identity: str | None = None,
+    type_hint: str | None = None,
+    actor_class: ActorType | None = None,
+    *,
+    in_base: bool = True,
+) -> ReleaseResult:
+    """Запись v3 в прежней раскладке полей v2: `merge_sha`/`identity`/`type_hint` →
+    `delivery` (спека v3 §6); у отрицательных состояний доставки нет."""
+    if merge_sha is None:
+        return ReleaseResult(request, state, None, None)
+    login = None if identity is None else identity.removeprefix("github:")
+    delivery = Delivery(True, merge_sha, MERGED_AT, login, type_hint, HEAD, in_base, ())
+    return ReleaseResult(request, state, delivery, actor_class)
+
+
+HUMAN = _result(
     RequestId("merge_sha", SHA), "merged", SHA, "github:andrei-shtanakov", "User", "human"
 )
-AGENT = Result(RequestId("merge_sha", SHA), "merged", SHA, "github:merge-broker", "Bot", "agent")
+AGENT = _result(RequestId("merge_sha", SHA), "merged", SHA, "github:merge-broker", "Bot", "agent")
 
 
 # --------------------------------------------------------------------------
@@ -138,12 +169,12 @@ def _loaded_policy(
 def _facts(
     *,
     scope: list[RequestId] | None = None,
-    results: list[Result] | None = None,
+    results: list[ReleaseResult] | None = None,
     repository: str = REPO,
     generated_at: datetime = GENERATED,
     valid_until: datetime | None = None,
     digest: str = "sha256:" + "0" * 64,
-) -> ApprovalFactsV2:
+) -> ApprovalFactsV3:
     scope = [RequestId("merge_sha", SHA)] if scope is None else scope
     results = [HUMAN] if results is None else results
     header = Header(
@@ -155,7 +186,7 @@ def _facts(
         scope=tuple(scope),
         scope_sha256=scope_digest(scope),
     )
-    return ApprovalFactsV2(header=header, results=tuple(results))
+    return ApprovalFactsV3(header=header, results=tuple(results))
 
 
 def _write_valid(
@@ -164,7 +195,7 @@ def _write_valid(
     policy_path: Path,
     name: str = "approval_facts.jsonl",
     scope: list[RequestId] | None = None,
-    results: list[Result] | None = None,
+    results: list[ReleaseResult] | None = None,
     repository: str = REPO,
     generated_at: datetime = GENERATED,
     valid_until: datetime | None = None,
@@ -180,7 +211,24 @@ def _write_valid(
         digest=policy_digest(policy_path) if digest is None else digest,
     )
     path = tmp_path / name
-    publish(path, facts.header, facts.results)
+    publish(
+        path,
+        facts.header,
+        facts.results,
+        schema_version=SCHEMA_VERSION_V3,
+        result_record=release_record,
+    )
+    return path
+
+
+def _write_v2(tmp_path: Path, *, policy_path: Path, name: str = "approval_facts.jsonl") -> Path:
+    """Годный по v2 файл с человеческим мержем — v2-писателем, без правок байтов."""
+    facts = _facts(digest=policy_digest(policy_path))
+    path = tmp_path / name
+    v2 = V2Result(
+        RequestId("merge_sha", SHA), "merged", SHA, "github:andrei-shtanakov", "User", "human"
+    )
+    publish(path, facts.header, [v2])
     return path
 
 
@@ -310,6 +358,59 @@ def test_legacy_v1_on_explicit_path_is_config_error(tmp_path: Path) -> None:
         )
 
 
+def _resolve(path: Path, policy: ApprovalPolicy, policy_path: Path, *, explicit: bool) -> object:
+    return resolve_facts(
+        path,
+        expected_repository=REPO,
+        policy=policy,
+        policy_path=policy_path,
+        now=NOW,
+        explicit=explicit,
+    )
+
+
+def test_v2_file_is_legacy_v2_finding(tmp_path: Path) -> None:
+    """approval-facts v3 §6: годный v2-файл по пути бандла — свой код `legacy_v2` с
+    подсказкой перевыпустить, а не общий `unreadable` и не допуск по человеческому мержу."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    outcome = _resolve(
+        _write_v2(tmp_path, policy_path=policy_path), policy, policy_path, explicit=False
+    )
+    assert isinstance(outcome, FactsUnavailable)
+    assert outcome.code == "legacy_v2"
+    (finding,) = _check(outcome, git=_git(sha=SHA))
+    assert "approval-facts/v2" in finding.message
+    assert "steward approval-facts" in finding.message
+
+
+def test_v2_file_explicit_is_config_error(tmp_path: Path) -> None:
+    """Тот же файл по явному `--approval-facts` — ошибка вызова (правило §8.3.1)."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    path = _write_v2(tmp_path, policy_path=policy_path)
+    with pytest.raises(ConfigError, match="approval-facts/v2"):
+        _resolve(path, policy, policy_path, explicit=True)
+
+
+def test_v2_file_with_non_string_actor_class_is_legacy_v2_not_type_error(
+    tmp_path: Path,
+) -> None:
+    """Распознавание v2 — до любого разбора: v2-читатель на нестроковом `actor_class`
+    падает `TypeError`, и такой файл не должен донести его до гейта (перенос Task 10)."""
+    policy, policy_path = _loaded_policy(tmp_path)
+    path = _write_v2(tmp_path, policy_path=policy_path)
+    header, result = path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(result)
+    record["actor_class"] = ["human"]
+    path.write_text(f"{header}\n{json.dumps(record)}\n", encoding="utf-8")
+    for explicit in (False, True):
+        if explicit:
+            with pytest.raises(ConfigError):
+                _resolve(path, policy, policy_path, explicit=True)
+            continue
+        outcome = _resolve(path, policy, policy_path, explicit=False)
+        assert isinstance(outcome, FactsUnavailable) and outcome.code == "legacy_v2"
+
+
 def test_broken_invariant_on_bundle_default_is_unreadable(tmp_path: Path) -> None:
     """Сценарий 21а: нарушенный инвариант по пути бандла — finding."""
     policy, policy_path = _loaded_policy(tmp_path)
@@ -421,7 +522,7 @@ def test_generated_at_within_clock_skew_still_resolves(tmp_path: Path) -> None:
         now=NOW,
         explicit=False,
     )
-    assert isinstance(outcome, ApprovalFactsV2)
+    assert isinstance(outcome, ApprovalFactsV3)
 
 
 def test_policy_digest_mismatch_beats_live_lease(tmp_path: Path) -> None:
@@ -638,7 +739,7 @@ def test_valid_fresh_file_resolves_to_facts(tmp_path: Path) -> None:
         now=NOW,
         explicit=False,
     )
-    assert isinstance(outcome, ApprovalFactsV2)
+    assert isinstance(outcome, ApprovalFactsV3)
     assert outcome.by_merge_sha()[SHA].actor_class == "human"
 
 
@@ -680,7 +781,7 @@ def test_lease_from_policy_file_is_what_row_four_compares(tmp_path: Path) -> Non
         now=NOW,
         explicit=False,
     )
-    assert isinstance(ok, ApprovalFactsV2)
+    assert isinstance(ok, ApprovalFactsV3)
 
 
 # --------------------------------------------------------------------------
@@ -771,7 +872,7 @@ def test_sha_outside_scope_is_unknown_not_conflict() -> None:
     связать нечем."""
     facts = _facts(
         scope=[RequestId("pr", 42)],
-        results=[Result(RequestId("pr", 42), "not_merged")],
+        results=[_result(RequestId("pr", 42), "not_merged")],
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
@@ -783,7 +884,7 @@ def test_merge_absent_from_index_and_scope_is_out_of_scope() -> None:
     facts = _facts(
         scope=[RequestId("merge_sha", OTHER_SHA)],
         results=[
-            Result(
+            _result(
                 RequestId("merge_sha", OTHER_SHA),
                 "merged",
                 OTHER_SHA,
@@ -802,7 +903,7 @@ def test_not_found_for_requested_sha_is_source_conflict() -> None:
     """Строка 7."""
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "not_found")],
+        results=[_result(RequestId("merge_sha", SHA), "not_found")],
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
@@ -813,7 +914,7 @@ def test_no_matching_pr_for_requested_sha_is_source_conflict() -> None:
     """Строка 8."""
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "no_matching_pr")],
+        results=[_result(RequestId("merge_sha", SHA), "no_matching_pr")],
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
@@ -824,11 +925,11 @@ def test_two_source_conflicts_have_distinct_messages() -> None:
     """Сценарий 16: два случая, два РАЗНЫХ сообщения."""
     not_found = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "not_found")],
+        results=[_result(RequestId("merge_sha", SHA), "not_found")],
     )
     no_pr = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "no_matching_pr")],
+        results=[_result(RequestId("merge_sha", SHA), "no_matching_pr")],
     )
     a = _check(not_found, git=_git(sha=SHA))[0].message
     b = _check(no_pr, git=_git(sha=SHA))[0].message
@@ -841,7 +942,7 @@ def _out_of_scope_message() -> str:
     facts = _facts(
         scope=[RequestId("merge_sha", OTHER_SHA)],
         results=[
-            Result(
+            _result(
                 RequestId("merge_sha", OTHER_SHA),
                 "merged",
                 OTHER_SHA,
@@ -857,7 +958,7 @@ def _out_of_scope_message() -> str:
 def _conflict_message(state: ObservationState) -> str:
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), state)],
+        results=[_result(RequestId("merge_sha", SHA), state)],
     )
     return _check(facts, git=_git(sha=SHA))[0].message
 
@@ -875,7 +976,7 @@ def test_requested_sha_resolving_to_another_merge_is_its_own_diagnosis() -> None
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(
+            _result(
                 RequestId("merge_sha", SHA),
                 "merged",
                 OTHER_SHA,
@@ -896,7 +997,7 @@ def test_requested_sha_with_actor_unavailable_on_another_merge_is_distinct() -> 
     """Та же ветка со вторым состоянием, несущим разрешённый SHA."""
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "actor_unavailable", OTHER_SHA)],
+        results=[_result(RequestId("merge_sha", SHA), "actor_unavailable", OTHER_SHA)],
     )
     findings = _check(facts, git=_git(sha=SHA))
     assert len(findings) == 1
@@ -909,14 +1010,14 @@ def test_requested_sha_with_actor_unavailable_on_another_merge_is_distinct() -> 
 
 
 def test_actor_class_outside_the_closed_set_is_fail_closed() -> None:
-    """`check_approval_evidence` публична и принимает любой `ApprovalFactsV2`.
+    """`check_approval_evidence` публична и принимает любой `ApprovalFactsV3`.
     Классификация, которой нет в таблице, обязана давать находку: «по умолчанию
     политика удовлетворена» — ровно тот fail-open, который закрытая
     классификация и запрещает."""
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:someone", "User", None)
+            _result(RequestId("merge_sha", SHA), "merged", SHA, "github:someone", "User", None)
         ],
     )
     findings = _check(facts, git=_git(sha=SHA))
@@ -924,16 +1025,74 @@ def test_actor_class_outside_the_closed_set_is_fail_closed() -> None:
     assert "fail-closed" in findings[0].message
 
 
+def test_not_in_base_finding() -> None:
+    """Строка между 8 и 9 (v3 §6): мерж наблюдён человеком, но merge-коммит не достижим
+    из базы PR — находка, а не допуск. Парный контроль — `test_human_merge_yields_no_finding`
+    (та же запись с `in_base: true`)."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[
+            _result(
+                RequestId("merge_sha", SHA),
+                "merged",
+                SHA,
+                "github:andrei-shtanakov",
+                "User",
+                "human",
+                in_base=False,
+            )
+        ],
+    )
+    (finding,) = _check(facts, git=_git(sha=SHA))
+    assert "not reachable from base" in finding.message
+    assert "in_base: false" in finding.message
+
+
+def test_not_in_base_outranks_actor_unavailable() -> None:
+    """Порядок: `in_base = false` стоит ДО строки 9 — при наложенных условиях сообщение
+    про базу, а не про неустановленного актора."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[_result(RequestId("merge_sha", SHA), "actor_unavailable", SHA, in_base=False)],
+    )
+    (finding,) = _check(facts, git=_git(sha=SHA))
+    assert "not reachable from base" in finding.message
+
+
+def test_source_conflict_outranks_not_in_base() -> None:
+    """Порядок с другой стороны: строки 7-8 (SHA не разрешился в этот мерж) стоят до
+    `in_base` — запись по запросу этого SHA, разрешившаяся в ДРУГОЙ мерж с `in_base: false`,
+    даёт конфликт источников, а не сообщение про базу."""
+    facts = _facts(
+        scope=[RequestId("merge_sha", SHA)],
+        results=[
+            _result(
+                RequestId("merge_sha", SHA),
+                "merged",
+                OTHER_SHA,
+                "github:andrei-shtanakov",
+                "User",
+                "human",
+                in_base=False,
+            )
+        ],
+    )
+    (finding,) = _check(facts, git=_git(sha=SHA))
+    assert "source conflict" in finding.message
+
+
 def test_actor_unavailable_is_distinct_from_unknown() -> None:
     """Строки 9 и 10 (сценарии 5 и 6)."""
     unavailable = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "actor_unavailable", SHA)],
+        results=[_result(RequestId("merge_sha", SHA), "actor_unavailable", SHA)],
     )
     unknown = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:stranger", "User", "unknown")
+            _result(
+                RequestId("merge_sha", SHA), "merged", SHA, "github:stranger", "User", "unknown"
+            )
         ],
     )
     a = _check(unavailable, git=_git(sha=SHA))[0].message
@@ -949,12 +1108,12 @@ def test_actor_unavailable_is_not_the_unclassified_fallback() -> None:
     же кодом."""
     unavailable = _facts(
         scope=[RequestId("merge_sha", SHA)],
-        results=[Result(RequestId("merge_sha", SHA), "actor_unavailable", SHA)],
+        results=[_result(RequestId("merge_sha", SHA), "actor_unavailable", SHA)],
     )
     unclassified = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:someone", "User", None)
+            _result(RequestId("merge_sha", SHA), "merged", SHA, "github:someone", "User", None)
         ],
     )
     a = _check(unavailable, git=_git(sha=SHA))[0].message
@@ -967,7 +1126,9 @@ def test_classified_unknown_gives_finding() -> None:
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:stranger", "User", "unknown")
+            _result(
+                RequestId("merge_sha", SHA), "merged", SHA, "github:stranger", "User", "unknown"
+            )
         ],
     )
     findings = _check(facts, git=_git(sha=SHA))
@@ -980,7 +1141,9 @@ def test_unknown_stays_fail_closed_under_allowing_policy() -> None:
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:stranger", "User", "unknown")
+            _result(
+                RequestId("merge_sha", SHA), "merged", SHA, "github:stranger", "User", "unknown"
+            )
         ],
     )
     findings = _check(facts, git=_git(sha=SHA), policy=POLICY_ALLOWING)
@@ -1019,7 +1182,7 @@ def test_gate_does_not_reclassify_the_actor_locally() -> None:
     facts = _facts(
         scope=[RequestId("merge_sha", SHA)],
         results=[
-            Result(RequestId("merge_sha", SHA), "merged", SHA, "github:newcomer", "User", "human")
+            _result(RequestId("merge_sha", SHA), "merged", SHA, "github:newcomer", "User", "human")
         ],
     )
     assert _check(facts, git=_git(sha=SHA)) == []
@@ -1028,7 +1191,7 @@ def test_gate_does_not_reclassify_the_actor_locally() -> None:
 def test_aliases_that_agree_are_used_by_the_gate() -> None:
     """Сценарий 18 со стороны гейта: `pr:N` и `merge_sha:<oid>` в одном scope,
     согласованные наблюдения — индекс разрешённых SHA находит мерж."""
-    merged_by_pr = Result(
+    merged_by_pr = _result(
         RequestId("pr", 42), "merged", SHA, "github:andrei-shtanakov", "User", "human"
     )
     facts = _facts(
@@ -1043,7 +1206,7 @@ def test_index_holds_only_resolved_shas() -> None:
     по PR-запросу не должен «находиться» ни по какому SHA."""
     facts = _facts(
         scope=[RequestId("pr", 42)],
-        results=[Result(RequestId("pr", 42), "not_merged")],
+        results=[_result(RequestId("pr", 42), "not_merged")],
     )
     assert facts.by_merge_sha() == {}
 
@@ -1135,7 +1298,7 @@ def test_cli_reads_the_bundle_default_path(tmp_path: Path) -> None:
     outcome = approval_facts_outcome(
         None, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
     )
-    assert isinstance(outcome, ApprovalFactsV2)
+    assert isinstance(outcome, ApprovalFactsV3)
 
 
 def test_cli_ignores_a_file_planted_inside_the_bundle(tmp_path: Path) -> None:
@@ -1183,7 +1346,7 @@ def test_cli_explicit_override_reads_a_file_outside_the_bundle(tmp_path: Path) -
     outcome = approval_facts_outcome(
         override, _bundle_dir(root), policy=policy, policy_path=policy_path, now=NOW
     )
-    assert isinstance(outcome, ApprovalFactsV2)
+    assert isinstance(outcome, ApprovalFactsV3)
 
 
 def test_cli_without_origin_refuses_evidence_that_is_present(tmp_path: Path) -> None:

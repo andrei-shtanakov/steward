@@ -1,4 +1,10 @@
-"""`approval-facts/v2`: контракт merge-акторов, продюсер, читатель, публикация."""
+"""`approval-facts/v2`: контракт merge-акторов, продюсер, читатель, публикация.
+
+v2 заморожен; актуальный — `steward.approvalfacts.v3` (его release-продюсер и читатель
+переиспользуют отсюда `model`, `publish` и общие проверки `reader`; `reader` ещё
+распознаёт v2-файл как `legacy_v2`). Удаление v2-продюсера — пункт TODO
+`approval-facts-v2-producer-removal`.
+"""
 
 from steward.approvalfacts.model import (
     MAX_CLOCK_SKEW_SECONDS,

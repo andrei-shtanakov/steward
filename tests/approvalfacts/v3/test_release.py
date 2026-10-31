@@ -5,8 +5,9 @@
 `e7_commit_pulls_graphql_merge`, `neg_e2_delivery_absent_pr`) и их производных
 преобразований §5 (фикстура `derive`). Обмены продюсера: `pr` — E2, E1, E5 (у
 несмёрженного — E2, E1); `merge_sha` — E7, затем те же E2, E1, E5 найденного PR.
-Продюсер и читатель v3 в этой задаче неактивны: CLI и гейт остаются на v2 (Task 11
-переключает их одним изменением).
+С Task 11 `steward approval-facts` выпускает этот файл, а гейт его читает
+(`test_cli_writes_schema_version_3`, `test_gate_reads_v3`; связка целиком —
+`test_release_e2e.py`).
 """
 
 import hashlib
@@ -22,11 +23,9 @@ import pytest
 from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
-from steward.approvalfacts import producer
 from steward.approvalfacts.model import Header, RequestId, Result, scope_digest
 from steward.approvalfacts.producer import MechanicalFailure
 from steward.approvalfacts.publish import build_header, publish
-from steward.approvalfacts.reader import UnreadableFacts
 from steward.approvalfacts.v3._github import _Fail
 from steward.approvalfacts.v3.model import Delivery, PathBlob
 from steward.approvalfacts.v3.release import (
@@ -37,9 +36,11 @@ from steward.approvalfacts.v3.release import (
     release_record,
     resolve_release,
 )
+from steward.approvalfacts.v3.release_reader import load_release_facts
 from steward.approvalfacts.v3.transport import ReplayTransport, replay_transport
 from steward.gatecheck import approval as gate_approval
 from steward.gatecheck.approval import ApprovalPolicy
+from steward.riskclassify import cli as cli_module
 from steward.riskclassify.cli import app
 
 Record = dict[str, Any]
@@ -448,56 +449,81 @@ def test_v2_publish_bytes_unchanged(tmp_path: Path) -> None:
     assert hashlib.sha256(path.read_bytes()).hexdigest() == V2_GOLDEN_SHA256
 
 
-# --- переключения нет (временный тест, удаляется коммитом переключения Task 11) -----------
+# --- переключение (Task 11): CLI выпускает v3, гейт читает v3 -------------------------------
 
 
-def test_cli_and_gate_still_v2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """ВРЕМЕННЫЙ: `steward approval-facts` пишет `schema_version: "2"`, гейт читает v2 и
-    отвергает v3. Task 11 заменяет его `test_cli_writes_schema_version_3` и
-    `test_gate_reads_v3`."""
+def test_cli_writes_schema_version_3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, derive: Derive
+) -> None:
+    """`steward approval-facts` на живом #657 (E2, E1, E5 через `make_transport`) пишет
+    header `"3"` и запись `delivery`, принимаемую схемой v3 и читателем гейта."""
     policy = tmp_path / "approval-policy.yaml"
     policy.write_text(
-        "version: 1\nhuman_identities: []\nagent_identities:\n  - github:merge-broker\n"
+        "version: 1\nhuman_identities:\n  - github:andrei-shtanakov\nagent_identities: []\n"
         "approval_facts_lease_seconds: 86400\n",
         encoding="utf-8",
     )
-    body = {
-        "data": {
-            "repository": {
-                "pullRequest": {
-                    "mergeCommit": {"oid": V2_SHA},
-                    "mergedBy": {"login": "merge-broker", "__typename": "Bot"},
-                }
-            }
-        }
-    }
-    monkeypatch.setattr(producer, "_gh", lambda args: (0, json.dumps(body), ""))
+    t = _pr657(derive)
+    monkeypatch.setattr(cli_module, "make_transport", lambda: t)
     out = tmp_path / "facts.jsonl"
     root = tmp_path / "root"
     root.mkdir()
-    args = ["approval-facts", "--repo", "andrei-shtanakov/steward", "--repo-root", str(root)]
-    args += ["--prs", "42", "--out", str(out), "--policy", str(policy)]
-    result = CliRunner().invoke(app, args)
+    args = ["approval-facts", "--repo", REPO, "--repo-root", str(root), "--prs", "657"]
+    result = CliRunner().invoke(app, [*args, "--out", str(out), "--policy", str(policy)])
     assert result.exit_code == 0, result.output
-    assert json.loads(out.read_text(encoding="utf-8").splitlines()[0])["schema_version"] == "2"
-    gate_now = datetime.now(UTC)
-    assert gate_approval.load_facts(
-        out, expected_repository="andrei-shtanakov/steward", now=gate_now
-    )
+    assert t.unused() == [] and t.unexpected == []
+    header, record = (json.loads(x) for x in out.read_text(encoding="utf-8").splitlines())
+    assert header["schema_version"] == "3"
+    for line in (header, record):
+        Draft202012Validator(SCHEMA).validate(line)
+    assert record["delivery"]["merged_by"] == {
+        "identity": "github:andrei-shtanakov",
+        "type_hint": "User",
+        "actor_class": "human",
+    }
+    facts = load_release_facts(out, expected_repository=REPO, now=datetime.now(UTC))
+    assert facts.by_merge_sha()[MERGE].actor_class == "human"
 
-    v3 = tmp_path / "v3.jsonl"
-    results = [ReleaseResult(PR657, "merged", _delivery("ai-prosto", "Bot"), "agent")]
+
+def test_gate_reads_v3(tmp_path: Path) -> None:
+    """`resolve_facts` гейта принимает v3-файл и отвергает v2 как `legacy_v2` (не
+    `unreadable` и не допуск по человеческому мержу)."""
+    policy_path = tmp_path / "approval-policy.yaml"
+    policy_path.write_text(
+        "version: 1\nhuman_identities: []\nagent_identities: []\n"
+        "approval_facts_lease_seconds: 86400\n",
+        encoding="utf-8",
+    )
+    policy = gate_approval.load_approval_policy(policy_path)
+    now = datetime.now(UTC)
     header = build_header(
-        repository="andrei-shtanakov/steward",
+        repository=REPO,
         scope=[PR657],
         policy_version=1,
-        policy_digest_value="sha256:" + "0" * 64,
+        policy_digest_value=gate_approval.policy_digest(policy_path),
         lease_seconds=86400,
-        now=gate_now,
+        now=now,
     )
+    resolve = {
+        "expected_repository": REPO,
+        "policy": policy,
+        "policy_path": policy_path,
+        "now": now,
+        "explicit": False,
+    }
+    v3 = tmp_path / "v3.jsonl"
+    results = [ReleaseResult(PR657, "merged", _delivery("ai-prosto", "Bot"), "agent")]
     publish(v3, header, results, schema_version=SCHEMA_VERSION_V3, result_record=release_record)
-    with pytest.raises(UnreadableFacts, match="schema_version"):
-        gate_approval.load_facts(v3, expected_repository="andrei-shtanakov/steward", now=gate_now)
+    facts = gate_approval.resolve_facts(v3, **resolve)
+    assert not isinstance(facts, gate_approval.FactsUnavailable)
+    assert facts.by_merge_sha()[MERGE].actor_class == "agent"
+
+    v2 = tmp_path / "v2.jsonl"
+    publish(v2, header, [Result(PR657, "merged", MERGE, "github:ai-prosto", "Bot", "agent")])
+    outcome = gate_approval.resolve_facts(v2, **resolve)
+    assert outcome == gate_approval.FactsUnavailable(
+        "legacy_v2", f"{v2}: detected approval-facts/v2"
+    )
 
 
 # --- граница импорта и замороженный v2 ------------------------------------------------------

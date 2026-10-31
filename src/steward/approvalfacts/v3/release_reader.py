@@ -1,4 +1,4 @@
-"""Читатель файла release-гейта `approval-facts/v3` (спека steward §6). Пока неактивен.
+"""Читатель файла release-гейта `approval-facts/v3` (спека steward §6); его зовёт гейт.
 
 Файл — `.steward/approval_facts.jsonl`, как у v2: строка 1 — `header` (поля v2,
 `schema_version: "3"`), дальше по одной `result` на элемент scope. Поля мержа v2
