@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from steward.gatecheck.checks import SnapshotError, snapshot_digest, snapshot_for
+from steward.gatecheck.checks import (
+    SnapshotError,
+    approvals_dir,
+    snapshot_digest,
+    snapshot_for,
+)
 from steward.gatecheck.cli import app
 
 runner = CliRunner()
@@ -163,3 +168,49 @@ def test_gate_run_without_act_mode_still_exit_2(
     res = runner.invoke(app, [str(spec), "--profile", str(tmp_path / "test.yaml"), "--candidate"])
     assert res.exit_code == 2
     assert "--act-mode is required: pass the admission result (legacy|review)" in res.output
+
+
+def test_symlinked_bundle_dir_is_refused(tmp_path: Path) -> None:
+    """A bundle reached through a link is refused, not located by guess (§7.2.3):
+    following it would hash approvals/ beside the target, not beside the link."""
+    real = _bundle(tmp_path / "real")
+    (tmp_path / "view").mkdir()
+    link = tmp_path / "view" / "spec"
+    link.symlink_to(real, target_is_directory=True)
+    (tmp_path / "view" / "approvals").mkdir()
+    (tmp_path / "view" / "approvals" / "requirements.yaml").write_text("act: review/v1\n")
+    with pytest.raises(SnapshotError, match="symlink"):
+        snapshot_digest(link)
+    with pytest.raises(SnapshotError, match="symlink"):
+        snapshot_for("candidate", link, None)
+    res = runner.invoke(app, ["--print-snapshot-digest", "--candidate", str(link)])
+    assert res.exit_code == 2
+    assert "symlink" in res.output
+
+
+def test_symlinked_approvals_dir_is_refused(tmp_path: Path) -> None:
+    spec = _bundle(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "approvals").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(SnapshotError, match="symlink"):
+        snapshot_digest(spec)
+
+
+def test_approvals_dir_is_the_lexical_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _bundle(tmp_path / "repo")
+    monkeypatch.chdir(spec)
+    assert approvals_dir(Path(".")) == tmp_path / "repo" / "approvals"
+    assert approvals_dir(Path("../spec/.")) == tmp_path / "repo" / "approvals"
+
+
+def test_dangling_symlink_in_bundle_is_error(tmp_path: Path) -> None:
+    """The non-regular-file guard: a dangling link is neither hashed nor skipped."""
+    spec = _bundle(tmp_path)
+    (spec / "x").symlink_to(tmp_path / "nonexistent")
+    with pytest.raises(SnapshotError, match="not a regular file"):
+        snapshot_digest(spec)
+    res = runner.invoke(app, ["--print-snapshot-digest", "--candidate", str(spec)])
+    assert res.exit_code == 2

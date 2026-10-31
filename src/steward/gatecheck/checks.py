@@ -135,13 +135,30 @@ class Snapshot:
 NodeStatus = Callable[[str, Snapshot], str]
 
 
+def bundle_dir(spec_dir: Path) -> Path:
+    """The bundle path at the boundary: lexically absolute, never through a link.
+
+    ``os.path.abspath`` collapses ``.`` and ``x/..`` without following links, so
+    ``<spec_dir>/../approvals/`` is the sibling *as it sits in the tree*. A
+    symlinked bundle or ``approvals/`` directory is refused (:class:`SnapshotError`)
+    rather than located by guess: following it would read approvals from beside
+    the link's target, possibly outside the repository, and the digest would
+    cover other envelopes than the tree shows.
+    """
+    path = Path(os.path.abspath(spec_dir))
+    for candidate in (path, path.parent / "approvals"):
+        if candidate.is_symlink():
+            raise SnapshotError(f"snapshot: {candidate} is a symlink; pass the real directory")
+    return path
+
+
 def approvals_dir(spec_dir: Path) -> Path:
     """``<spec_dir>/../approvals/`` — where envelopes and request manifests live.
 
-    Resolved first: ``Path(".").parent`` is ``.`` itself, so an unresolved
-    relative bundle path would put ``approvals/`` *inside* the bundle.
+    Absolutised first: ``Path(".").parent`` is ``.`` itself, so a relative
+    bundle path would put ``approvals/`` *inside* the bundle.
     """
-    return spec_dir.resolve().parent / "approvals"
+    return Path(os.path.abspath(spec_dir)).parent / "approvals"
 
 
 def snapshot_digest(spec_dir: Path) -> str:
@@ -155,7 +172,7 @@ def snapshot_digest(spec_dir: Path) -> str:
     provider's answer cover bytes nobody hashed. A non-regular file (a FIFO, a
     dangling symlink) is the same error — reading it would block or fail.
     """
-    spec_dir = spec_dir.resolve()
+    spec_dir = bundle_dir(spec_dir)
     lines = []
     for label, root in (("bundle", spec_dir), ("approvals", approvals_dir(spec_dir))):
         if label == "approvals" and not root.exists():
@@ -188,7 +205,7 @@ def snapshot_for(
     of the base: an answer computed over the base would cover other bytes.
     Path inputs are resolved here, at the boundary.
     """
-    spec_dir = spec_dir.resolve()
+    spec_dir = bundle_dir(spec_dir)
     digest = snapshot_digest(spec_dir)
     if run != "live":
         return Snapshot(kind=run, root=spec_dir, commit=None, digest=digest)
@@ -222,7 +239,7 @@ def collect_bundle(
     """
     if act_mode not in _ACT_MODES:
         raise ValueError(f"act_mode must be one of {_ACT_MODES}, got {act_mode!r}")
-    spec_dir = spec_dir.resolve()  # the boundary: `.`/`..` must not shift approvals/
+    spec_dir = bundle_dir(spec_dir)  # the boundary: `.`/`..` must not shift approvals/
     artifacts: list[Artifact] = []
     findings: list[Finding] = []
     claimed: dict[str, str] = {}

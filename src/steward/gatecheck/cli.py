@@ -48,6 +48,7 @@ from steward.gatecheck.checks import (
     Snapshot,
     SnapshotError,
     act_statuses,
+    bundle_dir,
     collect_bundle,
     delegated,
     relaxable,
@@ -595,7 +596,10 @@ def main(
         _fail_config(f"bundle directory not found: {spec_dir}")
     # Path inputs are resolved once, here: every `<spec_dir>/..` downstream
     # (approvals/, the snapshot) is wrong for an unresolved `.` or `x/..`.
-    spec_dir = spec_dir.resolve()
+    try:
+        spec_dir = bundle_dir(spec_dir)
+    except SnapshotError as err:
+        _fail_config(str(err))
     node_status = node_status.resolve() if node_status is not None else None
 
     if emit_verdicts_flag and no_fs is not None:
