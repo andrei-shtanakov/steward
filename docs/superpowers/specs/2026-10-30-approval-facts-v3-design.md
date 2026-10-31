@@ -232,6 +232,8 @@ safe="")`. Ветка с `?`, `#`, `%`, `/`, `..` или пробелом не �
    совпасть, иначе `bot_login_mismatch`. Возвращается GraphQL-форма (`merged_by_login` без
    `[bot]` и без префикса `github:`; `merged_by_type_hint` — `__typename`). Мержер
    смёрженного PR, чья идентичность не установлена (правило §3.4.1), → `actor_unresolved`;
+   правило §3.4.1 проверяется на каждой стороне **до** сверки форм (REST `slug[bot]` с
+   `type = User` → `actor_unresolved`, не `bot_login_mismatch`);
    `mergedAt`/`merged_at` = null у смёрженного PR → `malformed`; `state` PR вне {`OPEN`,
    `CLOSED`, `MERGED`} → `unknown_state`.
 2. **Не смёржен** → сразу `(Delivery(merged=False, merge_commit=None, merged_at=None,
@@ -316,7 +318,9 @@ JSON** (снято живьём, `pr657_act_sequence`) и нормализует
 решение» закрывается **на чтении целиком**. Любой актор PR — автор любого ревью (в т. ч.
 PENDING), актор любого отзыва, мержер — считается **неустановленным**, если: объект `null`
 или отсутствует; `login` отсутствует, не строка или пуст; `login` = `ghost` (зарезервированная
-GitHub-заглушка удалённого пользователя; сравнение без учёта регистра); тип
+GitHub-заглушка удалённого пользователя; сравнение без учёта регистра); `login` не в
+GraphQL-форме (после сведения REST `slug[bot]` при `type = Bot` остался суффикс `[bot]` или
+есть `:`, О9); тип
 (`__typename` / REST `type`) вне словаря {`User`, `Bot`} (например, `Mannequin`,
 `Organization`, `EnterpriseUserAccount`, отсутствует). Такой актор → `Unavailable:
 actor_unresolved` **для всего PR**, независимо от того, хватает ли остальных фактов для
@@ -546,8 +550,10 @@ query StewardV3Blobs($owner:String!,$name:String!,$merge:GitObjectID!,$head:GitO
 
 - `SCHEMA.json` (draft 2020-12, `additionalProperties: false` во всех ветках) с `$defs`:
   `review_record` (§5.2 спеки devtools: `repository`, `pr`, `observed_at`, `head_sha`,
-  `base_ref`, `pr_state`, `reviews[]`, `dismissals[]`, `effective[]`, `complete`),
-  `delivery_record` (§5.4: `merged`, `merge_commit`, `merged_at`,
+  `base_ref`, `pr_state`, `reviews[]`, `dismissals[]`, `effective[]`, `complete`; плюс `t` и
+  `before` — **решение контроллера (M0-I)**: момент и множество ключей равных меток, на
+  которых вычислен `effective[]`; без них `effective[]` читался бы как состояние на
+  `observed_at` — разрешающее прочтение отзыва после T), `delivery_record` (§5.4: `merged`, `merge_commit`, `merged_at`,
   `merged_by{identity, type_hint, actor_class}`, `head_at_merge`, `in_base`, `paths[]`,
   `complete`), `policy_history_record` (§6.1 п. 6: `repository`, `branch`, `anchor`, `until`,
   `activations[]` | `violation`, `complete`), `header` и `result` файла release-гейта (§6).
@@ -555,7 +561,13 @@ query StewardV3Blobs($owner:String!,$name:String!,$merge:GitObjectID!,$head:GitO
   процессе, используют dataclass-ы, а не файлы.
 - `README.md` — назначение, словари причин §3.6, формат векторов §5, правила
   восстановления §3.5, пределы обнаружения §3.7, канон меток.
-- `vectors/` — §5.
+- `vectors/` — §5; `MANIFEST.json` рядом с `vectors/` — sha256 каждого файла векторов
+  (ключи — пути от `vectors/`).
+- `run_vector(vector) -> VectorOutcome` в `steward.approvalfacts.v3` — **решение контроллера
+  (M0-J)**: строгий прогон вектора библиотекой (воспроизведение со сверкой полного порядка
+  запросов, полное потребление обменов, сравнение исхода с `expect`). Отрицательные векторы
+  несут только потреблённые обмены; без строгих проверок пропущенный дефект превращается в
+  `Unavailable: transport`, и проверка «какой-то отказ» проходит вакуумно.
 - `v2/` **заморожен** (правило steward: опубликованная версия контракта не меняется).
 
 ## 5. Векторы сбора (§5.6 спеки devtools)
@@ -568,7 +580,11 @@ query StewardV3Blobs($owner:String!,$name:String!,$merge:GitObjectID!,$head:GitO
 генератором: вектор несёт `"derived_from": [<имена снимков>]` и `"transforms": [...]` —
 закрытый список именованных преобразований (`set_field(path, value)`, `drop_field(path)`,
 `append_node(path, node)`, `retime(path, ts)`, `repeat_exchange(name)` для второго прохода,
-`page_split(path, n)`). Узел, добавляемый `append_node`, обязан содержать **ровно** поля
+`page_split(path, n)`, `select(keep)` — **решение контроллера (M0-H)**: выбирает и
+упорядочивает живые обмены (потреблённый префикс отказа; составной вектор из обменов разных
+снимков в порядке библиотеки), содержимого никогда не меняет). Имя, повторённое в
+`derived_from`, склеивает обмены снимка повторно (так один живой проход становится и вторым
+проходом вектора `open_review`; второй проход акта — настоящий второй запрос снимка). Узел, добавляемый `append_node`, обязан содержать **ровно** поля
 запроса из §3.8 (генератор сверяет по тексту запроса) — фикстура не может вернуть
 незапрошенное поле. Единственное исключение по форме — `ReviewDismissedEvent`: живьём не
 снят (§3.8 E4), его узел строится по схеме GitHub и тексту запроса E4, вектор помечен
@@ -1017,7 +1033,17 @@ fail-closed при обеих, а факт входит в чек-лист жи�
    `previous_state`/`submitted_at`/`DISMISSED` без события и `actor_unresolved` (О15)
    приходит от `read` (О13); коды
    `rebase_intermediate` и `commit_without_pr` в решении не различать (§3.7 п. 4).
-6. **Ветка источника политики** обязана быть веткой по умолчанию (О11).
+6. **Строгий прогон векторов (M0-J).** Гонять векторы **обязательно** через
+   `steward.approvalfacts.v3.run_vector` или эквивалент с обеими строгими проверками:
+   полный порядок запросов (`ReplayTransport` — FIFO на ключ и общий порядок не проверяет)
+   и полное потребление (`unexpected == []`, `unused() == []`), плюс точный код
+   `unavailable`, ветка `waiting_delivery` до `effective`, `delivery`/`effective_commit`.
+   Проверка «результат — какой-то `Unavailable`» (Task 11 в нынешней редакции) вакуумна:
+   отрицательные векторы обрезаны до потреблённого префикса, и мутант, пропустивший дефект,
+   даёт `transport` (замер ревью Task 7: мутанты M13, M14, M20 выживают). Целостность копии —
+   `contracts/approval-facts/v3/MANIFEST.json` (рядом с `vectors/`, не внутри) или свой список
+   дайджестов от пинованного SHA. `review_record` несёт `t`/`before` (M0-I).
+7. **Ветка источника политики** обязана быть веткой по умолчанию (О11).
 
 ## 13. Проход на разрешающие умолчания (r3)
 

@@ -21,9 +21,17 @@
   первые `K` узлов с `hasNextPage: true` и курсором, остальные — новой страницей сразу за
   ней (индексы следующих обменов сдвигаются на 1).
 
+- `{"op": "select", "keep": [i, ...]}` — оставить обмены с индексами `keep` в этом порядке
+  (каждый не больше раза): библиотека прекращает чтение на первом отказе, и вектор несёт
+  ровно потреблённые обмены; составной вектор берёт обмены разных снимков в порядке
+  запросов библиотеки. Содержимое обменов не меняется.
+
 Путь `P` — `[индекс обмена, ключ или индекс, ...]` от корня обмена (`request`/`response`).
-Модуль — без pytest: его же использует генератор векторов (Task 7); тесты получают его через
-фикстуры `conftest.py`.
+
+Модуль — dev-тулинг без pytest и без импортов из `tests/`: его загружают по пути файла и
+генератор векторов `scripts/gen_approval_facts_v3_vectors.py`, и фикстуры
+`tests/approvalfacts/v3/conftest.py` (как тесты загружают скрипт захвата). Так у генератора и
+тестов одна реализация преобразований, а скрипт не импортирует тестовый пакет.
 """
 
 import copy
@@ -33,9 +41,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-LIVE = Path(__file__).resolve().parents[2] / "fixtures" / "approvalfacts_v3" / "live"
+LIVE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "approvalfacts_v3" / "live"
 TRANSFORMS = frozenset(
-    {"set_field", "drop_field", "append_node", "retime", "repeat_exchange", "page_split"}
+    {"set_field", "drop_field", "append_node", "retime", "repeat_exchange", "page_split", "select"}
 )
 #: Тип узла, не снятый живьём (§3.8 E4): его форма — по схеме GitHub и тексту запроса E4.
 UNVERIFIED_SHAPE = "ReviewDismissedEvent"
@@ -95,6 +103,9 @@ def _apply(exchanges: list[dict[str, Any]], transform: Transform) -> bool:
     op = transform.get("op")
     if op not in TRANSFORMS:
         raise ValueError(f"unknown transform {op!r}")
+    if op == "select":
+        _select(exchanges, transform["keep"])
+        return False
     if op == "repeat_exchange":
         picked = [ex for ex in exchanges if ex["request"].get("op") == transform["name"]]
         if not picked:
@@ -130,6 +141,18 @@ def _apply(exchanges: list[dict[str, Any]], transform: Transform) -> bool:
         _check(value["data"], root, f"{path}.data", exact=False)
     parent[last] = copy.deepcopy(value)
     return False
+
+
+def _select(exchanges: list[dict[str, Any]], keep: Any) -> None:
+    ok = (
+        isinstance(keep, list)
+        and keep
+        and all(type(i) is int and 0 <= i < len(exchanges) for i in keep)
+        and len(set(keep)) == len(keep)
+    )
+    if not ok:
+        raise ValueError(f"select: keep {keep!r} is not distinct indices of {len(exchanges)}")
+    exchanges[:] = [exchanges[i] for i in keep]
 
 
 def _locate(exchanges: list[dict[str, Any]], path: Path_) -> tuple[Any, Any]:

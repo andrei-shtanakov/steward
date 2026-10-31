@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "approval-facts/v3 records",
+  "description": "Records of approval-facts/v3. The top level is one line of the release-gate file (.steward/approval_facts.jsonl): header or result. review_record, delivery_record and policy_history_record are the serialized library facts (steward.approvalfacts.v3.records).",
+  "oneOf": [{"$ref": "#/$defs/header"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "timestamp": {"type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"},
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "review_id": {"type": "string", "pattern": "^[0-9]+$"},
+    "login": {"type": "string", "minLength": 1},
+    "actor_type": {"enum": ["User", "Bot"]},
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_id", "login", "type_hint", "state", "commit_id", "submitted_at"],
+      "properties": {
+        "review_id": {"$ref": "#/$defs/review_id"},
+        "login": {"$ref": "#/$defs/login"},
+        "type_hint": {"$ref": "#/$defs/actor_type"},
+        "state": {"enum": ["PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"]},
+        "commit_id": {"$ref": "#/$defs/sha"},
+        "submitted_at": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"state": {"not": {"const": "PENDING"}}}},
+      "then": {"properties": {"submitted_at": {"$ref": "#/$defs/timestamp"}}}
+    },
+    "effective_review": {
+      "allOf": [{"$ref": "#/$defs/review"}],
+      "properties": {"state": {"enum": ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]}}
+    },
+    "dismissal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_id", "actor", "created_at", "previous_state"],
+      "properties": {
+        "review_id": {"$ref": "#/$defs/review_id"},
+        "actor": {"$ref": "#/$defs/login"},
+        "created_at": {"$ref": "#/$defs/timestamp"},
+        "previous_state": {"enum": ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"]}
+      }
+    },
+    "review_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pr", "observed_at", "head_sha", "base_ref", "pr_state",
+                   "reviews", "dismissals", "t", "before", "effective", "complete"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+        "pr": {"type": "integer", "minimum": 1},
+        "observed_at": {"$ref": "#/$defs/timestamp"},
+        "head_sha": {"$ref": "#/$defs/sha"},
+        "base_ref": {"type": "string", "minLength": 1},
+        "pr_state": {"enum": ["OPEN", "CLOSED", "MERGED"]},
+        "reviews": {"type": "array", "items": {"$ref": "#/$defs/review"}},
+        "dismissals": {"type": "array", "items": {"$ref": "#/$defs/dismissal"}},
+        "t": {"$ref": "#/$defs/timestamp",
+              "description": "Момент, на который вычислен effective[] (M0-I), не observed_at."},
+        "before": {
+          "description": "Ключи событий с меткой == t, считанных до T (M0-I).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "array", "prefixItems": [{"enum": ["review", "dismissal"]},
+                                                     {"$ref": "#/$defs/review_id"}],
+                    "minItems": 2, "maxItems": 2}
+        },
+        "effective": {"type": "array", "items": {"$ref": "#/$defs/effective_review"}},
+        "complete": {"const": true}
+      }
+    },
+    "path_blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "blob_at_merge", "blob_at_head"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "blob_at_merge": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+        "blob_at_head": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "merged_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "type_hint", "actor_class"],
+      "properties": {
+        "identity": {"type": "string", "pattern": "^github:[^\\s]+$"},
+        "type_hint": {"$ref": "#/$defs/actor_type"},
+        "actor_class": {"enum": ["human", "agent", "unknown", null]}
+      }
+    },
+    "delivery_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["merged", "merge_commit", "merged_at", "merged_by", "head_at_merge",
+                   "in_base", "paths", "complete"],
+      "properties": {
+        "merged": {"type": "boolean"},
+        "merge_commit": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+        "merged_at": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "merged_by": {"anyOf": [{"$ref": "#/$defs/merged_by"}, {"type": "null"}]},
+        "head_at_merge": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+        "in_base": {"type": "boolean"},
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/path_blob"}},
+        "complete": {"const": true}
+      },
+      "if": {"properties": {"merged": {"const": true}}},
+      "then": {
+        "properties": {
+          "merge_commit": {"$ref": "#/$defs/sha"},
+          "merged_at": {"$ref": "#/$defs/timestamp"},
+          "head_at_merge": {"$ref": "#/$defs/sha"}
+        }
+      },
+      "else": {
+        "properties": {
+          "merge_commit": {"type": "null"},
+          "merged_at": {"type": "null"},
+          "merged_by": {"type": "null"},
+          "head_at_merge": {"type": "null"},
+          "in_base": {"const": false},
+          "paths": {"maxItems": 0}
+        }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr", "merge_commit", "merged_at", "files_sha256"],
+      "properties": {
+        "pr": {"type": "integer", "minimum": 1},
+        "merge_commit": {"$ref": "#/$defs/sha"},
+        "merged_at": {"$ref": "#/$defs/timestamp"},
+        "files_sha256": {
+          "type": "object",
+          "propertyNames": {"type": "string", "pattern": "^[^/\\u0000]+(/[^/\\u0000]+)*$"},
+          "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "policy_history_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "branch", "anchor", "until", "complete"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+        "branch": {"type": "string", "minLength": 1},
+        "anchor": {"$ref": "#/$defs/sha"},
+        "until": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+        "activations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/activation"}},
+        "violation": {
+          "type": "string",
+          "pattern": "^(commit_without_pr|rebase_intermediate|pr_base_mismatch|anchor_not_reached): .+$"
+        },
+        "unavailable": {
+          "type": "string",
+          "pattern": "^(transport|http|graphql_errors|malformed|pagination|bad_timestamp|unknown_state|missing_commit_id|missing_submitted_at|dismissal_without_previous_state|dismissed_without_event|duplicate_dismissal|orphan_dismissal|delivery_mismatch|bot_login_mismatch|unstable|object_missing|path_absent_at_head|not_a_blob|chain_limit|branch_not_default|no_pr_for_commit|tree_truncated|actor_unresolved)(: .+)?$"
+        },
+        "complete": {"type": "boolean"}
+      },
+      "oneOf": [
+        {"required": ["activations"], "properties": {"complete": {"const": true}},
+         "not": {"anyOf": [{"required": ["violation"]}, {"required": ["unavailable"]}]}},
+        {"required": ["violation"], "properties": {"complete": {"const": true}},
+         "not": {"anyOf": [{"required": ["activations"]}, {"required": ["unavailable"]}]}},
+        {"required": ["unavailable"], "properties": {"complete": {"const": false}},
+         "not": {"anyOf": [{"required": ["activations"]}, {"required": ["violation"]}]}}
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"enum": ["pr", "merge_sha"]},
+        "value": {}
+      },
+      "oneOf": [
+        {"properties": {"kind": {"const": "pr"}, "value": {"type": "integer", "minimum": 1}}},
+        {"properties": {"kind": {"const": "merge_sha"}, "value": {"$ref": "#/$defs/sha"}}}
+      ]
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "repository", "generated_at", "valid_until",
+                   "policy_version", "policy_digest", "complete", "scope_sha256", "scope"],
+      "properties": {
+        "kind": {"const": "header"},
+        "schema_version": {"const": "3"},
+        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+        "generated_at": {"$ref": "#/$defs/timestamp"},
+        "valid_until": {"$ref": "#/$defs/timestamp"},
+        "policy_version": {"type": "integer", "minimum": 1},
+        "policy_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "complete": {"const": true},
+        "scope_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "scope": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/request"}}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "request", "state", "delivery"],
+      "properties": {
+        "kind": {"const": "result"},
+        "request": {"$ref": "#/$defs/request"},
+        "state": {"enum": ["merged", "not_merged", "not_found", "no_matching_pr",
+                           "actor_unavailable"]},
+        "delivery": {"anyOf": [{"$ref": "#/$defs/delivery_record"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "merged"}}},
+          "then": {"properties": {"delivery": {
+            "$ref": "#/$defs/delivery_record",
+            "properties": {"merged": {"const": true}, "paths": {"maxItems": 0},
+                           "merged_by": {"$ref": "#/$defs/merged_by",
+                                         "properties": {"actor_class": {"enum": ["human", "agent", "unknown"]}}}}
+          }}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "actor_unavailable"}}},
+          "then": {"properties": {"delivery": {
+            "$ref": "#/$defs/delivery_record",
+            "properties": {"merged": {"const": true}, "merged_by": {"type": "null"},
+                           "paths": {"maxItems": 0}}
+          }}}
+        },
+        {
+          "if": {"properties": {"state": {"enum": ["not_merged", "not_found", "no_matching_pr"]}}},
+          "then": {"properties": {"delivery": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "not_merged"}}},
+          "then": {"properties": {"request": {"properties": {"kind": {"const": "pr"}}}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "no_matching_pr"}}},
+          "then": {"properties": {"request": {"properties": {"kind": {"const": "merge_sha"}}}}}
+        }
+      ]
+    }
+  }
+}

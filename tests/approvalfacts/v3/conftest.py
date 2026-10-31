@@ -7,20 +7,43 @@
 манифеста (`pytest_generate_tests`). Хелперы — фикстуры, возвращающие функции: правило
 репо — без импортов между тест-модулями (`tests/conftest.py`). Перевод записи в `Request`
 написан независимо от библиотеки: тест не должен проверять библиотеку её же кодом.
+
+Преобразования спеки §5 (`derive`, `dismissal_node`, `TRANSFORMS`) живут в dev-тулинге
+`scripts/approval_facts_v3_derive.py` и загружаются по пути файла (как скрипт захвата в
+`tests/approvalfacts/test_capture_live.py`): ту же реализацию загружает генератор векторов,
+который не импортирует тестовый пакет.
 """
 
+import importlib.util
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
 
 from steward.approvalfacts.v3.transport import Request
 
-from . import _derive
-
 ROOT = Path(__file__).resolve().parents[3]
+_DERIVE_SCRIPT = ROOT / "scripts" / "approval_facts_v3_derive.py"
+
+
+def _load_derive() -> ModuleType:
+    name = "approval_facts_v3_derive"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _DERIVE_SCRIPT)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging error
+        raise RuntimeError(f"cannot load {_DERIVE_SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_derive: Any = _load_derive()
 LIVE = ROOT / "tests" / "fixtures" / "approvalfacts_v3" / "live"
 _MANIFEST = json.loads((LIVE / "MANIFEST.json").read_text(encoding="utf-8"))
 LIVE_CAPTURES: tuple[str, ...] = tuple(sorted(n.removesuffix(".json") for n in _MANIFEST["files"]))
@@ -106,7 +129,7 @@ def key_of() -> Callable[[Record], Key]:
 
 @pytest.fixture
 def derive() -> Callable[[list[str], list[dict[str, Any]]], Record]:
-    """`derive(base, transforms)` — обмены снимков после преобразований спеки §5 (`_derive`)."""
+    """`derive(base, transforms)` — обмены снимков после преобразований спеки §5."""
     return _derive.derive
 
 
@@ -114,3 +137,9 @@ def derive() -> Callable[[list[str], list[dict[str, Any]]], Record]:
 def dismissal_node() -> Callable[..., Record]:
     """`dismissal_node(review_id, created, prev, actor_login, actor_type)` — узел E4."""
     return _derive.dismissal_node
+
+
+@pytest.fixture
+def derive_transforms() -> frozenset[str]:
+    """Закрытый список имён преобразований спеки §5 (`op`)."""
+    return _derive.TRANSFORMS

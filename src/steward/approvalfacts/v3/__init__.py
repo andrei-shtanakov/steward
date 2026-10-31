@@ -30,6 +30,7 @@ from steward.approvalfacts.v3.validate import (
     login_resolved,
     validate_review_facts,
 )
+from steward.approvalfacts.v3.vectors import VectorOutcome, run_vector
 
 __all__ = [
     "ACTOR_TYPES",
@@ -49,6 +50,7 @@ __all__ = [
     "Review",
     "ReviewFacts",
     "Unavailable",
+    "VectorOutcome",
     "actor_resolved",
     "canon_ts",
     "effective_reviews",
@@ -57,6 +59,7 @@ __all__ = [
     "read_activation",
     "read_open_review",
     "read_policy_history",
+    "run_vector",
     "unavailable",
     "validate_review_facts",
     "violation",

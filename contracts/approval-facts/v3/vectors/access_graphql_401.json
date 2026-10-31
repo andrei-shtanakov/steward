@@ -1,0 +1,76 @@
+{
+  "before": [],
+  "derived_from": [
+    "pr657_act_sequence"
+  ],
+  "expect": {
+    "unavailable": "http"
+  },
+  "kind": "act",
+  "paths": [
+    "docs/evidence/2026-10-30-df-stage2a-acceptance.md"
+  ],
+  "pr": 657,
+  "repo": "andrei-shtanakov/devtools",
+  "t": "2026-10-30T12:09:17Z",
+  "title": "Ошибка доступа: GraphQL отвечает 401",
+  "transforms": [
+    {
+      "op": "set_field",
+      "path": [
+        0,
+        "response",
+        "status"
+      ],
+      "value": 401
+    },
+    {
+      "keep": [
+        0
+      ],
+      "op": "select"
+    }
+  ],
+  "transport": {
+    "exchanges": [
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Delivery",
+          "path": "graphql",
+          "query": "query StewardV3Delivery($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number state merged mergedAt mergeCommit{oid} mergedBy{login __typename} headRefOid baseRefName}}}",
+          "variables": {
+            "name": "devtools",
+            "number": 657,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "baseRefName": "master",
+                  "headRefOid": "b3651bcb2907bd6d1b6d421b018701520fb64066",
+                  "mergeCommit": {
+                    "oid": "aa4e7e37d9f1ea34581c9c484d60074b6d3ac18e"
+                  },
+                  "merged": true,
+                  "mergedAt": "2026-10-30T12:09:17Z",
+                  "mergedBy": {
+                    "__typename": "User",
+                    "login": "andrei-shtanakov"
+                  },
+                  "number": 657,
+                  "state": "MERGED"
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 401
+        }
+      }
+    ]
+  }
+}

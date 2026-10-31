@@ -1,0 +1,160 @@
+{
+  "before": [],
+  "derived_from": [
+    "closed606_review_pass",
+    "closed606_review_pass"
+  ],
+  "expect": {
+    "unavailable": "actor_unresolved"
+  },
+  "kind": "open_review",
+  "pr": 606,
+  "repo": "andrei-shtanakov/devtools",
+  "t": "2026-10-12T18:00:00Z",
+  "title": "Предпроверка: ревью автора ghost — actor_unresolved",
+  "transforms": [
+    {
+      "op": "set_field",
+      "path": [
+        0,
+        "response",
+        "body",
+        "data",
+        "repository",
+        "pullRequest",
+        "reviews",
+        "nodes",
+        1,
+        "author"
+      ],
+      "value": {
+        "__typename": "User",
+        "login": "ghost"
+      }
+    },
+    {
+      "op": "set_field",
+      "path": [
+        2,
+        "response",
+        "body",
+        "data",
+        "repository",
+        "pullRequest",
+        "reviews",
+        "nodes",
+        1,
+        "author"
+      ],
+      "value": {
+        "__typename": "User",
+        "login": "ghost"
+      }
+    },
+    {
+      "keep": [
+        0,
+        1
+      ],
+      "op": "select"
+    }
+  ],
+  "transport": {
+    "exchanges": [
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Reviews",
+          "path": "graphql",
+          "query": "query StewardV3Reviews($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid baseRefName reviews(first:100,after:$after){nodes{databaseId state submittedAt commit{oid} author{login __typename}} pageInfo{hasNextPage endCursor}}}}}",
+          "variables": {
+            "after": null,
+            "name": "devtools",
+            "number": 606,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "baseRefName": "master",
+                  "headRefOid": "a038c2156ac098dad4e1d0cba3ba936cc57940c8",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "__typename": "User",
+                          "login": "ai-prosto"
+                        },
+                        "commit": {
+                          "oid": "a038c2156ac098dad4e1d0cba3ba936cc57940c8"
+                        },
+                        "databaseId": 5493892414,
+                        "state": "APPROVED",
+                        "submittedAt": "2026-10-12T17:07:40Z"
+                      },
+                      {
+                        "author": {
+                          "__typename": "User",
+                          "login": "ghost"
+                        },
+                        "commit": {
+                          "oid": "a038c2156ac098dad4e1d0cba3ba936cc57940c8"
+                        },
+                        "databaseId": 5493955117,
+                        "state": "COMMENTED",
+                        "submittedAt": "2026-10-12T17:14:49Z"
+                      }
+                    ],
+                    "pageInfo": {
+                      "endCursor": "Y3Vyc29yOnYyOpO0MjAyNi0xMC0xMlQxNzoxNDo0OVq0MjAyNi0xMC0xMlQxNzoxNDo0OFrPAAAAAUd3Gi0=",
+                      "hasNextPage": false
+                    }
+                  },
+                  "state": "CLOSED"
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Timeline",
+          "path": "graphql",
+          "query": "query StewardV3Timeline($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT,MERGED_EVENT],first:100,after:$after){nodes{__typename ... on ReviewDismissedEvent{createdAt actor{login __typename} previousReviewState review{databaseId}} ... on MergedEvent{createdAt commit{oid}}} pageInfo{hasNextPage endCursor}}}}}",
+          "variables": {
+            "after": null,
+            "name": "devtools",
+            "number": 606,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "timelineItems": {
+                    "nodes": [],
+                    "pageInfo": {
+                      "endCursor": null,
+                      "hasNextPage": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 200
+        }
+      }
+    ]
+  }
+}

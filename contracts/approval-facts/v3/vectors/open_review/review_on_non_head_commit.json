@@ -1,0 +1,253 @@
+{
+  "before": [],
+  "derived_from": [
+    "pr603_review_pass",
+    "pr603_review_pass"
+  ],
+  "expect": {
+    "effective": {
+      "ai-prosto": "APPROVED"
+    },
+    "effective_commit": {
+      "ai-prosto": "0172e10f0adecccd513027f785e29ee46d0c6b29"
+    }
+  },
+  "kind": "open_review",
+  "pr": 603,
+  "repo": "andrei-shtanakov/devtools",
+  "t": "2026-10-12T15:07:43Z",
+  "title": "Ревью на коммитах ≠ headRefOid (один живой проход #603, повторённый вторым): эффективное APPROVED со своим commit_id",
+  "transforms": [],
+  "transport": {
+    "exchanges": [
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Reviews",
+          "path": "graphql",
+          "query": "query StewardV3Reviews($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid baseRefName reviews(first:100,after:$after){nodes{databaseId state submittedAt commit{oid} author{login __typename}} pageInfo{hasNextPage endCursor}}}}}",
+          "variables": {
+            "after": null,
+            "name": "devtools",
+            "number": 603,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "baseRefName": "master",
+                  "headRefOid": "d634ea2ace36501eb7cb84dac1ac01d6b9ba7680",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "__typename": "User",
+                          "login": "ai-prosto"
+                        },
+                        "commit": {
+                          "oid": "48cb50ac2a13736d70f6a933bc8a3a3239b5d662"
+                        },
+                        "databaseId": 5491803053,
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-10-12T13:57:26Z"
+                      },
+                      {
+                        "author": {
+                          "__typename": "Bot",
+                          "login": "copilot-pull-request-reviewer"
+                        },
+                        "commit": {
+                          "oid": "48cb50ac2a13736d70f6a933bc8a3a3239b5d662"
+                        },
+                        "databaseId": 5491815707,
+                        "state": "COMMENTED",
+                        "submittedAt": "2026-10-12T13:58:24Z"
+                      },
+                      {
+                        "author": {
+                          "__typename": "User",
+                          "login": "ai-prosto"
+                        },
+                        "commit": {
+                          "oid": "0172e10f0adecccd513027f785e29ee46d0c6b29"
+                        },
+                        "databaseId": 5491859523,
+                        "state": "APPROVED",
+                        "submittedAt": "2026-10-12T14:01:49Z"
+                      }
+                    ],
+                    "pageInfo": {
+                      "endCursor": "Y3Vyc29yOnYyOpO0MjAyNi0xMC0xMlQxNDowMTo0OVq0MjAyNi0xMC0xMlQxNDowMTo0OFrPAAAAAUdXIEM=",
+                      "hasNextPage": false
+                    }
+                  },
+                  "state": "MERGED"
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Timeline",
+          "path": "graphql",
+          "query": "query StewardV3Timeline($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT,MERGED_EVENT],first:100,after:$after){nodes{__typename ... on ReviewDismissedEvent{createdAt actor{login __typename} previousReviewState review{databaseId}} ... on MergedEvent{createdAt commit{oid}}} pageInfo{hasNextPage endCursor}}}}}",
+          "variables": {
+            "after": null,
+            "name": "devtools",
+            "number": 603,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "timelineItems": {
+                    "nodes": [
+                      {
+                        "__typename": "MergedEvent",
+                        "commit": {
+                          "oid": "9bafd27593cd97f0966ed5220f5832ba87d90a65"
+                        },
+                        "createdAt": "2026-10-12T15:07:43Z"
+                      }
+                    ],
+                    "pageInfo": {
+                      "endCursor": "Y3Vyc29yOnYyOpPPAAABoTCnwhgBqzMzMDU4Mjg4NDA5",
+                      "hasNextPage": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Reviews",
+          "path": "graphql",
+          "query": "query StewardV3Reviews($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid baseRefName reviews(first:100,after:$after){nodes{databaseId state submittedAt commit{oid} author{login __typename}} pageInfo{hasNextPage endCursor}}}}}",
+          "variables": {
+            "after": null,
+            "name": "devtools",
+            "number": 603,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "baseRefName": "master",
+                  "headRefOid": "d634ea2ace36501eb7cb84dac1ac01d6b9ba7680",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "__typename": "User",
+                          "login": "ai-prosto"
+                        },
+                        "commit": {
+                          "oid": "48cb50ac2a13736d70f6a933bc8a3a3239b5d662"
+                        },
+                        "databaseId": 5491803053,
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-10-12T13:57:26Z"
+                      },
+                      {
+                        "author": {
+                          "__typename": "Bot",
+                          "login": "copilot-pull-request-reviewer"
+                        },
+                        "commit": {
+                          "oid": "48cb50ac2a13736d70f6a933bc8a3a3239b5d662"
+                        },
+                        "databaseId": 5491815707,
+                        "state": "COMMENTED",
+                        "submittedAt": "2026-10-12T13:58:24Z"
+                      },
+                      {
+                        "author": {
+                          "__typename": "User",
+                          "login": "ai-prosto"
+                        },
+                        "commit": {
+                          "oid": "0172e10f0adecccd513027f785e29ee46d0c6b29"
+                        },
+                        "databaseId": 5491859523,
+                        "state": "APPROVED",
+                        "submittedAt": "2026-10-12T14:01:49Z"
+                      }
+                    ],
+                    "pageInfo": {
+                      "endCursor": "Y3Vyc29yOnYyOpO0MjAyNi0xMC0xMlQxNDowMTo0OVq0MjAyNi0xMC0xMlQxNDowMTo0OFrPAAAAAUdXIEM=",
+                      "hasNextPage": false
+                    }
+                  },
+                  "state": "MERGED"
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "POST",
+          "op": "StewardV3Timeline",
+          "path": "graphql",
+          "query": "query StewardV3Timeline($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT,MERGED_EVENT],first:100,after:$after){nodes{__typename ... on ReviewDismissedEvent{createdAt actor{login __typename} previousReviewState review{databaseId}} ... on MergedEvent{createdAt commit{oid}}} pageInfo{hasNextPage endCursor}}}}}",
+          "variables": {
+            "after": null,
+            "name": "devtools",
+            "number": 603,
+            "owner": "andrei-shtanakov"
+          }
+        },
+        "response": {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "timelineItems": {
+                    "nodes": [
+                      {
+                        "__typename": "MergedEvent",
+                        "commit": {
+                          "oid": "9bafd27593cd97f0966ed5220f5832ba87d90a65"
+                        },
+                        "createdAt": "2026-10-12T15:07:43Z"
+                      }
+                    ],
+                    "pageInfo": {
+                      "endCursor": "Y3Vyc29yOnYyOpPPAAABoTCnwhgBqzMzMDU4Mjg4NDA5",
+                      "hasNextPage": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "link": null,
+          "status": 200
+        }
+      }
+    ]
+  }
+}

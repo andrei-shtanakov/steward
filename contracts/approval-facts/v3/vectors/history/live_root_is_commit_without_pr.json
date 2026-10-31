@@ -1,0 +1,398 @@
+{
+  "anchor": "12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+  "branch": "main",
+  "derived_from": [
+    "h1_repo_policy",
+    "h2_branch_policy",
+    "h3_commit_root_no_parents",
+    "h4_commit_pulls_direct_push"
+  ],
+  "expect": {
+    "violation": "commit_without_pr"
+  },
+  "files": [
+    "policy/approvers.env",
+    "policy/modes.yaml",
+    "policy/actors.yaml"
+  ],
+  "kind": "history",
+  "repo": "andrei-shtanakov/approval-policy",
+  "title": "Неизменённые H1–H4 approval-policy: корень — прямой коммит без PR, якорем даёт commit_without_pr (bootstrap источника обязан быть PR-мержем)",
+  "transforms": [],
+  "transport": {
+    "exchanges": [
+      {
+        "request": {
+          "method": "GET",
+          "path": "repos/andrei-shtanakov/approval-policy"
+        },
+        "response": {
+          "body": {
+            "allow_auto_merge": false,
+            "allow_forking": true,
+            "allow_merge_commit": true,
+            "allow_rebase_merge": true,
+            "allow_squash_merge": true,
+            "allow_update_branch": false,
+            "archive_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/{archive_format}{/ref}",
+            "archived": false,
+            "assignees_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/assignees{/user}",
+            "blobs_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/blobs{/sha}",
+            "branches_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/branches{/branch}",
+            "clone_url": "https://github.com/andrei-shtanakov/approval-policy.git",
+            "collaborators_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/collaborators{/collaborator}",
+            "comments_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/comments{/number}",
+            "commits_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/commits{/sha}",
+            "compare_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/compare/{base}...{head}",
+            "contents_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/contents/{+path}",
+            "contributors_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/contributors",
+            "created_at": "2026-09-22T07:45:15Z",
+            "default_branch": "main",
+            "delete_branch_on_merge": false,
+            "deployments_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/deployments",
+            "description": "Политика подписи узлов governance-бандла (§I12): единственный источник AUTHORIZED_APPROVER_ACCOUNTS",
+            "disabled": false,
+            "downloads_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/downloads",
+            "events_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/events",
+            "fork": false,
+            "forks": 0,
+            "forks_count": 0,
+            "forks_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/forks",
+            "full_name": "andrei-shtanakov/approval-policy",
+            "git_commits_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/commits{/sha}",
+            "git_refs_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/refs{/sha}",
+            "git_tags_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/tags{/sha}",
+            "git_url": "git://github.com/andrei-shtanakov/approval-policy.git",
+            "has_discussions": false,
+            "has_downloads": false,
+            "has_issues": true,
+            "has_pages": false,
+            "has_projects": true,
+            "has_pull_requests": true,
+            "has_wiki": true,
+            "homepage": null,
+            "hooks_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/hooks",
+            "html_url": "https://github.com/andrei-shtanakov/approval-policy",
+            "id": 1381067983,
+            "is_template": false,
+            "issue_comment_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/issues/comments{/number}",
+            "issue_events_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/issues/events{/number}",
+            "issues_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/issues{/number}",
+            "keys_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/keys{/key_id}",
+            "labels_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/labels{/name}",
+            "language": null,
+            "languages_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/languages",
+            "license": null,
+            "merge_commit_message": "PR_TITLE",
+            "merge_commit_title": "MERGE_MESSAGE",
+            "merges_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/merges",
+            "milestones_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/milestones{/number}",
+            "mirror_url": null,
+            "name": "approval-policy",
+            "network_count": 0,
+            "node_id": "R_kgDOUlFszw",
+            "notifications_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/notifications{?since,all,participating}",
+            "open_issues": 0,
+            "open_issues_count": 0,
+            "owner": {
+              "avatar_url": "https://avatars.githubusercontent.com/u/45091754?v=4",
+              "events_url": "https://api.github.com/users/andrei-shtanakov/events{/privacy}",
+              "followers_url": "https://api.github.com/users/andrei-shtanakov/followers",
+              "following_url": "https://api.github.com/users/andrei-shtanakov/following{/other_user}",
+              "gists_url": "https://api.github.com/users/andrei-shtanakov/gists{/gist_id}",
+              "gravatar_id": "",
+              "html_url": "https://github.com/andrei-shtanakov",
+              "id": 45091754,
+              "login": "andrei-shtanakov",
+              "node_id": "MDQ6VXNlcjQ1MDkxNzU0",
+              "organizations_url": "https://api.github.com/users/andrei-shtanakov/orgs",
+              "received_events_url": "https://api.github.com/users/andrei-shtanakov/received_events",
+              "repos_url": "https://api.github.com/users/andrei-shtanakov/repos",
+              "site_admin": false,
+              "starred_url": "https://api.github.com/users/andrei-shtanakov/starred{/owner}{/repo}",
+              "subscriptions_url": "https://api.github.com/users/andrei-shtanakov/subscriptions",
+              "type": "User",
+              "url": "https://api.github.com/users/andrei-shtanakov",
+              "user_view_type": "public"
+            },
+            "permissions": {
+              "admin": true,
+              "maintain": true,
+              "pull": true,
+              "push": true,
+              "triage": true
+            },
+            "private": false,
+            "pull_request_creation_policy": "all",
+            "pulls_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/pulls{/number}",
+            "pushed_at": "2026-09-22T07:45:23Z",
+            "releases_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/releases{/id}",
+            "security_and_analysis": {
+              "dependabot_security_updates": {
+                "status": "enabled"
+              },
+              "secret_scanning": {
+                "status": "enabled"
+              },
+              "secret_scanning_non_provider_patterns": {
+                "status": "disabled"
+              },
+              "secret_scanning_push_protection": {
+                "status": "enabled"
+              },
+              "secret_scanning_validity_checks": {
+                "status": "disabled"
+              }
+            },
+            "size": 1,
+            "squash_merge_commit_message": "COMMIT_MESSAGES",
+            "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+            "ssh_url": "git@github.com:andrei-shtanakov/approval-policy.git",
+            "stargazers_count": 0,
+            "stargazers_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/stargazers",
+            "statuses_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/statuses/{sha}",
+            "subscribers_count": 0,
+            "subscribers_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/subscribers",
+            "subscription_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/subscription",
+            "svn_url": "https://github.com/andrei-shtanakov/approval-policy",
+            "tags_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/tags",
+            "teams_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/teams",
+            "topics": [],
+            "trees_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/trees{/sha}",
+            "updated_at": "2026-09-22T07:45:28Z",
+            "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy",
+            "use_squash_pr_title_as_default": false,
+            "visibility": "public",
+            "watchers": 0,
+            "watchers_count": 0,
+            "web_commit_signoff_required": false
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "GET",
+          "path": "repos/andrei-shtanakov/approval-policy/branches/main"
+        },
+        "response": {
+          "body": {
+            "_links": {
+              "html": "https://github.com/andrei-shtanakov/approval-policy/tree/main",
+              "self": "https://api.github.com/repos/andrei-shtanakov/approval-policy/branches/main"
+            },
+            "commit": {
+              "author": {
+                "avatar_url": "https://avatars.githubusercontent.com/u/45091754?v=4",
+                "events_url": "https://api.github.com/users/andrei-shtanakov/events{/privacy}",
+                "followers_url": "https://api.github.com/users/andrei-shtanakov/followers",
+                "following_url": "https://api.github.com/users/andrei-shtanakov/following{/other_user}",
+                "gists_url": "https://api.github.com/users/andrei-shtanakov/gists{/gist_id}",
+                "gravatar_id": "",
+                "html_url": "https://github.com/andrei-shtanakov",
+                "id": 45091754,
+                "login": "andrei-shtanakov",
+                "node_id": "MDQ6VXNlcjQ1MDkxNzU0",
+                "organizations_url": "https://api.github.com/users/andrei-shtanakov/orgs",
+                "received_events_url": "https://api.github.com/users/andrei-shtanakov/received_events",
+                "repos_url": "https://api.github.com/users/andrei-shtanakov/repos",
+                "site_admin": false,
+                "starred_url": "https://api.github.com/users/andrei-shtanakov/starred{/owner}{/repo}",
+                "subscriptions_url": "https://api.github.com/users/andrei-shtanakov/subscriptions",
+                "type": "User",
+                "url": "https://api.github.com/users/andrei-shtanakov",
+                "user_view_type": "public"
+              },
+              "comments_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/comments",
+              "commit": {
+                "author": {
+                  "date": "2026-09-22T07:45:11Z",
+                  "name": "andrei-shtanakov"
+                },
+                "comment_count": 0,
+                "committer": {
+                  "date": "2026-09-22T07:45:11Z",
+                  "name": "andrei-shtanakov"
+                },
+                "message": "policy: AUTHORIZED_APPROVER_ACCOUNTS=andrei-shtanakov",
+                "tree": {
+                  "sha": "11134f9a63befbba4706708a1a42036b00400136",
+                  "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/trees/11134f9a63befbba4706708a1a42036b00400136"
+                },
+                "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+                "verification": {
+                  "reason": "unsigned",
+                  "verified": false,
+                  "verified_at": null
+                }
+              },
+              "committer": {
+                "avatar_url": "https://avatars.githubusercontent.com/u/45091754?v=4",
+                "events_url": "https://api.github.com/users/andrei-shtanakov/events{/privacy}",
+                "followers_url": "https://api.github.com/users/andrei-shtanakov/followers",
+                "following_url": "https://api.github.com/users/andrei-shtanakov/following{/other_user}",
+                "gists_url": "https://api.github.com/users/andrei-shtanakov/gists{/gist_id}",
+                "gravatar_id": "",
+                "html_url": "https://github.com/andrei-shtanakov",
+                "id": 45091754,
+                "login": "andrei-shtanakov",
+                "node_id": "MDQ6VXNlcjQ1MDkxNzU0",
+                "organizations_url": "https://api.github.com/users/andrei-shtanakov/orgs",
+                "received_events_url": "https://api.github.com/users/andrei-shtanakov/received_events",
+                "repos_url": "https://api.github.com/users/andrei-shtanakov/repos",
+                "site_admin": false,
+                "starred_url": "https://api.github.com/users/andrei-shtanakov/starred{/owner}{/repo}",
+                "subscriptions_url": "https://api.github.com/users/andrei-shtanakov/subscriptions",
+                "type": "User",
+                "url": "https://api.github.com/users/andrei-shtanakov",
+                "user_view_type": "public"
+              },
+              "html_url": "https://github.com/andrei-shtanakov/approval-policy/commit/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+              "node_id": "C_kwDOUlFsz9oAKDEyZDE5OGZiNGRiOWVkNmZiYjFjNWIwMGFmMzA4ZWViMzFlNGVjMjI",
+              "parents": [],
+              "sha": "12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+              "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22"
+            },
+            "name": "main",
+            "protected": true,
+            "protection": {
+              "enabled": false,
+              "required_status_checks": {
+                "checks": [],
+                "contexts": [],
+                "enforcement_level": "off"
+              }
+            },
+            "protection_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/branches/main/protection"
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "GET",
+          "path": "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22"
+        },
+        "response": {
+          "body": {
+            "author": {
+              "avatar_url": "https://avatars.githubusercontent.com/u/45091754?v=4",
+              "events_url": "https://api.github.com/users/andrei-shtanakov/events{/privacy}",
+              "followers_url": "https://api.github.com/users/andrei-shtanakov/followers",
+              "following_url": "https://api.github.com/users/andrei-shtanakov/following{/other_user}",
+              "gists_url": "https://api.github.com/users/andrei-shtanakov/gists{/gist_id}",
+              "gravatar_id": "",
+              "html_url": "https://github.com/andrei-shtanakov",
+              "id": 45091754,
+              "login": "andrei-shtanakov",
+              "node_id": "MDQ6VXNlcjQ1MDkxNzU0",
+              "organizations_url": "https://api.github.com/users/andrei-shtanakov/orgs",
+              "received_events_url": "https://api.github.com/users/andrei-shtanakov/received_events",
+              "repos_url": "https://api.github.com/users/andrei-shtanakov/repos",
+              "site_admin": false,
+              "starred_url": "https://api.github.com/users/andrei-shtanakov/starred{/owner}{/repo}",
+              "subscriptions_url": "https://api.github.com/users/andrei-shtanakov/subscriptions",
+              "type": "User",
+              "url": "https://api.github.com/users/andrei-shtanakov",
+              "user_view_type": "public"
+            },
+            "comments_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/comments",
+            "commit": {
+              "author": {
+                "date": "2026-09-22T07:45:11Z",
+                "name": "andrei-shtanakov"
+              },
+              "comment_count": 0,
+              "committer": {
+                "date": "2026-09-22T07:45:11Z",
+                "name": "andrei-shtanakov"
+              },
+              "message": "policy: AUTHORIZED_APPROVER_ACCOUNTS=andrei-shtanakov",
+              "tree": {
+                "sha": "11134f9a63befbba4706708a1a42036b00400136",
+                "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/trees/11134f9a63befbba4706708a1a42036b00400136"
+              },
+              "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/git/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+              "verification": {
+                "reason": "unsigned",
+                "verified": false,
+                "verified_at": null
+              }
+            },
+            "committer": {
+              "avatar_url": "https://avatars.githubusercontent.com/u/45091754?v=4",
+              "events_url": "https://api.github.com/users/andrei-shtanakov/events{/privacy}",
+              "followers_url": "https://api.github.com/users/andrei-shtanakov/followers",
+              "following_url": "https://api.github.com/users/andrei-shtanakov/following{/other_user}",
+              "gists_url": "https://api.github.com/users/andrei-shtanakov/gists{/gist_id}",
+              "gravatar_id": "",
+              "html_url": "https://github.com/andrei-shtanakov",
+              "id": 45091754,
+              "login": "andrei-shtanakov",
+              "node_id": "MDQ6VXNlcjQ1MDkxNzU0",
+              "organizations_url": "https://api.github.com/users/andrei-shtanakov/orgs",
+              "received_events_url": "https://api.github.com/users/andrei-shtanakov/received_events",
+              "repos_url": "https://api.github.com/users/andrei-shtanakov/repos",
+              "site_admin": false,
+              "starred_url": "https://api.github.com/users/andrei-shtanakov/starred{/owner}{/repo}",
+              "subscriptions_url": "https://api.github.com/users/andrei-shtanakov/subscriptions",
+              "type": "User",
+              "url": "https://api.github.com/users/andrei-shtanakov",
+              "user_view_type": "public"
+            },
+            "files": [
+              {
+                "additions": 14,
+                "blob_url": "https://github.com/andrei-shtanakov/approval-policy/blob/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/README.md",
+                "changes": 14,
+                "contents_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/contents/README.md?ref=12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+                "deletions": 0,
+                "filename": "README.md",
+                "raw_url": "https://github.com/andrei-shtanakov/approval-policy/raw/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/README.md",
+                "sha": "4ed1a2384413a01a60eff6da99a302de5bdb3428",
+                "status": "added"
+              },
+              {
+                "additions": 4,
+                "blob_url": "https://github.com/andrei-shtanakov/approval-policy/blob/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/policy%2Fapprovers.env",
+                "changes": 4,
+                "contents_url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/contents/policy%2Fapprovers.env?ref=12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+                "deletions": 0,
+                "filename": "policy/approvers.env",
+                "raw_url": "https://github.com/andrei-shtanakov/approval-policy/raw/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/policy%2Fapprovers.env",
+                "sha": "07b96dccd88cbc3e0582bc1a5f63dcd8f61fe55c",
+                "status": "added"
+              }
+            ],
+            "html_url": "https://github.com/andrei-shtanakov/approval-policy/commit/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+            "node_id": "C_kwDOUlFsz9oAKDEyZDE5OGZiNGRiOWVkNmZiYjFjNWIwMGFmMzA4ZWViMzFlNGVjMjI",
+            "parents": [],
+            "sha": "12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22",
+            "stats": {
+              "additions": 18,
+              "deletions": 0,
+              "total": 18
+            },
+            "url": "https://api.github.com/repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22"
+          },
+          "link": null,
+          "status": 200
+        }
+      },
+      {
+        "request": {
+          "method": "GET",
+          "path": "repos/andrei-shtanakov/approval-policy/commits/12d198fb4db9ed6fbb1c5b00af308eeb31e4ec22/pulls?per_page=100"
+        },
+        "response": {
+          "body": [],
+          "link": null,
+          "status": 200
+        }
+      }
+    ]
+  },
+  "until": null
+}
