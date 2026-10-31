@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -53,7 +54,6 @@ from urllib.parse import quote
 
 from steward.approvalfacts.v3 import (
     POLICY_FILES,
-    UNAVAILABLE_CODES,
     GhTransport,
     HistoryViolation,
     Request,
@@ -224,39 +224,135 @@ def guarded(item: str, check: Callable[[], Row]) -> Row:
 
 
 # --- the decision rule ----------------------------------------------------------------
+#
+# A kind names what a check saw. For a library refusal it is
+# ``<function>:<code>:<origin>``: which public function refused (``open_review``,
+# ``act``, ``history``), the ``UNAVAILABLE_CODES`` code, and which object the library
+# refused — derived from the library's own detail, never guessed. An origin the script
+# cannot derive is ``unknown`` and appears in no allow-list. ``RULES`` holds, per item,
+# explicit allow-lists of kinds that verify and kinds that contradict; there are no
+# "all except" sets. Every other kind is not_verified.
 
-#: Typed refusals of ``read_policy_history`` that mean "answered, but not in the shape of
-#: §3.8" — a refutation of anonymous availability. ``http``/``transport`` are "did not
-#: answer" (quota, network) and never contradict.
-_ANON_REFUTING = frozenset(f"refusal:{code}" for code in UNAVAILABLE_CODES - {"http", "transport"})
+#: Every origin ``origin_of`` can return.
+ORIGINS = (
+    "pr",
+    "pass_pr",
+    "merger",
+    "review",
+    "dismissal",
+    "timeline",
+    "compare",
+    "blob",
+    "tree",
+    "commit",
+    "commit_pulls",
+    "branch",
+    "repo",
+    "graphql",
+    "link",
+    "chain",
+    "unknown",
+)
 
-#: Per item: (kinds that verify, kinds that contradict). Every other kind — not_verified.
-#: Kinds are built by ``kind_of`` and the item checks; see the combination table in the
-#: Task 13 report (fix round 2).
+#: Codes the library raises at exactly one site: the code itself names the object.
+CODE_ORIGIN = {
+    "bot_login_mismatch": "merger",
+    "dismissal_without_previous_state": "dismissal",
+    "duplicate_dismissal": "dismissal",
+    "orphan_dismissal": "dismissal",
+    "branch_not_default": "repo",
+    "chain_limit": "chain",
+    "no_pr_for_commit": "commit_pulls",
+    "tree_truncated": "tree",
+}
+
+#: Detail prefixes the library writes (its ``where``), in match order.
+_PREFIX_ORIGIN = (
+    ("GraphQL pull request", "pr"),
+    ("REST pull request", "pr"),
+    ("StewardV3Delivery", "pr"),
+    ("pull request", "pass_pr"),
+    ("review", "review"),
+    ("dismissal", "dismissal"),
+    ("ReviewDismissedEvent", "dismissal"),
+    ("StewardV3Reviews", "review"),
+    ("StewardV3Timeline", "timeline"),
+    ("timeline items", "timeline"),
+    ("StewardV3Blobs", "blob"),
+    ("Link ", "link"),
+    ("anchor ", "chain"),
+)
+#: REST path markers (``http: <status> <path>``, ``<path>: …``), most specific first.
+_PATH_ORIGIN = (
+    ("/compare/", "compare"),
+    ("/git/trees/", "tree"),
+    ("/git/blobs/", "blob"),
+    ("/pulls?", "commit_pulls"),
+    ("/pulls/", "pr"),
+    ("/commits/", "commit"),
+    ("/branches/", "branch"),
+)
+_MERGER = re.compile(r"\bmerged(?:By|_by)\b")
+_GRAPHQL_HTTP = re.compile(r"\d{3} graphql")
+_REPO_PATH = re.compile(r"\brepos/[^/\s]+/[^/\s:]+(?:$|[\s:])")
+
+
+def origin_of(code: str, detail: str) -> str:
+    """Object the library refused, from its own detail (or the code, if single-site)."""
+    if code in CODE_ORIGIN:
+        return CODE_ORIGIN[code]
+    for prefix, origin in _PREFIX_ORIGIN:
+        if detail.startswith(prefix):
+            return "merger" if origin == "pr" and _MERGER.search(detail) else origin
+    for marker, origin in _PATH_ORIGIN:
+        if marker in detail:
+            return origin
+    if _GRAPHQL_HTTP.fullmatch(detail):
+        return "graphql"
+    if _REPO_PATH.search(detail):
+        return "repo"
+    return "unknown"
+
+
+def kind_of(fn: str, got: object) -> str:
+    """Kind of a library result of public function ``fn``: ``<fn>:ok``,
+    ``<fn>:violation``, or ``<fn>:<code>:<origin>``."""
+    if isinstance(got, HistoryViolation):
+        return f"{fn}:violation"
+    if not isinstance(got, Unavailable):
+        return f"{fn}:ok"
+    detail = got.reason.removeprefix(got.code).removeprefix(": ")
+    return f"{fn}:{got.code}:{origin_of(got.code, detail)}"
+
+
+#: History origins whose ``malformed`` means "answered anonymously, not in §3.8 shape".
+_H_ORIGINS = ("repo", "branch", "commit", "commit_pulls", "tree", "blob", "link")
+
+#: Per item: (kinds that verify, kinds that contradict) — explicit allow-lists only.
 RULES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "1-review-dismissed-event": (
-        frozenset({"ok:events"}),
+        frozenset({"open_review:ok:events"}),
         frozenset(
             {
-                "ok:count_mismatch",
-                "refusal:dismissal_without_previous_state",
-                "refusal:dismissed_without_event",
+                "open_review:ok:count_mismatch",
+                "open_review:dismissal_without_previous_state:dismissal",
+                "open_review:dismissed_without_event:review",
             }
         ),
     ),
     "2-app-merger": (
-        frozenset({"ok:documented_forms"}),
+        frozenset({"act:ok:documented_forms"}),
         frozenset(
             {
-                "ok:undocumented_forms",
-                "actor_unresolved:merger:clean",
-                "refusal:bot_login_mismatch",
+                "act:ok:undocumented_forms",
+                "act:actor_unresolved:merger:clean",
+                "act:bot_login_mismatch:merger",
             }
         ),
     ),
     "3-open-pr": (
-        frozenset({"ok:open"}),
-        frozenset({"ok:undocumented_state", "refusal:unknown_state"}),
+        frozenset({"open:ok:open"}),
+        frozenset({"open:ok:undocumented_state", "act:unknown_state:pr"}),
     ),
     "4a-compare-ahead": (
         frozenset({"compare:want"}),
@@ -269,15 +365,18 @@ RULES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "5-deleted-user": (
         frozenset(
             {
-                "pass:actor_unresolved:review",
-                "pass:actor_unresolved:dismissal",
-                "merger:actor_unresolved:merger:clean",
+                "open_review:actor_unresolved:review",
+                "open_review:actor_unresolved:dismissal",
+                "act:actor_unresolved:merger:clean",
             }
         ),
-        frozenset({"pass:ok:unresolved_accepted", "merger:ok:unresolved_accepted"}),
+        frozenset({"open_review:ok:ghost_accepted", "act:ok:ghost_accepted"}),
     ),
     "6-pending-visibility": (frozenset({"pending:foreign_visible"}), frozenset()),
-    ITEM_ANON: (frozenset({"answered:anon_quota"}), _ANON_REFUTING),
+    ITEM_ANON: (
+        frozenset({"history:answered:anon_quota"}),
+        frozenset(f"history:malformed:{origin}" for origin in _H_ORIGINS),
+    ),
     "8-compare-slash-base": (frozenset({"slash:same"}), frozenset({"slash:encoded_404"})),
 }
 
@@ -292,24 +391,6 @@ def decide(item: str, kind: str, detail: str, targets: tuple[str, ...] = ()) -> 
     else:
         outcome = "not_verified"
     return Row(item, outcome, f"[{kind}] {detail}", targets)
-
-
-def kind_of(got: object) -> str:
-    """Kind of a library result: ``ok``, ``violation``, ``refusal:<code>``, or
-    ``actor_unresolved:<merger|review|dismissal|other>`` by the library's own ``where``."""
-    if isinstance(got, HistoryViolation):
-        return "violation"
-    if not isinstance(got, Unavailable):
-        return "ok"
-    if got.code != "actor_unresolved":
-        return f"refusal:{got.code}"
-    where = got.reason.removeprefix("actor_unresolved").lstrip(": ")
-    if where.endswith(("mergedBy", "merged_by")):
-        return "actor_unresolved:merger"
-    for actor in ("review", "dismissal"):
-        if where.startswith(f"{actor} "):
-            return f"actor_unresolved:{actor}"
-    return "actor_unresolved:other"
 
 
 def _reason(got: object) -> str:
@@ -395,6 +476,11 @@ def _ghost(login: object) -> bool:
     return not isinstance(login, str) or not login or login.lower() == "ghost"
 
 
+def deleted(actor: object) -> bool:
+    """Item 5's case: a deleted user — ``null`` actor or the ``ghost`` placeholder login."""
+    return not isinstance(actor, Mapping) or _ghost(actor.get("login"))
+
+
 def _numbers(
     prs: Sequence[Mapping[str, Any]], pred: Callable[[Mapping[str, Any]], bool]
 ) -> list[int]:
@@ -418,13 +504,14 @@ def _clean(scan: Scan, number: int) -> bool:
 
 
 def dismissal_kind(got: ReviewFacts | Unavailable) -> str:
-    """Item 1 kind of one candidate: ``ok:events`` needs ≥1 event and count = DISMISSED."""
+    """Item 1 kind of one ``read_open_review`` candidate: ``ok:events`` needs ≥1 event and
+    count = DISMISSED."""
     if not isinstance(got, ReviewFacts):
-        return kind_of(got)
+        return kind_of("open_review", got)
     dismissed = sum(r.state == "DISMISSED" for r in got.reviews)
     if dismissed != len(got.dismissals):
-        return "ok:count_mismatch"
-    return "ok:events" if got.dismissals else "ok:no_events"
+        return "open_review:ok:count_mismatch"
+    return "open_review:ok:events" if got.dismissals else "open_review:ok:no_events"
 
 
 def dismissal_row(repo: str, results: Mapping[int, ReviewFacts | Unavailable]) -> Row:
@@ -518,10 +605,11 @@ def check_dismissals(t: Transport, repo: str, scan: Scan) -> Row:
 
 
 def app_merger_kind(got: object, rest: Mapping[str, Any], clean: bool) -> str:
-    """Item 2 kind: a merger refusal counts only on a clean PR; ``ok`` splits by whether
-    both raw forms are the documented ``slug[bot]``/``Bot`` and ``slug``/``Bot``."""
-    kind = kind_of(got)
-    if kind == "actor_unresolved:merger":
+    """Item 2 kind of ``read_act_facts``: a merger refusal is suffixed ``clean``/``tainted``;
+    ``ok`` splits by whether both raw forms are the documented ``slug[bot]``/``Bot`` and
+    ``slug``/``Bot``."""
+    kind = kind_of("act", got)
+    if kind == "act:actor_unresolved:merger":
         return f"{kind}:{'clean' if clean else 'tainted'}"
     if not isinstance(got, tuple):
         return kind
@@ -533,7 +621,7 @@ def app_merger_kind(got: object, rest: Mapping[str, Any], clean: bool) -> str:
         and hint == "Bot"
         and not login.endswith("[bot]")
     )
-    return "ok:documented_forms" if documented else "ok:undocumented_forms"
+    return "act:ok:documented_forms" if documented else "act:ok:undocumented_forms"
 
 
 def check_app_merger(t: Transport, repo: str, scan: Scan, paths: Sequence[str] = ()) -> Row:
@@ -559,17 +647,20 @@ def check_app_merger(t: Transport, repo: str, scan: Scan, paths: Sequence[str] =
 
 
 def open_pr_kind(rest_state: object, facts: object, act: object) -> str:
-    """Item 3 kind: both reads answered → ``ok:open`` / ``ok:undocumented_state`` (REST
-    state outside {open, closed}) / ``ok:state_mismatch`` (a race, not a refutation)."""
-    if not isinstance(facts, ReviewFacts):
-        return kind_of(facts)
+    """Item 3 kind. ``read_act_facts`` is looked at first: its PR-state refusal
+    (``act:unknown_state:pr``) is the only library refusal about E1/E2 state. Any other
+    refusal keeps its own kind. Both answered → ``open:ok:open`` /
+    ``open:ok:undocumented_state`` (REST state outside {open, closed}) /
+    ``open:ok:state_mismatch`` (a race between reads, not a refutation)."""
     if not isinstance(act, tuple):
-        return kind_of(act)
+        return kind_of("act", act)
+    if not isinstance(facts, ReviewFacts):
+        return kind_of("open_review", facts)
     if rest_state not in ("open", "closed"):
-        return "ok:undocumented_state"
+        return "open:ok:undocumented_state"
     if rest_state == "open" and facts.pr_state == "OPEN" and not act[0].merged:
-        return "ok:open"
-    return "ok:state_mismatch"
+        return "open:ok:open"
+    return "open:ok:state_mismatch"
 
 
 def check_open_pr(t: Transport, repo: str, scan: Scan) -> Row:
@@ -613,23 +704,24 @@ def check_compare_diverged(t: Transport, repo: str, scan: Scan) -> Row:
 
 
 def pass_ghost_kind(got: object) -> str:
-    """Item 5, pass branch: facts that still carry a ghost login are an accepted
-    unresolved actor; facts without one do not refute anything."""
+    """Item 5, ``read_open_review`` branch: facts that still carry a ghost login are an
+    accepted deleted user; facts without one refute nothing."""
     if not isinstance(got, ReviewFacts):
-        return f"pass:{kind_of(got)}"
+        return kind_of("open_review", got)
     logins = [r.login for r in got.reviews] + [d.actor for d in got.dismissals]
-    return "pass:ok:unresolved_accepted" if any(map(_ghost, logins)) else "pass:ok"
+    accepted = any(map(_ghost, logins))
+    return "open_review:ok:ghost_accepted" if accepted else "open_review:ok"
 
 
 def merger_ghost_kind(got: object, clean: bool) -> str:
-    """Item 5, merger branch: a merger refusal verifies only on a clean PR; ``ok`` refutes
-    only when the delivered merger itself is unresolved."""
-    kind = kind_of(got)
-    if kind == "actor_unresolved:merger":
-        return f"merger:{kind}:{'clean' if clean else 'tainted'}"
+    """Item 5, ``read_act_facts`` branch: a merger refusal is suffixed ``clean``/
+    ``tainted``; ``ok`` refutes only when the delivered merger itself is a ghost."""
+    kind = kind_of("act", got)
+    if kind == "act:actor_unresolved:merger":
+        return f"{kind}:{'clean' if clean else 'tainted'}"
     if isinstance(got, tuple) and _ghost(got[0].merged_by_login):
-        return "merger:ok:unresolved_accepted"
-    return f"merger:{kind}"
+        return "act:ok:ghost_accepted"
+    return kind
 
 
 def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
@@ -637,15 +729,17 @@ def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
 
     Review author or dismissal actor → ``read_open_review``; merger of a merged PR →
     ``read_act_facts``; both must give ``actor_unresolved`` (§3.4.1) naming that actor.
-    The PR author is outside §3.4.1 — such a PR alone is ``not_verified``.
+    Candidates are only ``null``/``ghost`` actors (``deleted``): a live actor of another
+    type is §3.4.1 too, but not this item's case. The PR author is outside §3.4.1 — such
+    a PR alone is ``not_verified``.
     """
     item = "5-deleted-user"
-    in_pass = _numbers(scan.prs, lambda pr: any(unresolved(a) for a in _pass_actors(pr)))
-    merger = _numbers(scan.prs, lambda pr: bool(pr["merged"]) and unresolved(pr["mergedBy"]))
+    in_pass = _numbers(scan.prs, lambda pr: any(deleted(a) for a in _pass_actors(pr)))
+    merger = _numbers(scan.prs, lambda pr: bool(pr["merged"]) and deleted(pr["mergedBy"]))
     by_pr = {pr["number"]: pr for pr in scan.prs}
     if in_pass:
         number = in_pass[0]
-        forms = sorted({json.dumps(a) for a in _pass_actors(by_pr[number]) if unresolved(a)})
+        forms = sorted({json.dumps(a) for a in _pass_actors(by_pr[number]) if deleted(a)})
         got: object = read_open_review(t, repo, number)
         detail = f"ревью/отзыв {forms} → {_reason(got)}"
         return decide(item, pass_ghost_kind(got), detail, (f"{repo}#{number}",))
@@ -655,9 +749,16 @@ def check_deleted_user(t: Transport, repo: str, scan: Scan) -> Row:
         detail = f"мержер {json.dumps(by_pr[number]['mergedBy'])} → {_reason(got)}"
         kind = merger_ghost_kind(got, _clean(scan, number))
         return decide(item, kind, detail, (f"{repo}#{number}",))
-    authors = _numbers(scan.prs, lambda pr: unresolved(pr.get("author")))
+    authors = _numbers(scan.prs, lambda pr: deleted(pr.get("author")))
     if authors:
         detail = f"удалённый только автор PR {authors[:MAX_CANDIDATES]} — вне §3.4.1"
+        return Row(item, "not_verified", detail)
+    others = _numbers(scan.prs, lambda pr: any(unresolved(a) for a in _pass_actors(pr)))
+    if others:
+        detail = (
+            f"акторы типа вне User/Bot (не удалённые) в {others[:MAX_CANDIDATES]} — "
+            "пункт про null/ghost, не проверялся"
+        )
         return Row(item, "not_verified", detail)
     return Row(item, "not_verified", f"удалённых пользователей в {repo} нет ({scan.coverage()})")
 
@@ -685,15 +786,15 @@ def check_pending(scan: Scan, repo: str) -> Row:
 
 
 def anonymous_kind(history: object, remaining: Sequence[str | None], limits: Sequence[str]) -> str:
-    """Item 7 kind: answered (activations or a violation) with the anonymous quota in
-    every response — ``answered:anon_quota``; a typed refusal keeps its ``refusal:<code>``
-    (``RULES`` contradicts only codes other than http/transport)."""
-    kind = kind_of(history)
-    if kind not in ("ok", "violation"):
+    """Item 7 kind of ``read_policy_history``: answered (activations or a violation) with
+    the anonymous quota in every response — ``history:answered:anon_quota``; a refusal
+    keeps ``history:<code>:<origin>``."""
+    kind = kind_of("history", history)
+    if kind not in ("history:ok", "history:violation"):
         return kind
     if remaining and None not in remaining and list(limits) == [ANON_LIMIT]:
-        return "answered:anon_quota"
-    return "answered:no_anon_quota"
+        return "history:answered:anon_quota"
+    return "history:answered:no_anon_quota"
 
 
 def check_anonymous(repo: str, anon: RecordingTransport) -> Row:
